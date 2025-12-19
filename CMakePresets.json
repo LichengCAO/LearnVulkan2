@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "configurePresets": [
+    {
+      "name": "vcpkg",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET" : "x64-windows",
+        "OPENVDB_BUILD_NANOVDB": "ON", // Equivalent to -DOPENVDB_BUILD_NANOVDB=0
+        "NANOVDB_USE_OPENVDB": "ON", // Equivalent to -DNANOVDB_USE_OPENVDB=ON
+        "NANOVDB_BUILD_TOOLS" : "OFF",
+        "OPENVDB_ENABLE_UNINSTALL" : "OFF",
+        "ENKITS_BUILD_EXAMPLES" : "OFF"
+      }
+    }
+  ]
+}

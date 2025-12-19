@@ -1,0 +1,24 @@
+[submodule "external/glfw"]
+	path = external/glfw
+	url = https://github.com/glfw/glfw
+[submodule "external/glm"]
+	path = external/glm
+	url = https://github.com/g-truc/glm
+[submodule "external/vk-bootstrap"]
+	path = external/vk-bootstrap
+	url = https://github.com/charles-lunarg/vk-bootstrap
+[submodule "external/imgui"]
+	path = external/imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "external/volk"]
+	path = external/volk
+	url = https://github.com/zeux/volk.git
+[submodule "external/vma"]
+	path = external/vma
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+[submodule "external/spirv_reflect"]
+	path = external/spirv_reflect
+	url = https://github.com/KhronosGroup/SPIRV-Reflect.git
+[submodule "external/enkiTS"]
+	path = external/enkiTS
+	url = https://github.com/dougbinks/enkiTS.git

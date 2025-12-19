@@ -1,0 +1,4 @@
+#pragma once
+
+#define SPV_DIRECTORY "${PROJECT_SOURCE_DIR}/bin/shaders/"
+#define IMAGE_DIRECTORY "${PROJECT_SOURCE_DIR}/res/images/"

@@ -1,0 +1,11 @@
+1. install vcpkg: https://github.com/microsoft/vcpkg?tab=readme-ov-file
+
+2. follow openvdb's instruction to install openvdb's dependency with vcpkg in cmd:
+vcpkg install zlib:x64-windows
+vcpkg install blosc:x64-windows
+vcpkg install tbb:x64-windows
+vcpkg install boost-iostreams:x64-windows
+vcpkg install boost-interprocess:x64-windows
+
+3. install metis by vcpkg in cmd:
+vcpkg install mestis
