@@ -7,19 +7,14 @@ public:
 
 };
 
-class RunPinnedTaskLoopTask
+class IPinnedTask
 {
-private:
-	MyTaskScheduler* m_pTaskScheduler = nullptr;
-
 public:
-	bool execute = true;
-
-public:
-	void Execute();
+	virtual void Execute() = 0;
+	virtual ~IPinnedTask() {};
 };
 
-class AsynchronizeLoadTask
+class RunPinnedTaskLoopTask : public IPinnedTask
 {
 private:
 	MyTaskScheduler* m_pTaskScheduler = nullptr;
@@ -28,5 +23,17 @@ public:
 	bool execute = true;
 
 public:
-	void Execute();
+	virtual void Execute() override;
+};
+
+class AsynchronizeLoadTask : public IPinnedTask
+{
+private:
+	MyTaskScheduler* m_pTaskScheduler = nullptr;
+
+public:
+	bool execute = true;
+
+public:
+	virtual void Execute() override;
 };

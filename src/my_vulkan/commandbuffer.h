@@ -367,3 +367,19 @@ public:
 	// end of commands
 	// ------------------------------------------------------
 };
+
+class CommandBufferManager
+{
+public:
+	struct ManagedCommandBufferInfo
+	{
+		uint32_t frameID;
+		uint32_t threadID;
+		QueueFamilyType queueFamilyType;
+	};
+
+public:
+	CommandBuffer* GetManagedFreeCommandBuffer(const ManagedCommandBufferInfo& inRequireInfo);
+
+	void ResetCommandPoolsManaged(uint32_t inFrameIndex);
+};
