@@ -3,40 +3,58 @@
 
 // ref: https://stackoverflow.com/questions/73512602/using-vulkan-memory-allocator-with-volk
 class BufferView;
-class CommandSubmission;
+class CommandBuffer;
 class MemoryAllocator;
 
 class Buffer final
 {
 public:
-	struct CreateInformation
+	class Initializer
 	{
-		VkDeviceSize size;
-		VkBufferUsageFlags usage;
-		std::optional<VkSharingMode>			optSharingMode;		//optional, default: VK_SHARING_MODE_EXCLUSIVE;
-		std::optional<VkMemoryPropertyFlags> optMemoryProperty; // optional, default: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-		std::optional<VkDeviceSize>				optAlignment;			// buffer may have alignment requirements, i.e. Scratch Buffer
+	private:
+		std::optional<VkDeviceSize> m_optAlignment;
+		VkMemoryPropertyFlags m_memoryProperty = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+		VkSharingMode m_sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		VkDeviceSize m_bufferSize;
+		VkBufferUsageFlags m_usage;
+
+	public:
+		// Reset optional values to default, clear other values to zero
+		Buffer::Initializer& Reset();
+
+		// Set buffer size, mandatory
+		Buffer::Initializer& SetBufferSize(VkDeviceSize inSize);
+
+		// Set buffer usage, mandatory
+		Buffer::Initializer& SetBufferUsage(VkBufferUsageFlags inUsage);
+
+		// Optional, default: VK_SHARING_MODE_EXCLUSIVE
+		Buffer::Initializer& CustomizeSharingMode(VkSharingMode inSharingMode);
+		
+		// Optional, default: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+		Buffer::Initializer& CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperties);
+		
+		// Optional, for buffers that have alignment requirement
+		Buffer::Initializer& CustomizeAlignment(VkDeviceSize inAlignment);
+
+		friend class Buffer;
 	};
+
 	struct Information
 	{
 		VkDeviceSize size;
 		VkBufferUsageFlags usage;
 		VkSharingMode sharingMode;
-		VkMemoryPropertyFlags	memoryProperty;// = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		VkMemoryPropertyFlags	memoryProperty;
 		std::optional<VkDeviceSize> optAlignment; // buffer may have alignment requirements, i.e. Scratch Buffer
 	};
 
 private:
 	Information m_bufferInformation{};
 	void* m_mappedMemory = nullptr; // we store this value, since mapping is not free
-
-public:
-	VkBuffer	   vkBuffer = VK_NULL_HANDLE;
-	//VkDeviceMemory vkDeviceMemory = VK_NULL_HANDLE;
+	VkBuffer m_vkBuffer = VK_NULL_HANDLE;
 
 private:
-	//uint32_t _FindMemoryTypeIndex(uint32_t typeBits, VkMemoryPropertyFlags properties) const;
-
 	MemoryAllocator* _GetMemoryAllocator() const;
 	
 	void _AllocateMemory();
@@ -49,6 +67,7 @@ private:
 
 	// Map the memory and copy, if this buffer is host coherent
 	void _CopyFromHostWithMappedMemory(const void* src, size_t bufferOffset, size_t size);
+	
 	// Create a staging buffer to copy from host and then copy from staging buffer
 	void _CopyFromHostWithStaggingBuffer(const void* src, size_t bufferOffest, size_t size);
 
@@ -58,57 +77,82 @@ public:
 	Buffer(Buffer& _toCopy) = delete;
 	~Buffer();
 
-	void PresetCreateInformation(const CreateInformation& _info);
-
-	void Init();
+	void Init(const Buffer::Initializer* inInitializerPtr);
 	
 	void Uninit();
 
 	// Copy from host, will use stagging buffer if necessary, use buffer's size as length
 	void CopyFromHost(const void* src);
+	
 	// Copy from host, will use stagging buffer if necessary
 	void CopyFromHost(const void* src, size_t bufferOffset, size_t size);
-
-	// Copy from buffer, will wait until copy is done, use buffer's size as length
-	void CopyFromBuffer(const Buffer& otherBuffer);
-	// Copy from buffer, will wait until copy is done, use buffer's size as length
-	void CopyFromBuffer(const Buffer* pOtherBuffer);
-	// Copy from buffer,
-	// if pCmd is nullptr it will create a command buffer and wait this action to finish,
-	// if command buffer is provided, then when does this command finish depends on user
-	void CopyFromBuffer(const Buffer* pOtherBuffer, size_t srcOffset, size_t dstOffset, size_t size, CommandSubmission* pCmd = nullptr);
-
-	// Fill buffer with input data,
-	// if pCmd is nullptr it will create a command buffer and wait this action to finish,
-	// if command buffer is provided, then when does this command finish depends on user
-	void Fill(uint32_t _data, CommandSubmission* pCmd = nullptr);
-
-	const Information& GetBufferInformation() const;
 	
+	// Copy from source buffer, will wait until copy is done, use dist buffer's size as length
+	void CopyFromBuffer(const Buffer* pOtherBuffer);
+	
+	// Copy from buffer on graphics queue, wait till copy finish
+	void CopyFromBuffer(
+		const Buffer* inSrcBufferPtr, 
+		size_t inSrcOffset, 
+		size_t inDstOffset, 
+		size_t inSize);
+
+	// Record copy command to command buffer
+	void CopyFromBuffer(
+		const Buffer* inSrcBufferPtr,
+		size_t inSrcOffset,
+		size_t inDstOffset,
+		size_t inSize,
+		CommandBuffer* outCmdPtr);
+
+	// Fill buffer with input data by graphics queue, wait till finish
+	void Fill(uint32_t inData);
+
+	// Record fill data command into command buffer
+	void Fill(uint32_t inData, CommandBuffer* outCmdPtr);
+
+	// Get buffer information
+	const Buffer::Information& GetBufferInformation() const;
+	
+	// Get device address of the buffer, require VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
 	VkDeviceAddress GetDeviceAddress() const;
 
-	VkDescriptorBufferInfo GetDescriptorInfo() const;
+	// Get default VkDescriptorBufferInfo, with offset = 0, range = bufferSize
+	VkDescriptorBufferInfo GetDescriptorBufferInfo() const;
 
-	BufferView NewBufferView(VkFormat _format);
+	// Get device handle of this buffer
+	VkBuffer GetVkBuffer() const;
 };
 
 class BufferView // use for texel buffer
 {
 private:
+	VkBufferView m_vkBufferView = VK_NULL_HANDLE;
 	VkFormat m_format = VkFormat::VK_FORMAT_UNDEFINED;
 
 public:
-	const Buffer* pBuffer = nullptr;
-	VkBufferView vkBufferView = VK_NULL_HANDLE;
+	class Initializer
+	{
+	private:
+		VkFormat m_format = VK_FORMAT_UNDEFINED;
+		VkBuffer m_buffer = VK_NULL_HANDLE;
+		VkDeviceSize m_offset = 0;
+		VkDeviceSize m_range = 0;
 
-private:
+	public:
+		BufferView::Initializer& Reset();
+		BufferView::Initializer& SetFormat(VkFormat inFormat);
+		BufferView::Initializer& SetBuffer(const Buffer* inBufferPtr);
+
+		friend class BufferView;
+	};
 
 public:
 	~BufferView();
-	void Init();
+	
+	void Init(const BufferView::Initializer* inInitPtr);
+	
 	void Uninit();
-
-	friend class Buffer;
 };
 
 //Resource Type :

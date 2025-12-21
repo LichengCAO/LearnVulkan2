@@ -722,7 +722,7 @@ void RayTracingAccelerationStructure::BLAS::Init(VkDeviceSize size)
 	bufferInfo.size = info.size;
 	uptrBuffer->PresetCreateInformation(bufferInfo);
 	uptrBuffer->Init();
-	info.buffer = uptrBuffer->vkBuffer;
+	info.buffer = uptrBuffer->m_vkBuffer;
 
 	VK_CHECK(vkCreateAccelerationStructureKHR(MyDevice::GetInstance().vkDevice, &info, nullptr, &vkAccelerationStructure), "Failed to create BLAS!");
 
@@ -768,7 +768,7 @@ void RayTracingAccelerationStructure::TLAS::Init(VkDeviceSize ASSize)
 	createInfo.size = ASSize;
 	createInfo.pNext = nullptr;
 	createInfo.offset = 0;
-	createInfo.buffer = uptrBuffer->vkBuffer;
+	createInfo.buffer = uptrBuffer->m_vkBuffer;
 	createInfo.deviceAddress = 0; // https://registry.khronos.org/vulkan/specs/latest/man/html/VkAccelerationStructureCreateInfoKHR.html
 	createInfo.createFlags = 0;
 

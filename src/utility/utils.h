@@ -1,17 +1,5 @@
 #pragma once
-#include "geometry.h"
-#include "transform.h"
 #include <variant>
-
-class MeshUtility
-{
-private:
-	static void _OptimizeMesh(StaticMesh& mesh);
-	static void _OptimizeMeshToVertexCacheStage(StaticMesh& mesh);
-
-public:
-	static bool Load(const std::string& objFile, std::vector<StaticMesh>& outMesh);
-};
 
 namespace common_utils
 {

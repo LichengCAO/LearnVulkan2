@@ -270,7 +270,7 @@ void Image::TransitLayout(VkImageLayout newLayout)
 		aspect = VK_IMAGE_ASPECT_COLOR_BIT;
 	}
 
-	barrierBuilder.SetAspect(aspect);
+	barrierBuilder.CustomizeImageAspect(aspect);
 	barrier = barrierBuilder.NewBarrier(vkImage, oldLayout, newLayout, VK_ACCESS_NONE, VK_ACCESS_NONE);
 
 	// one time submit command will wait to be done anyway
@@ -309,7 +309,7 @@ void Image::CopyFromBuffer(const Buffer& stagingBuffer)
 	region.imageExtent.depth = 1;
 
 	cmdSubmit.CopyBufferToImage(
-		stagingBuffer.vkBuffer,
+		stagingBuffer.m_vkBuffer,
 		vkImage,
 		_GetImageLayout(),
 		{ region });
@@ -359,9 +359,9 @@ void Image::ChangeLayoutAndFill(VkImageLayout finalLayout, const VkClearColorVal
 	range.layerCount = VK_REMAINING_ARRAY_LAYERS;
 	range.levelCount = VK_REMAINING_MIP_LEVELS;
 
-	barrierBuilder.SetArrayLayerRange(range.baseArrayLayer, range.layerCount);
-	barrierBuilder.SetAspect(range.aspectMask);
-	barrierBuilder.SetMipLevelRange(range.baseMipLevel, range.levelCount);
+	barrierBuilder.CustomizeArrayLayerRange(range.baseArrayLayer, range.layerCount);
+	barrierBuilder.CustomizeImageAspect(range.aspectMask);
+	barrierBuilder.CustomizeMipLevelRange(range.baseMipLevel, range.levelCount);
 	barrier = barrierBuilder.NewBarrier(vkImage, _GetImageLayout(), finalLayout, VK_ACCESS_NONE, VK_ACCESS_TRANSFER_WRITE_BIT);
 
 	if (pCmd == nullptr)

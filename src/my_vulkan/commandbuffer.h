@@ -7,6 +7,7 @@
 
 class GraphicsPipeline;
 class RenderPass;
+class CommandPool;
 
 class ImageBarrierBuilder
 {
@@ -18,19 +19,20 @@ private:
 
 public:
 	ImageBarrierBuilder();
+	
 	ImageBarrierBuilder& Reset();
 
 	// optional, set mip level range of the barrier
-	ImageBarrierBuilder& SetMipLevelRange(uint32_t baseMipLevel, uint32_t levelCount = 1);
+	ImageBarrierBuilder& CustomizeMipLevelRange(uint32_t baseMipLevel, uint32_t levelCount = 1);
 
 	// optional, set array layer range of the barrier
-	ImageBarrierBuilder& SetArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount = 1);
+	ImageBarrierBuilder& CustomizeArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount = 1);
 
 	// optional, set aspect of the image barrier
-	ImageBarrierBuilder& SetAspect(VkImageAspectFlags aspectMask);
+	ImageBarrierBuilder& CustomizeImageAspect(VkImageAspectFlags aspectMask);
 
 	// optional, useful when trying to upload image in a command buffer from queue family other than the graphics queue family
-	ImageBarrierBuilder& SetQueueFamilyTransfer(uint32_t inQueueFamilyTransferFrom, uint32_t inQueueFamilyTransferTo);
+	ImageBarrierBuilder& CustomizeQueueFamilyTransfer(uint32_t inQueueFamilyTransferFrom, uint32_t inQueueFamilyTransferTo);
 	
 	// _srcAccessMask: when the data is updated (available)
 	// _dstAccessMask: when the data is visible
@@ -220,26 +222,43 @@ private:
 private:
 	void _ProcessInCmdScope(const std::function<void()>& inFunction);
 
-public:
-	uint32_t GetQueueFamliyIndex() const;
+private:
+	class Initializer
+	{
+	private:
+		VkCommandPool m_vkCommandPool = VK_NULL_HANDLE;
+		VkCommandBufferLevel m_bufferLevel = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+
+	public:
+		CommandBuffer::Initializer& Reset();
+
+		// Set command pool to allocate buffer, mandatory
+		CommandBuffer::Initializer& SetCommandPool(VkCommandPool inCommandPool);
+
+		// Optional, default is VK_COMMAND_BUFFER_LEVEL_PRIMARY
+		CommandBuffer::Initializer& CustomizeCommandBufferLevel(VkCommandBufferLevel inBufferLevel);
+
+		friend class CommandBuffer;
+	};
+
+	void _Init(const CommandBuffer::Initializer* inInitializerPtr);
 	
+	// Free command buffer to pool. It's not mandatory, since command buffer will
+	// be freed when its parent command pool is destroyed.
+	// According to spec, the allocated command buffer will not be freed until
+	// the command pool is reset, even with this function invoked.
+	void _Uninit();
+
+public:
+	~CommandBuffer();
+
+	uint32_t GetQueueFamliyIndex() const;
+
 	VkCommandBuffer GetVkCommandBuffer() const;
 
 	VkCommandBufferLevel GetCommandBufferLevel() const;
 
-	// Initiate based on default settings
-	void Init();
-
-	// Initiate based on Vulkan settings
-	void Init(
-		VkCommandPool inCommandPool,
-		VkCommandBufferLevel inBufferLevel = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-		const void* inNextPtr = nullptr);
-
-	// Destroy command buffer to invalid state.
-	// According to spec, the allocated command buffer will not be freed until
-	// the command pool is reset, even with this function invoked.
-	void Uninit();
+	bool IsRecording() const;
 
 	// Reset commands in command buffer
 	void Reset(VkCommandBufferResetFlags inFlags = 0);
@@ -336,6 +355,12 @@ public:
 		VkImageLayout inDstLayout,
 		const std::vector<VkBufferImageCopy>& inRegions);
 
+	// Copies data from a buffer to another buffer, using the provided regions to specify the layout of the copy operation.
+	CommandBuffer& CmdCopyBuffer(
+		VkBuffer inSrcBuffer,
+		VkBuffer inDstBuffer,
+		const std::vector<VkBufferCopy>& inRegions);
+
 	// Builds acceleration structures for ray tracing pipelines using provided geometry and range information.
 	CommandBuffer& CmdBuildAccelerationStructuresKHR(
 		const std::vector<VkAccelerationStructureBuildGeometryInfoKHR>& inBuildInfos,
@@ -366,6 +391,8 @@ public:
 
 	// end of commands
 	// ------------------------------------------------------
+
+	friend class CommandPool;
 };
 
 class CommandBufferManager
@@ -382,4 +409,48 @@ public:
 	CommandBuffer* GetManagedFreeCommandBuffer(const ManagedCommandBufferInfo& inRequireInfo);
 
 	void ResetCommandPoolsManaged(uint32_t inFrameIndex);
+};
+
+class CommandPool
+{
+private:
+	VkCommandPool m_vkCommandPool = VK_NULL_HANDLE;
+	uint32_t m_queueFamilyIndex = ~0;
+
+public:
+	class Initializer
+	{
+	private:
+		uint32_t m_queueFamilyIndex = ~0;
+		VkCommandPoolCreateFlags m_createFlags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+
+	public:
+		CommandPool::Initializer& Reset();
+
+		// Optional, default: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+		CommandPool::Initializer& CustomizeCommandPoolCreateFlags(VkCommandPoolCreateFlags inFlags);
+
+		// Optional, default: queue family index of the primary queue
+		CommandPool::Initializer& CustomizeQueueFamilyIndex(uint32_t inIndex);
+
+		friend class CommandPool;
+	};
+
+public:
+	~CommandPool();
+
+	void Init(const CommandPool::Initializer* inInitializerPtr);
+
+	VkCommandPool GetVkCommandPool() const;
+
+	// Every command buffer allocated by this are reset
+	CommandPool& ResetPool();
+
+	// Allocate a ready command buffer(inited) from current pool
+	CommandPool& AllocateCommandBuffer(CommandBuffer* outCommandBufferPtr, VkCommandBufferLevel inBufferLevel = VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+
+	// Return command buffer to this pool
+	CommandPool& FreeCommandBuffer(CommandBuffer* inoutBufferReturnedPtr);
+
+	void Uninit();
 };

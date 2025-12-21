@@ -7,7 +7,7 @@ void CommandSubmission::_CreateSynchronizeObjects()
 	auto& device = MyDevice::GetInstance();
 
 	m_vkSemaphore = device.CreateVkSemaphore();
-	vkFence = device.CreateVkFence();
+	vkFence = device.CreateFence();
 }
 
 void CommandSubmission::_UpdateImageLayout(VkImage vkImage, VkImageSubresourceRange range, VkImageLayout layout) const
@@ -358,24 +358,24 @@ ImageBarrierBuilder& ImageBarrierBuilder::Reset()
 	m_srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	return *this;
 }
-ImageBarrierBuilder& ImageBarrierBuilder::SetMipLevelRange(uint32_t baseMipLevel, uint32_t levelCount)
+ImageBarrierBuilder& ImageBarrierBuilder::CustomizeMipLevelRange(uint32_t baseMipLevel, uint32_t levelCount)
 {
 	m_subresourceRange.baseMipLevel = baseMipLevel;
 	m_subresourceRange.levelCount = levelCount;
 	return *this;
 }
-ImageBarrierBuilder& ImageBarrierBuilder::SetArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount)
+ImageBarrierBuilder& ImageBarrierBuilder::CustomizeArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount)
 {
 	m_subresourceRange.baseArrayLayer = baseArrayLayer;
 	m_subresourceRange.layerCount = layerCount;
 	return *this;
 }
-ImageBarrierBuilder& ImageBarrierBuilder::SetAspect(VkImageAspectFlags aspectMask)
+ImageBarrierBuilder& ImageBarrierBuilder::CustomizeImageAspect(VkImageAspectFlags aspectMask)
 {
 	m_subresourceRange.aspectMask = aspectMask;
 	return *this;
 }
-ImageBarrierBuilder& ImageBarrierBuilder::SetQueueFamilyTransfer(uint32_t inQueueFamilyTransferFrom, uint32_t inQueueFamilyTransferTo)
+ImageBarrierBuilder& ImageBarrierBuilder::CustomizeQueueFamilyTransfer(uint32_t inQueueFamilyTransferFrom, uint32_t inQueueFamilyTransferTo)
 {
 	m_dstQueueFamilyIndex = inQueueFamilyTransferTo;
 	m_srcQueueFamilyIndex = inQueueFamilyTransferFrom;
@@ -501,6 +501,27 @@ VkImageBlit ImageBlitBuilder::NewBlit(
 		inDstMipLevel);
 }
 
+CommandBuffer::Initializer& CommandBuffer::Initializer::Reset()
+{
+	*this = CommandBuffer::Initializer{};
+
+	return *this;
+}
+
+CommandBuffer::Initializer& CommandBuffer::Initializer::SetCommandPool(VkCommandPool inCommandPool)
+{
+	m_vkCommandPool = inCommandPool;
+
+	return *this;
+}
+
+CommandBuffer::Initializer& CommandBuffer::Initializer::CustomizeCommandBufferLevel(VkCommandBufferLevel inLevel)
+{
+	m_bufferLevel = inLevel;
+
+	return *this;
+}
+
 void CommandBuffer::_ProcessInCmdScope(const std::function<void()>& inFunction)
 {
 	// common things to do before processing
@@ -525,30 +546,27 @@ VkCommandBufferLevel CommandBuffer::GetCommandBufferLevel() const
 	return m_vkCommandBufferLevel;
 }
 
-void CommandBuffer::Init()
+bool CommandBuffer::IsRecording() const
 {
-	MyDevice::CommandPoolRequireInfo reqInfo{};
-	const auto& myDevice = MyDevice::GetInstance();
-	uint32_t queueFamilyIndex = myDevice.GetQueueFamilyIndex(QueueFamilyType::GRAPHICS);
-	
-	reqInfo.queueFamilyIndex = queueFamilyIndex;
-	Init(myDevice.GetCommandPool(reqInfo), VK_COMMAND_BUFFER_LEVEL_PRIMARY, nullptr);
+	return m_isRecording;
 }
 
-void CommandBuffer::Init(
-	VkCommandPool inCommandPool, 
-	VkCommandBufferLevel inBufferLevel, 
-	const void* inNextPtr)
+CommandBuffer::~CommandBuffer()
+{
+	// Do nothing, it's ok that command buffer is not freed, it will be freed by comannd pool when it is destroyed anyway
+}
+
+void CommandBuffer::_Init(const CommandBuffer::Initializer* inInitializerPtr)
 {
 	auto& myDevice = MyDevice::GetInstance();
 
-	m_vkCommandBuffer = myDevice.AllocateCommandBuffer(inCommandPool, inBufferLevel, inNextPtr);
-	m_vkCommandBufferLevel = inBufferLevel;
-	m_vkCommandPool = inCommandPool;
+	m_vkCommandPool = inInitializerPtr->m_vkCommandPool;
+	m_vkCommandBufferLevel = inInitializerPtr->m_bufferLevel;
+	m_vkCommandBuffer = myDevice.AllocateCommandBuffer(m_vkCommandPool, m_vkCommandBufferLevel);
 	m_queueFamily = myDevice.GetQueueFamilyIndex(m_vkCommandPool);
 }
 
-void CommandBuffer::Uninit()
+void CommandBuffer::_Uninit()
 {
 	auto& myDevice = MyDevice::GetInstance();
 
@@ -797,6 +815,18 @@ CommandBuffer& CommandBuffer::CmdCopyBufferToImage(
 	return *this;
 }
 
+CommandBuffer& CommandBuffer::CmdCopyBuffer(VkBuffer inSrcBuffer, VkBuffer inDstBuffer, const std::vector<VkBufferCopy>& inRegions)
+{
+	_ProcessInCmdScope(
+		[&]()
+		{
+			vkCmdCopyBuffer(m_vkCommandBuffer, inSrcBuffer, inDstBuffer, static_cast<uint32_t>(inRegions.size()), inRegions.data());
+		}
+	);
+	
+	return *this;
+}
+
 CommandBuffer& CommandBuffer::CmdBuildAccelerationStructuresKHR(
 	const std::vector<VkAccelerationStructureBuildGeometryInfoKHR>& inBuildInfos,
 	const std::vector<VkAccelerationStructureBuildRangeInfoKHR*>& inBuildRanges)
@@ -867,6 +897,97 @@ CommandBuffer& CommandBuffer::CmdExecuteCommands(const std::vector<VkCommandBuff
 		{
 			vkCmdExecuteCommands(this->m_vkCommandBuffer, static_cast<uint32_t>(inCommandBuffers.size()), inCommandBuffers.data());
 		});
+
+	return *this;
+}
+
+CommandPool::~CommandPool()
+{
+	CHECK_TRUE(m_vkCommandPool == VK_NULL_HANDLE);
+}
+
+void CommandPool::Init(const CommandPool::Initializer* inInitializerPtr)
+{
+	CHECK_TRUE(inInitializerPtr != nullptr);
+
+	auto& device = MyDevice::GetInstance();
+	VkCommandPoolCreateInfo createInfo{};
+
+	createInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	createInfo.flags = inInitializerPtr->m_createFlags;
+	createInfo.queueFamilyIndex = inInitializerPtr->m_queueFamilyIndex;
+	if (inInitializerPtr->m_queueFamilyIndex == ~0)
+	{
+		createInfo.queueFamilyIndex = device.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
+	}
+
+	m_vkCommandPool = device.CreateCommandPool(createInfo);
+}
+
+CommandPool& CommandPool::FreeCommandBuffer(CommandBuffer* inoutBufferReturnedPtr)
+{
+	auto& device = MyDevice::GetInstance();
+
+	inoutBufferReturnedPtr->_Uninit();
+
+	return *this;
+}
+
+void CommandPool::Uninit()
+{
+	if (m_vkCommandPool != VK_NULL_HANDLE)
+	{
+		auto& device = MyDevice::GetInstance();
+
+		device.DestroyCommandPool(m_vkCommandPool);
+		m_vkCommandPool = VK_NULL_HANDLE;
+	}
+}
+
+CommandPool::Initializer& CommandPool::Initializer::Reset()
+{
+	*this = CommandPool::Initializer{};
+
+	return *this;
+}
+
+CommandPool::Initializer& CommandPool::Initializer::CustomizeCommandPoolCreateFlags(VkCommandPoolCreateFlags inFlags)
+{
+	m_createFlags = inFlags;
+	
+	return *this;
+}
+
+CommandPool::Initializer& CommandPool::Initializer::CustomizeQueueFamilyIndex(uint32_t inIndex)
+{
+	m_queueFamilyIndex = inIndex;
+
+	return *this;
+}
+
+VkCommandPool CommandPool::GetVkCommandPool() const
+{
+	return m_vkCommandPool;
+}
+
+CommandPool& CommandPool::ResetPool()
+{
+	if (m_vkCommandPool != VK_NULL_HANDLE)
+	{
+		auto& device = MyDevice::GetInstance();
+
+		device.ResetCommandPool(m_vkCommandPool);
+	}
+
+	return *this;
+}
+
+CommandPool& CommandPool::AllocateCommandBuffer(CommandBuffer* outCommandBufferPtr, VkCommandBufferLevel inBufferLevel)
+{
+	CommandBuffer::Initializer bufferInit{};
+
+	bufferInit.CustomizeCommandBufferLevel(inBufferLevel).SetCommandPool(m_vkCommandPool);
+	outCommandBufferPtr->_Init(&bufferInit);
 
 	return *this;
 }

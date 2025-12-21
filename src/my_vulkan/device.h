@@ -33,6 +33,9 @@ private:
 	vkb::DispatchTable	m_dispatchTable;
 	vkb::Swapchain		m_swapchain;
 	VkQueue				m_vkPresentQueue = VK_NULL_HANDLE;
+	VkQueue				m_vkGraphicsQueue = VK_NULL_HANDLE;
+	VkQueue				m_vkComputeQueue = VK_NULL_HANDLE;
+	VkQueue				m_vkTransferQueue = VK_NULL_HANDLE;
 	bool				m_needRecreate = false;
 	bool				m_initialized = false;
 	UserInput			m_userInput{};
@@ -108,8 +111,9 @@ public:
 	VkFormat GetDepthFormat() const;
 	VkFormat GetSwapchainFormat() const;
 	UserInput GetUserInput() const;
-	VkQueue GetQueue(uint32_t _familyIndex, uint32_t _queueIndex = 0) const;
+
 	void WaitIdle() const;
+	
 	// get time, in seconds
 	double GetTime() const;
 
@@ -117,8 +121,13 @@ public:
 
 	DescriptorSetAllocator* GetDescriptorSetAllocator();
 
-	// Get queue family index by the function
-	uint32_t GetQueueFamilyIndex(QueueFamilyType inType) const;
+	// Get queue family index by the function,
+	// https://github.com/KhronosGroup/Vulkan-Guide/blob/main/chapters/queues.adoc
+	uint32_t GetQueueFamilyIndexOfType(QueueFamilyType inType) const;
+
+	// Get queue by the queue family type, we only have one queue for one type.
+	// One queue can only be submit from one thread each time
+	VkQueue GetQueueOfType(QueueFamilyType inType) const;
 
 	// Get queue family index by VkCommandPool handle
 	uint32_t GetQueueFamilyIndex(VkCommandPool inVkCommandPool) const;
@@ -138,7 +147,10 @@ public:
 	// Thin wraps for device Vulkan functions
 	//---------------------------------------------
 	// Create a VkFence, _pCreateInfo is optional, if it's not nullptr, VkFence will be created based on it
-	VkFence CreateVkFence(const VkFenceCreateInfo* _pCreateInfo = nullptr);
+	VkFence CreateFence(
+		VkFenceCreateFlags inFlags = VK_FENCE_CREATE_SIGNALED_BIT, 
+		const void* inNextPtr = nullptr, 
+		const VkAllocationCallbacks* inCallbacks = nullptr);
 
 	// Destroy _fence on device, set it to VK_NULL_HANDLE
 	void DestroyVkFence(VkFence& _fence);
@@ -251,6 +263,43 @@ public:
 		uint32_t inGroupCount,
 		size_t inDataSize,
 		void* outDataPtr);
+
+	// VK_SUCCESS: fence signaled, VK_NOT_READY: fence unsignaled
+	VkResult GetFenceStatus(VkFence inFence);
+
+	VkResult WaitForFences(
+		const std::vector<VkFence>& inFencesToWait, 
+		bool inWaitAll = true, 
+		uint64_t inTimeout = UINT64_MAX);
+
+	VkCommandPool CreateCommandPool(
+		const VkCommandPoolCreateInfo& inCreateInfo,
+		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	VkResult ResetCommandPool(VkCommandPool inCommandPool, VkCommandPoolResetFlags inFlags = 0);
+
+	void DestroyCommandPool(
+		VkCommandPool inCommandPoolToDestroy,
+		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	VkBuffer CreateBuffer(
+		const VkBufferCreateInfo& inCreateInfo,
+		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	VkDeviceAddress GetBufferDeviceAddress(
+		const VkBufferDeviceAddressInfo& inAddrInfo);
+
+	void DestroyBuffer(
+		VkBuffer inBufferToDestroy,
+		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	VkBufferView CreateBufferView(
+		const VkBufferViewCreateInfo& inCreateInfo,
+		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	void DestroyBufferView(
+		VkBufferView inBufferView, 
+		const VkAllocationCallbacks* pAllocator = nullptr);
 	//---------------------------------------------
 public:
 	static MyDevice& GetInstance();

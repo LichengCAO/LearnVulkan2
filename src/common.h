@@ -51,4 +51,4 @@ failedMessage);\
 }\
 }while(0)
 
-#define COMPARE_BITS(a, bits) (((a) & (bits)) == (bits)) 
+#define CONTAIN_BITS(a, bits) (((a) & (bits)) == (bits)) 

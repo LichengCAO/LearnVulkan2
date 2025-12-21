@@ -112,7 +112,7 @@ public:
 		VkImageTiling tiling;
 		VkImageUsageFlags usage;
 		VkSampleCountFlagBits samples;
-		VkMemoryPropertyFlags memoryProperty;						// image memory
+		VkMemoryPropertyFlags memoryProperty;			  // image memory
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; // transfer layout
 		bool isSwapchainImage = false;
 	};

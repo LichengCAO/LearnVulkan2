@@ -8,7 +8,7 @@
 
 namespace
 {
-#define PRINT_STAGE(os, stage, bit) if (COMPARE_BITS(stage, bit))\
+#define PRINT_STAGE(os, stage, bit) if (CONTAIN_BITS(stage, bit))\
 									{\
 										os << #bit <<" ";\
 									}
@@ -309,7 +309,7 @@ void ShaderReflector::ReflectInput(
 
 	for (const auto pVariable : vecVariable)
 	{
-		if (COMPARE_BITS(pVariable->decoration_flags, SPV_REFLECT_DECORATION_BUILT_IN)) continue;
+		if (CONTAIN_BITS(pVariable->decoration_flags, SPV_REFLECT_DECORATION_BUILT_IN)) continue;
 
 		_mapLocation[pVariable->name] = pVariable->location;
 		_mapFormat[pVariable->location] = static_cast<VkFormat>(pVariable->format);
@@ -337,7 +337,7 @@ void ShaderReflector::ReflectOuput(
 
 	for (const auto pVariable : vecVariable)
 	{
-		if (COMPARE_BITS(pVariable->decoration_flags, SPV_REFLECT_DECORATION_BUILT_IN)) continue;
+		if (CONTAIN_BITS(pVariable->decoration_flags, SPV_REFLECT_DECORATION_BUILT_IN)) continue;
 
 		_mapLocation[pVariable->name] = pVariable->location;
 		_mapFormat[pVariable->location] = static_cast<VkFormat>(pVariable->format);
@@ -444,7 +444,7 @@ void ShaderReflector::PrintReflectResult() const
 			std::cout << "Input variables:\r\n";
 			for (const auto pVariable : pInputInfo)
 			{
-				if (COMPARE_BITS(pVariable->decoration_flags, SPV_REFLECT_DECORATION_BUILT_IN)) continue;
+				if (CONTAIN_BITS(pVariable->decoration_flags, SPV_REFLECT_DECORATION_BUILT_IN)) continue;
 				std::cout << "    name: " << pVariable->name << std::endl;
 				std::cout << "    location: " << pVariable->location << std::endl;
 				std::cout << "    format: ";
@@ -458,7 +458,7 @@ void ShaderReflector::PrintReflectResult() const
 			std::cout << "Output variables:\r\n";
 			for (const auto pVariable : pOutputInfo)
 			{
-				if (COMPARE_BITS(pVariable->decoration_flags, SPV_REFLECT_DECORATION_BUILT_IN)) continue;
+				if (CONTAIN_BITS(pVariable->decoration_flags, SPV_REFLECT_DECORATION_BUILT_IN)) continue;
 				std::cout << "    name: " << pVariable->name << std::endl;
 				std::cout << "    location: " << pVariable->location << std::endl;
 				std::cout << "    format: ";

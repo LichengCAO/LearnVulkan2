@@ -249,7 +249,21 @@ void MyDevice::_CreateLogicalDevice()
 	vkDevice = m_device.device;
 	m_dispatchTable = m_device.make_table();
 	volkLoadDevice(vkDevice);
-	vkGetDeviceQueue(vkDevice, queueFamilyIndices.presentFamily.value(), 0, &m_vkPresentQueue);
+
+	// store vkQueues
+	{
+		uint32_t queueFamilyIndex = queueFamilyIndices.presentFamily.value();
+		vkGetDeviceQueue(vkDevice, queueFamilyIndex, 0, &m_vkPresentQueue);
+
+		queueFamilyIndex = GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
+		vkGetDeviceQueue(vkDevice, queueFamilyIndex, 0, &m_vkGraphicsQueue);
+
+		queueFamilyIndex = GetQueueFamilyIndexOfType(QueueFamilyType::COMPUTE);
+		vkGetDeviceQueue(vkDevice, queueFamilyIndex, 0, &m_vkComputeQueue);
+
+		queueFamilyIndex = GetQueueFamilyIndexOfType(QueueFamilyType::TRANSFER);
+		vkGetDeviceQueue(vkDevice, queueFamilyIndex, 0, &m_vkTransferQueue);
+	}
 }
 
 void MyDevice::_CreateSwapchain()
@@ -679,15 +693,6 @@ UserInput MyDevice::GetUserInput() const
 	return ret;
 }
 
-VkQueue MyDevice::GetQueue(uint32_t _familyIndex, uint32_t _queueIndex) const
-{
-	VkQueue vkQueue = VK_NULL_HANDLE;
-
-	vkGetDeviceQueue(vkDevice, _familyIndex, _queueIndex, &vkQueue);
-
-	return vkQueue;
-}
-
 void MyDevice::WaitIdle() const
 {
 	vkDeviceWaitIdle(vkDevice);
@@ -708,22 +713,20 @@ DescriptorSetAllocator* MyDevice::GetDescriptorSetAllocator()
 	return &descriptorAllocator;
 }
 
-VkFence MyDevice::CreateVkFence(const VkFenceCreateInfo* _pCreateInfo)
+VkFence MyDevice::CreateFence(
+	VkFenceCreateFlags inFlags, 
+	const void* inNextPtr, 
+	const VkAllocationCallbacks* inCallbacks)
 {
-	VkFence vkFence = VK_NULL_HANDLE;
-	
-	if (_pCreateInfo)
-	{
-		VK_CHECK(vkCreateFence(vkDevice, _pCreateInfo, nullptr, &vkFence), "Failed to create the availability fence!");
-	}
-	else
-	{
-		VkFenceCreateInfo fenceInfo{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-		VK_CHECK(vkCreateFence(MyDevice::GetInstance().vkDevice, &fenceInfo, nullptr, &vkFence), "Failed to create the availability fence!");
-	}
+	VkFenceCreateInfo fenceInfo{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+	VkFence result = VK_NULL_HANDLE;
 
-    return vkFence;
+	fenceInfo.flags = inFlags;
+	fenceInfo.pNext = inNextPtr;
+
+	VK_CHECK(vkCreateFence(vkDevice, &fenceInfo, inCallbacks, &result), "Failed to create the availability fence!");
+
+	return result;
 }
 
 void MyDevice::DestroyVkFence(VkFence& _fence)
@@ -753,7 +756,7 @@ void MyDevice::DestroyVkSemaphore(VkSemaphore& _semaphore)
 	_semaphore = VK_NULL_HANDLE;
 }
 
-uint32_t MyDevice::GetQueueFamilyIndex(QueueFamilyType inType) const
+uint32_t MyDevice::GetQueueFamilyIndexOfType(QueueFamilyType inType) const
 {
 	uint32_t result = ~0;
 
@@ -776,6 +779,30 @@ uint32_t MyDevice::GetQueueFamilyIndex(QueueFamilyType inType) const
 	break;
 	}
 	CHECK_TRUE(result != ~0);
+
+	return result;
+}
+
+VkQueue MyDevice::GetQueueOfType(QueueFamilyType inType) const
+{
+	VkQueue result = VK_NULL_HANDLE;
+
+	switch (inType)
+	{
+	case QueueFamilyType::GRAPHICS:
+		result = m_vkGraphicsQueue;
+		break;
+	case QueueFamilyType::COMPUTE:
+		result = m_vkComputeQueue;
+		break;
+	case QueueFamilyType::TRANSFER:
+		result = m_vkTransferQueue;
+		break;
+	default:
+		break;
+	}
+
+	CHECK_TRUE(result != VK_NULL_HANDLE);
 
 	return result;
 }
@@ -1050,6 +1077,73 @@ void MyDevice::DestroyPipelineLayout(VkPipelineLayout inLayout, const VkAllocati
 VkResult MyDevice::GetRayTracingShaderGroupHandles(VkPipeline inPipeline, uint32_t inFirstGroup, uint32_t inGroupCount, size_t inDataSize, void* outDataPtr)
 {
 	return vkGetRayTracingShaderGroupHandlesKHR(vkDevice, inPipeline, inFirstGroup, inGroupCount, inDataSize, outDataPtr);
+}
+
+VkResult MyDevice::GetFenceStatus(VkFence inFence)
+{
+	return vkGetFenceStatus(vkDevice, inFence);
+}
+
+VkResult MyDevice::WaitForFences(const std::vector<VkFence>& inFencesToWait, bool inWaitAll, uint64_t inTimeout)
+{
+	return vkWaitForFences(
+		vkDevice, 
+		static_cast<uint32_t>(inFencesToWait.size()), 
+		inFencesToWait.data(), 
+		inWaitAll ? VK_TRUE : VK_FALSE, 
+		inTimeout);
+}
+
+VkCommandPool MyDevice::CreateCommandPool(const VkCommandPoolCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator)
+{
+	VkCommandPool result = VK_NULL_HANDLE;
+
+	VK_CHECK(vkCreateCommandPool(vkDevice, &inCreateInfo, pAllocator, &result));
+
+	return result;
+}
+
+VkResult MyDevice::ResetCommandPool(VkCommandPool inCommandPool, VkCommandPoolResetFlags inFlags)
+{
+	return vkResetCommandPool(vkDevice, inCommandPool, inFlags);
+}
+
+void MyDevice::DestroyCommandPool(VkCommandPool inCommandPoolToDestroy, const VkAllocationCallbacks* pAllocator)
+{
+	vkDestroyCommandPool(vkDevice, inCommandPoolToDestroy, pAllocator);
+}
+
+VkBuffer MyDevice::CreateBuffer(const VkBufferCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator)
+{
+	VkBuffer result = VK_NULL_HANDLE;
+
+	VK_CHECK(vkCreateBuffer(vkDevice, &inCreateInfo, pAllocator, &result), "Failed to create a VkBuffer!");
+
+	return result;
+}
+
+VkDeviceAddress MyDevice::GetBufferDeviceAddress(const VkBufferDeviceAddressInfo& inAddrInfo)
+{
+	return vkGetBufferDeviceAddress(vkDevice, &inAddrInfo);
+}
+
+void MyDevice::DestroyBuffer(VkBuffer inBufferToDestroy, const VkAllocationCallbacks* pAllocator)
+{
+	vkDestroyBuffer(vkDevice, inBufferToDestroy, pAllocator);
+}
+
+VkBufferView MyDevice::CreateBufferView(const VkBufferViewCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator)
+{
+	VkBufferView result = VK_NULL_HANDLE;
+
+	VK_CHECK(vkCreateBufferView(vkDevice, &inCreateInfo, pAllocator, &result));
+
+	return result;
+}
+
+void MyDevice::DestroyBufferView(VkBufferView inBufferView, const VkAllocationCallbacks* pAllocator)
+{
+	vkDestroyBufferView(vkDevice, inBufferView, pAllocator);
 }
 
 MyDevice& MyDevice::GetInstance()
