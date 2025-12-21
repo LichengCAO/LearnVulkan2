@@ -45,7 +45,15 @@ VkSampler SamplerPool::GetSampler(const VkSamplerCreateInfo& _createInfo)
 	return _GetSampler(info);
 }
 
-VkSampler SamplerPool::GetSampler(VkFilter filter, VkSamplerAddressMode addressMode, VkSamplerMipmapMode mipmapMode, float minLod, float maxLod, float mipLodBias, bool anistrophyEnable, float maxAnistrophy)
+VkSampler SamplerPool::GetSampler(
+	VkFilter filter, 
+	VkSamplerAddressMode addressMode, 
+	VkSamplerMipmapMode mipmapMode, 
+	float minLod, 
+	float maxLod, 
+	float mipLodBias, 
+	bool anistrophyEnable, 
+	float maxAnistrophy)
 {
 	VkSamplerCreateInfo createInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
 	

@@ -511,6 +511,16 @@ VkImageBlit ImageBlitBuilder::NewBlit(
 		inDstMipLevel);
 }
 
+void CommandBuffer::Initializer::InitCommandBuffer(CommandBuffer* outCommandBufferPtr) const
+{
+	auto& myDevice = MyDevice::GetInstance();
+
+	outCommandBufferPtr->m_vkCommandPool = m_vkCommandPool;
+	outCommandBufferPtr->m_vkCommandBufferLevel = m_bufferLevel;
+	outCommandBufferPtr->m_vkCommandBuffer = myDevice.AllocateCommandBuffer(m_vkCommandPool, m_bufferLevel);
+	outCommandBufferPtr->m_queueFamily = myDevice.GetQueueFamilyIndex(m_vkCommandPool);
+}
+
 CommandBuffer::Initializer& CommandBuffer::Initializer::Reset()
 {
 	*this = CommandBuffer::Initializer{};
@@ -566,14 +576,9 @@ CommandBuffer::~CommandBuffer()
 	// Do nothing, it's ok that command buffer is not freed, it will be freed by comannd pool when it is destroyed anyway
 }
 
-void CommandBuffer::_Init(const CommandBuffer::Initializer* inInitializerPtr)
+void CommandBuffer::_Init(const ICommandBufferInitializer* inInitializerPtr)
 {
-	auto& myDevice = MyDevice::GetInstance();
-
-	m_vkCommandPool = inInitializerPtr->m_vkCommandPool;
-	m_vkCommandBufferLevel = inInitializerPtr->m_bufferLevel;
-	m_vkCommandBuffer = myDevice.AllocateCommandBuffer(m_vkCommandPool, m_vkCommandBufferLevel);
-	m_queueFamily = myDevice.GetQueueFamilyIndex(m_vkCommandPool);
+	inInitializerPtr->InitCommandBuffer(this);
 }
 
 void CommandBuffer::_Uninit()
@@ -916,22 +921,11 @@ CommandPool::~CommandPool()
 	CHECK_TRUE(m_vkCommandPool == VK_NULL_HANDLE);
 }
 
-void CommandPool::Init(const CommandPool::Initializer* inInitializerPtr)
+void CommandPool::Init(const ICommandPoolInitializer* inInitializerPtr)
 {
 	CHECK_TRUE(inInitializerPtr != nullptr);
 
-	auto& device = MyDevice::GetInstance();
-	VkCommandPoolCreateInfo createInfo{};
-
-	createInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-	createInfo.flags = inInitializerPtr->m_createFlags;
-	createInfo.queueFamilyIndex = inInitializerPtr->m_queueFamilyIndex;
-	if (inInitializerPtr->m_queueFamilyIndex == ~0)
-	{
-		createInfo.queueFamilyIndex = device.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
-	}
-
-	m_vkCommandPool = device.CreateCommandPool(createInfo);
+	inInitializerPtr->InitCommandPool(this);
 }
 
 CommandPool& CommandPool::FreeCommandBuffer(CommandBuffer* inoutBufferReturnedPtr)
@@ -952,6 +946,22 @@ void CommandPool::Uninit()
 		device.DestroyCommandPool(m_vkCommandPool);
 		m_vkCommandPool = VK_NULL_HANDLE;
 	}
+}
+
+void CommandPool::Initializer::InitCommandPool(CommandPool* outPoolPtr) const
+{
+	auto& device = MyDevice::GetInstance();
+	VkCommandPoolCreateInfo createInfo{};
+
+	createInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	createInfo.flags = m_createFlags;
+	createInfo.queueFamilyIndex = m_queueFamilyIndex;
+	if (m_queueFamilyIndex == ~0)
+	{
+		createInfo.queueFamilyIndex = device.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
+	}
+
+	outPoolPtr->m_vkCommandPool = device.CreateCommandPool(createInfo);
 }
 
 CommandPool::Initializer& CommandPool::Initializer::Reset()

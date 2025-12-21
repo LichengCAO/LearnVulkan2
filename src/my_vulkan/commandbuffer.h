@@ -8,6 +8,19 @@
 class GraphicsPipeline;
 class RenderPass;
 class CommandPool;
+class CommandBuffer;
+
+class ICommandPoolInitializer
+{
+public:
+	virtual void InitCommandPool(CommandPool* outPoolPtr) const = 0;
+};
+
+class ICommandBufferInitializer
+{
+public:
+	virtual void InitCommandBuffer(CommandBuffer* outCommandBufferPtr) const = 0;
+};
 
 class ImageBarrierBuilder
 {
@@ -226,13 +239,15 @@ private:
 	void _ProcessInCmdScope(const std::function<void()>& inFunction);
 
 private:
-	class Initializer
+	class Initializer : public ICommandBufferInitializer
 	{
 	private:
 		VkCommandPool m_vkCommandPool = VK_NULL_HANDLE;
 		VkCommandBufferLevel m_bufferLevel = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 
 	public:
+		virtual void InitCommandBuffer(CommandBuffer* outCommandBufferPtr) const override;
+
 		CommandBuffer::Initializer& Reset();
 
 		// Set command pool to allocate buffer, mandatory
@@ -240,11 +255,9 @@ private:
 
 		// Optional, default is VK_COMMAND_BUFFER_LEVEL_PRIMARY
 		CommandBuffer::Initializer& CustomizeCommandBufferLevel(VkCommandBufferLevel inBufferLevel);
-
-		friend class CommandBuffer;
 	};
 
-	void _Init(const CommandBuffer::Initializer* inInitializerPtr);
+	void _Init(const ICommandBufferInitializer* inInitializerPtr);
 	
 	// Free command buffer to pool. It's not mandatory, since command buffer will
 	// be freed when its parent command pool is destroyed.
@@ -405,13 +418,15 @@ private:
 	uint32_t m_queueFamilyIndex = ~0;
 
 public:
-	class Initializer
+	class Initializer : public ICommandPoolInitializer
 	{
 	private:
 		uint32_t m_queueFamilyIndex = ~0;
 		VkCommandPoolCreateFlags m_createFlags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 
 	public:
+		virtual void InitCommandPool(CommandPool* outPoolPtr) const override;
+
 		CommandPool::Initializer& Reset();
 
 		// Optional, default: VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
@@ -419,14 +434,12 @@ public:
 
 		// Optional, default: queue family index of the primary queue
 		CommandPool::Initializer& CustomizeQueueFamilyIndex(uint32_t inIndex);
-
-		friend class CommandPool;
 	};
 
 public:
 	~CommandPool();
 
-	void Init(const CommandPool::Initializer* inInitializerPtr);
+	void Init(const ICommandPoolInitializer* inInitializerPtr);
 
 	VkCommandPool GetVkCommandPool() const;
 

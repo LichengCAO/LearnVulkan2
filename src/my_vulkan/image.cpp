@@ -6,21 +6,6 @@
 //#ifndef STB_IMAGE_IMPLEMENTATION
 //#define STB_IMAGE_IMPLEMENTATION
 //#endif defined in tinyglTF
-#include "stb_image.h"
-
-void Image::_InitAsSwapchainImage(VkImage _vkImage, VkImageUsageFlags _usage, VkFormat _format)
-{
-	CreateInformation createInfo{};
-
-	createInfo.usage = _usage;
-	createInfo.optFormat = _format;
-
-	PresetCreateInformation(createInfo);
-
-	m_imageInformation.isSwapchainImage = true;
-	vkImage = _vkImage;
-	Init();
-}
 
 Image::~Image()
 {
@@ -29,78 +14,9 @@ Image::~Image()
 	//assert(vkDeviceMemory == VK_NULL_HANDLE);
 }
 
-void Image::PresetCreateInformation(const CreateInformation& imageInfo)
+void Image::Init(const IImageInitializer* pInit)
 {
-	CHECK_TRUE(vkImage == VK_NULL_HANDLE, "Image is already initialized!");
-	bool useSwapchainSize = !imageInfo.optWidth.has_value();
-
-	if (useSwapchainSize)
-	{
-		m_imageInformation.width = MyDevice::GetInstance().GetSwapchainExtent().width;
-		m_imageInformation.height = MyDevice::GetInstance().GetSwapchainExtent().height;
-		m_imageInformation.depth = 1;
-		m_imageInformation.imageType = VK_IMAGE_TYPE_2D;
-	}
-	else
-	{
-		m_imageInformation.width =  imageInfo.optWidth.value();
-		m_imageInformation.height = imageInfo.optHeight.has_value() ? imageInfo.optHeight.value() : 1;
-		m_imageInformation.depth = imageInfo.optDepth.has_value() ? imageInfo.optDepth.value() : 1;
-		if (imageInfo.optDepth.has_value())
-		{
-			m_imageInformation.imageType = VK_IMAGE_TYPE_3D;
-		}
-		else if (imageInfo.optHeight.has_value())
-		{
-			m_imageInformation.imageType = VK_IMAGE_TYPE_2D;
-		}
-		else
-		{
-			m_imageInformation.imageType = VK_IMAGE_TYPE_1D;
-		}
-	}
-	m_imageInformation.mipLevels = imageInfo.optMipLevels.has_value() ? imageInfo.optMipLevels.value() : 1;
-	m_imageInformation.arrayLayers = imageInfo.optArrayLayers.has_value() ? imageInfo.optArrayLayers.value() : 1;
-	m_imageInformation.format = imageInfo.optFormat.has_value() ? imageInfo.optFormat.value() : VK_FORMAT_R32G32B32A32_SFLOAT;
-	m_imageInformation.tiling = imageInfo.optTiling.has_value() ? imageInfo.optTiling.value() : VK_IMAGE_TILING_OPTIMAL;
-	m_imageInformation.usage = imageInfo.usage;
-	m_imageInformation.samples = imageInfo.optSampleCount.has_value() ? imageInfo.optSampleCount.value() : VK_SAMPLE_COUNT_1_BIT;
-	m_imageInformation.memoryProperty = imageInfo.optMemoryProperty.has_value() ? imageInfo.optMemoryProperty.value() : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-	m_imageInformation.layout = VK_IMAGE_LAYOUT_UNDEFINED;
-}
-
-void Image::Init()
-{
-	if (m_initCalled) return;
-	m_initCalled = true;
-	if (!m_imageInformation.isSwapchainImage)
-	{
-		if (vkImage != VK_NULL_HANDLE) return;
-		VkImageCreateInfo imgInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-		imgInfo.imageType = m_imageInformation.imageType;
-		imgInfo.extent.width = m_imageInformation.width;
-		imgInfo.extent.height = m_imageInformation.height;
-		imgInfo.extent.depth = m_imageInformation.depth;
-		imgInfo.mipLevels = m_imageInformation.mipLevels;
-		imgInfo.arrayLayers = m_imageInformation.arrayLayers;
-		imgInfo.format = m_imageInformation.format;
-		imgInfo.tiling = m_imageInformation.tiling;
-		//CHECK_TRUE(m_imageInformation.initialLayout == VkImageLayout::VK_IMAGE_LAYOUT_UNDEFINED || m_imageInformation.initialLayout == VkImageLayout::VK_IMAGE_LAYOUT_PREINITIALIZED,
-		//	"According to the Vulkan specification, VkImageCreateInfo::initialLayout must be set to VK_IMAGE_LAYOUT_UNDEFINED or VK_IMAGE_LAYOUT_PREINITIALIZED at image creation.");
-		imgInfo.initialLayout = m_imageInformation.layout;
-		imgInfo.usage = m_imageInformation.usage;
-		imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		imgInfo.samples = m_imageInformation.samples;
-		imgInfo.flags = 0;
-		CHECK_TRUE(vkImage == VK_NULL_HANDLE, "VkImage is already created!");
-		VK_CHECK(vkCreateImage(MyDevice::GetInstance().vkDevice, &imgInfo, nullptr, &vkImage), "Failed to crate image!");
-		_AddImageLayout();
-		_AllocateMemory();
-	}
-	else
-	{
-		_AddImageLayout();
-	}
+	pInit->InitImage(this);
 }
 
 void Image::Uninit()
@@ -685,4 +601,146 @@ void ImageLayout::ImageLayoutEntry::SetLayout(VkImageLayout layout, VkImageAspec
 			p.second = layout;
 		}
 	}
+}
+
+void Image::Initializer::InitImage(Image* outImage) const
+{
+	VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	auto& device = MyDevice::GetInstance();
+	auto& infoToFill = outImage->m_imageInformation;
+	const auto swapchainSize = device.GetSwapchainExtent();
+
+	imageInfo.imageType = m_type;
+	imageInfo.arrayLayers = m_optArrayLayers.value_or(1);
+	imageInfo.flags = 0;
+	imageInfo.extent.width = m_optWidth.value_or(swapchainSize.width);
+	imageInfo.extent.height = m_optHeight.value_or(swapchainSize.height);
+	imageInfo.extent.depth = m_optDepth.value_or(1);
+	imageInfo.format = m_optFormat.value_or(VK_FORMAT_R32G32B32A32_SFLOAT);
+	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	imageInfo.mipLevels = m_optMipLevels.value_or(1);
+	imageInfo.samples = m_optSampleCount.value_or(VK_SAMPLE_COUNT_1_BIT);
+	imageInfo.usage = m_usage;
+	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	imageInfo.tiling = m_optTiling.value_or(VK_IMAGE_TILING_OPTIMAL);
+	
+	infoToFill.imageType = imageInfo.imageType;
+	infoToFill.width = imageInfo.extent.width;
+	infoToFill.height = imageInfo.extent.height;
+	infoToFill.depth = imageInfo.extent.depth;
+	infoToFill.mipLevels = imageInfo.mipLevels;
+	infoToFill.arrayLayers = imageInfo.arrayLayers;
+	infoToFill.format = imageInfo.format;
+	infoToFill.tiling = imageInfo.tiling;
+	infoToFill.layout = imageInfo.initialLayout;
+	infoToFill.usage = imageInfo.usage;
+	infoToFill.samples = imageInfo.samples;
+	infoToFill.isSwapchainImage = false;
+	infoToFill.memoryProperty = m_optMemoryProperty.value_or(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	outImage->vkImage = device.CreateImage(imageInfo);
+	outImage->_AllocateMemory();
+}
+
+Image::Initializer& Image::Initializer::Reset()
+{
+	*this = Image::Initializer{};
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::SetUsage(VkImageUsageFlags usage)
+{
+	m_usage = usage;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeSize1D(uint32_t width)
+{
+	m_optWidth = width;
+	m_type = VK_IMAGE_TYPE_1D;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeSize2D(uint32_t width, uint32_t height)
+{
+	m_optWidth = width;
+	m_optHeight = height;
+	m_type = VK_IMAGE_TYPE_2D;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeSize3D(uint32_t width, uint32_t height, uint32_t depth)
+{
+	m_optWidth = width;
+	m_optHeight = height;
+	m_optDepth = depth;
+	m_type = VK_IMAGE_TYPE_3D;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeMipLevels(uint32_t mipLevelCount)
+{
+	m_optMipLevels = mipLevelCount;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeArrayLayers(uint32_t layerCount)
+{
+	m_optArrayLayers = layerCount;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeFormat(VkFormat format)
+{
+	m_optFormat = format;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeImageTiling(VkImageTiling tiling)
+{
+	m_optTiling = tiling;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeMemoryProperty(VkMemoryPropertyFlags memoryProperty)
+{
+	m_optMemoryProperty = memoryProperty;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeSampleCount(VkSampleCountFlagBits sampleCount)
+{
+	m_optSampleCount = sampleCount;
+	return *this;
+}
+
+void Image::SwapchainImageInit::InitImage(Image* outImagePtr) const
+{
+	auto& infoToFill = outImagePtr->m_imageInformation;
+	auto& device = MyDevice::GetInstance();
+	const auto size2D = device.GetSwapchainExtent();
+
+	infoToFill.arrayLayers = 1;
+	infoToFill.depth = 1;
+	infoToFill.format = m_format;
+	infoToFill.height = size2D.height;
+	infoToFill.imageType = VK_IMAGE_TYPE_2D;
+	infoToFill.isSwapchainImage = true;
+	infoToFill.layout = VK_IMAGE_LAYOUT_UNDEFINED; // TODO
+	infoToFill.memoryProperty = 0; // TODO
+	infoToFill.mipLevels = 1;
+	infoToFill.samples = VK_SAMPLE_COUNT_1_BIT;
+	infoToFill.tiling = VK_IMAGE_TILING_LINEAR;
+	infoToFill.usage = m_usage;
+	infoToFill.width = size2D.width;
+
+	outImagePtr->vkImage = m_vkHandle;
+}
+
+Image::SwapchainImageInit& Image::SwapchainImageInit::SetUp(VkImage inSwapchain, VkImageUsageFlags inUsage, VkFormat inFormat)
+{
+	m_vkHandle = inSwapchain;
+	m_usage = inUsage;
+	m_format = inFormat;
+
+	return *this;
 }

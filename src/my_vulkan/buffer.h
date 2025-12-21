@@ -2,14 +2,27 @@
 #include "common.h"
 
 // ref: https://stackoverflow.com/questions/73512602/using-vulkan-memory-allocator-with-volk
+class Buffer;
 class BufferView;
 class CommandBuffer;
 class MemoryAllocator;
 
+class IBufferInitializer
+{
+public:
+	virtual void InitBuffer(Buffer* outBufferPtr) const = 0;
+};
+
+class IBufferViewInitializer
+{
+public:
+	virtual void InitBufferView(BufferView* outViewPtr) const = 0;
+};
+
 class Buffer final
 {
 public:
-	class Initializer
+	class Initializer : public IBufferInitializer
 	{
 	private:
 		std::optional<VkDeviceSize> m_optAlignment;
@@ -19,6 +32,8 @@ public:
 		VkBufferUsageFlags m_usage;
 
 	public:
+		virtual void InitBuffer(Buffer* outBufferPtr) const override;
+
 		// Reset optional values to default, clear other values to zero
 		Buffer::Initializer& Reset();
 
@@ -73,11 +88,14 @@ private:
 
 public:
 	Buffer();
+	
 	Buffer(Buffer&& _toMove);
+	
 	Buffer(Buffer& _toCopy) = delete;
+	
 	~Buffer();
 
-	void Init(const Buffer::Initializer* inInitializerPtr);
+	void Init(const IBufferInitializer* inInitializerPtr);
 	
 	void Uninit();
 
@@ -126,12 +144,24 @@ public:
 
 class BufferView // use for texel buffer
 {
+	//Resource Type :
+	//
+	//Storage Texel Buffer : Operates on buffer resources; ideal for 1D data that can benefit from format interpretation(e.g., integer or floating - point conversion).
+	//Storage Image : Operates on image resources; enables multi - dimensional access and supports a broader set of operations specific to images.
+	//Shader Access :
+	//
+	//Storage Texel Buffer : Accessed in shaders using imageLoadand imageStore functions with buffer access semantics.
+	//Storage Image : Fully supports imageLoad, imageStore, and atomic operations, providing more flexibility for image - oriented tasks.
+	//Setup Complexity :
+	//
+	//Storage Texel Buffer : Generally simpler to set up and use due to buffer - based nature.
+	//Storage Image : Involves more setup(memory layout transitions, view configurations) but offers richer functionality for image processing.
 private:
 	VkBufferView m_vkBufferView = VK_NULL_HANDLE;
 	VkFormat m_format = VkFormat::VK_FORMAT_UNDEFINED;
 
 public:
-	class Initializer
+	class Initializer : public IBufferViewInitializer
 	{
 	private:
 		VkFormat m_format = VK_FORMAT_UNDEFINED;
@@ -140,6 +170,7 @@ public:
 		VkDeviceSize m_range = 0;
 
 	public:
+		virtual void InitBufferView(BufferView* outViewPtr) const override;
 		BufferView::Initializer& Reset();
 		BufferView::Initializer& SetFormat(VkFormat inFormat);
 		BufferView::Initializer& SetBuffer(const Buffer* inBufferPtr);
@@ -150,20 +181,7 @@ public:
 public:
 	~BufferView();
 	
-	void Init(const BufferView::Initializer* inInitPtr);
+	void Init(const IBufferViewInitializer* inInitPtr);
 	
 	void Uninit();
 };
-
-//Resource Type :
-//
-//Storage Texel Buffer : Operates on buffer resources; ideal for 1D data that can benefit from format interpretation(e.g., integer or floating - point conversion).
-//Storage Image : Operates on image resources; enables multi - dimensional access and supports a broader set of operations specific to images.
-//Shader Access :
-//
-//Storage Texel Buffer : Accessed in shaders using imageLoadand imageStore functions with buffer access semantics.
-//Storage Image : Fully supports imageLoad, imageStore, and atomic operations, providing more flexibility for image - oriented tasks.
-//Setup Complexity :
-//
-//Storage Texel Buffer : Generally simpler to set up and use due to buffer - based nature.
-//Storage Image : Involves more setup(memory layout transitions, view configurations) but offers richer functionality for image processing.

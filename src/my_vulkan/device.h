@@ -300,6 +300,14 @@ public:
 	void DestroyBufferView(
 		VkBufferView inBufferView, 
 		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	VkImage CreateImage(
+		const VkImageCreateInfo& inCreateInfo,
+		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	void DestroyImage(
+		VkImage image,
+		const VkAllocationCallbacks* pAllocator = nullptr);
 	//---------------------------------------------
 public:
 	static MyDevice& GetInstance();

@@ -27,21 +27,9 @@ Buffer::~Buffer()
 	assert(m_mappedMemory == nullptr);
 }
 
-void Buffer::Init(const Buffer::Initializer* inInitializerPtr)
+void Buffer::Init(const IBufferInitializer* inInitializerPtr)
 {
-	auto& device = MyDevice::GetInstance();
-	VkBufferCreateInfo bufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	bufferInfo.size = inInitializerPtr->m_bufferSize;
-	bufferInfo.usage = inInitializerPtr->m_usage;
-	bufferInfo.sharingMode = inInitializerPtr->m_sharingMode;
-	CHECK_TRUE(m_vkBuffer == VK_NULL_HANDLE);
-	m_bufferInformation.memoryProperty = inInitializerPtr->m_memoryProperty;
-	m_bufferInformation.sharingMode = inInitializerPtr->m_sharingMode;
-	m_bufferInformation.size = inInitializerPtr->m_bufferSize;
-	m_bufferInformation.usage = inInitializerPtr->m_usage;
-	m_bufferInformation.optAlignment = inInitializerPtr->m_optAlignment;
-	m_vkBuffer = device.CreateBuffer(bufferInfo);
-	_AllocateMemory();
+	inInitializerPtr->InitBuffer(this);
 }
 
 void Buffer::Uninit()
@@ -257,6 +245,23 @@ VkBuffer Buffer::GetVkBuffer() const
 	return m_vkBuffer;
 }
 
+void Buffer::Initializer::InitBuffer(Buffer* outBufferPtr) const
+{
+	auto& device = MyDevice::GetInstance();
+	auto& bufferToFill = outBufferPtr->m_bufferInformation;
+	VkBufferCreateInfo bufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	bufferInfo.size = m_bufferSize;
+	bufferInfo.usage = m_usage;
+	bufferInfo.sharingMode = m_sharingMode;
+	bufferToFill.memoryProperty = m_memoryProperty;
+	bufferToFill.sharingMode = m_sharingMode;
+	bufferToFill.size = m_bufferSize;
+	bufferToFill.usage = m_usage;
+	bufferToFill.optAlignment = m_optAlignment;
+	outBufferPtr->m_vkBuffer = device.CreateBuffer(bufferInfo);
+	outBufferPtr->_AllocateMemory();
+}
+
 Buffer::Initializer& Buffer::Initializer::Reset()
 {
 	*this = Buffer::Initializer{};
@@ -293,6 +298,20 @@ Buffer::Initializer& Buffer::Initializer::CustomizeAlignment(VkDeviceSize inAlig
 	return *this;
 }
 
+void BufferView::Initializer::InitBufferView(BufferView* outViewPtr) const
+{
+	auto& device = MyDevice::GetInstance();
+	VkBufferViewCreateInfo createInfo{ VkStructureType::VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO };
+
+	outViewPtr->m_format = m_format;
+	createInfo.buffer = m_buffer;
+	createInfo.format = m_format;
+	createInfo.offset = m_offset;
+	createInfo.range = m_range;
+
+	outViewPtr->m_vkBufferView = device.CreateBufferView(createInfo);
+}
+
 BufferView::Initializer& BufferView::Initializer::Reset()
 {
 	*this = BufferView::Initializer{};
@@ -327,19 +346,10 @@ BufferView::~BufferView()
 	CHECK_TRUE(m_vkBufferView == VK_NULL_HANDLE);
 }
 
-void BufferView::Init(const BufferView::Initializer* inInitPtr)
+void BufferView::Init(const IBufferViewInitializer* inInitPtr)
 {
 	CHECK_TRUE(m_vkBufferView == VK_NULL_HANDLE, "VkBufferView is already created!");
-	auto& device = MyDevice::GetInstance();
-	VkBufferViewCreateInfo createInfo{ VkStructureType::VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO };
-
-	m_format = inInitPtr->m_format;
-	createInfo.buffer = inInitPtr->m_buffer;
-	createInfo.format = m_format;
-	createInfo.offset = inInitPtr->m_offset;
-	createInfo.range = inInitPtr->m_range;
-	
-	m_vkBufferView = device.CreateBufferView(createInfo);
+	inInitPtr->InitBufferView(this);
 }
 
 void BufferView::Uninit()

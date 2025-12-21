@@ -1146,6 +1146,20 @@ void MyDevice::DestroyBufferView(VkBufferView inBufferView, const VkAllocationCa
 	vkDestroyBufferView(vkDevice, inBufferView, pAllocator);
 }
 
+VkImage MyDevice::CreateImage(const VkImageCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator)
+{
+	VkImage result = VK_NULL_HANDLE;
+
+	VK_CHECK(vkCreateImage(vkDevice, &inCreateInfo, pAllocator, &result));
+
+	return result;
+}
+
+void MyDevice::DestroyImage(VkImage image, const VkAllocationCallbacks* pAllocator)
+{
+	vkDestroyImage(vkDevice, image, pAllocator);
+}
+
 MyDevice& MyDevice::GetInstance()
 {
 	if (s_uptrInstance.get() == nullptr)
