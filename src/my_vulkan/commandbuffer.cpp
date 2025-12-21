@@ -405,7 +405,7 @@ ImageBlitBuilder::ImageBlitBuilder()
 	Reset();
 }
 
-void ImageBlitBuilder::Reset()
+ImageBlitBuilder& ImageBlitBuilder::Reset()
 {
 	m_srcSubresourceLayers.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	m_srcSubresourceLayers.baseArrayLayer = 0;
@@ -414,28 +414,38 @@ void ImageBlitBuilder::Reset()
 	m_dstSubresourceLayers.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	m_dstSubresourceLayers.baseArrayLayer = 0;
 	m_dstSubresourceLayers.layerCount = 1;
+
+	return *this;
 }
 
-void ImageBlitBuilder::SetSrcAspect(VkImageAspectFlags aspectMask)
+ImageBlitBuilder& ImageBlitBuilder::CustomizeSrcAspect(VkImageAspectFlags aspectMask)
 {
 	m_srcSubresourceLayers.aspectMask = aspectMask;
+
+	return *this;
 }
 
-void ImageBlitBuilder::SetDstAspect(VkImageAspectFlags aspectMask)
+ImageBlitBuilder& ImageBlitBuilder::CustomizeDstAspect(VkImageAspectFlags aspectMask)
 {
 	m_dstSubresourceLayers.aspectMask = aspectMask;
+
+	return *this;
 }
 
-void ImageBlitBuilder::SetSrcArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount)
+ImageBlitBuilder& ImageBlitBuilder::CustomizeSrcArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount)
 {
 	m_srcSubresourceLayers.baseArrayLayer = baseArrayLayer;
 	m_srcSubresourceLayers.layerCount = layerCount;
+
+	return *this;
 }
 
-void ImageBlitBuilder::SetDstArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount)
+ImageBlitBuilder& ImageBlitBuilder::CustomizeDstArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount)
 {
 	m_dstSubresourceLayers.baseArrayLayer = baseArrayLayer;
 	m_dstSubresourceLayers.layerCount = layerCount;
+
+	return *this;
 }
 
 VkImageBlit ImageBlitBuilder::NewBlit(

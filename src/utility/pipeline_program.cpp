@@ -627,7 +627,7 @@ void DescriptorSetManager::GetCurrentDescriptorSets(
 
 	for (const auto& pDescriptorSetThisFrame : m_pCurrentDescriptorSets)
 	{
-		_outDescriptorSets.push_back(pDescriptorSetThisFrame->vkDescriptorSet);
+		_outDescriptorSets.push_back(pDescriptorSetThisFrame->m_vkDescriptorSet);
 	}
 }
 
@@ -635,7 +635,7 @@ void DescriptorSetManager::GetDescriptorSetLayouts(std::vector<VkDescriptorSetLa
 {
 	for (const auto& uptrDescriptorSetLayout : m_vecUptrDescriptorSetLayout)
 	{
-		_outDescriptorSetLayouts.push_back(uptrDescriptorSetLayout->vkDescriptorSetLayout);
+		_outDescriptorSetLayouts.push_back(uptrDescriptorSetLayout->m_vkDescriptorSetLayout);
 	}
 }
 

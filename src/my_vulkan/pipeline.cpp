@@ -210,7 +210,7 @@ void GraphicsPipeline::AddVertexInputLayout(const VkVertexInputBindingDescriptio
 void GraphicsPipeline::AddDescriptorSetLayout(const DescriptorSetLayout* pSetLayout)
 {
 	assert(vkPipeline == VK_NULL_HANDLE);
-	m_descriptorSetLayouts.push_back(pSetLayout->vkDescriptorSetLayout);
+	m_descriptorSetLayouts.push_back(pSetLayout->m_vkDescriptorSetLayout);
 }
 
 void GraphicsPipeline::AddDescriptorSetLayout(VkDescriptorSetLayout vkDSetLayout)
@@ -424,7 +424,7 @@ void ComputePipeline::AddShader(const VkPipelineShaderStageCreateInfo& shaderInf
 
 void ComputePipeline::AddDescriptorSetLayout(const DescriptorSetLayout* pSetLayout)
 {
-	AddDescriptorSetLayout(pSetLayout->vkDescriptorSetLayout);
+	AddDescriptorSetLayout(pSetLayout->m_vkDescriptorSetLayout);
 }
 
 void ComputePipeline::AddDescriptorSetLayout(VkDescriptorSetLayout _vkLayout)

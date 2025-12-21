@@ -2,304 +2,64 @@
 #include "device.h"
 #include "buffer.h"
 
-void DescriptorSet::_PreSetLayout(const DescriptorSetLayout* _layout)
+DescriptorSet::~DescriptorSet()
 {
-	m_pLayout = _layout;
+	// Do nothing, descriptor pool will do this for us when destroyed
+	m_vkDescriptorSet = VK_NULL_HANDLE;
 }
 
-VkDescriptorPoolCreateFlags DescriptorSet::GetRequiredPoolFlags() const
+void DescriptorSet::Init(const DescriptorSet::Initializer* inInitPtr)
 {
-	return m_requiredPoolFlags;
+	inInitPtr->_InitDescriptorSet(*this);
 }
 
-void DescriptorSet::PreSetRequiredPoolFlags(VkDescriptorPoolCreateFlags inFlags)
+DescriptorSet& DescriptorSet::UpdateDescriptors(const UpdateBuffer* inUpdaterPtr)
 {
-	if (vkDescriptorSet != VK_NULL_HANDLE) return;
-	m_requiredPoolFlags = inFlags;
+	inUpdaterPtr->_UpdateDescriptorSet(*this);
+
+	return *this;
 }
 
-void DescriptorSet::Init()
+VkDescriptorSet DescriptorSet::GetVkDescriptorSet() const
 {
-	CHECK_TRUE(m_pLayout != nullptr, "No descriptor layout set! Apply a layout before initialization!");
-	CHECK_TRUE(vkDescriptorSet == VK_NULL_HANDLE, "VkDescriptorSet is already created!");
-
-	auto pAllocator = MyDevice::GetInstance().GetDescriptorSetAllocator();
-	pAllocator->Allocate(m_pLayout->vkDescriptorSetLayout, vkDescriptorSet);
-}
-
-void DescriptorSet::StartUpdate()
-{
-	if (m_pLayout == nullptr)
-	{
-		throw std::runtime_error("Layout is not set!");
-	}
-	if (vkDescriptorSet == VK_NULL_HANDLE)
-	{
-		throw std::runtime_error("Descriptorset is not initialized");
-	}
-	m_updates.clear();
-}
-
-void DescriptorSet::UpdateBinding(
-	uint32_t bindingId, 
-	const std::vector<VkDescriptorImageInfo>& dImageInfo,
-	uint32_t inArrayIndexOffset)
-{
-	DescriptorSetUpdate newUpdate{};
-	newUpdate.binding = bindingId;
-	newUpdate.imageInfos = dImageInfo;
-	newUpdate.arrayElementIndex = inArrayIndexOffset;
-	newUpdate.descriptorType = DescriptorType::IMAGE;
-	m_updates.push_back(newUpdate);
-}
-
-void DescriptorSet::UpdateBinding(
-	uint32_t bindingId, 
-	const std::vector<VkBufferView>& bufferViews,
-	uint32_t inArrayIndexOffset)
-{
-	DescriptorSetUpdate newUpdate{};
-
-	newUpdate.binding = bindingId;
-	newUpdate.bufferViews = bufferViews;
-	newUpdate.arrayElementIndex = inArrayIndexOffset;
-	newUpdate.descriptorType = DescriptorType::TEXEL_BUFFER;
-	m_updates.push_back(newUpdate);
-}
-
-void DescriptorSet::UpdateBinding(
-	uint32_t bindingId, 
-	const std::vector<VkDescriptorBufferInfo>& bufferInfos,
-	uint32_t inArrayIndexOffset)
-{
-	DescriptorSetUpdate newUpdate{};
-	newUpdate.binding = bindingId;
-	newUpdate.bufferInfos = bufferInfos;
-	newUpdate.arrayElementIndex = inArrayIndexOffset;
-	newUpdate.descriptorType = DescriptorType::BUFFER;
-	m_updates.push_back(newUpdate);
-}
-
-void DescriptorSet::UpdateBinding(
-	uint32_t bindingId, 
-	const std::vector<VkAccelerationStructureKHR>& _accelStructs,
-	uint32_t inArrayIndexOffset)
-{
-	DescriptorSetUpdate newUpdate{};
-	newUpdate.binding = bindingId;
-	newUpdate.accelerationStructures = _accelStructs;
-	newUpdate.arrayElementIndex = inArrayIndexOffset;
-	newUpdate.descriptorType = DescriptorType::ACCELERATION_STRUCTURE;
-	m_updates.push_back(newUpdate);
-}
-
-void DescriptorSet::FinishUpdate()
-{
-	std::vector<VkWriteDescriptorSet> writes;
-	std::vector<std::unique_ptr<VkWriteDescriptorSetAccelerationStructureKHR>> uptrASwrites;
-	CHECK_TRUE(m_pLayout != nullptr, "Layout is not initialized!");
-	for (auto& eUpdate : m_updates)
-	{
-		VkWriteDescriptorSet wds{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-		bool bindingFound = false;
-		wds.dstSet = vkDescriptorSet;
-		wds.dstBinding = eUpdate.binding;
-		wds.dstArrayElement = eUpdate.arrayElementIndex;
-		for (const auto& binding : m_pLayout->bindings)
-		{
-			if (binding.binding == eUpdate.binding)
-			{
-				wds.descriptorType = binding.descriptorType;
-				bindingFound = true;
-				break;
-			}
-		}
-		CHECK_TRUE(bindingFound, "The descriptor doesn't have this binding!");
-		
-		// wds.descriptorCount = m_pLayout->bindings[eUpdate.binding].descriptorCount; the number of elements to update doens't need to be the same as the total number of the elements
-		switch (eUpdate.descriptorType)
-		{
-		case DescriptorType::BUFFER:
-		{
-			wds.descriptorCount = static_cast<uint32_t>(eUpdate.bufferInfos.size());
-			wds.pBufferInfo = eUpdate.bufferInfos.data();
-			break;
-		}
-		case DescriptorType::IMAGE:
-		{
-			wds.descriptorCount = static_cast<uint32_t>(eUpdate.imageInfos.size());
-			wds.pImageInfo = eUpdate.imageInfos.data();
-			break;
-		}
-		case DescriptorType::TEXEL_BUFFER:
-		{
-			wds.descriptorCount = static_cast<uint32_t>(eUpdate.bufferViews.size());
-			wds.pTexelBufferView = eUpdate.bufferViews.data();
-			break;
-		}
-		case DescriptorType::ACCELERATION_STRUCTURE:
-		{
-			std::unique_ptr<VkWriteDescriptorSetAccelerationStructureKHR> uptrASInfo = std::make_unique<VkWriteDescriptorSetAccelerationStructureKHR>();
-			uptrASInfo->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
-			uptrASInfo->accelerationStructureCount = static_cast<uint32_t>(eUpdate.accelerationStructures.size());
-			uptrASInfo->pAccelerationStructures = eUpdate.accelerationStructures.data();
-			uptrASInfo->pNext = nullptr;
-			// pNext<VkWriteDescriptorSetAccelerationStructureKHR>.accelerationStructureCount must be equal to descriptorCount
-			wds.descriptorCount = static_cast<uint32_t>(eUpdate.accelerationStructures.size());
-			wds.pNext = uptrASInfo.get();
-			uptrASwrites.push_back(std::move(uptrASInfo));
-			break;
-		}
-		default:
-		{
-			std::runtime_error("No such descriptor type!");
-			break;
-		}
-		}
-		writes.push_back(wds);
-	}
-	MyDevice::GetInstance().UpdateDescriptorSets(writes);
-	m_updates.clear();
+	return m_vkDescriptorSet;
 }
 
 DescriptorSetLayout::~DescriptorSetLayout()
 {
-	assert(vkDescriptorSetLayout == VK_NULL_HANDLE);
+	assert(m_vkDescriptorSetLayout == VK_NULL_HANDLE);
 }
 
-DescriptorSetLayout& DescriptorSetLayout::SetFollowingBindless(bool inBindless)
+void DescriptorSetLayout::Init(const DescriptorSetLayout::Initializer* inInitialzerPtr)
 {
-	m_allowBindless = inBindless;
-	return *this;
+	inInitialzerPtr->_InitDescriptorSetLayout(*this);
 }
 
-DescriptorSetLayout& DescriptorSetLayout::PreAddBinding(
-	uint32_t descriptorCount,
-	VkDescriptorType descriptorType,
-	VkShaderStageFlags stageFlags,
-	const VkSampler* pImmutableSamplers,
-	uint32_t* outBindingPtr)
+VkDescriptorSetLayout DescriptorSetLayout::GetVkDescriptorSetLayout() const
 {
-	uint32_t binding = static_cast<uint32_t>(bindings.size());
-	if (outBindingPtr != nullptr)
-	{
-		*outBindingPtr = binding;
-	}
-
-	return PreAddBinding(binding, descriptorCount, descriptorType, stageFlags, pImmutableSamplers);
+	return m_vkDescriptorSetLayout;
 }
 
-DescriptorSetLayout& DescriptorSetLayout::PreAddBinding(
-	uint32_t binding,
-	uint32_t descriptorCount,
-	VkDescriptorType descriptorType,
-	VkShaderStageFlags stageFlags,
-	const VkSampler* pImmutableSamplers)
+VkDescriptorPoolCreateFlags DescriptorSetLayout::GetRequiredPoolCreateFlags() const
 {
-	VkDescriptorSetLayoutBinding layoutBinding{};
-
-	layoutBinding.binding = binding;
-	layoutBinding.descriptorCount = descriptorCount;
-	layoutBinding.descriptorType = descriptorType;
-	layoutBinding.pImmutableSamplers = pImmutableSamplers;
-	layoutBinding.stageFlags = stageFlags;
-	m_bindingToIndex[binding] = bindings.size();
-	bindings.push_back(layoutBinding);
-	if (m_allowBindless)
-	{
-		PreSetBindingFlags(binding, 
-			VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT
-			| VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT);
-	}
-
-	return *this;
+	return m_requiredPoolFlags;
 }
 
-DescriptorSetLayout& DescriptorSetLayout::PreSetBindingFlags(
-	uint32_t binding,
-	VkDescriptorBindingFlags flags)
+const VkDescriptorSetLayoutBinding& DescriptorSetLayout::GetDescriptorSetLayoutBinding(uint32_t inBinding) const
 {
-	if (m_bindingToIndex.find(binding) == m_bindingToIndex.end()) return *this;
-	
-	size_t index = m_bindingToIndex.at(binding);
-	
-	m_bindingFlags.resize(index + 1, 0);
-	m_bindingFlags[index] = flags;
+	size_t index = m_bindingToIndex.at(inBinding);
 
-	return *this;
-}
-
-void DescriptorSetLayout::Init()
-{
-	CHECK_TRUE(bindings.size() != 0, "No bindings set!");
-	CHECK_TRUE(vkDescriptorSetLayout == VK_NULL_HANDLE, "VkDescriptorSetLayout is already created!");
-
-	VkDescriptorSetLayoutCreateInfo createInfo{};
-	VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsCreateInfo{};
-	void const** ppNextChain = &(createInfo.pNext);
-
-	createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	createInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-	createInfo.pBindings = bindings.data();
-
-	// Which indicates that the descriptor set layout will use the extended binding flags
-	if (m_bindingFlags.size() > 0)
-	{
-		m_bindingFlags.resize(bindings.size(), 0);
-		bindingFlagsCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
-		bindingFlagsCreateInfo.pNext = nullptr;
-		bindingFlagsCreateInfo.bindingCount = static_cast<uint32_t>(m_bindingFlags.size());
-		bindingFlagsCreateInfo.pBindingFlags = m_bindingFlags.data();
-
-		(*ppNextChain) = &bindingFlagsCreateInfo;
-		ppNextChain = &(bindingFlagsCreateInfo.pNext);
-	}
-
-	vkDescriptorSetLayout = MyDevice::GetInstance().CreateDescriptorSetLayout(createInfo);
-}
-
-DescriptorSet DescriptorSetLayout::NewDescriptorSet() const
-{
-	DescriptorSet result{};
-
-	ApplyToDescriptorSet(result);
-
-	return result;
-}
-
-DescriptorSet* DescriptorSetLayout::NewDescriptorSetPtr() const
-{
-	DescriptorSet* pDescriptor = new DescriptorSet();
-
-	ApplyToDescriptorSet(*pDescriptor);
-
-	return pDescriptor;
-}
-
-void DescriptorSetLayout::ApplyToDescriptorSet(DescriptorSet& outDescriptorSet) const
-{
-	bool supportBindless = m_bindingFlags.size() > 0;
-	outDescriptorSet._PreSetLayout(this);
-	if (supportBindless)
-	{
-		// For bindless descriptor sets, 
-		// change which buffer descriptor is pointing to after bound, 
-		// before command buffer submission
-		outDescriptorSet.PreSetRequiredPoolFlags(
-			outDescriptorSet.GetRequiredPoolFlags()
-			| VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT_EXT
-		);
-	}
+	return m_descriptorBindings[index];
 }
 
 void DescriptorSetLayout::Uninit()
 {
-	if (vkDescriptorSetLayout != VK_NULL_HANDLE)
+	if (m_vkDescriptorSetLayout != VK_NULL_HANDLE)
 	{
-		MyDevice::GetInstance().DestroyDescriptorSetLayout(vkDescriptorSetLayout);
-		vkDescriptorSetLayout = VK_NULL_HANDLE;
+		MyDevice::GetInstance().DestroyDescriptorSetLayout(m_vkDescriptorSetLayout);
+		m_vkDescriptorSetLayout = VK_NULL_HANDLE;
 	}
-	bindings.clear();
+	m_descriptorBindings.clear();
 	m_bindingFlags.clear();
 	m_bindingToIndex.clear();
 	m_allowBindless = false;
@@ -473,4 +233,243 @@ void DescriptorSetAllocator::Uninit()
 		}
 	}
 	m_usedPools.clear();
+}
+
+void DescriptorSet::Initializer::_InitDescriptorSet(DescriptorSet& inoutDescriptorSet) const
+{
+	auto pAllocator = MyDevice::GetInstance().GetDescriptorSetAllocator();
+
+	pAllocator->Allocate(m_pSetLayout->GetVkDescriptorSetLayout(), inoutDescriptorSet.m_vkDescriptorSet, m_poolFlags);
+	inoutDescriptorSet.m_pSetLayout = m_pSetLayout;
+}
+
+DescriptorSet::Initializer& DescriptorSet::Initializer::Reset()
+{
+	*this = DescriptorSet::Initializer{};
+
+	return *this;
+}
+
+DescriptorSet::Initializer& DescriptorSet::Initializer::AddDescriptorPoolCreateFlags(VkDescriptorPoolCreateFlags inPoolFlags)
+{
+	m_poolFlags |= inPoolFlags;
+
+	return *this;
+}
+
+DescriptorSet::Initializer& DescriptorSet::Initializer::SetDescriptorSetLayout(const DescriptorSetLayout* inSetLayoutPtr)
+{
+	m_pSetLayout = inSetLayoutPtr;
+	AddDescriptorPoolCreateFlags(inSetLayoutPtr->GetRequiredPoolCreateFlags());
+
+	return *this;
+}
+
+void DescriptorSet::UpdateBuffer::_UpdateDescriptorSet(DescriptorSet& inoutDescriptorSet) const
+{
+	std::vector<VkWriteDescriptorSet> writes;
+	std::vector<std::unique_ptr<VkWriteDescriptorSetAccelerationStructureKHR>> uptrASwrites;
+	const auto& setLayout = *inoutDescriptorSet.m_pSetLayout;
+	VkDescriptorSet dstDescriptor = inoutDescriptorSet.m_vkDescriptorSet;
+
+	for (auto& eUpdate : m_updates)
+	{
+		VkWriteDescriptorSet wds{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+		wds.dstSet = dstDescriptor;
+		wds.dstBinding = eUpdate.binding;
+		wds.dstArrayElement = eUpdate.arrayElementIndex;
+		wds.descriptorType = setLayout.GetDescriptorSetLayoutBinding(eUpdate.binding).descriptorType;
+		switch (eUpdate.descriptorType)
+		{
+		case DescriptorType::BUFFER:
+		{
+			wds.descriptorCount = static_cast<uint32_t>(eUpdate.bufferInfos.size());
+			wds.pBufferInfo = eUpdate.bufferInfos.data();
+		}
+		break;
+		case DescriptorType::IMAGE:
+		{
+			wds.descriptorCount = static_cast<uint32_t>(eUpdate.imageInfos.size());
+			wds.pImageInfo = eUpdate.imageInfos.data();
+		}
+		break;
+		case DescriptorType::TEXEL_BUFFER:
+		{
+			wds.descriptorCount = static_cast<uint32_t>(eUpdate.bufferViews.size());
+			wds.pTexelBufferView = eUpdate.bufferViews.data();
+		}
+		break;
+		case DescriptorType::ACCELERATION_STRUCTURE:
+		{
+			std::unique_ptr<VkWriteDescriptorSetAccelerationStructureKHR> uptrASInfo = std::make_unique<VkWriteDescriptorSetAccelerationStructureKHR>();
+			uptrASInfo->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+			uptrASInfo->accelerationStructureCount = static_cast<uint32_t>(eUpdate.accelerationStructures.size());
+			uptrASInfo->pAccelerationStructures = eUpdate.accelerationStructures.data();
+			uptrASInfo->pNext = nullptr;
+			// pNext<VkWriteDescriptorSetAccelerationStructureKHR>.accelerationStructureCount must be equal to descriptorCount
+			wds.descriptorCount = static_cast<uint32_t>(eUpdate.accelerationStructures.size());
+			wds.pNext = uptrASInfo.get();
+			uptrASwrites.push_back(std::move(uptrASInfo));
+		}
+		break;
+		default:
+		{
+			std::runtime_error("No such descriptor type!");
+		}
+		break;
+		}
+		writes.push_back(wds);
+	}
+
+	MyDevice::GetInstance().UpdateDescriptorSets(writes);
+}
+
+DescriptorSet::UpdateBuffer& DescriptorSet::UpdateBuffer::Reset()
+{
+	m_updates.clear();
+
+	return *this;
+}
+
+DescriptorSet::UpdateBuffer& DescriptorSet::UpdateBuffer::WriteBinding(
+	uint32_t bindingId, 
+	const std::vector<VkDescriptorImageInfo>& dImageInfo, 
+	uint32_t inArrayIndexOffset)
+{
+	DescriptorSetUpdate newUpdate{};
+	newUpdate.binding = bindingId;
+	newUpdate.imageInfos = dImageInfo;
+	newUpdate.arrayElementIndex = inArrayIndexOffset;
+	newUpdate.descriptorType = DescriptorType::IMAGE;
+	m_updates.push_back(newUpdate);
+
+	return *this;
+}
+
+DescriptorSet::UpdateBuffer& DescriptorSet::UpdateBuffer::WriteBinding(
+	uint32_t bindingId,
+	const std::vector<VkBufferView>& bufferViews,
+	uint32_t inArrayIndexOffset)
+{
+	DescriptorSetUpdate newUpdate{};
+	newUpdate.binding = bindingId;
+	newUpdate.bufferViews = bufferViews;
+	newUpdate.arrayElementIndex = inArrayIndexOffset;
+	newUpdate.descriptorType = DescriptorType::TEXEL_BUFFER;
+	m_updates.push_back(newUpdate);
+
+	return *this;
+}
+
+DescriptorSet::UpdateBuffer& DescriptorSet::UpdateBuffer::WriteBinding(
+	uint32_t bindingId,
+	const std::vector<VkDescriptorBufferInfo>& bufferInfos,
+	uint32_t inArrayIndexOffset)
+{
+	DescriptorSetUpdate newUpdate{};
+	newUpdate.binding = bindingId;
+	newUpdate.bufferInfos = bufferInfos;
+	newUpdate.arrayElementIndex = inArrayIndexOffset;
+	newUpdate.descriptorType = DescriptorType::BUFFER;
+	m_updates.push_back(newUpdate);
+
+	return *this;
+}
+
+DescriptorSet::UpdateBuffer& DescriptorSet::UpdateBuffer::WriteBinding(
+	uint32_t bindingId,
+	const std::vector<VkAccelerationStructureKHR>& _accelStructs,
+	uint32_t inArrayIndexOffset)
+{
+	DescriptorSetUpdate newUpdate{};
+	newUpdate.binding = bindingId;
+	newUpdate.accelerationStructures = _accelStructs;
+	newUpdate.arrayElementIndex = inArrayIndexOffset;
+	newUpdate.descriptorType = DescriptorType::ACCELERATION_STRUCTURE;
+	m_updates.push_back(newUpdate);
+
+	return *this;
+}
+
+void DescriptorSetLayout::Initializer::_InitDescriptorSetLayout(DescriptorSetLayout& outDescriptorSetLayout) const
+{
+	VkDescriptorSetLayoutCreateInfo createInfo{};
+	VkDescriptorSetLayoutBindingFlagsCreateInfo flagInfo{};
+	auto& device = MyDevice::GetInstance();
+	void const** ppNextChain = &(createInfo.pNext);
+
+	createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	createInfo.bindingCount = static_cast<uint32_t>(m_layoutBindings.size());
+	createInfo.pBindings = m_layoutBindings.data();
+
+	outDescriptorSetLayout.m_descriptorBindings.clear();
+	outDescriptorSetLayout.m_bindingToIndex.clear();
+	outDescriptorSetLayout.m_descriptorBindings.reserve(m_layoutBindings.size());
+	outDescriptorSetLayout.m_requiredPoolFlags = m_poolFlags;
+	for (size_t i = 0; i < m_layoutBindings.size(); ++i)
+	{
+		const auto& currentBinding = m_layoutBindings[i];
+		
+		outDescriptorSetLayout.m_descriptorBindings.push_back(currentBinding);
+		outDescriptorSetLayout.m_bindingToIndex[currentBinding.binding] = i;
+	}
+
+	// For binding flags
+	if (m_extraFlags.size() > 0)
+	{
+		CHECK_TRUE(m_extraFlags.size() == m_layoutBindings.size());
+		flagInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+		flagInfo.pBindingFlags = m_extraFlags.data();
+		flagInfo.bindingCount = static_cast<uint32_t>(m_extraFlags.size());
+		
+		(*ppNextChain) = &flagInfo;
+		ppNextChain = &(flagInfo.pNext);
+	}
+
+	outDescriptorSetLayout.m_vkDescriptorSetLayout = device.CreateDescriptorSetLayout(createInfo);
+}
+
+DescriptorSetLayout::Initializer& DescriptorSetLayout::Initializer::Reset()
+{
+	*this = DescriptorSetLayout::Initializer{};
+	return *this;
+}
+
+DescriptorSetLayout::Initializer& DescriptorSetLayout::Initializer::AddBinding(
+	uint32_t inBinding, 
+	VkDescriptorType inDescriptorType, 
+	VkShaderStageFlags inStages, 
+	uint32_t inDescriptorCount, 
+	const VkSampler* pImmutableSamplers)
+{
+	VkDescriptorSetLayoutBinding layoutBinding{};
+
+	layoutBinding.binding = inBinding;
+	layoutBinding.descriptorCount = inDescriptorCount;
+	layoutBinding.descriptorType = inDescriptorType;
+	layoutBinding.pImmutableSamplers = pImmutableSamplers;
+	layoutBinding.stageFlags = inStages;
+
+	m_layoutBindings.push_back(layoutBinding);
+
+	// so that m_extraFlags will always equal to bindings if we have extra flags
+	if (m_extraFlags.size() > 0)
+	{
+		m_extraFlags.resize(m_layoutBindings.size(), 0);
+	}
+	return *this;
+}
+
+DescriptorSetLayout::Initializer& DescriptorSetLayout::Initializer::AddBindlessBinding(
+	uint32_t inBinding, 
+	VkDescriptorType inDescriptorType, 
+	VkShaderStageFlags inStages, 
+	uint32_t inDescriptorCount, 
+	const VkSampler* pImmutableSamplers)
+{
+	AddBinding(inBinding, inDescriptorType, inStages, inDescriptorCount, pImmutableSamplers);
+	m_extraFlags.resize(m_layoutBindings.size(), 0);
+	m_extraFlags.back() |= (VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT);
+	m_poolFlags |= VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT_EXT;
+	return *this;
 }

@@ -8,52 +8,52 @@ class DescriptorSet;
 class DescriptorSetLayout
 {
 private:
-	bool m_allowBindless = false;	// whether to add following descriptor bindings as bindless one
-	std::vector<VkDescriptorBindingFlags> m_bindingFlags; // only used when using bindless descriptors
-	std::map<uint32_t, size_t> m_bindingToIndex;
+	std::unordered_map<uint32_t, size_t> m_bindingToIndex;
+	std::vector<VkDescriptorSetLayoutBinding> m_descriptorBindings;
+	VkDescriptorSetLayout m_vkDescriptorSetLayout = VK_NULL_HANDLE;
+	VkDescriptorPoolCreateFlags m_requiredPoolFlags = 0;
 
 public:
-	VkDescriptorSetLayout vkDescriptorSetLayout = VK_NULL_HANDLE;
-	std::vector<VkDescriptorSetLayoutBinding> bindings;
+	class Initializer
+	{
+	private:
+		std::vector<VkDescriptorBindingFlags> m_extraFlags;
+		std::vector<VkDescriptorSetLayoutBinding> m_layoutBindings;
+		VkDescriptorPoolCreateFlags m_poolFlags = 0;
+
+		void _InitDescriptorSetLayout(DescriptorSetLayout& outDescriptorSetLayout) const;
+
+	public:
+		DescriptorSetLayout::Initializer& Reset();
+
+		DescriptorSetLayout::Initializer& AddBinding(
+			uint32_t inBinding,
+			VkDescriptorType inDescriptorType,
+			VkShaderStageFlags inStages,
+			uint32_t inDescriptorCount = 1,
+			const VkSampler* pImmutableSamplers = nullptr);
+
+		DescriptorSetLayout::Initializer& AddBindlessBinding(
+			uint32_t inBinding,
+			VkDescriptorType inDescriptorType,
+			VkShaderStageFlags inStages,
+			uint32_t inDescriptorCount = 100,
+			const VkSampler* pImmutableSamplers = nullptr);
+
+		friend class DescriptorSetLayout;
+	};
 
 public:
 	~DescriptorSetLayout();
 
 public:
-	// Optional, indicating whether the later descriptor bindings added are bindless or not
-	// the descriptor set is NOT bindless by default
-	DescriptorSetLayout& SetFollowingBindless(bool inBindless);
+	void Init(const DescriptorSetLayout::Initializer* inInitialzerPtr);
 
-	DescriptorSetLayout& PreAddBinding(
-		uint32_t descriptorCount,
-		VkDescriptorType descriptorType,
-		VkShaderStageFlags stageFlags,
-		const VkSampler* pImmutableSamplers = nullptr,
-		uint32_t* outBindingPtr = nullptr);
+	VkDescriptorSetLayout GetVkDescriptorSetLayout() const;
 
-	// Add binding for the current layout.
-	// For bindless binding, you may want to set descriptorCount large!
-	DescriptorSetLayout& PreAddBinding(
-		uint32_t binding,
-		uint32_t descriptorCount,
-		VkDescriptorType descriptorType,
-		VkShaderStageFlags stageFlags,
-		const VkSampler* pImmutableSamplers = nullptr);
+	VkDescriptorPoolCreateFlags GetRequiredPoolCreateFlags() const;
 
-	// Optional, set up binding flags for a specific binding
-	// now only used for bindless descriptors
-	DescriptorSetLayout& PreSetBindingFlags(
-		uint32_t binding,
-		VkDescriptorBindingFlags flags);
-
-	void Init();
-
-	DescriptorSet NewDescriptorSet() const;
-	
-	DescriptorSet* NewDescriptorSetPtr() const;
-
-	// Set up the descriptor set with this layout, the result descriptor set is not Init() yet
-	void ApplyToDescriptorSet(DescriptorSet& outDescriptorSet) const;
+	const VkDescriptorSetLayoutBinding& GetDescriptorSetLayoutBinding(uint32_t inBinding) const;
 
 	void Uninit();
 };
@@ -73,55 +73,73 @@ private:
 		std::vector<VkAccelerationStructureKHR> accelerationStructures;
 	};
 
+public:
+	class Initializer
+	{
+	private:
+		VkDescriptorPoolCreateFlags m_poolFlags = 0;
+		const DescriptorSetLayout* m_pSetLayout = nullptr;
+
+		void _InitDescriptorSet(DescriptorSet& inoutDescriptorSet) const;
+
+	public:
+		// Reset initializer
+		DescriptorSet::Initializer& Reset();
+
+		// Optional, add pool create flags only for special cases
+		DescriptorSet::Initializer& AddDescriptorPoolCreateFlags(VkDescriptorPoolCreateFlags inPoolFlags);
+
+		// Set descriptor set layout for allocation reference in descriptor pool, mandatory
+		DescriptorSet::Initializer& SetDescriptorSetLayout(const DescriptorSetLayout* inSetLayoutPtr);
+
+		friend class DescriptorSet;
+	};
+
+	class UpdateBuffer
+	{
+	private:
+		std::vector<DescriptorSetUpdate> m_updates;
+
+		void _UpdateDescriptorSet(DescriptorSet& inoutDescriptorSet) const;
+
+	public:
+		DescriptorSet::UpdateBuffer& Reset();
+
+		DescriptorSet::UpdateBuffer& WriteBinding(
+			uint32_t bindingId,
+			const std::vector<VkDescriptorImageInfo>& dImageInfo,
+			uint32_t inArrayIndexOffset = 0);
+
+		DescriptorSet::UpdateBuffer& WriteBinding(
+			uint32_t bindingId,
+			const std::vector<VkBufferView>& bufferViews,
+			uint32_t inArrayIndexOffset = 0);
+
+		DescriptorSet::UpdateBuffer& WriteBinding(
+			uint32_t bindingId,
+			const std::vector<VkDescriptorBufferInfo>& bufferInfos,
+			uint32_t inArrayIndexOffset = 0);
+
+		DescriptorSet::UpdateBuffer& WriteBinding(
+			uint32_t bindingId,
+			const std::vector<VkAccelerationStructureKHR>& _accelStructs,
+			uint32_t inArrayIndexOffset = 0);
+
+		friend class DescriptorSet;
+	};
+
 private:
-	std::vector<DescriptorSetUpdate> m_updates;
-	const DescriptorSetLayout* m_pLayout = nullptr;
-	VkDescriptorPoolCreateFlags m_requiredPoolFlags = 0;
+	const DescriptorSetLayout* m_pSetLayout = nullptr;
+	VkDescriptorSet m_vkDescriptorSet = VK_NULL_HANDLE;
 
 public:
-	VkDescriptorSet vkDescriptorSet = VK_NULL_HANDLE;
+	~DescriptorSet();
 
-public:
-	// ~DescriptorSet(); No worry, allocator will handle this
-private:
-	// Set up layout for the descriptor set, I make it private so that a valid descriptor set
-	// can only be get by a descriptor set layout
-	void _PreSetLayout(const DescriptorSetLayout* _layout);
+	void Init(const DescriptorSet::Initializer* inInitPtr);
 
-public:
-	// Get descriptor pool flags this descriptor set needs,
-	// it should be constant once the descriptor set is created by Init()
-	VkDescriptorPoolCreateFlags GetRequiredPoolFlags() const;
+	DescriptorSet& UpdateDescriptors(const UpdateBuffer* inUpdaterPtr);
 
-	// Optional, normally set by descriptor set layout.
-	// Will do nothing after descriptor set initialized.
-	void PreSetRequiredPoolFlags(VkDescriptorPoolCreateFlags inFlags);
-
-	void Init();
-	
-	void StartUpdate();
-	
-	void UpdateBinding(
-		uint32_t bindingId, 
-		const std::vector<VkDescriptorImageInfo>& dImageInfo,
-		uint32_t inArrayIndexOffset = 0);
-	
-	void UpdateBinding(
-		uint32_t bindingId, 
-		const std::vector<VkBufferView>& bufferViews,
-		uint32_t inArrayIndexOffset = 0);
-	
-	void UpdateBinding(
-		uint32_t bindingId, 
-		const std::vector<VkDescriptorBufferInfo>& bufferInfos,
-		uint32_t inArrayIndexOffset = 0);
-	
-	void UpdateBinding(
-		uint32_t bindingId, 
-		const std::vector<VkAccelerationStructureKHR>& _accelStructs,
-		uint32_t inArrayIndexOffset = 0);
-	
-	void FinishUpdate();
+	VkDescriptorSet GetVkDescriptorSet() const;
 
 	friend class DescriptorSetLayout;
 };

@@ -257,15 +257,6 @@ VkBuffer Buffer::GetVkBuffer() const
 	return m_vkBuffer;
 }
 
-BufferView Buffer::NewBufferView(VkFormat _format)
-{
-	CHECK_TRUE((m_bufferInformation.usage & VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) || (m_bufferInformation.usage & VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT), "This buffer cannot have buffer views!");
-	BufferView bufferview{};
-	bufferview.m_format = _format;
-	bufferview.pBuffer = this;
-	return bufferview;
-}
-
 Buffer::Initializer& Buffer::Initializer::Reset()
 {
 	*this = Buffer::Initializer{};

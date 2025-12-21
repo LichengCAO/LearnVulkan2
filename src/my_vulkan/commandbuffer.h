@@ -53,11 +53,12 @@ private:
 
 public:
 	ImageBlitBuilder();
-	void Reset();
-	void SetSrcAspect(VkImageAspectFlags aspectMask);
-	void SetDstAspect(VkImageAspectFlags aspectMask);
-	void SetSrcArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount = 1);
-	void SetDstArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount = 1);
+	ImageBlitBuilder& Reset();
+	ImageBlitBuilder& CustomizeSrcAspect(VkImageAspectFlags aspectMask);
+	ImageBlitBuilder& CustomizeDstAspect(VkImageAspectFlags aspectMask);
+	ImageBlitBuilder& CustomizeSrcArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount = 1);
+	ImageBlitBuilder& CustomizeDstArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount = 1);
+	
 	VkImageBlit NewBlit(
 		const VkOffset3D& srcOffsetUL, 
 		const VkOffset3D& srcOffsetLR, 
@@ -65,11 +66,13 @@ public:
 		const VkOffset3D& dstOffsetUL,
 		const VkOffset3D& dstOffsetLR,
 		uint32_t dstMipLevel) const;
+	
 	VkImageBlit NewBlit(
 		const VkExtent2D& inSrcImageSize,
 		uint32_t srcMipLevel, 
 		const VkExtent2D& inDstImageSize,
 		uint32_t dstMipLevel) const;
+	
 	VkImageBlit NewBlit(
 		const VkOffset2D& inSrcOffsetUpperLeftXY,
 		const VkOffset2D& inSrcOffsetLowerRightXY,
@@ -393,22 +396,6 @@ public:
 	// ------------------------------------------------------
 
 	friend class CommandPool;
-};
-
-class CommandBufferManager
-{
-public:
-	struct ManagedCommandBufferInfo
-	{
-		uint32_t frameID;
-		uint32_t threadID;
-		QueueFamilyType queueFamilyType;
-	};
-
-public:
-	CommandBuffer* GetManagedFreeCommandBuffer(const ManagedCommandBufferInfo& inRequireInfo);
-
-	void ResetCommandPoolsManaged(uint32_t inFrameIndex);
 };
 
 class CommandPool
