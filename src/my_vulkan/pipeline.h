@@ -1,145 +1,31 @@
 #pragma once
 #include "common.h"
-
+#include "graphics_pipeline.h"
 class Buffer;
 class DescriptorSetLayout;
 class DescriptorSet;
 class VertexInputLayout;
 class RenderPass;
-class GraphicsPipeline;
 class ComputePipeline;
 class RayTracingPipeline;
+class PipelineCache;
 
-class PushConstantManager
+class IPipelineCacheInitializer
 {
-private:
-	uint32_t m_currentSize = 0u;
-	std::unordered_map<VkShaderStageFlags, std::pair<uint32_t, uint32_t>> m_mapRange;
-	VkShaderStageFlags m_usedStages = 0;
-
-private:
-	PushConstantManager();
-
-	static std::vector<VkShaderStageFlagBits> _GetBitsFromStageFlags(VkShaderStageFlags _flags);
-
 public:
-	// Add a push constant in the input stage, the stage is not allowed to assigned twice
-	void AddConstantRange(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size);
-
-	// Push constant to the input stage
-	void PushConstant(VkCommandBuffer _cmd, VkPipelineLayout _layout, VkShaderStageFlags _stage, const void* _data) const;
-
-	// Get VkPushConstantRanges managed
-	void GetVkPushConstantRanges(std::vector<VkPushConstantRange>& _outRanges) const;
-
-	friend class GraphicsPipeline;
-	friend class ComputePipeline;
-	friend class RayTracingPipeline;
+	virtual void InitPipelineCache(PipelineCache* outPipelineCachePtr) const = 0;
 };
 
-class GraphicsPipeline
+class IComputePipelineInitializer
 {
 public:
-	// For pipelines that don't bind vertex buffers, e.g. pass through
-	struct PipelineInput_Draw
-	{
-		VkExtent2D imageSize{};
-		std::vector<VkDescriptorSet> vkDescriptorSets;
-		std::vector<uint32_t> optDynamicOffsets;
-		std::vector<std::pair<VkShaderStageFlags, const void*>> pushConstants;
+	virtual void InitComputePipeline(ComputePipeline* pPipeline) const = 0;
+};
 
-		uint32_t vertexCount = 0u;
-
-		std::vector<VkBuffer>						vertexBuffers;			// can be empty
-		std::optional<std::vector<VkDeviceSize>>	optVertexBufferOffsets; // must have the same length as vertexBuffers
-	};
-
-	// For general graphics pipelines that use vertex buffers
-	struct PipelineInput_DrawIndexed
-	{
-		VkExtent2D imageSize{};
-		std::vector<VkDescriptorSet> vkDescriptorSets;
-		std::vector<uint32_t> optDynamicOffsets;
-		std::vector<std::pair<VkShaderStageFlags, const void*>> pushConstants;
-
-		std::vector<VkBuffer>	vertexBuffers;								// not sure, but I think order matters
-		VkBuffer				indexBuffer = VK_NULL_HANDLE;
-		VkIndexType				vkIndexType = VK_INDEX_TYPE_UINT32;
-		uint32_t				indexCount = 0u;
-
-		std::optional<std::vector<VkDeviceSize>>	optVertexBufferOffsets; // must have the same length as vertexBuffers
-		std::optional<VkDeviceSize>					optIndexBufferOffset;
-	};
-
-	// For mesh shader pipelines
-	struct PipelineInput_Mesh
-	{
-		VkExtent2D imageSize{};
-		std::vector<VkDescriptorSet> vkDescriptorSets;
-		std::vector<uint32_t> optDynamicOffsets;
-		std::vector<std::pair<VkShaderStageFlags, const void*>> pushConstants;
-
-		uint32_t groupCountX = 1;
-		uint32_t groupCountY = 1;
-		uint32_t groupCountZ = 1;
-	};
-
-private:
-	std::vector<VkPipelineShaderStageCreateInfo> m_shaderStageInfos;
-	std::vector<VkVertexInputBindingDescription> m_vertBindingDescriptions;
-	std::vector<VkVertexInputAttributeDescription> m_vertAttributeDescriptions;
-	std::vector<VkDynamicState> m_dynamicStates;
-	VkPipelineViewportStateCreateInfo m_viewportStateInfo{};
-	std::vector<VkPipelineColorBlendAttachmentState> m_colorBlendAttachmentStates;
-	VkPipelineColorBlendStateCreateInfo m_colorBlendStateInfo{};
-	std::vector<VkDescriptorSetLayout> m_descriptorSetLayouts;
-	VkPipelineDepthStencilStateCreateInfo m_depthStencilInfo{};
-	const RenderPass* m_pRenderPass = nullptr;
-	uint32_t m_subpass = 0;
-	PushConstantManager m_pushConstant;
-	VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;
-
+class IRayTracingPipelineInitializer
+{
 public:
-	VkPipelineLayout vkPipelineLayout = VK_NULL_HANDLE;
-	VkPipeline vkPipeline = VK_NULL_HANDLE;
-	VkPipelineInputAssemblyStateCreateInfo inputAssemblyStateInfo{};
-	VkPipelineRasterizationStateCreateInfo rasterizerStateInfo{};
-	VkPipelineMultisampleStateCreateInfo multisampleStateInfo{};
-
-private:
-	void _InitCreateInfos();
-	void _DoCommon(
-		VkCommandBuffer _cmd,
-		const VkExtent2D& _imageSize,
-		const std::vector<VkDescriptorSet>& _vkDescriptorSets,
-		const std::vector<uint32_t>& _dynamicOffsets,
-		const std::vector<std::pair<VkShaderStageFlags, const void*>>& _pushConstants);
-
-public:
-	GraphicsPipeline();
-	~GraphicsPipeline();
-
-	void AddShader(const VkPipelineShaderStageCreateInfo& shaderInfo);
-	void AddVertexInputLayout(const VertexInputLayout* pVertLayout);
-	void AddVertexInputLayout(
-		const VkVertexInputBindingDescription& _bindingDescription, 
-		const std::vector<VkVertexInputAttributeDescription>& _attributeDescriptions);
-	void AddDescriptorSetLayout(const DescriptorSetLayout* pSetLayout);
-	void AddDescriptorSetLayout(VkDescriptorSetLayout vkDSetLayout);
-	void BindToSubpass(const RenderPass* pRenderPass, uint32_t subpass);
-	void SetColorAttachmentAsAdd(int idx);
-	void AddPushConstant(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size);
-
-	// Optional, if cache is not empty, this will facilitate pipeline creation,
-	// if not, cache will be filled with pipeline information for next creation
-	void PreSetPipelineCache(VkPipelineCache inCache);
-
-	void Init();
-	void Uninit();
-
-	void Do(VkCommandBuffer commandBuffer, const PipelineInput_DrawIndexed& input);
-	void Do(VkCommandBuffer commandBuffer, const PipelineInput_Mesh& input);
-	void Do(VkCommandBuffer commandBuffer, const PipelineInput_Draw& input);
+	virtual void InitRayTracingPipeline(RayTracingPipeline* pPipeline) const = 0;
 };
 
 class ComputePipeline
@@ -296,31 +182,36 @@ public:
 class PipelineCache
 {
 private:
-	std::string m_filePath;
 	VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;
-	VkPipelineCacheCreateFlags m_createFlags = 0;
 	bool m_fileCacheValid = false;
 
-private:
-	void _LoadBinary(std::vector<uint8_t>& outData) const;
+public:
+	class Initializer : public IPipelineCacheInitializer
+	{
+	private:
+		std::string& m_file;
+
+		void _LoadBinary(const std::string& inPath, std::vector<uint8_t>& outData) const;
+
+	public:
+		virtual void InitPipelineCache(PipelineCache* outPipelineCachePtr) const override;
+
+		PipelineCache::Initializer& Reset();
+
+		PipelineCache::Initializer& CustomizeSourceFile(const std::string& inFilePath);
+	};
 
 public:
 	~PipelineCache();
 
-	// Optional, use it when we try to load previously stored cache from file
-	PipelineCache& PreSetSourceFilePath(const std::string& inFilePath);
-
-	// Optional, do not know what's for for now
-	PipelineCache& PreSetCreateFlags(VkPipelineCacheCreateFlags inFlags);
-
 	// Init device object
-	void Init();
+	void Init(const IPipelineCacheInitializer* inInitPtr);
 
 	// Return device handle
 	VkPipelineCache GetVkPipelineCache() const;
 
 	// Return whether the current cache is empty and will be written by pipeline creation.
-	// Return false if we set source file before intialization, and we successfully load a valid pipeline cache from it
+	// Return false if we set source file before initialization, and we successfully load a valid pipeline cache from it
 	bool IsEmptyCache() const;
 
 	// Destroy device object

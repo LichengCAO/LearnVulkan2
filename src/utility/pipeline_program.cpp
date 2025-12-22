@@ -869,7 +869,7 @@ void GraphicsProgram::BindFramebuffer(
 	CommandSubmission* _pCmd, 
 	const Framebuffer* _pFramebuffer)
 {
-	_pCmd->StartRenderPass(_pFramebuffer->pRenderPass, _pFramebuffer);
+	_pCmd->StartRenderPass(_pFramebuffer->m_pRenderPass, _pFramebuffer);
 	m_pFramebuffer = _pFramebuffer;
 }
 

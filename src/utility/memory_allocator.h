@@ -27,7 +27,7 @@ public:
 
 	virtual ~MemoryAllocator();
 
-	// Allocate memory and then bind it to vkImage
+	// Allocate memory and then bind it to m_vkImage
 	void AllocateForVkImage(VkImage _vkImage, VkMemoryPropertyFlags _flags);
 
 	// Allocate memory and then bind it to m_vkBuffer, 

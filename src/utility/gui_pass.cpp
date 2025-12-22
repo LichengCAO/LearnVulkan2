@@ -214,7 +214,7 @@ void GUIPass::_UninitCommandBuffer()
 void GUIPass::_InitMyGUI()
 {
 	m_uptrGUI = std::make_unique<MyGUI>();
-	m_uptrGUI->SetUpRenderPass(m_uptrRenderPass->vkRenderPass);
+	m_uptrGUI->SetUpRenderPass(m_uptrRenderPass->m_vkRenderPass);
 	m_uptrGUI->Init();
 }
 
