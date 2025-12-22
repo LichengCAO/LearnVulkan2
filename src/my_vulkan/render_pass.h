@@ -59,7 +59,7 @@ public:
 		VkSubpassDescription GetSubpassDescription() const;
 	};
 
-	class SimpleInit : public IRenderPassInitializer
+	class SingleSubpassInit : public IRenderPassInitializer
 	{
 	private:
 		Subpass m_subpass;
@@ -69,15 +69,16 @@ public:
 		virtual void InitRenderPass(RenderPass* pRenderPass) const override;
 
 		// Reset everything into default state
-		RenderPass::SimpleInit& Reset();
+		RenderPass::SingleSubpassInit& Reset();
 
-		RenderPass::SimpleInit& AddColorAttachment(const Attachment& inAttachment);
+		RenderPass::SingleSubpassInit& AddColorAttachment(const Attachment& inAttachment);
 
-		RenderPass::SimpleInit& AddDepthStencilAttachment(const Attachment& inAttachment, bool inReadOnly = false);
+		RenderPass::SingleSubpassInit& AddDepthStencilAttachment(const Attachment& inAttachment, bool inReadOnly = false);
 	};
 
 private:
 	std::vector<VkClearValue> m_clearValues;
+	std::vector<Subpass> m_subpasses;
 	VkRenderPass m_vkRenderPass = VK_NULL_HANDLE;	
 
 public:
@@ -88,6 +89,8 @@ public:
 	void Uninit();
 
 	VkRenderPass GetVkRenderPass() const;
+
+	const Subpass& GetSubpass(uint32_t index = 0) const;
 
 	static VkRenderPassBeginInfo GetRenderPassBeginInfo(
 		const RenderPass* inRenderPassPtr,

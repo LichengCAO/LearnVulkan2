@@ -57,31 +57,17 @@ public:
 		uint32_t groupCountZ = 1;
 	};
 
-private:
-	std::unique_ptr<PushConstantManager> m_pushConstant;
-
-public:
-	VkPipelineLayout vkPipelineLayout = VK_NULL_HANDLE;
-	VkPipeline vkPipeline = VK_NULL_HANDLE;
-
-public:
+	// For pipeline initialization
 	class BaseInit : public IGraphicsPipelineInitializer
 	{
 	private:
-		struct PushConstantInfo
-		{
-			VkShaderStageFlags stages;
-			uint32_t offset;
-			uint32_t size;
-		};
-
 		std::vector<VkPipelineShaderStageCreateInfo> m_shaderStageInfos;
 		std::vector<VkVertexInputBindingDescription> m_vertBindingDescriptions;
 		std::vector<VkVertexInputAttributeDescription> m_vertAttributeDescriptions;
 		std::vector<VkDynamicState> m_dynamicStates;
 		std::vector<VkPipelineColorBlendAttachmentState> m_colorBlendAttachmentStates;
 		std::vector<VkDescriptorSetLayout> m_descriptorSetLayouts;
-		std::vector<PushConstantInfo> m_pushConstantInfos;
+		std::vector<VkPushConstantRange> m_pushConstantInfos;
 		VkPipelineInputAssemblyStateCreateInfo m_inputAssemblyStateInfo{};
 		VkPipelineRasterizationStateCreateInfo m_rasterizerStateInfo{};
 		VkPipelineMultisampleStateCreateInfo m_multisampleStateInfo{};
@@ -93,8 +79,10 @@ public:
 
 		void _InitCreateInfos();
 
+		VkPipelineColorBlendAttachmentState _GetDefaultColorBlendAttachmentState() const;
+
 	public:
-		GraphicsPipeline::BaseInit();
+		BaseInit();
 
 		virtual void InitGraphicsPipeline(GraphicsPipeline* pPipeline) const override;
 
@@ -102,7 +90,7 @@ public:
 
 		GraphicsPipeline::BaseInit& AddShader(const VkPipelineShaderStageCreateInfo& inShaderInfo);
 
-		GraphicsPipeline::BaseInit& AddVertexInputLayout(
+		GraphicsPipeline::BaseInit& AddVertexInputDescription(
 			const VkVertexInputBindingDescription& inBindingDescription,
 			const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions);
 
@@ -112,15 +100,21 @@ public:
 
 		GraphicsPipeline::BaseInit& AddPushConstant(VkShaderStageFlags inStages, uint32_t inOffset, uint32_t inSize);
 
-		// Optional, if cache is not empty, this will facilitate pipeline creation,
+		// Optional, default: VK_NULL_HANDLE.
+		// In cases this is set: 
+		// if cache is not empty, this will facilitate pipeline creation,
 		// if not, cache will be filled with pipeline information for next creation
 		GraphicsPipeline::BaseInit& CustomizePipelineCache(VkPipelineCache inCache);
 
-		GraphicsPipeline::BaseInit& SetRenderPassSubpass(VkRenderPass inRenderPass, uint32_t inSubpassIndex = 0);
+		GraphicsPipeline::BaseInit& SetRenderPassSubpass(const RenderPass* inRenderPassPtr, uint32_t inSubpassIndex = 0);
 	};
 
 private:
-	void _InitCreateInfos();
+	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
+	VkPipelineLayout m_vkPipelineLayout = VK_NULL_HANDLE;
+	VkPipeline m_vkPipeline = VK_NULL_HANDLE;
+
+private:
 	void _DoCommon(
 		VkCommandBuffer _cmd,
 		const VkExtent2D& _imageSize,
@@ -129,7 +123,6 @@ private:
 		const std::vector<std::pair<VkShaderStageFlags, const void*>>& _pushConstants);
 
 public:
-	GraphicsPipeline();
 	~GraphicsPipeline();
 
 	void Init(const IGraphicsPipelineInitializer* pInitializer);

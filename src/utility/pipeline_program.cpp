@@ -836,10 +836,10 @@ void GraphicsProgram::BindVertexBuffer(
 	
 	if (!bPipelineInitialized)
 	{
-		VertexInputLayout vertLayout{};
+		VertexInputDescriptionBuilder vertLayout{};
 		uint32_t binding = m_vertexBuffers.size() - 1;
 
-		vertLayout.SetUpVertex(_vertexStride);
+		vertLayout.SetVertexStrideAndInputRate(_vertexStride);
 
 		for (const auto& p : _mapLocationOffset)
 		{

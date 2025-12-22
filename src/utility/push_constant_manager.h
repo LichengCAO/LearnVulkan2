@@ -22,8 +22,4 @@ public:
 
 	// Get VkPushConstantRanges managed
 	void GetVkPushConstantRanges(std::vector<VkPushConstantRange>& _outRanges) const;
-
-	friend class GraphicsPipeline;
-	friend class ComputePipeline;
-	friend class RayTracingPipeline;
 };

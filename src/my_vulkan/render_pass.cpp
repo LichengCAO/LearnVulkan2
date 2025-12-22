@@ -17,6 +17,11 @@ VkRenderPass RenderPass::GetVkRenderPass() const
     return m_vkRenderPass;
 }
 
+const RenderPass::Subpass& RenderPass::GetSubpass(uint32_t index) const
+{
+	return m_subpasses.at(index);
+}
+
 VkRenderPassBeginInfo RenderPass::GetRenderPassBeginInfo(const RenderPass* inRenderPassPtr, const Framebuffer* inFramebuferrPtr)
 {
 	VkRenderPassBeginInfo ret{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
@@ -99,6 +104,9 @@ Framebuffer::~Framebuffer()
 void Framebuffer::Init(const IFramebufferInitializer* inInitializerPtr)
 {
 	inInitializerPtr->InitFramebuffer(this);
+
+	CHECK_TRUE(m_vkFramebuffer != VK_NULL_HANDLE);
+	CHECK_TRUE(m_pRenderPass != nullptr);
 }
 
 void Framebuffer::Uninit()
@@ -247,7 +255,7 @@ RenderPass::Attachment RenderPass::AttachmentBuilder::BuildByPreset(RenderPass::
 	return info;
 }
 
-void RenderPass::SimpleInit::InitRenderPass(RenderPass* pRenderPass) const
+void RenderPass::SingleSubpassInit::InitRenderPass(RenderPass* pRenderPass) const
 {
 	auto& device = MyDevice::GetInstance();
 	std::vector<VkAttachmentDescription> vkAttachments;
@@ -288,9 +296,10 @@ void RenderPass::SimpleInit::InitRenderPass(RenderPass* pRenderPass) const
 	renderPassInfo.pDependencies = &subpassDependency;
 
 	pRenderPass->m_vkRenderPass = device.CreateRenderPass(renderPassInfo);
+	pRenderPass->m_subpasses = { m_subpass };
 }
 
-RenderPass::SimpleInit& RenderPass::SimpleInit::Reset()
+RenderPass::SingleSubpassInit& RenderPass::SingleSubpassInit::Reset()
 {
 	m_subpass = RenderPass::Subpass{};
 	m_attachments.clear();
@@ -298,7 +307,7 @@ RenderPass::SimpleInit& RenderPass::SimpleInit::Reset()
 	return *this;
 }
 
-RenderPass::SimpleInit& RenderPass::SimpleInit::AddColorAttachment(const Attachment& inAttachment)
+RenderPass::SingleSubpassInit& RenderPass::SingleSubpassInit::AddColorAttachment(const Attachment& inAttachment)
 {
 	uint32_t attachmentIndex = m_attachments.size();
 
@@ -308,7 +317,7 @@ RenderPass::SimpleInit& RenderPass::SimpleInit::AddColorAttachment(const Attachm
 	return *this;
 }
 
-RenderPass::SimpleInit& RenderPass::SimpleInit::AddDepthStencilAttachment(const Attachment& inAttachment, bool inReadOnly)
+RenderPass::SingleSubpassInit& RenderPass::SingleSubpassInit::AddDepthStencilAttachment(const Attachment& inAttachment, bool inReadOnly)
 {
 	uint32_t attachmentIndex = m_attachments.size();
 

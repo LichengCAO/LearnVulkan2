@@ -2,10 +2,6 @@
 #include "device.h"
 #include "push_constant_manager.h"
 
-void GraphicsPipeline::_InitCreateInfos()
-{
-}
-
 void GraphicsPipeline::_DoCommon(
 	VkCommandBuffer cmd,
 	const VkExtent2D& imageSize,
@@ -13,7 +9,7 @@ void GraphicsPipeline::_DoCommon(
 	const std::vector<uint32_t>& _dynamicOffsets,
 	const std::vector<std::pair<VkShaderStageFlags, const void*>>& pushConstants)
 {
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vkPipeline);
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_vkPipeline);
 
 	VkViewport viewport;
 	viewport.x = 0.f;
@@ -33,7 +29,7 @@ void GraphicsPipeline::_DoCommon(
 		vkCmdBindDescriptorSets(
 			cmd,
 			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			vkPipelineLayout,
+			m_vkPipelineLayout,
 			0,
 			static_cast<uint32_t>(pSets.size()),
 			pSets.data(),
@@ -43,135 +39,40 @@ void GraphicsPipeline::_DoCommon(
 
 	for (const auto& _pushConst : pushConstants)
 	{
-		m_pushConstant.PushConstant(cmd, vkPipelineLayout, _pushConst.first, _pushConst.second);
+		m_uptrPushConstant->PushConstant(cmd, m_vkPipelineLayout, _pushConst.first, _pushConst.second);
 	}
-}
-
-GraphicsPipeline::GraphicsPipeline()
-{
-	_InitCreateInfos();
 }
 
 GraphicsPipeline::~GraphicsPipeline()
 {
-	assert(vkPipeline == VK_NULL_HANDLE);
-	assert(vkPipelineLayout == VK_NULL_HANDLE);
+	assert(m_vkPipeline == VK_NULL_HANDLE);
+	assert(m_vkPipelineLayout == VK_NULL_HANDLE);
 }
 
-void GraphicsPipeline::AddShader(const VkPipelineShaderStageCreateInfo& shaderInfo)
+void GraphicsPipeline::Init(const IGraphicsPipelineInitializer* pInitializer)
 {
-	assert(vkPipeline == VK_NULL_HANDLE);
-	m_shaderStageInfos.push_back(shaderInfo);
-}
+	pInitializer->InitGraphicsPipeline(this);
 
-void GraphicsPipeline::AddVertexInputLayout(const VertexInputLayout* pVertLayout)
-{
-	assert(vkPipeline == VK_NULL_HANDLE);
-	uint32_t binding = static_cast<uint32_t>(m_vertBindingDescriptions.size());
-	m_vertBindingDescriptions.push_back(pVertLayout->GetVertexInputBindingDescription(binding));
-	auto attributeDescriptions = pVertLayout->GetVertexInputAttributeDescriptions(binding);
-	for (int i = 0; i < attributeDescriptions.size(); ++i)
-	{
-		m_vertAttributeDescriptions.push_back(attributeDescriptions[i]);
-	}
-}
-
-void GraphicsPipeline::AddVertexInputLayout(const VkVertexInputBindingDescription& _bindingDescription, const std::vector<VkVertexInputAttributeDescription>& _attributeDescriptions)
-{
-	m_vertBindingDescriptions.push_back(_bindingDescription);
-	m_vertAttributeDescriptions.insert(m_vertAttributeDescriptions.end(), _attributeDescriptions.begin(), _attributeDescriptions.end());
-}
-
-void GraphicsPipeline::AddDescriptorSetLayout(const DescriptorSetLayout* pSetLayout)
-{
-	assert(vkPipeline == VK_NULL_HANDLE);
-	m_descriptorSetLayouts.push_back(pSetLayout->m_vkDescriptorSetLayout);
-}
-
-void GraphicsPipeline::AddDescriptorSetLayout(VkDescriptorSetLayout vkDSetLayout)
-{
-	assert(vkPipeline == VK_NULL_HANDLE);
-	m_descriptorSetLayouts.push_back(vkDSetLayout);
-}
-
-void GraphicsPipeline::BindToSubpass(const RenderPass* pRenderPass, uint32_t subpass)
-{
-	assert(vkPipeline == VK_NULL_HANDLE);
-	m_pRenderPass = pRenderPass;
-	m_subpass = subpass;
-	if (pRenderPass->subpasses[subpass].colorAttachments.size() > 0)
-	{
-		uint32_t attachmentId = pRenderPass->subpasses[subpass].colorAttachments[0].attachment;
-		multisampleStateInfo.rasterizationSamples = pRenderPass->attachments[attachmentId].attachmentDescription.samples;
-	}
-	if (pRenderPass->subpasses[subpass].optDepthStencilAttachment.has_value())
-	{
-		VkPipelineDepthStencilStateCreateInfo depthStencil{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
-		VkAttachmentReference depthAtt = pRenderPass->subpasses[subpass].optDepthStencilAttachment.value();
-		bool readOnlyDepth = (depthAtt.layout == VkImageLayout::VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-		depthStencil.depthTestEnable = VK_TRUE;
-		depthStencil.depthWriteEnable = readOnlyDepth ? VK_FALSE : VK_TRUE;
-		depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-		depthStencil.depthBoundsTestEnable = VK_FALSE;
-		depthStencil.minDepthBounds = 0.0f; // Optional
-		depthStencil.maxDepthBounds = 1.0f; // Optional
-		depthStencil.stencilTestEnable = VK_FALSE;
-		depthStencil.front = {}; // Optional
-		depthStencil.back = {}; // Optional
-		m_depthStencilInfo = depthStencil;
-	}
-	VkPipelineColorBlendAttachmentState colorBlendAttachmentState{};
-	colorBlendAttachmentState.blendEnable = VK_TRUE;
-	colorBlendAttachmentState.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-	colorBlendAttachmentState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-	colorBlendAttachmentState.colorBlendOp = VK_BLEND_OP_ADD;
-	colorBlendAttachmentState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-	colorBlendAttachmentState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-	colorBlendAttachmentState.alphaBlendOp = VK_BLEND_OP_ADD;
-	colorBlendAttachmentState.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
-		VK_COLOR_COMPONENT_G_BIT |
-		VK_COLOR_COMPONENT_B_BIT |
-		VK_COLOR_COMPONENT_A_BIT;
-	int colorAttachmentCount = m_pRenderPass->subpasses[m_subpass].colorAttachments.size();
-	m_colorBlendAttachmentStates.reserve(colorAttachmentCount);
-	for (int i = 0; i < colorAttachmentCount; ++i)
-	{
-		m_colorBlendAttachmentStates.push_back(colorBlendAttachmentState);
-	}
-}
-
-void GraphicsPipeline::SetColorAttachmentAsAdd(int idx)
-{
-	m_colorBlendAttachmentStates[idx].dstAlphaBlendFactor = VkBlendFactor::VK_BLEND_FACTOR_ONE;
-	m_colorBlendAttachmentStates[idx].srcAlphaBlendFactor = VkBlendFactor::VK_BLEND_FACTOR_ONE;
-	m_colorBlendAttachmentStates[idx].dstColorBlendFactor = VkBlendFactor::VK_BLEND_FACTOR_ONE;
-	m_colorBlendAttachmentStates[idx].srcColorBlendFactor = VkBlendFactor::VK_BLEND_FACTOR_ONE;
-}
-
-void GraphicsPipeline::PreSetPipelineCache(VkPipelineCache inCache)
-{
-	m_vkPipelineCache = inCache;
-}
-
-void GraphicsPipeline::Init()
-{
-	
+	// check everything initialized
+	CHECK_TRUE(m_vkPipeline != VK_NULL_HANDLE);
+	CHECK_TRUE(m_vkPipelineLayout != VK_NULL_HANDLE);
+	CHECK_TRUE(m_uptrPushConstant != nullptr);
 }
 
 void GraphicsPipeline::Uninit()
 {
 	auto& device = MyDevice::GetInstance();
-	if (vkPipeline != VK_NULL_HANDLE)
+	if (m_vkPipeline != VK_NULL_HANDLE)
 	{
-		device.DestroyPipeline(vkPipeline);
-		vkPipeline = VK_NULL_HANDLE;
+		device.DestroyPipeline(m_vkPipeline);
+		m_vkPipeline = VK_NULL_HANDLE;
 	}
-	if (vkPipelineLayout != VK_NULL_HANDLE)
+	if (m_vkPipelineLayout != VK_NULL_HANDLE)
 	{
-		device.DestroyPipelineLayout(vkPipelineLayout);
-		vkPipelineLayout = VK_NULL_HANDLE;
+		device.DestroyPipelineLayout(m_vkPipelineLayout);
+		m_vkPipelineLayout = VK_NULL_HANDLE;
 	}
-	m_pRenderPass = nullptr;
+	m_uptrPushConstant.reset();
 }
 
 void GraphicsPipeline::Do(VkCommandBuffer commandBuffer, const PipelineInput_DrawIndexed& input)
@@ -233,11 +134,6 @@ void GraphicsPipeline::Do(VkCommandBuffer commandBuffer, const PipelineInput_Dra
 	vkCmdDraw(commandBuffer, input.vertexCount, 1, 0, 0);
 }
 
-void GraphicsPipeline::AddPushConstant(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size)
-{
-	m_pushConstant.AddConstantRange(_stages, _offset, _size);
-}
-
 void GraphicsPipeline::BaseInit::_InitCreateInfos()
 {
 	m_dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
@@ -248,6 +144,7 @@ void GraphicsPipeline::BaseInit::_InitCreateInfos()
 	m_inputAssemblyStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
 	m_inputAssemblyStateInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	m_inputAssemblyStateInfo.primitiveRestartEnable = VK_FALSE;
+	
 	m_rasterizerStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 	m_rasterizerStateInfo.depthClampEnable = VK_FALSE;
 	m_rasterizerStateInfo.rasterizerDiscardEnable = VK_FALSE;
@@ -259,6 +156,7 @@ void GraphicsPipeline::BaseInit::_InitCreateInfos()
 	m_rasterizerStateInfo.lineWidth = 1.0f; //use values bigger than 1.0, enable wideLines GPU features, extensions
 	m_rasterizerStateInfo.cullMode = VK_CULL_MODE_BACK_BIT;
 	m_rasterizerStateInfo.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;// TODO: otherwise the image won't be drawn if we apply the transform matrix
+	
 	m_multisampleStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 	m_multisampleStateInfo.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 	m_multisampleStateInfo.sampleShadingEnable = VK_FALSE;
@@ -268,6 +166,31 @@ void GraphicsPipeline::BaseInit::_InitCreateInfos()
 	m_multisampleStateInfo.alphaToOneEnable = VK_FALSE;
 	m_multisampleStateInfo.sampleShadingEnable = VK_TRUE; // enable sample shading in the pipeline
 	m_multisampleStateInfo.minSampleShading = .2f; // min fraction for sample shading; closer to one is smoother
+}
+
+VkPipelineColorBlendAttachmentState GraphicsPipeline::BaseInit::_GetDefaultColorBlendAttachmentState() const
+{
+	VkPipelineColorBlendAttachmentState colorBlendAttachmentState{};
+	
+	colorBlendAttachmentState.blendEnable = VK_TRUE;
+	colorBlendAttachmentState.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+	colorBlendAttachmentState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	colorBlendAttachmentState.colorBlendOp = VK_BLEND_OP_ADD;
+	colorBlendAttachmentState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	colorBlendAttachmentState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	colorBlendAttachmentState.alphaBlendOp = VK_BLEND_OP_ADD;
+	colorBlendAttachmentState.colorWriteMask = 
+		VK_COLOR_COMPONENT_R_BIT |
+		VK_COLOR_COMPONENT_G_BIT |
+		VK_COLOR_COMPONENT_B_BIT |
+		VK_COLOR_COMPONENT_A_BIT;
+
+	return colorBlendAttachmentState;
+}
+
+GraphicsPipeline::BaseInit::BaseInit()
+{
+	_InitCreateInfos();
 }
 
 void GraphicsPipeline::BaseInit::InitGraphicsPipeline(GraphicsPipeline* pPipeline) const
@@ -300,17 +223,18 @@ void GraphicsPipeline::BaseInit::InitGraphicsPipeline(GraphicsPipeline* pPipelin
 
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	std::vector<VkPushConstantRange> pushConstantRanges{};
+	pPipeline->m_uptrPushConstant = std::make_unique<PushConstantManager>();
 	for (const auto& pushConstInfo : m_pushConstantInfos)
 	{
-		pPipeline->m_pushConstant->AddConstantRange(pushConstInfo.stages, pushConstInfo.offset, pushConstInfo.size);
+		pPipeline->m_uptrPushConstant->AddConstantRange(pushConstInfo.stageFlags, pushConstInfo.offset, pushConstInfo.size);
 	}
-	pPipeline->m_pushConstant->GetVkPushConstantRanges(pushConstantRanges);
+	pPipeline->m_uptrPushConstant->GetVkPushConstantRanges(pushConstantRanges);
 	pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(m_descriptorSetLayouts.size());
 	pipelineLayoutInfo.pSetLayouts = m_descriptorSetLayouts.data();
 	pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(pushConstantRanges.size());
 	pipelineLayoutInfo.pPushConstantRanges = pushConstantRanges.data();
 
-	pPipeline->vkPipelineLayout = device.CreatePipelineLayout(pipelineLayoutInfo);
+	pPipeline->m_vkPipelineLayout = device.CreatePipelineLayout(pipelineLayoutInfo);
 
 	VkGraphicsPipelineCreateInfo pipelineInfo{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
 	pipelineInfo.stageCount = static_cast<uint32_t>(m_shaderStageInfos.size());
@@ -322,11 +246,109 @@ void GraphicsPipeline::BaseInit::InitGraphicsPipeline(GraphicsPipeline* pPipelin
 	pipelineInfo.pMultisampleState = &m_multisampleStateInfo;
 	pipelineInfo.pColorBlendState = &colorBlendStateInfo;
 	pipelineInfo.pDynamicState = &dynamicStateInfo;
-	pipelineInfo.layout = pPipeline->vkPipelineLayout;
-	pipelineInfo.renderPass = m_pRenderPass->m_vkRenderPass;
-	pipelineInfo.subpass = m_subpass;
+	pipelineInfo.layout = pPipeline->m_vkPipelineLayout;
+	pipelineInfo.renderPass = m_renderPass;
+	pipelineInfo.subpass = m_subpassIndex;
 	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;//only when in graphics pipleininfo VK_PIPELINE_CREATE_DERIVATIVE_BIT flag is set
 	pipelineInfo.basePipelineIndex = -1;
 	pipelineInfo.pDepthStencilState = &m_depthStencilInfo;
-	pPipeline->vkPipeline = device.CreateGraphicsPipeline(pipelineInfo, m_cache);
+	pPipeline->m_vkPipeline = device.CreateGraphicsPipeline(pipelineInfo, m_cache);
+}
+
+GraphicsPipeline::BaseInit& GraphicsPipeline::BaseInit::Reset()
+{
+	*this = GraphicsPipeline::BaseInit();
+	return *this;
+}
+
+GraphicsPipeline::BaseInit& GraphicsPipeline::BaseInit::AddShader(const VkPipelineShaderStageCreateInfo& inShaderInfo)
+{
+	m_shaderStageInfos.push_back(inShaderInfo);
+
+	return *this;
+}
+
+GraphicsPipeline::BaseInit& GraphicsPipeline::BaseInit::AddVertexInputDescription(
+	const VkVertexInputBindingDescription& inBindingDescription, 
+	const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions)
+{
+	m_vertBindingDescriptions.push_back(inBindingDescription);
+	m_vertAttributeDescriptions.insert(
+		m_vertAttributeDescriptions.end(), 
+		inAttributeDescriptions.begin(), 
+		inAttributeDescriptions.end());
+
+	return *this;
+}
+
+GraphicsPipeline::BaseInit& GraphicsPipeline::BaseInit::AddDescriptorSetLayout(VkDescriptorSetLayout inDescriptorSetLayout)
+{
+	m_descriptorSetLayouts.push_back(inDescriptorSetLayout);
+
+	return *this;
+}
+
+GraphicsPipeline::BaseInit& GraphicsPipeline::BaseInit::CustomizeColorAttachmentAsAdd(uint32_t inAttachmentIndex)
+{
+	if (m_colorBlendAttachmentStates.size() <= inAttachmentIndex)
+	{
+		m_colorBlendAttachmentStates.resize(inAttachmentIndex + 1, _GetDefaultColorBlendAttachmentState());
+	}
+	auto& toUpdate = m_colorBlendAttachmentStates[inAttachmentIndex];
+
+	toUpdate.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	toUpdate.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	toUpdate.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	toUpdate.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+
+	return *this;
+}
+
+GraphicsPipeline::BaseInit& GraphicsPipeline::BaseInit::AddPushConstant(VkShaderStageFlags inStages, uint32_t inOffset, uint32_t inSize)
+{
+	VkPushConstantRange info{};
+
+	info.stageFlags = inStages;
+	info.offset = inOffset;
+	info.size = inSize;
+
+	m_pushConstantInfos.push_back(info);
+
+	return *this;
+}
+
+GraphicsPipeline::BaseInit& GraphicsPipeline::BaseInit::CustomizePipelineCache(VkPipelineCache inCache)
+{
+	m_cache = inCache;
+
+	return *this;
+}
+
+GraphicsPipeline::BaseInit& GraphicsPipeline::BaseInit::SetRenderPassSubpass(const RenderPass* inRenderPassPtr, uint32_t inSubpassIndex)
+{
+	const auto& subpass = inRenderPassPtr->GetSubpass(inSubpassIndex);
+
+	m_colorBlendAttachmentStates.resize(subpass.colorAttachments.size(), _GetDefaultColorBlendAttachmentState());
+
+	if (subpass.optDepthStencilAttachment.has_value())
+	{
+		VkPipelineDepthStencilStateCreateInfo depthStencil{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+		VkAttachmentReference depthAtt = subpass.optDepthStencilAttachment.value();
+		bool readOnlyDepth = (depthAtt.layout == VkImageLayout::VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+		depthStencil.depthTestEnable = VK_TRUE;
+		depthStencil.depthWriteEnable = readOnlyDepth ? VK_FALSE : VK_TRUE;
+		depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+		depthStencil.depthBoundsTestEnable = VK_FALSE;
+		depthStencil.minDepthBounds = 0.0f; // Optional
+		depthStencil.maxDepthBounds = 1.0f; // Optional
+		depthStencil.stencilTestEnable = VK_FALSE;
+		depthStencil.front = {}; // Optional
+		depthStencil.back = {}; // Optional
+		m_depthStencilInfo = depthStencil;
+	}
+
+	m_subpassIndex = inSubpassIndex;
+	m_renderPass = inRenderPassPtr->GetVkRenderPass();
+
+	return *this;
 }
