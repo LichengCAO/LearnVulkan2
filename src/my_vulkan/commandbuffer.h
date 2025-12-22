@@ -41,7 +41,7 @@ public:
 	// optional, set array layer range of the barrier
 	ImageBarrierBuilder& CustomizeArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount = 1);
 
-	// optional, set aspect of the image barrier
+	// optional, set aspect of the image barrier, default: VK_IMAGE_ASPECT_COLOR_BIT
 	ImageBarrierBuilder& CustomizeImageAspect(VkImageAspectFlags aspectMask);
 
 	// optional, useful when trying to upload image in a command buffer from queue family other than the graphics queue family
@@ -443,7 +443,7 @@ public:
 
 	VkCommandPool GetVkCommandPool() const;
 
-	// Every command buffer allocated by this are reset
+	// Every command buffer allocated by this are reset, command buffers from this pool are all reset to initial state
 	CommandPool& ResetPool();
 
 	// Allocate a ready command buffer(inited) from current pool

@@ -8,12 +8,12 @@ DescriptorSet::~DescriptorSet()
 	m_vkDescriptorSet = VK_NULL_HANDLE;
 }
 
-void DescriptorSet::Init(const DescriptorSet::Initializer* inInitPtr)
+void DescriptorSet::Init(const IDescriptorSetInitializer* inInitPtr)
 {
-	inInitPtr->_InitDescriptorSet(*this);
+	inInitPtr->InitDescriptorSet(this);
 }
 
-DescriptorSet& DescriptorSet::UpdateDescriptors(const UpdateBuffer* inUpdaterPtr)
+DescriptorSet& DescriptorSet::UpdateDescriptors(const DescriptorSet::UpdateBuffer* inUpdaterPtr)
 {
 	inUpdaterPtr->_UpdateDescriptorSet(*this);
 
@@ -30,9 +30,9 @@ DescriptorSetLayout::~DescriptorSetLayout()
 	assert(m_vkDescriptorSetLayout == VK_NULL_HANDLE);
 }
 
-void DescriptorSetLayout::Init(const DescriptorSetLayout::Initializer* inInitialzerPtr)
+void DescriptorSetLayout::Init(const IDescriptorSetLayoutInitializer* inInitialzerPtr)
 {
-	inInitialzerPtr->_InitDescriptorSetLayout(*this);
+	inInitialzerPtr->InitDescriptorSetLayout(this);
 }
 
 VkDescriptorSetLayout DescriptorSetLayout::GetVkDescriptorSetLayout() const
@@ -60,9 +60,7 @@ void DescriptorSetLayout::Uninit()
 		m_vkDescriptorSetLayout = VK_NULL_HANDLE;
 	}
 	m_descriptorBindings.clear();
-	m_bindingFlags.clear();
 	m_bindingToIndex.clear();
-	m_allowBindless = false;
 }
 
 VkDescriptorPool DescriptorSetAllocator::_CreatePool(VkDescriptorPoolCreateFlags inPoolFlags)
@@ -235,9 +233,10 @@ void DescriptorSetAllocator::Uninit()
 	m_usedPools.clear();
 }
 
-void DescriptorSet::Initializer::_InitDescriptorSet(DescriptorSet& inoutDescriptorSet) const
+void DescriptorSet::Initializer::InitDescriptorSet(DescriptorSet* pDescriptorSet) const
 {
 	auto pAllocator = MyDevice::GetInstance().GetDescriptorSetAllocator();
+	DescriptorSet& inoutDescriptorSet = *pDescriptorSet;
 
 	pAllocator->Allocate(m_pSetLayout->GetVkDescriptorSetLayout(), inoutDescriptorSet.m_vkDescriptorSet, m_poolFlags);
 	inoutDescriptorSet.m_pSetLayout = m_pSetLayout;
@@ -391,12 +390,13 @@ DescriptorSet::UpdateBuffer& DescriptorSet::UpdateBuffer::WriteBinding(
 	return *this;
 }
 
-void DescriptorSetLayout::Initializer::_InitDescriptorSetLayout(DescriptorSetLayout& outDescriptorSetLayout) const
+void DescriptorSetLayout::Initializer::InitDescriptorSetLayout(DescriptorSetLayout* pDescriptorSetLayout) const
 {
 	VkDescriptorSetLayoutCreateInfo createInfo{};
 	VkDescriptorSetLayoutBindingFlagsCreateInfo flagInfo{};
 	auto& device = MyDevice::GetInstance();
 	void const** ppNextChain = &(createInfo.pNext);
+	DescriptorSetLayout& outDescriptorSetLayout = *pDescriptorSetLayout;
 
 	createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	createInfo.bindingCount = static_cast<uint32_t>(m_layoutBindings.size());
@@ -409,7 +409,7 @@ void DescriptorSetLayout::Initializer::_InitDescriptorSetLayout(DescriptorSetLay
 	for (size_t i = 0; i < m_layoutBindings.size(); ++i)
 	{
 		const auto& currentBinding = m_layoutBindings[i];
-		
+
 		outDescriptorSetLayout.m_descriptorBindings.push_back(currentBinding);
 		outDescriptorSetLayout.m_bindingToIndex[currentBinding.binding] = i;
 	}
@@ -421,7 +421,7 @@ void DescriptorSetLayout::Initializer::_InitDescriptorSetLayout(DescriptorSetLay
 		flagInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
 		flagInfo.pBindingFlags = m_extraFlags.data();
 		flagInfo.bindingCount = static_cast<uint32_t>(m_extraFlags.size());
-		
+
 		(*ppNextChain) = &flagInfo;
 		ppNextChain = &(flagInfo.pNext);
 	}

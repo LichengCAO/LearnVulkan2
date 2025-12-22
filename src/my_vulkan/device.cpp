@@ -323,7 +323,7 @@ std::vector<Image> MyDevice::GetSwapchainImages() const
 		imageInfo.usage = m_swapchain.image_usage_flags;
 		imageInfo.optFormat = m_swapchain.image_format;
 		tmpImage.PresetCreateInformation(imageInfo);
-		tmpImage.vkImage = vkImage;
+		tmpImage.m_vkImage = vkImage;
 		ret.push_back(tmpImage);
 	}
 
@@ -1158,6 +1158,48 @@ VkImage MyDevice::CreateImage(const VkImageCreateInfo& inCreateInfo, const VkAll
 void MyDevice::DestroyImage(VkImage image, const VkAllocationCallbacks* pAllocator)
 {
 	vkDestroyImage(vkDevice, image, pAllocator);
+}
+
+VkImageView MyDevice::CreateImageView(const VkImageViewCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator)
+{
+	VkImageView result = VK_NULL_HANDLE;
+
+	CHECK_TRUE(vkCreateImageView(vkDevice, &inCreateInfo, pAllocator, &result));
+
+    return result;
+}
+
+void MyDevice::DestroyImageView(VkImageView inView, const VkAllocationCallbacks* pAllocator)
+{
+	vkDestroyImageView(vkDevice, inView, pAllocator);
+}
+
+VkRenderPass MyDevice::CreateRenderPass(const VkRenderPassCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator)
+{
+	VkRenderPass result = VK_NULL_HANDLE;
+
+	VK_CHECK(vkCreateRenderPass(vkDevice, &inCreateInfo, pAllocator, &result));
+
+	return result;
+}
+
+void MyDevice::DestroyRenderPass(VkRenderPass inRenderPass, const VkAllocationCallbacks* pAllocator = nullptr)
+{
+	vkDestroyRenderPass(vkDevice, inRenderPass, pAllocator);
+}
+
+VkFramebuffer MyDevice::CreateFramebuffer(const VkFramebufferCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator)
+{
+	VkFramebuffer result = VK_NULL_HANDLE;
+
+	VK_CHECK(vkCreateFramebuffer(vkDevice, &inCreateInfo, pAllocator, &result));
+
+    return result;
+}
+
+void MyDevice::DestroyFramebuffer(VkFramebuffer inFramebuffer, const VkAllocationCallbacks* pAllocator)
+{
+	vkDestroyFramebuffer(vkDevice, inFramebuffer, pAllocator);
 }
 
 MyDevice& MyDevice::GetInstance()

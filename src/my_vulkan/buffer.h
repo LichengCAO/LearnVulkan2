@@ -158,7 +158,7 @@ class BufferView // use for texel buffer
 	//Storage Image : Involves more setup(memory layout transitions, view configurations) but offers richer functionality for image processing.
 private:
 	VkBufferView m_vkBufferView = VK_NULL_HANDLE;
-	VkFormat m_format = VkFormat::VK_FORMAT_UNDEFINED;
+	VkFormat m_format = VK_FORMAT_UNDEFINED;
 
 public:
 	class Initializer : public IBufferViewInitializer
@@ -174,8 +174,6 @@ public:
 		BufferView::Initializer& Reset();
 		BufferView::Initializer& SetFormat(VkFormat inFormat);
 		BufferView::Initializer& SetBuffer(const Buffer* inBufferPtr);
-
-		friend class BufferView;
 	};
 
 public:

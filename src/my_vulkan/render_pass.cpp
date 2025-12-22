@@ -4,14 +4,127 @@
 
 RenderPass::~RenderPass()
 {
-	assert(vkRenderPass == VK_NULL_HANDLE);
+	assert(m_vkRenderPass == VK_NULL_HANDLE);
 }
 
-RenderPass::Attachment RenderPass::GetPresetAttachment(AttachmentPreset _preset)
+void RenderPass::Init(const IRenderPassInitializer* inIntializerPtr)
+{
+	inIntializerPtr->InitRenderPass(this);
+}
+
+VkRenderPass RenderPass::GetVkRenderPass() const
+{
+    return m_vkRenderPass;
+}
+
+VkRenderPassBeginInfo RenderPass::GetRenderPassBeginInfo(const RenderPass* inRenderPassPtr, const Framebuffer* inFramebuferrPtr)
+{
+	VkRenderPassBeginInfo ret{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+	
+	ret.renderPass = inRenderPassPtr->GetVkRenderPass();
+	ret.renderArea.offset = { 0, 0 };
+	CHECK_TRUE(inRenderPassPtr == inFramebuferrPtr->m_pRenderPass, "This framebuffer doesn't belong to this render pass!");
+	ret.framebuffer = inFramebuferrPtr->GetVkFramebuffer();
+	ret.renderArea.extent = inFramebuferrPtr->GetImageSize();
+	ret.clearValueCount = static_cast<uint32_t>(inRenderPassPtr->m_clearValues.size()); // should have same length as attachedViews, although index of those who don't clear on load will be ignored
+	ret.pClearValues = inRenderPassPtr->m_clearValues.data();
+	
+	return ret;
+}
+
+void RenderPass::Uninit()
+{
+	m_clearValues.clear();
+	if (m_vkRenderPass != VK_NULL_HANDLE)
+	{
+		MyDevice::GetInstance().DestroyRenderPass(m_vkRenderPass);
+		m_vkRenderPass = VK_NULL_HANDLE;
+	}
+}
+
+RenderPass::Subpass& RenderPass::Subpass::AddColorAttachment(uint32_t _binding)
+{
+	colorAttachments.push_back({ _binding, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
+
+	return *this;
+}
+
+RenderPass::Subpass& RenderPass::Subpass::SetDepthStencilAttachment(uint32_t _binding, bool _readOnly)
+{
+	// ATTACHMENT here means writable
+	// VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL -> depth is readonly, stencil is writable
+	// VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL -> depth is writable, stencil is readonly
+	if (_readOnly)
+	{
+		optDepthStencilAttachment = { _binding, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+	}
+	else
+	{
+		optDepthStencilAttachment = { _binding, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+	}
+	return *this;
+}
+
+RenderPass::Subpass& RenderPass::Subpass::AddResolveAttachment(uint32_t _binding)
+{
+	resolveAttachments.push_back({ _binding, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
+	return *this;
+}
+
+VkSubpassDescription RenderPass::Subpass::GetSubpassDescription() const
+{
+	VkSubpassDescription vkSubpass{};
+	
+	vkSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	vkSubpass.colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size());
+	vkSubpass.pColorAttachments = colorAttachments.data();
+	if (optDepthStencilAttachment.has_value())
+	{
+		vkSubpass.pDepthStencilAttachment = &optDepthStencilAttachment.value();
+	}
+	if (resolveAttachments.size() > 0)
+	{
+		CHECK_TRUE(resolveAttachments.size() == colorAttachments.size());
+		vkSubpass.pResolveAttachments = resolveAttachments.data();
+	}
+
+	return vkSubpass;
+}
+
+Framebuffer::~Framebuffer()
+{
+	assert(m_vkFramebuffer == VK_NULL_HANDLE);
+}
+
+void Framebuffer::Init(const IFramebufferInitializer* inInitializerPtr)
+{
+	inInitializerPtr->InitFramebuffer(this);
+}
+
+void Framebuffer::Uninit()
+{
+	if (m_vkFramebuffer != VK_NULL_HANDLE)
+	{
+		MyDevice::GetInstance().DestroyFramebuffer(m_vkFramebuffer);
+		m_vkFramebuffer = VK_NULL_HANDLE;
+	}
+}
+
+VkExtent2D Framebuffer::GetImageSize() const
+{
+	return m_imageSize;
+}
+
+VkFramebuffer Framebuffer::GetVkFramebuffer() const
+{
+	return m_vkFramebuffer;
+}
+
+RenderPass::Attachment RenderPass::AttachmentBuilder::BuildByPreset(RenderPass::AttachmentPreset inPreset)
 {
 	Attachment info{};
 	VkAttachmentDescription& vkAttachment = info.attachmentDescription;
-	switch (_preset)
+	switch (inPreset)
 	{
 	case AttachmentPreset::SWAPCHAIN:
 	{
@@ -134,235 +247,119 @@ RenderPass::Attachment RenderPass::GetPresetAttachment(AttachmentPreset _preset)
 	return info;
 }
 
-uint32_t RenderPass::PreAddAttachment(const Attachment& _info)
+void RenderPass::SimpleInit::InitRenderPass(RenderPass* pRenderPass) const
 {
-	uint32_t ret = static_cast<uint32_t>(attachments.size());
-	assert(vkRenderPass == VK_NULL_HANDLE);
-	attachments.push_back(_info);
-	m_clearValues.push_back(_info.clearValue);
-	return ret;
-}
-
-uint32_t RenderPass::PreAddAttachment(AttachmentPreset _preset)
-{
-	return PreAddAttachment(GetPresetAttachment(_preset));
-}
-
-uint32_t RenderPass::PreAddSubpass(Subpass _subpass)
-{
-	uint32_t ret = static_cast<uint32_t>(subpasses.size());
-	assert(vkRenderPass == VK_NULL_HANDLE);
-	VkSubpassDependency subpassDependency{};
-	subpassDependency.srcSubpass = subpasses.empty() ? VK_SUBPASS_EXTERNAL : static_cast<uint32_t>(subpasses.size() - 1);
-	subpassDependency.dstSubpass = static_cast<uint32_t>(subpasses.size());
-	subpassDependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	subpassDependency.srcAccessMask = 0;
-	subpassDependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	subpassDependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-	if (_subpass.optDepthStencilAttachment.has_value())
-	{
-		subpassDependency.srcStageMask = subpassDependency.srcAccessMask | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-		subpassDependency.dstStageMask = subpassDependency.dstStageMask | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-		subpassDependency.dstAccessMask = subpassDependency.dstAccessMask | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-	}
-
-	m_vkSubpassDependencies.push_back(subpassDependency);
-	subpasses.push_back(_subpass);
-
-	return ret;
-}
-
-void RenderPass::Init()
-{
+	auto& device = MyDevice::GetInstance();
 	std::vector<VkAttachmentDescription> vkAttachments;
-	for (int i = 0; i < attachments.size(); ++i)
-	{
-		vkAttachments.push_back(attachments[i].attachmentDescription);
-	}
-	std::vector<VkSubpassDescription> vkSubpasses;
-	for (int i = 0; i < subpasses.size(); ++i)
-	{
-		VkSubpassDescription vkSubpass{};
-		vkSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-		vkSubpass.colorAttachmentCount = static_cast<uint32_t>(subpasses[i].colorAttachments.size());
-		vkSubpass.pColorAttachments = subpasses[i].colorAttachments.data();
-		if (subpasses[i].optDepthStencilAttachment.has_value())
-		{
-			vkSubpass.pDepthStencilAttachment = &subpasses[i].optDepthStencilAttachment.value();
-		}
-		if (subpasses[i].resolveAttachments.size() > 0)
-		{
-			vkSubpass.pResolveAttachments = subpasses[i].resolveAttachments.data();
-		}
-		vkSubpasses.push_back(vkSubpass);
-	}
+	VkSubpassDescription subpass;
+	VkSubpassDependency subpassDependency{};
 	VkRenderPassCreateInfo renderPassInfo{ VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+
+	for (int i = 0; i < m_attachments.size(); ++i)
+	{
+		vkAttachments.push_back(m_attachments[i].attachmentDescription);
+		pRenderPass->m_clearValues.push_back(m_attachments[i].clearValue);
+	}
+	subpass = m_subpass.GetSubpassDescription();
+
+	// Do things like pipeline memory barrier
+	// see https://docs.vulkan.org/refpages/latest/refpages/source/VkSubpassDependency.html
+	{
+		subpassDependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+		subpassDependency.dstSubpass = 0;
+		subpassDependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		subpassDependency.srcAccessMask = 0;
+		subpassDependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		subpassDependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+		if (m_subpass.optDepthStencilAttachment.has_value())
+		{
+			subpassDependency.srcStageMask = subpassDependency.srcAccessMask | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+			subpassDependency.dstStageMask = subpassDependency.dstStageMask | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+			subpassDependency.dstAccessMask = subpassDependency.dstAccessMask | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		}
+	}
+
 	renderPassInfo.attachmentCount = static_cast<uint32_t>(vkAttachments.size());
 	renderPassInfo.pAttachments = vkAttachments.data();
-	renderPassInfo.subpassCount = static_cast<uint32_t>(vkSubpasses.size());
-	renderPassInfo.pSubpasses = vkSubpasses.data();
-	renderPassInfo.dependencyCount = static_cast<uint32_t>(m_vkSubpassDependencies.size());
-	renderPassInfo.pDependencies = m_vkSubpassDependencies.data();
-	CHECK_TRUE(vkRenderPass == VK_NULL_HANDLE, "VkRenderPass is already created!");
-	VK_CHECK(vkCreateRenderPass(MyDevice::GetInstance().vkDevice, &renderPassInfo, nullptr, &vkRenderPass), "Failed to create render pass!");
+	renderPassInfo.subpassCount = 1;
+	renderPassInfo.pSubpasses = &subpass;
+	renderPassInfo.dependencyCount = 1;
+	renderPassInfo.pDependencies = &subpassDependency;
+
+	pRenderPass->m_vkRenderPass = device.CreateRenderPass(renderPassInfo);
 }
 
-VkRenderPassBeginInfo RenderPass::_GetVkRenderPassBeginInfo(const Framebuffer* pFramebuffer) const
+RenderPass::SimpleInit& RenderPass::SimpleInit::Reset()
 {
-	VkRenderPassBeginInfo ret{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-	ret.renderPass = vkRenderPass;
-	ret.renderArea.offset = { 0, 0 };
-	if (pFramebuffer != nullptr)
-	{
-		CHECK_TRUE(this == pFramebuffer->pRenderPass, "This framebuffer doesn't belong to this render pass!");
-		ret.framebuffer = pFramebuffer->vkFramebuffer;
-		ret.renderArea.extent = pFramebuffer->GetImageSize();
-		ret.clearValueCount = static_cast<uint32_t>(m_clearValues.size()); // should have same length as attachedViews, although index of those who don't clear on load will be ignored
-		ret.pClearValues = m_clearValues.data();
-	}
-	return ret;
+	m_subpass = RenderPass::Subpass{};
+	m_attachments.clear();
+
+	return *this;
 }
 
-void RenderPass::StartRenderPass(CommandSubmission* pCmd, const Framebuffer* pFramebuffer) const
+RenderPass::SimpleInit& RenderPass::SimpleInit::AddColorAttachment(const Attachment& inAttachment)
 {
-	pCmd->_BeginRenderPass(_GetVkRenderPassBeginInfo(pFramebuffer), VK_SUBPASS_CONTENTS_INLINE);
-	if (pFramebuffer != nullptr)
-	{
-		int n = pFramebuffer->attachedViews.size();
-		std::vector<VkImage> images;
-		std::vector<VkImageSubresourceRange> ranges;
-		std::vector<VkImageLayout> layouts;
-		images.reserve(n);
-		ranges.reserve(n);
-		layouts.reserve(n);
-		for (int i = 0; i < n; ++i)
-		{
-			auto info = pFramebuffer->attachedViews[i]->GetImageViewInformation();
-			VkImageSubresourceRange range{};
-			range.aspectMask = info.aspectMask;
-			range.baseArrayLayer = info.baseArrayLayer;
-			range.baseMipLevel = info.baseMipLevel;
-			range.layerCount = info.layerCount;
-			range.levelCount = info.levelCount;
+	uint32_t attachmentIndex = m_attachments.size();
 
-			images.push_back(info.vkImage);
-			ranges.push_back(range);
-			layouts.push_back(attachments[i].attachmentDescription.finalLayout);
-		}
-		pCmd->BindCallback(
-			CommandSubmission::CALLBACK_BINDING_POINT::END_RENDER_PASS,
-			[images, ranges, layouts](CommandSubmission* pCmd)
-			{
-				for (int i = 0; i < images.size(); ++i)
-				{
-					pCmd->_UpdateImageLayout(images[i], ranges[i], layouts[i]);
-				}
-			}
-		);
-	}
+	m_attachments.push_back(inAttachment);
+	m_subpass.AddColorAttachment(attachmentIndex);
+
+	return *this;
 }
 
-void RenderPass::Uninit()
+RenderPass::SimpleInit& RenderPass::SimpleInit::AddDepthStencilAttachment(const Attachment& inAttachment, bool inReadOnly)
 {
-	m_vkSubpassDependencies.clear();
-	m_clearValues.clear();
-	attachments.clear();
-	subpasses.clear();
-	if (vkRenderPass != VK_NULL_HANDLE)
-	{
-		vkDestroyRenderPass(MyDevice::GetInstance().vkDevice, vkRenderPass, nullptr);
-		vkRenderPass = VK_NULL_HANDLE;
-	}
+	uint32_t attachmentIndex = m_attachments.size();
+
+	m_attachments.push_back(inAttachment);
+	m_subpass.SetDepthStencilAttachment(attachmentIndex, inReadOnly);
+
+	return *this;
 }
 
-Framebuffer RenderPass::NewFramebuffer(const std::vector<const ImageView*>& _imageViews) const
+void Framebuffer::FramebufferInit::InitFramebuffer(Framebuffer* pFramebuffer) const
 {
-	CHECK_TRUE(vkRenderPass != VK_NULL_HANDLE, "Render pass is not initialized!");
-	CHECK_TRUE(_imageViews.size() == attachments.size(), "Number of image views is not the same as number of attachments");
-	for (int i = 0; i < _imageViews.size(); ++i)
-	{
-		CHECK_TRUE(attachments[i].attachmentDescription.format == _imageViews[i]->pImage->GetImageInformation().format, "Format of the imageview is not the same as the format of attachment");
-	}
-	return Framebuffer{ this ,_imageViews };
-}
-
-void RenderPass::NewFramebuffer(const std::vector<const ImageView*>& _imageViews, Framebuffer*& _pFramebuffer) const
-{
-	CHECK_TRUE(vkRenderPass != VK_NULL_HANDLE, "Render pass is not initialized!");
-	CHECK_TRUE(_imageViews.size() == attachments.size(), "Number of image views is not the same as number of attachments");
-	for (int i = 0; i < _imageViews.size(); ++i)
-	{
-		CHECK_TRUE(attachments[i].attachmentDescription.format == _imageViews[i]->pImage->GetImageInformation().format, "Format of the imageview is not the same as the format of attachment");
-	}
-	_pFramebuffer = new Framebuffer(this, _imageViews);
-}
-
-void RenderPass::Subpass::AddColorAttachment(uint32_t _binding)
-{
-	colorAttachments.push_back({ _binding, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
-}
-
-void RenderPass::Subpass::SetDepthStencilAttachment(uint32_t _binding, bool _readOnly)
-{
-	// ATTACHMENT here means writable
-	// VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL -> depth is readonly, stencil is writable
-	// VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL -> depth is writable, stencil is readonly
-	if (_readOnly)
-	{
-		optDepthStencilAttachment = { _binding, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
-	}
-	else
-	{
-		optDepthStencilAttachment = { _binding, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
-	}
-}
-
-void RenderPass::Subpass::AddResolveAttachment(uint32_t _binding)
-{
-	resolveAttachments.push_back({ _binding, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
-}
-
-Framebuffer::~Framebuffer()
-{
-	assert(vkFramebuffer == VK_NULL_HANDLE);
-}
-
-void Framebuffer::Init()
-{
-	CHECK_TRUE(pRenderPass != nullptr, "No render pass!");
-	CHECK_TRUE(attachedViews.size() > 0, "No attachment!");
+	CHECK_TRUE(m_pRenderPass != nullptr, "No render pass!");
 	VkFramebufferCreateInfo framebufferInfo{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-	std::vector<VkImageView> vkAttachments;
-	framebufferInfo.renderPass = pRenderPass->vkRenderPass;
-	framebufferInfo.attachmentCount = static_cast<uint32_t>(attachedViews.size());
-	for (int i = 0; i < attachedViews.size(); ++i)
-	{
-		CHECK_TRUE(attachedViews[i]->vkImageView != VK_NULL_HANDLE, "Image view is not initialized!");
-		vkAttachments.push_back(attachedViews[i]->vkImageView);
-	}
-	framebufferInfo.pAttachments = vkAttachments.data();
-	framebufferInfo.width = attachedViews[0]->pImage->GetImageInformation().width;
-	framebufferInfo.height = attachedViews[0]->pImage->GetImageInformation().height;
+	auto& device = MyDevice::GetInstance();
+
+	framebufferInfo.renderPass = m_pRenderPass->GetVkRenderPass();
+	framebufferInfo.attachmentCount = static_cast<uint32_t>(m_views.size());
+	framebufferInfo.pAttachments = m_views.data();
+	framebufferInfo.width = m_width;
+	framebufferInfo.height = m_height;
 	framebufferInfo.layers = 1;
-	CHECK_TRUE(vkFramebuffer == VK_NULL_HANDLE, "VkFramebuffer is already created!");
-	VK_CHECK(vkCreateFramebuffer(MyDevice::GetInstance().vkDevice, &framebufferInfo, nullptr, &vkFramebuffer), "Failed to create framebuffer!");
+
+	pFramebuffer->m_pRenderPass = m_pRenderPass;
+	pFramebuffer->m_imageSize.width = m_width;
+	pFramebuffer->m_imageSize.height = m_height;
+	pFramebuffer->m_vkFramebuffer = device.CreateFramebuffer(framebufferInfo);
 }
 
-void Framebuffer::Uninit()
+Framebuffer::FramebufferInit& Framebuffer::FramebufferInit::Reset()
 {
-	if (vkFramebuffer != VK_NULL_HANDLE)
+	*this = Framebuffer::FramebufferInit{};
+
+	return *this;
+}
+
+Framebuffer::FramebufferInit& Framebuffer::FramebufferInit::SetImageView(uint32_t inAttachmentIndex, const ImageView* inViewPtr)
+{
+	const auto& viewInfo = inViewPtr->GetImageViewInformation();
+	if (m_views.size() <= inAttachmentIndex)
 	{
-		vkDestroyFramebuffer(MyDevice::GetInstance().vkDevice, vkFramebuffer, nullptr);
-		vkFramebuffer = VK_NULL_HANDLE;
+		m_views.resize(inAttachmentIndex + 1, VK_NULL_HANDLE);
 	}
+	m_views[inAttachmentIndex] = inViewPtr->GetVkImageView();
+	m_width = viewInfo.width;
+	m_height = viewInfo.height;
+	return *this;
 }
 
-VkExtent2D Framebuffer::GetImageSize() const
+Framebuffer::FramebufferInit& Framebuffer::FramebufferInit::SetRenderPass(const RenderPass* inRenderPassPtr)
 {
-	CHECK_TRUE(attachedViews.size() > 0, "No image in this framebuffer!");
-	VkExtent2D ret{};
-	ret.width = attachedViews[0]->pImage->GetImageSize().width;
-	ret.height = attachedViews[0]->pImage->GetImageSize().height;
-	return ret;
+	m_pRenderPass = inRenderPassPtr;
+
+	return *this;
 }

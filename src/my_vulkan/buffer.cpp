@@ -301,14 +301,14 @@ Buffer::Initializer& Buffer::Initializer::CustomizeAlignment(VkDeviceSize inAlig
 void BufferView::Initializer::InitBufferView(BufferView* outViewPtr) const
 {
 	auto& device = MyDevice::GetInstance();
-	VkBufferViewCreateInfo createInfo{ VkStructureType::VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO };
+	VkBufferViewCreateInfo createInfo{ VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO };
 
-	outViewPtr->m_format = m_format;
 	createInfo.buffer = m_buffer;
 	createInfo.format = m_format;
 	createInfo.offset = m_offset;
 	createInfo.range = m_range;
 
+	outViewPtr->m_format = m_format;
 	outViewPtr->m_vkBufferView = device.CreateBufferView(createInfo);
 }
 

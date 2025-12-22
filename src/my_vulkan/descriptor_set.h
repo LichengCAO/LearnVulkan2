@@ -2,6 +2,19 @@
 #include "common.h"
 #include <map>
 class DescriptorSet;
+class DescriptorSetLayout;
+
+class IDescriptorSetLayoutInitializer
+{
+public:
+	virtual void InitDescriptorSetLayout(DescriptorSetLayout* pDescriptorSetLayout) const = 0;
+};
+
+class IDescriptorSetInitializer
+{
+public:
+	virtual void InitDescriptorSet(DescriptorSet* pDescriptorSet) const = 0;
+};
 
 // Pipeline can have multiple DescriptorSetLayout, 
 // when execute the pipeline we need to provide DescriptorSets for each of the DescriptorSetLayout in order
@@ -14,16 +27,16 @@ private:
 	VkDescriptorPoolCreateFlags m_requiredPoolFlags = 0;
 
 public:
-	class Initializer
+	class Initializer : public IDescriptorSetLayoutInitializer
 	{
 	private:
 		std::vector<VkDescriptorBindingFlags> m_extraFlags;
 		std::vector<VkDescriptorSetLayoutBinding> m_layoutBindings;
 		VkDescriptorPoolCreateFlags m_poolFlags = 0;
 
-		void _InitDescriptorSetLayout(DescriptorSetLayout& outDescriptorSetLayout) const;
-
 	public:
+		virtual void InitDescriptorSetLayout(DescriptorSetLayout* pDescriptorSetLayout) const override;
+
 		DescriptorSetLayout::Initializer& Reset();
 
 		DescriptorSetLayout::Initializer& AddBinding(
@@ -47,7 +60,7 @@ public:
 	~DescriptorSetLayout();
 
 public:
-	void Init(const DescriptorSetLayout::Initializer* inInitialzerPtr);
+	void Init(const IDescriptorSetLayoutInitializer* inInitialzerPtr);
 
 	VkDescriptorSetLayout GetVkDescriptorSetLayout() const;
 
@@ -74,15 +87,15 @@ private:
 	};
 
 public:
-	class Initializer
+	class Initializer : public IDescriptorSetInitializer
 	{
 	private:
 		VkDescriptorPoolCreateFlags m_poolFlags = 0;
 		const DescriptorSetLayout* m_pSetLayout = nullptr;
 
-		void _InitDescriptorSet(DescriptorSet& inoutDescriptorSet) const;
-
 	public:
+		virtual void InitDescriptorSet(DescriptorSet* pDescriptorSet) const override;
+
 		// Reset initializer
 		DescriptorSet::Initializer& Reset();
 
@@ -135,9 +148,9 @@ private:
 public:
 	~DescriptorSet();
 
-	void Init(const DescriptorSet::Initializer* inInitPtr);
+	void Init(const IDescriptorSetInitializer* inInitPtr);
 
-	DescriptorSet& UpdateDescriptors(const UpdateBuffer* inUpdaterPtr);
+	DescriptorSet& UpdateDescriptors(const DescriptorSet::UpdateBuffer* inUpdaterPtr);
 
 	VkDescriptorSet GetVkDescriptorSet() const;
 

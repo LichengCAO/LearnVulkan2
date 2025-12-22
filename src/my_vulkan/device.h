@@ -91,7 +91,6 @@ public:
 	SamplerPool         samplerPool{};
 	DescriptorSetAllocator descriptorAllocator{};
 	std::unordered_map<uint32_t, VkCommandPool>		vkCommandPools;
-	std::unordered_map<VkImage, ImageLayout>        imageLayouts;
 	
 	~MyDevice();
 
@@ -307,6 +306,30 @@ public:
 
 	void DestroyImage(
 		VkImage image,
+		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	VkImageView CreateImageView(
+		const VkImageViewCreateInfo& inCreateInfo,
+		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	void DestroyImageView(
+		VkImageView inView, 
+		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	VkRenderPass CreateRenderPass(
+		const VkRenderPassCreateInfo& inCreateInfo, 
+		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	void DestroyRenderPass(
+		VkRenderPass inRenderPass, 
+		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	VkFramebuffer CreateFramebuffer(
+		const VkFramebufferCreateInfo& inCreateInfo,
+		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	void DestroyFramebuffer(
+		VkFramebuffer inFramebuffer, 
 		const VkAllocationCallbacks* pAllocator = nullptr);
 	//---------------------------------------------
 public:

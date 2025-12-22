@@ -78,7 +78,7 @@ void GUIPass::EndPass(const std::vector<VkSemaphore>& _finishSignals, VkDescript
 
 	cmd->SubmitCommands(_finishSignals);
 
-	_outputImage.imageView = m_uptrViews[m_uCurrentFrame]->vkImageView;
+	_outputImage.imageView = m_uptrViews[m_uCurrentFrame]->m_vkImageView;
 	_outputImage.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	_outputImage.sampler = m_sampler;
 
