@@ -5,8 +5,8 @@
 #include <algorithm>
 #include <limits>
 #include "image.h"
-#include "pipeline_io.h"
 #include "memory_allocator.h"
+#include "descriptor_set.h"
 #include <iomanip>
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
@@ -37,7 +37,7 @@ std::vector<const char*> MyDevice::_GetInstanceRequiredExtensions() const
 	return requiredExtensions;
 }
 
-QueueFamilyIndices MyDevice::_GetQueueFamilyIndices(VkPhysicalDevice physicalDevice) const
+MyDevice::QueueFamilyIndices MyDevice::_GetQueueFamilyIndices(VkPhysicalDevice physicalDevice) const
 {
 	QueueFamilyIndices indices;
 	uint32_t queueFamilyCount = 0;
@@ -68,7 +68,7 @@ QueueFamilyIndices MyDevice::_GetQueueFamilyIndices(VkPhysicalDevice physicalDev
 	return indices;
 }
 
-SwapChainSupportDetails MyDevice::_QuerySwapchainSupport(VkPhysicalDevice phyiscalDevice, VkSurfaceKHR surface) const
+MyDevice::SwapChainSupportDetails MyDevice::_QuerySwapchainSupport(VkPhysicalDevice phyiscalDevice, VkSurfaceKHR surface) const
 {
 	SwapChainSupportDetails res;
 
@@ -158,7 +158,7 @@ void MyDevice::_CreateInstance()
 	instanceBuilder.set_engine_name("No Engine");
 	instanceBuilder.set_engine_version(VK_MAKE_VERSION(1, 0, 0));
 	//instanceBuilder.desire_api_version(VK_API_VERSION_1_2);
-	instanceBuilder.desire_api_version(VK_API_VERSION_1_3); // enable vkCmdPipelineBarrier2
+	instanceBuilder.require_api_version(VK_API_VERSION_1_3);
 	instanceBuilder.set_debug_callback(
 		[](
 			VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -307,36 +307,12 @@ void MyDevice::RecreateSwapchain()
 	_CreateSwapchain();
 }
 
-std::vector<Image> MyDevice::GetSwapchainImages() const
+void MyDevice::GetSwapchainImagePointers(std::vector<Image*>& outImages) const
 {
-	std::vector<VkImage> swapchainImages;
-	std::vector<Image> ret;
-	_GetVkSwapchainImages(swapchainImages);
-	
-	ret.reserve(swapchainImages.size());
-	for (const auto& vkImage : swapchainImages)
+	outImages.resize(m_uptrSwapchainImages.size(), nullptr);
+	for (size_t i = 0; i < m_uptrSwapchainImages.size(); ++i)
 	{
-		Image tmpImage{};
-		Image::CreateInformation imageInfo;
-		imageInfo.optWidth = m_swapchain.extent.width;
-		imageInfo.optHeight = m_swapchain.extent.height;
-		imageInfo.usage = m_swapchain.image_usage_flags;
-		imageInfo.optFormat = m_swapchain.image_format;
-		tmpImage.PresetCreateInformation(imageInfo);
-		tmpImage.m_vkImage = vkImage;
-		ret.push_back(tmpImage);
-	}
-
-	return ret;
-}
-
-void MyDevice::GetSwapchainImagePointers(std::vector<Image*>& _output) const
-{
-	_output.clear();
-	_output.reserve(m_uptrSwapchainImages.size());
-	for (auto& uptrImage : m_uptrSwapchainImages)
-	{
-		_output.push_back(uptrImage.get());
+		outImages[i] = m_uptrSwapchainImages[i].get();
 	}
 }
 
@@ -562,12 +538,16 @@ void MyDevice::_UpdateSwapchainImages()
 		}
 	}
 	_GetVkSwapchainImages(vkImages);
+
 	m_uptrSwapchainImages.resize(vkImages.size());
 	for (size_t i = 0; i < vkImages.size(); ++i)
 	{
 		std::unique_ptr<Image>& uptrImage = m_uptrSwapchainImages[i];
+		Image::SwapchainImageInit swapchainInit{};
+
 		uptrImage = std::make_unique<Image>();
-		uptrImage->_InitAsSwapchainImage(vkImages[i], m_swapchain.image_usage_flags, m_swapchain.image_format);
+		swapchainInit.SetUp(vkImages[i], m_swapchain.image_usage_flags, m_swapchain.image_format);
+		uptrImage->Init(&swapchainInit);
 	}
 }
 
@@ -608,46 +588,16 @@ VkFormat MyDevice::FindSupportFormat(const std::vector<VkFormat>& candidates, Vk
 	throw std::runtime_error("Failed to find supported format!");
 }
 
-void MyDevice::_CreateCommandPools()
+void MyDevice::_CreateDescriptorSetAllocator()
 {
-	std::set<uint32_t> uniqueFamilyIndex;
-	std::vector<std::optional<uint32_t>> familyIndices =
-	{ 
-		queueFamilyIndices.graphicsAndComputeFamily,
-		queueFamilyIndices.graphicsFamily,
-		queueFamilyIndices.presentFamily,
-		queueFamilyIndices.transferFamily,
-	};
-	for (const auto& opt : familyIndices)
-	{
-		if (opt.has_value())
-		{
-			uint32_t key = opt.value();
-			uniqueFamilyIndex.insert(key);
-		}
-	}
-	for (auto key : uniqueFamilyIndex)
-	{
-		VkCommandPool cmdPool;
-		VkCommandPoolCreateInfo commandPoolInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-		commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-		commandPoolInfo.queueFamilyIndex = key;
-		VK_CHECK(vkCreateCommandPool(vkDevice, &commandPoolInfo, nullptr, &cmdPool), "Failed to create command pool!");
-		vkCommandPools[key] = cmdPool;
-	}
+	descriptorAllocator = std::make_unique<DescriptorSetAllocator>();
+	descriptorAllocator->Init();
 }
 
-void MyDevice::_InitDescriptorAllocator()
+void MyDevice::_DestroyDescriptorSetAllocator()
 {
-	descriptorAllocator.Init();
-}
-
-void MyDevice::_DestroyCommandPools()
-{
-	for (const auto& p : vkCommandPools)
-	{
-		vkDestroyCommandPool(vkDevice, p.second, nullptr);
-	}
+	descriptorAllocator->Uninit();
+	descriptorAllocator.reset();
 }
 
 void MyDevice::Init()
@@ -660,15 +610,13 @@ void MyDevice::Init()
 	_CreateLogicalDevice();
 	_CreateMemoryAllocator();
 	_CreateSwapchain();
-	_InitDescriptorAllocator();
-	_CreateCommandPools();
+	_CreateDescriptorSetAllocator();
 	m_initialized = true;
 }
 
 void MyDevice::Uninit()
 {
-	_DestroyCommandPools();
-	descriptorAllocator.Uninit();
+	_DestroyDescriptorSetAllocator();
 	_DestroySwapchain();
 	_DestroyMemoryAllocator();
 	vkb::destroy_device(m_device);
@@ -710,7 +658,12 @@ MemoryAllocator* MyDevice::GetMemoryAllocator()
 
 DescriptorSetAllocator* MyDevice::GetDescriptorSetAllocator()
 {
-	return &descriptorAllocator;
+	return descriptorAllocator.get();
+}
+
+SamplerPool* MyDevice::GetSamplerPool()
+{
+	return samplerPool.get();
 }
 
 VkFence MyDevice::CreateFence(
@@ -808,29 +761,8 @@ VkQueue MyDevice::GetQueueOfType(QueueFamilyType inType) const
 }
 
 uint32_t MyDevice::GetQueueFamilyIndex(VkCommandPool inVkCommandPool) const
-{
-	uint32_t result = ~0;
-	
-	for (const auto& p : vkCommandPools)
-	{
-		if (p.second == inVkCommandPool)
-		{
-			result = p.first;
-			break;
-		}
-	}
-	CHECK_TRUE(result != ~0, "Failed to identify this command pool!");
-	
-	return result;
-}
-
-VkCommandPool MyDevice::GetCommandPool(const CommandPoolRequireInfo& inRequireInfo) const
-{
-	if (vkCommandPools.find(inRequireInfo.queueFamilyIndex) != vkCommandPools.end())
-	{
-		return vkCommandPools.at(inRequireInfo.queueFamilyIndex);
-	}
-	return VK_NULL_HANDLE;
+{	
+	return m_mapPoolToQueueFamily.at(inVkCommandPool);
 }
 
 bool MyDevice::IsPipelineCacheValid(const VkPipelineCacheHeaderVersionOne* inCacheHeaderPtr) const
@@ -1100,6 +1032,8 @@ VkCommandPool MyDevice::CreateCommandPool(const VkCommandPoolCreateInfo& inCreat
 
 	VK_CHECK(vkCreateCommandPool(vkDevice, &inCreateInfo, pAllocator, &result));
 
+	m_mapPoolToQueueFamily[result] = inCreateInfo.queueFamilyIndex;
+
 	return result;
 }
 
@@ -1110,6 +1044,8 @@ VkResult MyDevice::ResetCommandPool(VkCommandPool inCommandPool, VkCommandPoolRe
 
 void MyDevice::DestroyCommandPool(VkCommandPool inCommandPoolToDestroy, const VkAllocationCallbacks* pAllocator)
 {
+	m_mapPoolToQueueFamily.erase(inCommandPoolToDestroy);
+
 	vkDestroyCommandPool(vkDevice, inCommandPoolToDestroy, pAllocator);
 }
 

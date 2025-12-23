@@ -1,8 +1,7 @@
 #pragma once
 #include "common.h"
-#include "pipeline_io.h";
 #include <queue>
-#include "vk_struct.h"
+#include "common_enums.h"
 // https://stackoverflow.com/questions/44105058/implementing-component-system-from-unity-in-c
 
 class GraphicsPipeline;
@@ -451,6 +450,8 @@ public:
 
 	// Return command buffer to this pool
 	CommandPool& FreeCommandBuffer(CommandBuffer* inoutBufferReturnedPtr);
+
+	uint32_t GetQueueFamilyIndex() const;
 
 	void Uninit();
 };

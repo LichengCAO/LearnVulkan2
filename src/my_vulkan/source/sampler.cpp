@@ -75,14 +75,14 @@ VkSampler SamplerPool::GetSampler(
 	return GetSampler(createInfo);
 }
 
-void SamplerPool::ReturnSampler(VkSampler* _sampler)
+void SamplerPool::ReturnSampler(VkSampler& _sampler)
 {
-	auto it = m_mapSamplerToIndex.find(*_sampler);
+	auto it = m_mapSamplerToIndex.find(_sampler);
 	CHECK_TRUE(it != m_mapSamplerToIndex.end(), "Sampler pool doesn't have this sampler!");
 	uint32_t idx = it->second;
 	SamplerEntry& entry = m_vecSamplerEntries[idx];
 
-	CHECK_TRUE(entry.vkSampler == *_sampler, "Wrong sampler!");
+	CHECK_TRUE(entry.vkSampler == _sampler, "Wrong sampler!");
 	CHECK_TRUE(entry.refCount > 0, "Wrong reference count!");
 
 	entry.refCount--;
@@ -97,10 +97,5 @@ void SamplerPool::ReturnSampler(VkSampler* _sampler)
 		entry.nextId = m_currentId;
 		m_currentId = newEmptyEntry;
 	}
-	*_sampler = VK_NULL_HANDLE;
-}
-
-void SamplerPool::ReturnSampler(VkSampler& _sampler)
-{
-	ReturnSampler(&_sampler);
+	_sampler = VK_NULL_HANDLE;
 }

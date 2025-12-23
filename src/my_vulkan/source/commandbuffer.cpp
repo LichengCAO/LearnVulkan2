@@ -926,6 +926,9 @@ void CommandPool::Init(const ICommandPoolInitializer* inInitializerPtr)
 	CHECK_TRUE(inInitializerPtr != nullptr);
 
 	inInitializerPtr->InitCommandPool(this);
+
+	CHECK_TRUE(m_vkCommandPool != VK_NULL_HANDLE);
+	CHECK_TRUE(m_queueFamilyIndex != ~0);
 }
 
 CommandPool& CommandPool::FreeCommandBuffer(CommandBuffer* inoutBufferReturnedPtr)
@@ -937,6 +940,11 @@ CommandPool& CommandPool::FreeCommandBuffer(CommandBuffer* inoutBufferReturnedPt
 	return *this;
 }
 
+uint32_t CommandPool::GetQueueFamilyIndex() const
+{
+	return m_queueFamilyIndex;
+}
+
 void CommandPool::Uninit()
 {
 	if (m_vkCommandPool != VK_NULL_HANDLE)
@@ -946,6 +954,7 @@ void CommandPool::Uninit()
 		device.DestroyCommandPool(m_vkCommandPool);
 		m_vkCommandPool = VK_NULL_HANDLE;
 	}
+	m_queueFamilyIndex = ~0;
 }
 
 void CommandPool::Initializer::InitCommandPool(CommandPool* outPoolPtr) const
@@ -962,6 +971,7 @@ void CommandPool::Initializer::InitCommandPool(CommandPool* outPoolPtr) const
 	}
 
 	outPoolPtr->m_vkCommandPool = device.CreateCommandPool(createInfo);
+	outPoolPtr->m_queueFamilyIndex = createInfo.queueFamilyIndex;
 }
 
 CommandPool::Initializer& CommandPool::Initializer::Reset()

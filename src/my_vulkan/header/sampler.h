@@ -1,14 +1,6 @@
 #pragma once
 #include "common.h"
 
-class Sampler
-{
-private:
-	VkSamplerCreateInfo m_vkSamplerCreateInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-public:
-	VkSampler vkSampler = VK_NULL_HANDLE;
-};
-
 class SamplerPool
 {
 private:
@@ -57,6 +49,5 @@ public:
 		float mipLodBias = 0.0f,
 		bool anistrophyEnable = false,
 		float maxAnistrophy = 1.0f);
-	void ReturnSampler(VkSampler* _sampler);
 	void ReturnSampler(VkSampler& _sampler);
 };

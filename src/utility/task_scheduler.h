@@ -1,39 +1,42 @@
 #pragma once
 #include <enkiTS/src/TaskScheduler.h>
 
-class MyTaskScheduler
+class MyTaskScheduler;
+
+class IWaitable
 {
 public:
-
+	virtual void WaitForThis(MyTaskScheduler*) = 0;
 };
 
-class IPinnedTask
+class ISingleThreadTask : public IWaitable
 {
 public:
+	virtual void AssignToThread(MyTaskScheduler*) = 0;
 	virtual void Execute() = 0;
-	virtual ~IPinnedTask() {};
 };
 
-class RunPinnedTaskLoopTask : public IPinnedTask
+class IMultiThreadTask : public IWaitable
 {
-private:
-	MyTaskScheduler* m_pTaskScheduler = nullptr;
-
 public:
-	bool execute = true;
-
-public:
-	virtual void Execute() override;
+	virtual void AssignToThreadGroup(MyTaskScheduler*) = 0;
+	virtual void Execute(uint32_t inThreadIndex) = 0;
 };
 
-class AsynchronizeLoadTask : public IPinnedTask
+class MyTaskScheduler final
 {
 private:
-	MyTaskScheduler* m_pTaskScheduler = nullptr;
+	static std::unique_ptr<MyTaskScheduler> m_uptrInstance;
+
+	MyTaskScheduler();
 
 public:
-	bool execute = true;
+	~MyTaskScheduler();
 
-public:
-	virtual void Execute() override;
+	static MyTaskScheduler& GetInstance();
+
+	void WaitForTask(const IWaitable* pToWait);
+
+
+	void WaitForAll();
 };

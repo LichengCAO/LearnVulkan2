@@ -1,12 +1,12 @@
 #pragma once
 #include "common.h"
-#include "vk_struct.h"
+#include "common_enums.h"
 #include <VkBootstrap.h>
-#include "pipeline_io.h"
 #include "image.h"
 #include "sampler.h"
 
 class MemoryAllocator;
+class DescriptorSetAllocator;
 
 struct UserInput
 {
@@ -25,6 +25,30 @@ struct UserInput
 class MyDevice final
 {
 private:
+	struct QueueFamilyIndices
+	{
+		std::optional<uint32_t> graphicsFamily;
+		std::optional<uint32_t> presentFamily;
+		std::optional<uint32_t> graphicsAndComputeFamily;
+		std::optional<uint32_t> transferFamily;
+		bool isComplete()
+		{
+			bool ok1 = graphicsFamily.has_value()
+				&& presentFamily.has_value()
+				&& graphicsAndComputeFamily.has_value()
+				&& transferFamily.has_value();
+			return ok1;
+		}
+	};
+
+	struct SwapChainSupportDetails
+	{
+		VkSurfaceCapabilitiesKHR capabilities;
+		std::vector<VkSurfaceFormatKHR> formats;
+		std::vector<VkPresentModeKHR> presentModes;
+	};
+
+private:
 	static std::unique_ptr<MyDevice> s_uptrInstance;
 
 	vkb::Instance		m_instance;
@@ -41,6 +65,9 @@ private:
 	UserInput			m_userInput{};
 	std::vector<std::unique_ptr<Image>> m_uptrSwapchainImages;
 	std::unique_ptr<MemoryAllocator> m_uptrMemoryAllocator;
+	std::unique_ptr<DescriptorSetAllocator> descriptorAllocator;
+	std::unique_ptr<SamplerPool>  samplerPool;
+	std::unordered_map<VkCommandPool, uint32_t> m_mapPoolToQueueFamily;
 
 private:
 	MyDevice();
@@ -59,9 +86,8 @@ private:
 	void _CreateSurface();
 	void _SelectPhysicalDevice();
 	void _CreateLogicalDevice();
-	void _CreateCommandPools();
-	void _DestroyCommandPools();
-	void _InitDescriptorAllocator();
+	void _CreateDescriptorSetAllocator();
+	void _DestroyDescriptorSetAllocator();
 	void _CreateSwapchain();
 	void _DestroySwapchain();
 	void _CreateMemoryAllocator();
@@ -88,37 +114,47 @@ public:
 	VkDevice			vkDevice = VK_NULL_HANDLE;
 	QueueFamilyIndices	queueFamilyIndices{};
 	VkSwapchainKHR		vkSwapchain = VK_NULL_HANDLE;
-	SamplerPool         samplerPool{};
-	DescriptorSetAllocator descriptorAllocator{};
-	std::unordered_map<uint32_t, VkCommandPool>		vkCommandPools;
 	
 	~MyDevice();
 
 	void Init();
+	
 	void Uninit();
 	
 	void RecreateSwapchain();
-	std::vector<Image> GetSwapchainImages() const; //deprecated
+	
 	void GetSwapchainImagePointers(std::vector<Image*>& _output) const;
+	
 	std::optional<uint32_t> AquireAvailableSwapchainImageIndex(VkSemaphore finishSignal);
+	
 	void PresentSwapchainImage(const std::vector<VkSemaphore>& waitSemaphores, uint32_t imageIdx);
+	
 	bool NeedRecreateSwapchain() const;
+	
 	bool NeedCloseWindow() const;
+	
 	void StartFrame() const;
+	
 	VkExtent2D GetSwapchainExtent() const;
+	
 	VkFormat FindSupportFormat(const std::vector<VkFormat>& candidates, VkImageTiling tilling, VkFormatFeatureFlags features) const;
+	
 	VkFormat GetDepthFormat() const;
+	
 	VkFormat GetSwapchainFormat() const;
+	
 	UserInput GetUserInput() const;
 
 	void WaitIdle() const;
 	
-	// get time, in seconds
+	// Get time, in seconds
 	double GetTime() const;
 
 	MemoryAllocator* GetMemoryAllocator();
 
 	DescriptorSetAllocator* GetDescriptorSetAllocator();
+
+	SamplerPool* GetSamplerPool();
 
 	// Get queue family index by the function,
 	// https://github.com/KhronosGroup/Vulkan-Guide/blob/main/chapters/queues.adoc
@@ -131,14 +167,7 @@ public:
 	// Get queue family index by VkCommandPool handle
 	uint32_t GetQueueFamilyIndex(VkCommandPool inVkCommandPool) const;
 
-	struct CommandPoolRequireInfo
-	{
-		uint32_t queueFamilyIndex;
-		// thread id maybe?
-	};
-	// Get VkCommandPool by several info
-	VkCommandPool GetCommandPool(const CommandPoolRequireInfo& inRequireInfo) const;
-
+	// Return if the loaded pipeline cache is valid
 	bool IsPipelineCacheValid(const VkPipelineCacheHeaderVersionOne* inCacheHeaderPtr) const;
 
 	void GetPhysicalDeviceRayTracingProperties(VkPhysicalDeviceRayTracingPipelinePropertiesKHR& outProperties) const;
@@ -193,6 +222,7 @@ public:
 		VkDescriptorSetLayout inLayout,
 		VkDescriptorPool inPool,
 		const void* inNextPtr = nullptr);
+	
 	VkDescriptorSet AllocateDescriptorSet(
 		VkDescriptorSetLayout inLayout,
 		VkDescriptorPool inPool,
@@ -205,8 +235,10 @@ public:
 	void UpdateDescriptorSets(
 		const std::vector<VkWriteDescriptorSet>& inWriteUpdates, 
 		const std::vector<VkCopyDescriptorSet>& inCopyUpdates);
+	
 	void UpdateDescriptorSets(
 		const std::vector<VkWriteDescriptorSet>& inWriteUpdates);
+	
 	void UpdateDescriptorSets(
 		const std::vector<VkCopyDescriptorSet>& inCopyUpdates);
 
@@ -334,7 +366,9 @@ public:
 	//---------------------------------------------
 public:
 	static MyDevice& GetInstance();
+	
 	static void OnFramebufferResized(GLFWwindow* _pWindow, int width, int height);
+	
 	static void CursorPosCallBack(GLFWwindow* _pWindow, double _xPos, double _yPos);
 
 	// do this or use static std::unique_ptr<MyDevice> instance{ new MyDevice() };

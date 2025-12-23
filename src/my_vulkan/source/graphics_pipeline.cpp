@@ -1,6 +1,7 @@
 #include "graphics_pipeline.h"
 #include "device.h"
 #include "push_constant_manager.h"
+#include "render_pass.h"
 
 void GraphicsPipeline::_DoCommon(
 	VkCommandBuffer cmd,
