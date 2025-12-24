@@ -1,4 +1,5 @@
 #include "task_scheduler.h"
+#include "device.h"
 #include <TaskScheduler.h>
 
 MyTaskScheduler::MyTaskScheduler()
@@ -15,6 +16,19 @@ MyTaskScheduler& MyTaskScheduler::GetInstance()
 		g_uptrInstance = std::make_unique<MyTaskScheduler>();
 	}
 	return *g_uptrInstance;
+}
+
+void MyTaskScheduler::Init()
+{
+}
+
+void MyTaskScheduler::Uninit()
+{
+	if (m_uptrTaskSchedular)
+	{
+		m_uptrTaskSchedular->WaitforAllAndShutdown();
+		m_uptrTaskSchedular.reset();
+	}
 }
 
 MyTaskScheduler::~MyTaskScheduler()
@@ -87,6 +101,10 @@ void MySingleThreadTaskLambda::Execute()
 	m_function();
 }
 
+MySingleThreadTaskLambda::~MyTaskSchedular()
+{
+}
+
 MyMultiThreadTaskLambda::MyMultiThreadTaskLambda(std::function<void(uint32_t, uint32_t, uint32_t)> lambda)
 	:m_function(lambda)
 {
@@ -95,4 +113,61 @@ MyMultiThreadTaskLambda::MyMultiThreadTaskLambda(std::function<void(uint32_t, ui
 void MyMultiThreadTaskLambda::ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint32_t inThreadIndex)
 {
 	m_function(SubStart, SubEnd, inThreadIndex);
+}
+
+GraphicsQueueTask::GraphicsQueueTask(std::function<void()> lambda)
+	:m_function(lambda)
+{
+	auto& device = MyDevice::GetInstance();
+
+	m_vkQueue = device.GetQueueOfType(QueueFamilyType::GRAPHICS);
+}
+
+void GraphicsQueueTask::AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId)
+{
+	const uint32_t reservedThread = 0;
+
+	if (m_uptrTask == nullptr)
+	{
+		m_uptrTask = std::make_unique<enki::LambdaPinnedTask>(reservedThread, [&]()
+			{
+				this->Execute();
+			}
+		);
+	}
+	pSchedular->m_uptrTaskSchedular->AddPinnedTask(m_uptrTask.get());
+}
+
+void GraphicsQueueTask::Execute()
+{
+	m_function();
+}
+
+TransferQueueTask::TransferQueueTask(std::function<void()> lambda)
+	:m_function(lambda)
+{
+	auto& device = MyDevice::GetInstance();
+
+	m_vkQueue = device.GetQueueOfType(QueueFamilyType::TRANSFER);
+	m_useMainThread = (m_vkQueue == device.GetQueueOfType(QueueFamilyType::TRANSFER));
+}
+
+void TransferQueueTask::AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId)
+{
+	const uint32_t reservedThread = m_useMainThread ? 0 : 1;
+
+	if (m_uptrTask == nullptr)
+	{
+		m_uptrTask = std::make_unique<enki::LambdaPinnedTask>(reservedThread, [&]()
+			{
+				this->Execute();
+			}
+		);
+	}
+	pSchedular->m_uptrTaskSchedular->AddPinnedTask(m_uptrTask.get());
+}
+
+void TransferQueueTask::Execute()
+{
+	m_function();
 }

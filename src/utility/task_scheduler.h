@@ -16,6 +16,11 @@ public:
 	virtual void WaitForThis(MyTaskScheduler*) const = 0;
 };
 
+//-----------------------------------------------------
+// 
+//				  Single Thread Task
+// 
+//-----------------------------------------------------
 class MySingleThreadTask : public IWaitable
 {
 protected:
@@ -29,6 +34,51 @@ public:
 	virtual void Execute() = 0;
 };
 
+class MySingleThreadTaskLambda : public MySingleThreadTask
+{
+private:
+	std::function<void()> m_function;
+
+public:
+	MySingleThreadTaskLambda(std::function<void()> lambda);
+
+	virtual void Execute() override;
+};
+
+class GraphicsQueueTask : public MySingleThreadTask
+{
+private:
+	std::function<void()> m_function;
+	VkQueue m_vkQueue = VK_NULL_HANDLE;
+
+public:
+	GraphicsQueueTask(std::function<void()> lambda);
+
+	virtual void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId /* = 0 */) override;
+
+	virtual void Execute() override;
+};
+
+class TransferQueueTask : public MySingleThreadTask
+{
+private:
+	std::function<void()> m_function;
+	VkQueue m_vkQueue = VK_NULL_HANDLE;
+	bool m_useMainThread = false;
+
+public:
+	TransferQueueTask(std::function<void()> lambda);
+
+	virtual void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId /* = 0 */) override;
+
+	virtual void Execute() override;
+};
+
+//-----------------------------------------------------
+// 
+//				  Muti-Thread Task
+// 
+//-----------------------------------------------------
 class MyMultiThreadTask : public IWaitable
 {
 private:
@@ -42,17 +92,6 @@ public:
 	virtual void ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint32_t inThreadIndex) = 0;
 };
 
-class MySingleThreadTaskLambda : public MySingleThreadTask
-{
-private:
-	std::function<void()> m_function;
-
-public:
-	MySingleThreadTaskLambda(std::function<void()> lambda);
-
-	virtual void Execute() override;
-};
-
 class MyMultiThreadTaskLambda : public MyMultiThreadTask
 {
 private:
@@ -64,20 +103,11 @@ public:
 	virtual void ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint32_t inThreadIndex) override;
 };
 
-class SubmitToGraphicsQueue : MySingleThreadTask
-{
-public:
-	virtual void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId /* = 0 */) override;
-	virtual void Execute() override;
-};
-
-class SubmitToTransferQueue : MySingleThreadTask
-{
-public:
-	virtual void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId /* = 0 */) override;
-	virtual void Execute() override;
-};
-
+//-----------------------------------------------------
+// 
+//				    Task Scheduler
+// 
+//-----------------------------------------------------
 class MyTaskScheduler
 {
 private:
@@ -94,6 +124,8 @@ private:
 public:
 	~MyTaskScheduler();
 
+	void Init();
+
 	void AddSingleThreadTask(MySingleThreadTask* pSingleThreadTask, uint32_t inThreadIndex = 0);
 
 	void AddMutiThreadTask(MyMultiThreadTask* pMultiThreadTask, uint32_t inSubTaskCount = 1);
@@ -102,6 +134,10 @@ public:
 
 	void WaitForAll();
 
+	void Uninit();
+
 	friend class MySingleThreadTask;
 	friend class MyMultiThreadTask;
+	friend class GraphicsQueueTask;
+	friend class TransferQueueTask;
 };
