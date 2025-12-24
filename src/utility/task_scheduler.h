@@ -18,13 +18,13 @@ public:
 
 class MySingleThreadTask : public IWaitable
 {
-private:
+protected:
 	std::unique_ptr<enki::LambdaPinnedTask> m_uptrTask;
 
 public:
 	virtual void WaitForThis(MyTaskScheduler* pSchedular) const override;
 	
-	void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId = 0);
+	virtual void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId = 0);
 
 	virtual void Execute() = 0;
 };
@@ -37,7 +37,7 @@ private:
 public:
 	virtual void WaitForThis(MyTaskScheduler* pSchedular) const override;
 
-	void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inSubTaskCount = 1);
+	virtual void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inSubTaskCount = 1);
 
 	virtual void ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint32_t inThreadIndex) = 0;
 };
@@ -62,6 +62,20 @@ public:
 	MyMultiThreadTaskLambda(std::function<void(uint32_t, uint32_t, uint32_t)> lambda);
 
 	virtual void ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint32_t inThreadIndex) override;
+};
+
+class SubmitToGraphicsQueue : MySingleThreadTask
+{
+public:
+	virtual void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId /* = 0 */) override;
+	virtual void Execute() override;
+};
+
+class SubmitToTransferQueue : MySingleThreadTask
+{
+public:
+	virtual void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId /* = 0 */) override;
+	virtual void Execute() override;
 };
 
 class MyTaskScheduler
