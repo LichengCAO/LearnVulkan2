@@ -2,142 +2,82 @@
 #include "common.h"
 #include <functional>
 
-namespace enki
-{
-	class LambdaPinnedTask;
-	class TaskSet;
-	class TaskScheduler;
-}
-class MyTaskScheduler;
-
 class IWaitable
 {
 public:
-	virtual void WaitForThis(MyTaskScheduler*) const = 0;
+	virtual ~IWaitable() = default;
+	virtual void DependOn(IWaitable* pPrecondition) = 0;
 };
 
-//-----------------------------------------------------
-// 
-//				  Single Thread Task
-// 
-//-----------------------------------------------------
-class MySingleThreadTask : public IWaitable
+class ISingleThreadTask : public IWaitable
 {
-protected:
-	std::unique_ptr<enki::LambdaPinnedTask> m_uptrTask;
-
 public:
-	virtual void WaitForThis(MyTaskScheduler* pSchedular) const override;
-	
-	virtual void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId = 0);
-
+	virtual ~ISingleThreadTask() = default;
 	virtual void Execute() = 0;
 };
 
-class MySingleThreadTaskLambda : public MySingleThreadTask
+class IMultiThreadTask : public IWaitable
 {
-private:
-	std::function<void()> m_function;
-
 public:
-	MySingleThreadTaskLambda(std::function<void()> lambda);
-
-	virtual void Execute() override;
-};
-
-class GraphicsQueueTask : public MySingleThreadTask
-{
-private:
-	std::function<void()> m_function;
-	VkQueue m_vkQueue = VK_NULL_HANDLE;
-
-public:
-	GraphicsQueueTask(std::function<void()> lambda);
-
-	virtual void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId /* = 0 */) override;
-
-	virtual void Execute() override;
-};
-
-class TransferQueueTask : public MySingleThreadTask
-{
-private:
-	std::function<void()> m_function;
-	VkQueue m_vkQueue = VK_NULL_HANDLE;
-	bool m_useMainThread = false;
-
-public:
-	TransferQueueTask(std::function<void()> lambda);
-
-	virtual void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inThreadId /* = 0 */) override;
-
-	virtual void Execute() override;
-};
-
-//-----------------------------------------------------
-// 
-//				  Muti-Thread Task
-// 
-//-----------------------------------------------------
-class MyMultiThreadTask : public IWaitable
-{
-private:
-	std::unique_ptr<enki::TaskSet> m_uptrTask;
-
-public:
-	virtual void WaitForThis(MyTaskScheduler* pSchedular) const override;
-
-	virtual void AssignToSchedular(MyTaskScheduler* pSchedular, uint32_t inSubTaskCount = 1);
-
+	virtual ~IMultiThreadTask() = default;
 	virtual void ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint32_t inThreadIndex) = 0;
 };
 
-class MyMultiThreadTaskLambda : public MyMultiThreadTask
+class ITaskScheduler
 {
-private:
-	std::function<void(uint32_t, uint32_t, uint32_t)> m_function;
-
 public:
-	MyMultiThreadTaskLambda(std::function<void(uint32_t, uint32_t, uint32_t)> lambda);
-
-	virtual void ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint32_t inThreadIndex) override;
+	virtual ~ITaskScheduler() = default;
+	virtual void AddSingleThreadTask(ISingleThreadTask* pSingleThreadTask) = 0;
+	virtual void AddMutiThreadTask(IMultiThreadTask* pMultiThreadTask) = 0;
+	virtual void WaitForTask(const IWaitable* pToWait) = 0;
+	virtual void WaitForAll() = 0;
 };
 
-//-----------------------------------------------------
-// 
-//				    Task Scheduler
-// 
-//-----------------------------------------------------
-class MyTaskScheduler
+// interface that get the real class behind the scene
+class IImplement
+{
+public:
+	virtual ~IImplement() = default;
+	virtual void* GetRealImplement() = 0;
+};
+
+class MySinglThreadTask final : public ISingleThreadTask, public IImplement
+{
+private:
+	std::unique_ptr<ISingleThreadTask> m_uptrImpl;
+
+public:
+	MySinglThreadTask(std::function<void()> inFunction, uint32_t inThreadIndex = 0);
+	virtual void DependOn(IWaitable* pPrecondition) override;
+	virtual void Execute() override;
+	virtual void* GetRealImplement() override;
+};
+
+class MyMultiThreadTask final : public IMultiThreadTask, public IImplement
+{
+private:
+	std::unique_ptr<IMultiThreadTask> m_uptrImpl;
+
+public:
+	MyMultiThreadTask(std::function<void(uint32_t, uint32_t, uint32_t)> inFunction, uint32_t inSubTaskCount = 1);
+	virtual void DependOn(IWaitable* pPrecondition) override;
+	virtual void ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint32_t inThreadIndex) override;
+	virtual void* GetRealImplement() override;
+};
+
+class MyTaskScheduler final : public ITaskScheduler
 {
 private:
 	static std::unique_ptr<MyTaskScheduler> g_uptrInstance;
+	std::unique_ptr<ITaskScheduler> m_uptrImpl;
 	MyTaskScheduler();
 
 public:
 	static MyTaskScheduler& GetInstance();
-
-private:
-	std::unique_ptr <enki::TaskScheduler> m_uptrTaskSchedular;
-	uint32_t m_threadCount;
-
-public:
-	~MyTaskScheduler();
-
 	void Init();
-
-	void AddSingleThreadTask(MySingleThreadTask* pSingleThreadTask, uint32_t inThreadIndex = 0);
-
-	void AddMutiThreadTask(MyMultiThreadTask* pMultiThreadTask, uint32_t inSubTaskCount = 1);
-
-	void WaitForTask(const IWaitable* pToWait);
-
-	void WaitForAll();
-
+	virtual void AddSingleThreadTask(ISingleThreadTask* pSingleThreadTask) override;
+	virtual void AddMutiThreadTask(IMultiThreadTask* pMultiThreadTask) override;
+	virtual void WaitForTask(const IWaitable* pToWait) override;
+	virtual void WaitForAll() override;
 	void Uninit();
-
-	friend class MySingleThreadTask;
-	friend class MyMultiThreadTask;
-	friend class GraphicsQueueTask;
-	friend class TransferQueueTask;
 };
