@@ -1,4 +1,4 @@
-#include "vertex_input.h"
+#include "vertex_input_description.h"
 
 VertexInputDescriptionBuilder& VertexInputDescriptionBuilder::Reset()
 {
@@ -29,7 +29,10 @@ VertexInputDescriptionBuilder& VertexInputDescriptionBuilder::AddLocation(VkForm
 	return *this;
 }
 
-void VertexInputDescriptionBuilder::BuildDescription(uint32_t inBinding, VkVertexInputBindingDescription& outBindingDescription, std::vector<VkVertexInputAttributeDescription>& outAttributeDescriptions) const
+void VertexInputDescriptionBuilder::BuildDescription(
+	VkVertexInputBindingDescription& outBindingDescription, 
+	std::vector<VkVertexInputAttributeDescription>& outAttributeDescriptions, 
+	uint32_t inBinding) const
 {
 	std::vector<VkVertexInputAttributeDescription> ret = m_Locations;
 

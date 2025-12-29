@@ -17,7 +17,9 @@ public:
 	VertexInputDescriptionBuilder& Reset();
 
 	// Set up per Vertex Description information
-	VertexInputDescriptionBuilder& SetVertexStrideAndInputRate(uint32_t inStride, VkVertexInputRate inInputRate = VK_VERTEX_INPUT_RATE_VERTEX);
+	VertexInputDescriptionBuilder& SetVertexStrideAndInputRate(
+		uint32_t inStride, 
+		VkVertexInputRate inInputRate = VK_VERTEX_INPUT_RATE_VERTEX);
 
 	// Add location for this vertex binding.
 	// Then this location will read data from binding buffer with input format
@@ -26,8 +28,11 @@ public:
 	// inLocation: input, should match layout(location = ...) in shader
 	VertexInputDescriptionBuilder& AddLocation(VkFormat inFormat, uint32_t inOffset, uint32_t inLocation);
 
+	// outBindingDescription: output, defines vertex stride and input rate
+	// outAttributeDescriptions: output, associate layout(location = ...) with segments in vertex stride
+	// inBinding: normally, we only binds 1 vertex buffer to a graphic pipeline to draw an object
 	void BuildDescription(
-		uint32_t inBinding,
 		VkVertexInputBindingDescription& outBindingDescription, 
-		std::vector<VkVertexInputAttributeDescription>& outAttributeDescriptions) const;
+		std::vector<VkVertexInputAttributeDescription>& outAttributeDescriptions,
+		uint32_t inBinding = 0) const;
 };
