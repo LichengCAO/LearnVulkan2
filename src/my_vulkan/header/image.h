@@ -10,6 +10,7 @@ class MemoryAllocator;
 //	vkCreateRenderPass vkMapMemory vkQueuePresentKHR 
 //	vkQueueSubmit vkCmdCopyImage vkCmdCopyImageToBuffer 
 //	vkCmdWaitEvents VkCmdPipelineBarrier
+// https://gpuopen.com/download/Vulkanised2019_06_optimising_aaa_vulkan_title_on_desktop.pdf
 
 class IImageInitializer
 {
@@ -178,7 +179,8 @@ public:
 		// Optional, default: 0, VK_REMAINING_ARRAY_LAYERS
 		ImageView::ImageViewInit& CustomizeArrayLayers(uint32_t inBaseLayer, uint32_t layerCount = VK_REMAINING_ARRAY_LAYERS);
 
-		// Optional, default: format of source image
+		// Optional, default: format of source image, 
+		// only possible when image is created with VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT and compatible formats
 		ImageView::ImageViewInit& CustomizeFormat(VkFormat inFormat);
 	};
 

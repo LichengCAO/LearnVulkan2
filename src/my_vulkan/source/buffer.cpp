@@ -341,6 +341,14 @@ BufferView::Initializer& BufferView::Initializer::SetBuffer(const Buffer* inBuff
 	return *this;
 }
 
+BufferView::Initializer& BufferView::Initializer::CustomizeBufferRange(VkDeviceSize inOffset, VkDeviceSize inRange)
+{
+	m_offset = inOffset;
+	m_range = inRange;
+
+	return *this;
+}
+
 BufferView::~BufferView()
 {
 	CHECK_TRUE(m_vkBufferView == VK_NULL_HANDLE);

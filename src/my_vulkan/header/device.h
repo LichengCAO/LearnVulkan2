@@ -164,6 +164,8 @@ public:
 	// One queue can only be submit from one thread each time
 	VkQueue GetQueueOfType(QueueFamilyType inType) const;
 
+	VkQueue GetQueueByQueueFamilyIndex(uint32_t inQueueFamilyIndex) const;
+
 	// Get queue family index by VkCommandPool handle
 	uint32_t GetQueueFamilyIndex(VkCommandPool inVkCommandPool) const;
 

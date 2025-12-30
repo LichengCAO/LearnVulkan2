@@ -760,6 +760,30 @@ VkQueue MyDevice::GetQueueOfType(QueueFamilyType inType) const
 	return result;
 }
 
+VkQueue MyDevice::GetQueueByQueueFamilyIndex(uint32_t inQueueFamilyIndex) const
+{
+	VkQueue result = VK_NULL_HANDLE;
+	const std::vector<std::pair<uint32_t, VkQueue>> keyFamilyIndex
+	{
+		{queueFamilyIndices.graphicsFamily.value_or(~0), m_vkGraphicsQueue },
+		{queueFamilyIndices.graphicsAndComputeFamily.value_or(~0), m_vkComputeQueue},
+		{queueFamilyIndices.transferFamily.value_or(~0), m_vkTransferQueue }
+	};
+	if (inQueueFamilyIndex != ~0)
+	{
+		for (const auto& p : keyFamilyIndex)
+		{
+			if (p.first == inQueueFamilyIndex)
+			{
+				result = p.second;
+				break;
+			}
+		}
+	}
+
+    return result;
+}
+
 uint32_t MyDevice::GetQueueFamilyIndex(VkCommandPool inVkCommandPool) const
 {	
 	return m_mapPoolToQueueFamily.at(inVkCommandPool);

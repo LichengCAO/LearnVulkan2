@@ -166,14 +166,15 @@ public:
 	private:
 		VkFormat m_format = VK_FORMAT_UNDEFINED;
 		VkBuffer m_buffer = VK_NULL_HANDLE;
-		VkDeviceSize m_offset = 0;
-		VkDeviceSize m_range = 0;
+		VkDeviceSize m_offset;
+		VkDeviceSize m_range;
 
 	public:
 		virtual void InitBufferView(BufferView* outViewPtr) const override;
 		BufferView::Initializer& Reset();
 		BufferView::Initializer& SetFormat(VkFormat inFormat);
 		BufferView::Initializer& SetBuffer(const Buffer* inBufferPtr);
+		BufferView::Initializer& CustomizeBufferRange(VkDeviceSize inOffset, VkDeviceSize inRange);
 	};
 
 public:
