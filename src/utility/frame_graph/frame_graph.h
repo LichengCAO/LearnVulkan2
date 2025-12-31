@@ -1,0 +1,57 @@
+#pragma once
+#include "common.h"
+#include "frame_graph_resource.h"
+
+class FrameGraphNode;
+class Image;
+class Buffer;
+
+class FrameGraph
+{
+private:
+	std::vector<std::unique_ptr<FrameGraphNode>> m_nodes;
+	std::vector<std::unique_ptr<Image>> m_imageResources;
+	std::vector<std::unique_ptr<Buffer>> m_bufferResources;
+
+	void _TopologicalSortFrameGraphNodes(std::vector<std::set<size_t>>& outOrderedNodeIndex);
+
+public:
+	// Context that helps us to decide whether to add barrier between execution of frame graph nodes
+	class CompileContext
+	{
+	public:
+		void SetResourceState(BufferResourceHandle inHandle, const BufferResourceState& inNewState);
+		void SetResourceState(ImageResourceHandle inHandle, const ImageResourceState& inNewState);
+		const std::vector<BufferResourceState>& GetResourceState(BufferResourceState inHandle) const;
+		const std::vector<ImageResourceState>& GetResourceState(ImageResourceState inHandle) const;
+	};
+
+	class BufferResourceFetcher
+	{
+
+	};
+
+	class ImageResourceFetcher
+	{
+
+	};
+
+	BufferResourceHandle FetchBufferResource(const BufferResourceFetcher* pFetcher);
+	ImageResourceHandle FetchImageResource(const ImageResourceFetcher* pFetcher);
+	void ReturnBufferResource(BufferResourceHandle inBufferHandle);
+	void ReturnImageResource(ImageResourceHandle inImageHandle);
+
+	// Decide static process based in input, only do once,
+	// unless window resized, or other dramatic change
+	// This should include: 
+	// 1. order frame graph nodes
+	// 2. synchronize them(barrier, semaphore), maybe layout transfer
+	// 3. allocate resource for each nodes(include memory aliasing)
+	void Compile();
+
+	void StartFrame();
+
+	void Execute();
+
+	void EndFrame();
+};
