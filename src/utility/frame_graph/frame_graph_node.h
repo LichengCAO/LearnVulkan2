@@ -43,10 +43,15 @@ private:
 public:
 	void Init();
 
-	// Do things in a frame graph execution
+	// Do things in a frame graph execution, i.e. record command buffer
 	void Execute();
 
-	// 
+	// Normally, dependency based on node input and output will suffice,
+	// however, there might be cases where this node represent a secondary buffer
+	// recording behavior where we actually record a command buffer for other
+	// frame graph node to use
+	void AddExecutionDependency(const FrameGraphNode* inNodeDependsOn);
+
 	void GetPreGraphNodes(std::set<FrameGraphNode*>& outFrameGraphNodes) const;
 
 	void GetPostGraphNodes(std::set<FrameGraphNode*>& outFrameGraphNodes) const;

@@ -72,3 +72,10 @@ struct BufferResourceState
 	uint32_t queueFamily;
 	VkAccessFlags availableAccess;
 };
+
+enum class TaskThreadType
+{
+	GRAPHICS_ONLY, // so, it can be delegated to graphics recording thread
+	COMPUTE_ONLY,	// so, it can be delegated to compute recording thread
+	ALL				// it can only be run on main thread
+};

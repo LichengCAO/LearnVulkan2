@@ -17,8 +17,9 @@ class RayTracingAccelerationStructure final
 	// ===================
 	// UPDATE RULES£º
 	// ===================
-	// An update operation imposes certain constraints on the input, in exchange for considerably faster execution.When performing an update,
-	// the application is required to provide a full description of the acceleration structure, but is prohibited from changing anything other than instance definitions, transform matrices, 
+	// An update operation imposes certain constraints on the input, in exchange for considerably faster execution.
+	// When performing an update, the application is required to provide a full description of the acceleration structure, 
+	// but is prohibited from changing anything other than instance definitions, transform matrices, 
 	// and vertex or AABB positions.All other aspects of the description must exactly match the one from the original build.
 	// 
 	// More precisely, the application must not use an update operation to do any of the following :
