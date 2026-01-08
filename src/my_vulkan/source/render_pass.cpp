@@ -47,32 +47,49 @@ void RenderPass::Uninit()
 	}
 }
 
-RenderPass::Subpass& RenderPass::Subpass::AddColorAttachment(uint32_t _binding)
+RenderPass::Subpass& RenderPass::Subpass::AddColorAttachment(
+	uint32_t inLocationInShader, 
+	uint32_t inAttachmentIndexInRenderPass, 
+	VkImageLayout inLayout)
 {
-	colorAttachments.push_back({ _binding, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
+	static const VkAttachmentReference unusedAttachment{ VK_ATTACHMENT_UNUSED };
+	
+	if (colorAttachments.size() <= inLocationInShader)
+	{	
+		colorAttachments.resize(inLocationInShader + 1, unusedAttachment);
+	}
+	if (resolveAttachments.size() > 0 && resolveAttachments.size() < colorAttachments.size())
+	{
+		resolveAttachments.resize(colorAttachments.size(), unusedAttachment);
+	}
+	colorAttachments[inLocationInShader] = { inAttachmentIndexInRenderPass, inLayout };
 
 	return *this;
 }
 
-RenderPass::Subpass& RenderPass::Subpass::SetDepthStencilAttachment(uint32_t _binding, bool _readOnly)
+RenderPass::Subpass& RenderPass::Subpass::AddResolveAttachment(
+	uint32_t inColorReferenceLocation, 
+	uint32_t inAttachmentIndexInRenderPass, 
+	VkImageLayout inLayout)
+{
+	static const VkAttachmentReference unusedAttachment{ VK_ATTACHMENT_UNUSED };
+	
+	if (resolveAttachments.size() <= inColorReferenceLocation || resolveAttachments.size() < colorAttachments.size())
+	{
+		size_t aimSize = std::max(colorAttachments.size(), static_cast<size_t>(inColorReferenceLocation + 1));
+		resolveAttachments.resize(aimSize, unusedAttachment);
+	}
+	resolveAttachments[inColorReferenceLocation] = { inAttachmentIndexInRenderPass, inLayout };
+
+	return *this;
+}
+
+RenderPass::Subpass& RenderPass::Subpass::AddDepthStencilAttachment(uint32_t inAttachmentIndexInRenderPass, VkImageLayout inLayout)
 {
 	// ATTACHMENT here means writable
 	// VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL -> depth is readonly, stencil is writable
 	// VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL -> depth is writable, stencil is readonly
-	if (_readOnly)
-	{
-		optDepthStencilAttachment = { _binding, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
-	}
-	else
-	{
-		optDepthStencilAttachment = { _binding, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
-	}
-	return *this;
-}
-
-RenderPass::Subpass& RenderPass::Subpass::AddResolveAttachment(uint32_t _binding)
-{
-	resolveAttachments.push_back({ _binding, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL });
+	optDepthStencilAttachment = { inAttachmentIndexInRenderPass, inLayout };
 	return *this;
 }
 
@@ -259,10 +276,27 @@ void RenderPass::SingleSubpassInit::InitRenderPass(RenderPass* pRenderPass) cons
 {
 	auto& device = MyDevice::GetInstance();
 	std::vector<VkAttachmentDescription> vkAttachments;
-	VkSubpassDescription subpass;
-	VkSubpassDependency subpassDependency{};
+	VkSubpassDescription subpass{};
 	VkRenderPassCreateInfo renderPassInfo{ VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+	//VkSubpassDependency subpassDependency{};
 
+	// Do things like pipeline memory barrier
+	// see https://docs.vulkan.org/refpages/latest/refpages/source/VkSubpassDependency.html
+	//{
+	//	subpassDependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+	//	subpassDependency.dstSubpass = 0;
+	//	subpassDependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	//	subpassDependency.srcAccessMask = 0;
+	//	subpassDependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	//	subpassDependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+	//	if (m_subpass.optDepthStencilAttachment.has_value())
+	//	{
+	//		subpassDependency.srcStageMask = subpassDependency.srcAccessMask | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+	//		subpassDependency.dstStageMask = subpassDependency.dstStageMask | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+	//		subpassDependency.dstAccessMask = subpassDependency.dstAccessMask | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	//	}
+	//}
 	for (int i = 0; i < m_attachments.size(); ++i)
 	{
 		vkAttachments.push_back(m_attachments[i].attachmentDescription);
@@ -270,30 +304,12 @@ void RenderPass::SingleSubpassInit::InitRenderPass(RenderPass* pRenderPass) cons
 	}
 	subpass = m_subpass.GetSubpassDescription();
 
-	// Do things like pipeline memory barrier
-	// see https://docs.vulkan.org/refpages/latest/refpages/source/VkSubpassDependency.html
-	{
-		subpassDependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-		subpassDependency.dstSubpass = 0;
-		subpassDependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		subpassDependency.srcAccessMask = 0;
-		subpassDependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		subpassDependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-		if (m_subpass.optDepthStencilAttachment.has_value())
-		{
-			subpassDependency.srcStageMask = subpassDependency.srcAccessMask | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-			subpassDependency.dstStageMask = subpassDependency.dstStageMask | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-			subpassDependency.dstAccessMask = subpassDependency.dstAccessMask | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-		}
-	}
-
 	renderPassInfo.attachmentCount = static_cast<uint32_t>(vkAttachments.size());
 	renderPassInfo.pAttachments = vkAttachments.data();
 	renderPassInfo.subpassCount = 1;
 	renderPassInfo.pSubpasses = &subpass;
-	renderPassInfo.dependencyCount = 1;
-	renderPassInfo.pDependencies = &subpassDependency;
+	renderPassInfo.dependencyCount = 0;
+	renderPassInfo.pDependencies = nullptr;
 
 	pRenderPass->m_vkRenderPass = device.CreateRenderPass(renderPassInfo);
 	pRenderPass->m_subpasses = { m_subpass };
@@ -312,7 +328,7 @@ RenderPass::SingleSubpassInit& RenderPass::SingleSubpassInit::AddColorAttachment
 	uint32_t attachmentIndex = m_attachments.size();
 
 	m_attachments.push_back(inAttachment);
-	m_subpass.AddColorAttachment(attachmentIndex);
+	m_subpass.AddColorAttachment(attachmentIndex, attachmentIndex);
 
 	return *this;
 }
@@ -320,9 +336,11 @@ RenderPass::SingleSubpassInit& RenderPass::SingleSubpassInit::AddColorAttachment
 RenderPass::SingleSubpassInit& RenderPass::SingleSubpassInit::AddDepthStencilAttachment(const Attachment& inAttachment, bool inReadOnly)
 {
 	uint32_t attachmentIndex = m_attachments.size();
-
+	
 	m_attachments.push_back(inAttachment);
-	m_subpass.SetDepthStencilAttachment(attachmentIndex, inReadOnly);
+	m_subpass.AddDepthStencilAttachment(
+		attachmentIndex, 
+		inReadOnly ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);
 
 	return *this;
 }
@@ -371,4 +389,77 @@ Framebuffer::FramebufferInit& Framebuffer::FramebufferInit::SetRenderPass(const 
 	m_pRenderPass = inRenderPassPtr;
 
 	return *this;
+}
+
+AttachmentDescriptionBuilder& AttachmentDescriptionBuilder::Reset()
+{
+	m_format = VK_FORMAT_MAX_ENUM;
+	m_loadOp.reset();
+	m_storeOp.reset();
+	m_initialLayout.reset();
+	m_finalLayout.reset();
+	return *this;
+}
+
+AttachmentDescriptionBuilder& AttachmentDescriptionBuilder::SetFormat(VkFormat inFormat)
+{
+	if (inFormat == VK_FORMAT_MAX_ENUM)
+	{
+		throw std::invalid_argument("Attachment format cannot be VK_FORMAT_MAX_ENUM");
+	}
+	m_format = inFormat;
+	return *this;
+}
+
+AttachmentDescriptionBuilder& AttachmentDescriptionBuilder::CustomizeLoadOperationAndInitialLayout(
+	VkImageLayout inLayout, 
+	VkAttachmentLoadOp inOperation)
+{
+	// Basic validation (Vulkan spec compliance)
+	if (inOperation != VK_ATTACHMENT_LOAD_OP_LOAD &&
+		inOperation != VK_ATTACHMENT_LOAD_OP_CLEAR &&
+		inOperation != VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+	{
+		throw std::invalid_argument("Invalid VkAttachmentLoadOp value");
+	}
+
+	m_loadOp = inOperation;
+	m_initialLayout = inLayout;
+	return *this;
+}
+
+AttachmentDescriptionBuilder& AttachmentDescriptionBuilder::CustomizeStoreOperationAndFinalLayout(
+	VkImageLayout inLayout, 
+	VkAttachmentStoreOp inOperation)
+{
+	m_storeOp = inOperation;
+	m_finalLayout = inLayout;
+	return *this;
+}
+
+VkAttachmentDescription AttachmentDescriptionBuilder::Build() const
+{
+	CHECK_TRUE(m_format != VK_FORMAT_MAX_ENUM);
+
+	// Assemble the struct with defaults or user-provided values
+	VkAttachmentDescription desc{}; // Zero-initialize first (Vulkan best practice)
+	desc.format = m_format;
+
+	// Use user value or default for load/initial layout
+	desc.loadOp = m_loadOp.value_or(VK_ATTACHMENT_LOAD_OP_CLEAR);
+	desc.initialLayout = m_initialLayout.value_or(VK_IMAGE_LAYOUT_UNDEFINED);
+
+	// Use user value or default for store/final layout
+	desc.storeOp = m_storeOp.value_or(VK_ATTACHMENT_STORE_OP_STORE);
+	desc.finalLayout = m_finalLayout.value_or(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+	// Optional: Set default sample count (common for color/depth attachments)
+	// You can add a SetSampleCount() method if needed!
+	desc.samples = VK_SAMPLE_COUNT_1_BIT;
+
+	// Optional: Set default stencil ops (only relevant for depth/stencil attachments)
+	desc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	desc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+	return desc;
 }
