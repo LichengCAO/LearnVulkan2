@@ -62,7 +62,8 @@ struct ImageResourceState
 	VkImageSubresourceRange range;
 	VkImageLayout layout;
 	uint32_t queueFamily;
-	VkAccessFlags availableAccess; // when does output ready
+	VkAccessFlags availableAccess;
+	VkPipelineStageFlags availabeStage; // when does output ready
 };
 
 struct BufferResourceState
@@ -71,6 +72,7 @@ struct BufferResourceState
 	VkDeviceSize range;
 	uint32_t queueFamily;
 	VkAccessFlags availableAccess;
+	VkPipelineStageFlags availabeStage; // when does output ready
 };
 
 enum class TaskThreadType
@@ -78,4 +80,14 @@ enum class TaskThreadType
 	GRAPHICS_ONLY, // so, it can be delegated to graphics recording thread
 	COMPUTE_ONLY,	// so, it can be delegated to compute recording thread
 	ALL				// it can only be run on main thread
+};
+
+// Context that helps us to decide whether to add barrier between execution of frame graph nodes
+class FrameGraphCompileContext
+{
+public:
+	void SetResourceState(BufferResourceHandle inHandle, const BufferResourceState& inNewState);
+	void SetResourceState(ImageResourceHandle inHandle, const ImageResourceState& inNewState);
+	const std::vector<BufferResourceState>& GetResourceState(BufferResourceHandle inHandle) const;
+	const std::vector<ImageResourceState>& GetResourceState(ImageResourceHandle inHandle) const;
 };

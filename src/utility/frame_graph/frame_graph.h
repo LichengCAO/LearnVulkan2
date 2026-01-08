@@ -20,7 +20,12 @@ private:
 
 	void _CreateRequiredDeviceRescource();
 
-	void _GenerateExecutionTasksBasedOnSortResult(const std::vector<std::set<size_t>>& inOrderedNodeIndex);
+	void _GenerateExecutionTasksBasedOnSortResult(
+		const std::vector<std::set<size_t>>& inOrderedNodeIndex);
+
+	void _GenerateSynchronizeTaskBetween(
+		const FrameGraphCompileContext& inPreContext,
+		const FrameGraphCompileContext& inPostContext);
 
 	struct ExecutionTask
 	{
@@ -29,16 +34,6 @@ private:
 	};
 
 public:
-	// Context that helps us to decide whether to add barrier between execution of frame graph nodes
-	class CompileContext
-	{
-	public:
-		void SetResourceState(BufferResourceHandle inHandle, const BufferResourceState& inNewState);
-		void SetResourceState(ImageResourceHandle inHandle, const ImageResourceState& inNewState);
-		const std::vector<BufferResourceState>& GetResourceState(BufferResourceHandle inHandle) const;
-		const std::vector<ImageResourceState>& GetResourceState(ImageResourceHandle inHandle) const;
-	};
-
 	class BufferResourceFetcher
 	{
 
@@ -50,13 +45,17 @@ public:
 	};
 
 	BufferResourceHandle FetchBufferResource(const BufferResourceFetcher* pFetcher);
+	
 	ImageResourceHandle FetchImageResource(const ImageResourceFetcher* pFetcher);
+	
 	void ReturnBufferResource(BufferResourceHandle inBufferHandle);
+	
 	void ReturnImageResource(ImageResourceHandle inImageHandle);
 
 	CommandBuffer* GetCommandBuffer();
 
 	ImageResourceHandle RegisterExternalImageResource(Image* inImagePtr, const ImageResourceState& inInitialState);
+	
 	BufferResourceHandle RegisterExternalBufferResource(Buffer* inBufferPtr, const BufferResourceState& inInitialState);
 
 	void AddFrameGraphNode();
