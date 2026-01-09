@@ -21,7 +21,7 @@ public:
 	private:
 		std::string& m_file;
 
-		void _LoadBinary(const std::string& inPath, std::vector<uint8_t>& outData) const;
+		void _LoadBinary(const std::string& inPath, std::vector<char>& outData) const;
 
 	public:
 		virtual void InitPipelineCache(PipelineCache* outPipelineCachePtr) const override;

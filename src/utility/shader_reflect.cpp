@@ -1,7 +1,4 @@
 #include "shader_reflect.h"
-#include "shader.h"
-#include "pipeline.h"
-#include "pipeline_io.h"
 #include "utils.h"
 #include <fstream>
 #include <algorithm>

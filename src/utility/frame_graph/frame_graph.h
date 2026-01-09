@@ -18,14 +18,22 @@ private:
 
 	void _TopologicalSortFrameGraphNodes(std::vector<std::set<size_t>>& outOrderedNodeIndex);
 
-	void _CreateRequiredDeviceRescource();
+	void _CreateRequiredDeviceRescource(const std::set<size_t>& inNodeBatch);
 
-	void _GenerateExecutionTasksBasedOnSortResult(
-		const std::vector<std::set<size_t>>& inOrderedNodeIndex);
+	// Handles barrier insertion for the command buffers in each queue,
+	// here, the current thread will hold ownership of all command buffer
+	void _GenerateFrameGraphNodeBatchPrologue(const std::set<size_t>& inNodeBatch);
 
-	void _GenerateSynchronizeTaskBetween(
-		const FrameGraphCompileContext& inPreContext,
-		const FrameGraphCompileContext& inPostContext);
+	// Once barrier is recorded, the current thread can release the ownership
+	// of command buffers, and different threads can record command buffers
+	// separately
+	void _GenerateNodeBatchExecutionTasks(const std::set<size_t>& inNodeBatch);
+
+	// Wait till all command buffer recording done on different threads, and then:
+	// If we have cross queue data, we need to submit it as soon as possible,
+	// and we also need to provide a new command buffer to record new command for
+	// the queue that submit command buffer
+	void _GenerateFrameGraphNodeBatchEpilogue(const std::set<size_t>& inNodeBatch);
 
 	struct ExecutionTask
 	{
@@ -36,12 +44,21 @@ private:
 public:
 	class BufferResourceFetcher
 	{
-
+	public:
+		BufferResourceFetcher& SetSize(VkDeviceSize inSize);
+		// If this enabled, we do not apply memory aliasing and create
+		// a new device object during compilation instead
+		BufferResourceFetcher& CustomizeAsDedicated();
 	};
 
 	class ImageResourceFetcher
 	{
-
+	public:
+		ImageResourceFetcher& SetSize2D(uint32_t inWidth, uint32_t inHeight);
+		ImageResourceFetcher& SetFormat(VkFormat inFormat);
+		// If this enabled, we do not apply memory aliasing and create
+		// a new device object during compilation instead
+		ImageResourceFetcher& CustomizeAsDedicated();
 	};
 
 	BufferResourceHandle FetchBufferResource(const BufferResourceFetcher* pFetcher);

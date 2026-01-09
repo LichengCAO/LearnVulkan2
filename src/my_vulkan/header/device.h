@@ -255,7 +255,7 @@ public:
 
 	void DestroyPipelineCache(VkPipelineCache inPipelineCache, const VkAllocationCallbacks* pCallback = nullptr);
 
-	VkResult GetPipelineCacheData(VkPipelineCache inPipelineCache, std::vector<uint8_t>& outCacheData);
+	VkResult GetPipelineCacheData(VkPipelineCache inPipelineCache, std::vector<char>& outCacheData);
 
 	VkPipeline CreateGraphicsPipeline(
 		const VkGraphicsPipelineCreateInfo& inCreateInfo,

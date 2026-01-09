@@ -1,13 +1,7 @@
 #pragma once
 #include "common.h"
-#include <unordered_set>
 #include <spirv_reflect.h>
 #include <map>
-
-class ImageView;
-class CommandSubmission;
-class DescriptorSet;
-class DescriptorSetLayout;
 
 class ShaderReflector final
 {

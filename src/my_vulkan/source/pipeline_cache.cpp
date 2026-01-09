@@ -1,9 +1,8 @@
-#include "pipeline.h"
 #include "device.h"
 #include "buffer.h"
-#include "pipeline_io.h"
 #include "utils.h"
 #include <fstream>
+#include "pipeline_cache.h"
 
 PipelineCache::~PipelineCache()
 {
@@ -39,7 +38,7 @@ void PipelineCache::SaveCacheToFile(VkPipelineCache inCacheToStore, const std::s
 {
 	// code from https://mysvac.github.io/vulkan-hpp-tutorial/md/04/11_pipelinecache/
 	auto& device = MyDevice::GetInstance();
-	std::vector<uint8_t> cacheData;
+	std::vector<char> cacheData;
 	std::ofstream out(inDstFilePath, std::ios::binary);
 
 	VK_CHECK(device.GetPipelineCacheData(inCacheToStore, cacheData));
@@ -47,7 +46,7 @@ void PipelineCache::SaveCacheToFile(VkPipelineCache inCacheToStore, const std::s
 	out.write(reinterpret_cast<const char*>(cacheData.data()), cacheData.size());
 }
 
-void PipelineCache::Initializer::_LoadBinary(const std::string& inPath, std::vector<uint8_t>& outData) const
+void PipelineCache::Initializer::_LoadBinary(const std::string& inPath, std::vector<char>& outData) const
 {
 	// code from https://mysvac.github.io/vulkan-hpp-tutorial/md/04/11_pipelinecache/
 	outData.clear();
@@ -56,7 +55,7 @@ void PipelineCache::Initializer::_LoadBinary(const std::string& inPath, std::vec
 		const std::size_t size = in.tellg();
 		in.seekg(0);
 		outData.resize(size);
-		in.read(reinterpret_cast<char*>(outData.data()), size);
+		in.read(outData.data(), size);
 	}
 }
 
@@ -71,7 +70,7 @@ void PipelineCache::Initializer::InitPipelineCache(PipelineCache* outPipelineCac
 {
 	auto& device = MyDevice::GetInstance();
 	VkPipelineCacheCreateInfo createInfo{};
-	std::vector<uint8_t> binaryData{};
+	std::vector<char> binaryData{};
 	VkPipelineCacheHeaderVersionOne* pCacheHeader;
 
 	createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;

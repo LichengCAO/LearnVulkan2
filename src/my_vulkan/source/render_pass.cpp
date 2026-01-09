@@ -412,8 +412,8 @@ AttachmentDescriptionBuilder& AttachmentDescriptionBuilder::SetFormat(VkFormat i
 }
 
 AttachmentDescriptionBuilder& AttachmentDescriptionBuilder::CustomizeLoadOperationAndInitialLayout(
-	VkImageLayout inLayout, 
-	VkAttachmentLoadOp inOperation)
+	VkAttachmentLoadOp inOperation,
+	VkImageLayout inLayout)
 {
 	// Basic validation (Vulkan spec compliance)
 	if (inOperation != VK_ATTACHMENT_LOAD_OP_LOAD &&
@@ -429,8 +429,8 @@ AttachmentDescriptionBuilder& AttachmentDescriptionBuilder::CustomizeLoadOperati
 }
 
 AttachmentDescriptionBuilder& AttachmentDescriptionBuilder::CustomizeStoreOperationAndFinalLayout(
-	VkImageLayout inLayout, 
-	VkAttachmentStoreOp inOperation)
+	VkAttachmentStoreOp inOperation,
+	VkImageLayout inLayout)
 {
 	m_storeOp = inOperation;
 	m_finalLayout = inLayout;

@@ -950,7 +950,7 @@ void MyDevice::DestroyPipelineCache(VkPipelineCache inPipelineCache, const VkAll
 	vkDestroyPipelineCache(vkDevice, inPipelineCache, pCallback);
 }
 
-VkResult MyDevice::GetPipelineCacheData(VkPipelineCache inPipelineCache, std::vector<uint8_t>& outCacheData)
+VkResult MyDevice::GetPipelineCacheData(VkPipelineCache inPipelineCache, std::vector<char>& outCacheData)
 {
 	VkResult result;
 	size_t dataSize;

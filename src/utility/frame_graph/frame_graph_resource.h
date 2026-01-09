@@ -46,6 +46,9 @@
 //
 //	return 0;
 //}
+class Image;
+class ImageView;
+class Buffer;
 
 struct BufferResourceHandle
 {
@@ -75,9 +78,24 @@ struct BufferResourceState
 	VkPipelineStageFlags availabeStage; // when does output ready
 };
 
+struct ImageResource
+{
+	Image* image;
+	std::vector<ImageResourceState> states;
+	std::vector<ImageView*> views;
+	std::vector<bool> stateAvailability;
+};
+
+struct BufferResource
+{
+	Buffer* buffer;
+	std::vector<BufferResourceState> states;
+	std::vector<bool> stateAvailability;
+};
+
 enum class TaskThreadType
 {
-	GRAPHICS_ONLY, // so, it can be delegated to graphics recording thread
+	GRAPHICS_ONLY,  // so, it can be delegated to graphics recording thread
 	COMPUTE_ONLY,	// so, it can be delegated to compute recording thread
 	ALL				// it can only be run on main thread
 };

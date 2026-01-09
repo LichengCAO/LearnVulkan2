@@ -13,8 +13,10 @@ private:
 	FrameGraphNodeOutput* m_connectedOutput;
 
 public:
-	FrameGraphNodeOutput* GetConnectedOutput() const;
-	const FrameGraphNode* GetOwner() const;
+	auto GetConnectedOutput() const -> FrameGraphNodeOutput*;
+	auto GetResourceHandle() const -> const std::variant<BufferResourceHandle, ImageResourceHandle>&;
+	auto GetRequiredResourceState() const -> const std::variant<BufferResourceState, ImageResourceState>&;
+	auto GetOwner() const -> const FrameGraphNode*;
 
 	friend class FrameGraphNodeOutput;
 };
@@ -27,10 +29,11 @@ private:
 	std::variant<BufferResourceHandle, ImageResourceHandle> m_handle;
 
 public:
-	void ConnectToInput(FrameGraphNodeInput* inoutFrameGraphInputPtr);
 	auto GetConnectedInputs() const -> const std::vector<FrameGraphNodeInput*>&;
 	auto GetResourceHandle() const -> const std::variant<BufferResourceHandle, ImageResourceHandle>&;
+	auto GetProcessedResourceState() const -> const std::variant<BufferResourceState, ImageResourceState>&;
 	auto GetOwner() const -> const FrameGraphNode*;
+	void ConnectToInput(FrameGraphNodeInput* inoutFrameGraphInputPtr);
 };
 
 class FrameGraphNode

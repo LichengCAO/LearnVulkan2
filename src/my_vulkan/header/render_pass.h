@@ -30,9 +30,9 @@ public:
 	AttachmentDescriptionBuilder& Reset();
 	AttachmentDescriptionBuilder& SetFormat(VkFormat inFormat);
 	// default VK_ATTACHMENT_LOAD_OP_CLEAR, VK_IMAGE_LAYOUT_UNDEFINED
-	AttachmentDescriptionBuilder& CustomizeLoadOperationAndInitialLayout(VkImageLayout inLayout, VkAttachmentLoadOp inOperation);
+	AttachmentDescriptionBuilder& CustomizeLoadOperationAndInitialLayout(VkAttachmentLoadOp inOperation, VkImageLayout inLayout);
 	// default VK_ATTACHMENT_STORE_OP_STORE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-	AttachmentDescriptionBuilder& CustomizeStoreOperationAndFinalLayout(VkImageLayout inLayout, VkAttachmentStoreOp inOperation);
+	AttachmentDescriptionBuilder& CustomizeStoreOperationAndFinalLayout(VkAttachmentStoreOp inOperation, VkImageLayout inLayout);
 	VkAttachmentDescription Build() const;
 };
 
