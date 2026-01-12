@@ -50,7 +50,7 @@ private:
 	void _GenerateFrameGraphNodeBatchEpilogue(const std::set<size_t>& inNodeBatch);
 	struct ExecutionTask
 	{
-		TaskThreadType type;
+		FrameGraphTaskThreadType type;
 		std::function<void()> task;
 	};
 
@@ -74,19 +74,19 @@ public:
 		ImageResourceFetcher& CustomizeAsDedicated();
 	};
 
-	BufferResourceHandle FetchBufferResource(const BufferResourceFetcher* pFetcher);
+	FrameGraphBufferResourceHandle FetchBufferResource(const BufferResourceFetcher* pFetcher);
 	
-	ImageResourceHandle FetchImageResource(const ImageResourceFetcher* pFetcher);
+	FrameGraphImageResourceHandle FetchImageResource(const ImageResourceFetcher* pFetcher);
 	
-	void ReturnBufferResource(BufferResourceHandle inBufferHandle);
+	void ReturnBufferResource(FrameGraphBufferResourceHandle inBufferHandle);
 	
-	void ReturnImageResource(ImageResourceHandle inImageHandle);
+	void ReturnImageResource(FrameGraphImageResourceHandle inImageHandle);
 
 	CommandBuffer* GetCommandBuffer();
 
-	ImageResourceHandle RegisterExternalImageResource(Image* inImagePtr, const ImageResourceState& inInitialState);
+	FrameGraphImageResourceHandle RegisterExternalImageResource(Image* inImagePtr, const FrameGraphImageResourceState& inInitialState);
 	
-	BufferResourceHandle RegisterExternalBufferResource(Buffer* inBufferPtr, const BufferResourceState& inInitialState);
+	FrameGraphBufferResourceHandle RegisterExternalBufferResource(Buffer* inBufferPtr, const FrameGraphBufferResourceState& inInitialState);
 
 	void SetUp(FrameGraphBlueprint* inBlueprint);
 

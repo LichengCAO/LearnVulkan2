@@ -5,34 +5,142 @@
 
 class FrameGraph;
 class FrameGraphNode;
+class FrameGraphNodeInput;
+class FrameGraphNodeOutput;
 
-#define FRAME_GRAPH_RESOURCE_HANDLE std::variant<BufferResourceHandle, ImageResourceHandle>
-#define FRAME_GRAPH_RESOURCE_STATE std::variant<BufferResourceState, ImageResourceState>
+#define FRAME_GRAPH_RESOURCE_HANDLE std::variant<FrameGraphBufferResourceHandle, FrameGraphImageResourceHandle>
+#define FRAME_GRAPH_RESOURCE_STATE std::variant<FrameGraphBufferResourceState, FrameGraphImageResourceState>
+
+class IFrameGraphNodeInputInitializer
+{
+public:
+	virtual void InitializeInput(FrameGraphNodeInput* inoutNodeInput) const = 0;
+};
+
+class IFrameGraphNodeOutputInitializer
+{
+public:
+	virtual void InitializeOutput(FrameGraphNodeOutput* inoutNodeOutput) const = 0;
+};
+
+class IFrameGraphNodeInoutInitializer
+{
+public:
+	virtual void InitializeInout(
+		FrameGraphNodeInput* inoutNodeInput, 
+		FrameGraphNodeOutput* inoutNodeOutput) const = 0;
+};
+
+class FrameGraphNodeInputInitializer : public IFrameGraphNodeInputInitializer
+{
+private:
+	std::string m_name;
+	VkAccessFlags m_access;
+	VkPipelineStageFlags m_stages;
+	std::optional<VkImageLayout> m_layout;
+	std::optional<uint32_t> m_queueFamilyIndex;
+
+public:
+	FrameGraphNodeInputInitializer& Reset();
+	FrameGraphNodeInputInitializer& SetName(const std::string& inName);
+	FrameGraphNodeInputInitializer& SetAccessState(VkAccessFlags inAccessFlags);
+	FrameGraphNodeInputInitializer& SetVisiblePipelineStage(VkPipelineStageFlags inPipelineStageFlags);
+	FrameGraphNodeInputInitializer& SetImageLayout(VkImageLayout inImageLayout);
+	FrameGraphNodeInputInitializer& CustomizeQueueFamilyIndex(uint32_t inQueueFamilyIndex);
+	virtual void InitializeInput(FrameGraphNodeInput* inoutNodeInput) const override;
+};
+
+class FrameGraphNodeOutputInitializer : public IFrameGraphNodeOutputInitializer
+{
+private:
+	std::string m_name;
+	VkAccessFlags m_access;
+	VkPipelineStageFlags m_stages;
+	std::optional<VkImageLayout> m_layout;
+	std::optional<uint32_t> m_queueFamilyIndex;
+	FRAME_GRAPH_RESOURCE_HANDLE m_resourceHandle;
+
+public:
+	FrameGraphNodeOutputInitializer& Reset();
+	FrameGraphNodeOutputInitializer& SetName(const std::string& inName);
+	FrameGraphNodeOutputInitializer& SetAccessState(VkAccessFlags inAccessFlags);
+	FrameGraphNodeOutputInitializer& SetAvailablePipelineStage(VkPipelineStageFlags inPipelineStageFlags);
+	FrameGraphNodeOutputInitializer& SetResourceHandle(FRAME_GRAPH_RESOURCE_HANDLE inResourceHandle);
+	FrameGraphNodeOutputInitializer& SetImageLayout(VkImageLayout inImageLayout);
+	FrameGraphNodeOutputInitializer& CustomizeQueueFamilyIndex(uint32_t inQueueFamilyIndex);
+	virtual void InitializeOutput(FrameGraphNodeOutput* inoutNodeOutput) const override;
+};
+
+class FrameGraphNodeInoutInitializer : public IFrameGraphNodeInoutInitializer
+{
+private:
+	std::string m_name;
+	VkAccessFlags m_inAccess;
+	VkAccessFlags m_outAccess;
+	VkPipelineStageFlags m_inStages;
+	VkPipelineStageFlags m_outStages;
+	std::optional<VkImageLayout> m_initialLayout;
+	std::optional<VkImageLayout> m_finalLayout;
+	std::optional<uint32_t> m_initialQueueFamilyIndex;
+	std::optional<uint32_t> m_finalQueueFamilyIndex;
+
+public:
+	FrameGraphNodeInoutInitializer& Reset();
+	FrameGraphNodeInoutInitializer& SetName(const std::string& inName);
+	FrameGraphNodeInoutInitializer& SetInputAccessState(const VkAccessFlags inAccessFlags);
+	FrameGraphNodeInoutInitializer& SetInputPipelineStage(const VkPipelineStageFlags inPipelineStageFlags);
+	FrameGraphNodeInoutInitializer& SetOutputAccessState(const VkAccessFlags inAccessFlags);
+	FrameGraphNodeInoutInitializer& SetOutputPipelineStage(const VkPipelineStageFlags inPipelineStageFlags);
+	FrameGraphNodeInoutInitializer& SetImageLayouts(const VkImageLayout inInitialImageLayout, const VkImageLayout inFinalImageLayout);
+	FrameGraphNodeInoutInitializer& CustomizeQueueFamilyIndices(uint32_t inInitialQueueFamilyIndex, uint32_t inFinalQueueFamilyIndex);
+	virtual void InitializeInout(FrameGraphNodeInput* inoutNodeInput, FrameGraphNodeOutput* inoutNodeOutput) const override;
+};
+
+class FrameGraphNodeInitializer
+{
+private:
+	std::vector<std::unique_ptr<FrameGraphNodeInput>> m_tmpInput;
+	std::vector<std::unique_ptr<FrameGraphNodeOutput>> m_tmpOutput;
+	FrameGraphTaskThreadType m_taskType;
+
+public:
+	FrameGraphNodeInitializer& Reset();
+	FrameGraphNodeInitializer& AddInput(const IFrameGraphNodeInputInitializer* inInitializer);
+	FrameGraphNodeInitializer& AddOutput(const IFrameGraphNodeOutputInitializer* inInitializer);
+	FrameGraphNodeInitializer& AddInout(const IFrameGraphNodeInoutInitializer* inInitializer);
+	FrameGraphNodeInitializer& SetQueueType(FrameGraphTaskThreadType inQueueType);
+	void InitializeFrameGraphNode(FrameGraphNode* inFrameGraphNode);
+};
 
 class FrameGraphNodeInput
 {
 private:
 	FrameGraphNode* m_owner;
+	std::string m_name;
 	FrameGraphNodeOutput* m_connectedOutput;
 	FrameGraphNodeOutput* m_correlatedOutput; // for resource that also serve as output
-	std::string m_name;
+	FRAME_GRAPH_RESOURCE_STATE m_resourceState;
 
 public:
-	auto GetConnectedOutput() const -> FrameGraphNodeOutput*;
+	auto GetConnectedOutput() const->FrameGraphNodeOutput*;
 	auto GetResourceHandle() const -> const FRAME_GRAPH_RESOURCE_HANDLE&;
 	auto GetRequiredResourceState() const -> const FRAME_GRAPH_RESOURCE_STATE&;
 	auto GetOwner() const -> const FrameGraphNode*;
 
 	friend class FrameGraphNodeOutput;
+	friend class FrameGraphNodeInputInitializer;
+	friend class FrameGraphNodeInoutInitializer;
+	friend class FrameGraphNodeInitializer;
 };
 
 class FrameGraphNodeOutput
 {
 private:
 	FrameGraphNode* m_owner;
-	std::vector<FrameGraphNodeInput*> m_connectedInputs;
-	std::variant<BufferResourceHandle, ImageResourceHandle> m_handle;
 	std::string m_name;
+	std::vector<FrameGraphNodeInput*> m_connectedInputs;
+	FRAME_GRAPH_RESOURCE_HANDLE m_resourceHandle;
+	FRAME_GRAPH_RESOURCE_STATE m_resourceState;
 
 public:
 	auto GetConnectedInputs() const -> const std::vector<FrameGraphNodeInput*>&;
@@ -42,43 +150,10 @@ public:
 
 	// Connect this output to an input, if input will also serve as output, this output can only has one input connected
 	void ConnectToInput(FrameGraphNodeInput* inoutFrameGraphInputPtr);
-};
 
-class FrameGraphNodeInitializer
-{
-public:
-	class InputCreateInfo
-	{
-	public:
-		InputCreateInfo& Reset();
-		InputCreateInfo& SetName(const std::string& inName);
-		InputCreateInfo& SetAccessState(const VkAccessFlags inAccessFlags);
-		InputCreateInfo& SetVisiblePipelineStage(const VkPipelineStageFlags inPipelineStageFlags);
-	};
-	class OutputCreateInfo
-	{
-	public:
-		OutputCreateInfo& Reset();
-		OutputCreateInfo& SetName(const std::string& inName);
-		OutputCreateInfo& SetAccessState(const VkAccessFlags inAccessFlags);
-		OutputCreateInfo& SetAvailablePipelineStage(const VkPipelineStageFlags inPipelineStageFlags);
-		OutputCreateInfo& SetResourceHandle(const FRAME_GRAPH_RESOURCE_HANDLE inResourceHandle);
-	};
-	class InputOutputCreateInfo
-	{
-	public:
-		InputOutputCreateInfo& Reset();
-		InputOutputCreateInfo& SetName(const std::string& inName);
-		InputOutputCreateInfo& SetInputAccessState(const VkAccessFlags inAccessFlags);
-		InputOutputCreateInfo& SetInputPipelineStage(const VkPipelineStageFlags inPipelineStageFlags);
-		InputOutputCreateInfo& SetOutputAccessState(const VkAccessFlags inAccessFlags);
-		InputOutputCreateInfo& SetOutputPipelineStage(const VkPipelineStageFlags inPipelineStageFlags);
-	};
-	FrameGraphNodeInitializer& Reset();
-	FrameGraphNodeInitializer& AddInput(const InputCreateInfo* inCreateInfo);
-	FrameGraphNodeInitializer& AddOutput(const OutputCreateInfo* inCreateInfo);
-	FrameGraphNodeInitializer& AddInputOutput(const InputOutputCreateInfo* inCreateInfo);
-	FrameGraphNodeInitializer& SetQueueType(TaskThreadType inQueueType);
+	friend class FrameGraphNodeOutputInitializer;
+	friend class FrameGraphNodeInoutInitializer;
+	friend class FrameGraphNodeInitializer;
 };
 
 class FrameGraphNode
@@ -138,6 +213,8 @@ public:
 	void Execute();
 
 	void Uninit();
+
+	friend class FrameGraphNodeInitializer;
 };
 
 #undef FRAME_GRAPH_RESOURCE_STATE

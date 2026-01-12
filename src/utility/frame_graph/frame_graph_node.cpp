@@ -1,6 +1,351 @@
 #include "frame_graph_node.h"
+#include <forward_list>
+#define FRAME_GRAPH_RESOURCE_HANDLE std::variant<FrameGraphBufferResourceHandle, FrameGraphImageResourceHandle>
+#define FRAME_GRAPH_RESOURCE_STATE std::variant<FrameGraphBufferResourceState, FrameGraphImageResourceState>
 
-auto FrameGraphNodeOutput::GetConnectedInputs() const -> const std::vector<FrameGraphNodeInput*>&
+FrameGraphNodeInputInitializer& FrameGraphNodeInputInitializer::Reset()
 {
-    // TODO: insert return statement here
+    m_name.clear();
+    m_access = 0;
+    m_stages = 0;
+    m_layout.reset();
+    m_queueFamilyIndex.reset(); 
+    return *this;    
 }
+
+FrameGraphNodeInputInitializer& FrameGraphNodeInputInitializer::SetName(const std::string& inName)
+{
+    m_name = inName;
+    return *this;
+}
+
+FrameGraphNodeInputInitializer& FrameGraphNodeInputInitializer::SetAccessState(VkAccessFlags inAccessFlags)
+{
+    m_access = inAccessFlags;
+    return *this;
+}
+
+FrameGraphNodeInputInitializer& FrameGraphNodeInputInitializer::SetVisiblePipelineStage(VkPipelineStageFlags inPipelineStageFlags)
+{
+    m_stages = inPipelineStageFlags;
+    return *this;
+}
+
+FrameGraphNodeInputInitializer& FrameGraphNodeInputInitializer::SetImageLayout(VkImageLayout inImageLayout)
+{
+    m_layout = inImageLayout;
+    
+    return *this;
+}
+
+FrameGraphNodeInputInitializer& FrameGraphNodeInputInitializer::CustomizeQueueFamilyIndex(uint32_t inQueueFamilyIndex)
+{
+    m_queueFamilyIndex = inQueueFamilyIndex;
+    
+    return *this;
+}
+
+void FrameGraphNodeInputInitializer::InitializeInput(FrameGraphNodeInput* inoutNodeInput) const
+{
+	bool isImage = m_layout.has_value();
+	uint32_t queueFamilyIndex = m_queueFamilyIndex.value_or(VK_QUEUE_FAMILY_IGNORED);
+
+	inoutNodeInput->m_name = m_name;
+	inoutNodeInput->m_connectedOutput = nullptr;
+	inoutNodeInput->m_correlatedOutput = nullptr;
+	inoutNodeInput->m_owner = nullptr;
+	if (isImage)
+	{
+		FrameGraphImageResourceState state{};
+		state.access = m_access;
+		state.layout = m_layout.value();
+		state.queueFamily = queueFamilyIndex;
+		state.stage = m_stages;
+		//state.range = {}; TODO;
+		inoutNodeInput->m_resourceState = state;
+	}
+	else
+	{
+		FrameGraphBufferResourceState state{};
+		state.access = m_access;
+		state.queueFamily = queueFamilyIndex;
+		state.stage = m_stages;
+		// state.offset = 0; TODO
+		// state.range = 0;
+		inoutNodeInput->m_resourceState = state;
+	}
+}
+
+FrameGraphNodeOutputInitializer& FrameGraphNodeOutputInitializer::Reset()
+{
+    m_name.clear();
+    m_access = 0;
+    m_stages = 0;
+    m_layout.reset();
+    m_queueFamilyIndex.reset();
+    return *this;
+}
+
+FrameGraphNodeOutputInitializer& FrameGraphNodeOutputInitializer::SetName(const std::string& inName)
+{
+    m_name = inName;
+    return *this;
+}
+
+FrameGraphNodeOutputInitializer& FrameGraphNodeOutputInitializer::SetAccessState(VkAccessFlags inAccessFlags)
+{
+    m_access = inAccessFlags;
+    return *this;
+}
+
+FrameGraphNodeOutputInitializer& FrameGraphNodeOutputInitializer::SetAvailablePipelineStage(VkPipelineStageFlags inPipelineStageFlags)
+{
+    m_stages = inPipelineStageFlags;
+    return *this;
+}
+
+FrameGraphNodeOutputInitializer& FrameGraphNodeOutputInitializer::SetResourceHandle(FRAME_GRAPH_RESOURCE_HANDLE inResourceHandle)
+{
+	m_resourceHandle = inResourceHandle;
+	return *this;
+}
+
+FrameGraphNodeOutputInitializer& FrameGraphNodeOutputInitializer::SetImageLayout(VkImageLayout inImageLayout)
+{
+	m_layout = inImageLayout;
+	return *this;
+}
+
+FrameGraphNodeOutputInitializer& FrameGraphNodeOutputInitializer::CustomizeQueueFamilyIndex(uint32_t inQueueFamilyIndex)
+{
+	m_queueFamilyIndex = inQueueFamilyIndex;
+	return *this;
+}
+
+void FrameGraphNodeOutputInitializer::InitializeOutput(FrameGraphNodeOutput* inoutNodeOutput) const
+{
+	bool isImage = m_layout.has_value();
+	uint32_t queueFamilyIndex = m_queueFamilyIndex.value_or(VK_QUEUE_FAMILY_IGNORED);
+
+	inoutNodeOutput->m_name = m_name;
+	inoutNodeOutput->m_connectedInputs.clear();
+	inoutNodeOutput->m_resourceHandle = m_resourceHandle;
+	inoutNodeOutput->m_owner = nullptr;
+	if (isImage)
+	{
+		FrameGraphImageResourceState imgState{};
+		imgState.access = m_access;
+		imgState.layout = m_layout.value();
+		imgState.queueFamily = queueFamilyIndex;
+		imgState.stage = m_stages;
+		// imgState.range = {}; // TODO
+		inoutNodeOutput->m_resourceState = imgState;
+	}
+	else
+	{
+		FrameGraphBufferResourceState bufState{};
+		bufState.access = m_access;
+		bufState.queueFamily = queueFamilyIndex;
+		bufState.stage = m_stages;
+		// bufState.offset = 0; // TODO
+		// bufState.range = 0;  // TODO
+		inoutNodeOutput->m_resourceState = bufState;
+	}
+}
+
+FrameGraphNodeInoutInitializer& FrameGraphNodeInoutInitializer::Reset()
+{
+	m_name.clear();
+	m_inAccess = 0;
+	m_outAccess = 0;
+	m_inStages = 0;
+	m_outStages = 0;
+	m_initialLayout.reset();
+	m_finalLayout.reset();
+	m_initialQueueFamilyIndex.reset();
+	m_finalQueueFamilyIndex.reset();
+	return *this;
+}
+
+FrameGraphNodeInoutInitializer& FrameGraphNodeInoutInitializer::SetName(const std::string& inName)
+{
+	m_name = inName;
+	return *this;
+}
+
+FrameGraphNodeInoutInitializer& FrameGraphNodeInoutInitializer::SetInputAccessState(const VkAccessFlags inAccessFlags)
+{
+	m_inAccess = inAccessFlags;
+	return *this;
+}
+
+FrameGraphNodeInoutInitializer& FrameGraphNodeInoutInitializer::SetInputPipelineStage(const VkPipelineStageFlags inPipelineStageFlags)
+{
+	m_inStages = inPipelineStageFlags;
+	return *this;
+}
+
+FrameGraphNodeInoutInitializer& FrameGraphNodeInoutInitializer::SetOutputAccessState(const VkAccessFlags inAccessFlags)
+{
+	m_outAccess = inAccessFlags;
+	return *this;
+}
+
+FrameGraphNodeInoutInitializer& FrameGraphNodeInoutInitializer::SetOutputPipelineStage(const VkPipelineStageFlags inPipelineStageFlags)
+{
+	m_outStages = inPipelineStageFlags;
+	return *this;
+}
+
+FrameGraphNodeInoutInitializer& FrameGraphNodeInoutInitializer::SetImageLayouts(const VkImageLayout inInitialImageLayout, const VkImageLayout inFinalImageLayout)
+{
+	if (inInitialImageLayout >= VK_IMAGE_LAYOUT_UNDEFINED && inInitialImageLayout <= VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+	{
+		m_initialLayout = inInitialImageLayout;
+	}
+	if (inFinalImageLayout >= VK_IMAGE_LAYOUT_UNDEFINED && inFinalImageLayout <= VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
+	{
+		m_finalLayout = inFinalImageLayout;
+	}
+	return *this;
+}
+
+FrameGraphNodeInoutInitializer& FrameGraphNodeInoutInitializer::CustomizeQueueFamilyIndices(uint32_t inInitialQueueFamilyIndex, uint32_t inFinalQueueFamilyIndex)
+{
+	if (inInitialQueueFamilyIndex < UINT32_MAX)
+	{
+		m_initialQueueFamilyIndex = inInitialQueueFamilyIndex;
+	}
+	if (inFinalQueueFamilyIndex < UINT32_MAX)
+	{
+		m_finalQueueFamilyIndex = inFinalQueueFamilyIndex;
+	}
+	return *this;
+}
+
+void FrameGraphNodeInoutInitializer::InitializeInout(FrameGraphNodeInput* inoutNodeInput, FrameGraphNodeOutput* inoutNodeOutput) const
+{
+	CHECK_TRUE(!inoutNodeInput || !inoutNodeOutput);
+
+	// ====================== FrameGraphNodeInput ======================
+	bool isImage = m_initialLayout.has_value();
+	uint32_t initialQueueFamily = m_initialQueueFamilyIndex.value_or(VK_QUEUE_FAMILY_IGNORED);
+
+	inoutNodeInput->m_name = m_name;
+	inoutNodeInput->m_correlatedOutput = inoutNodeOutput;
+	inoutNodeInput->m_owner = nullptr;
+	if (isImage)
+	{
+		FrameGraphImageResourceState imgInState{};
+		imgInState.access = m_inAccess;
+		imgInState.layout = m_initialLayout.value();
+		imgInState.queueFamily = initialQueueFamily;
+		imgInState.stage = m_inStages;
+		// imgState.range = {}; // TODO
+		inoutNodeInput->m_resourceState = imgInState;
+	}
+	else
+	{
+		FrameGraphBufferResourceState bufInState{};
+		bufInState.access = m_inAccess;
+		bufInState.queueFamily = initialQueueFamily;
+		bufInState.stage = m_inStages;
+		// bufState.offset = 0; // TODO
+		// bufState.range = 0;  // TODO
+		inoutNodeInput->m_resourceState = bufInState;
+	}
+
+	// ====================== FrameGraphNodeOutput ======================
+	uint32_t finalQueueFamily = m_finalQueueFamilyIndex.value_or(VK_QUEUE_FAMILY_IGNORED);
+
+	inoutNodeOutput->m_name = m_name;
+	inoutNodeOutput->m_connectedInputs.clear();
+	inoutNodeOutput->m_owner = nullptr;
+	if (isImage)
+	{
+		FrameGraphImageResourceState imgOutState{};
+		imgOutState.access = m_outAccess;
+		imgOutState.layout = m_finalLayout.value();
+		imgOutState.queueFamily = finalQueueFamily;
+		imgOutState.stage = m_outStages;
+		// imgState.range = {}; // TODO
+		inoutNodeOutput->m_resourceState = imgOutState;
+	}
+	else
+	{
+		FrameGraphBufferResourceState bufOutState{};
+		bufOutState.access = m_outAccess;
+		bufOutState.queueFamily = finalQueueFamily;
+		bufOutState.stage = m_outStages;
+		// bufState.offset = 0; // TODO
+		// bufState.range = 0;  // TODO
+		inoutNodeOutput->m_resourceState = bufOutState;
+	}
+}
+
+FrameGraphNodeInitializer& FrameGraphNodeInitializer::Reset()
+{
+	m_tmpInput.clear();
+	m_tmpOutput.clear();
+	return *this;
+}
+
+FrameGraphNodeInitializer& FrameGraphNodeInitializer::AddInput(const IFrameGraphNodeInputInitializer* inInitializer)
+{
+	std::unique_ptr<FrameGraphNodeInput> pInput = std::make_unique<FrameGraphNodeInput>();
+	
+	inInitializer->InitializeInput(pInput.get());
+	m_tmpInput.push_back(std::move(pInput));
+
+	return *this;
+}
+
+FrameGraphNodeInitializer& FrameGraphNodeInitializer::AddOutput(const IFrameGraphNodeOutputInitializer* inInitializer)
+{
+	std::unique_ptr<FrameGraphNodeOutput> pOutput = std::make_unique<FrameGraphNodeOutput>();
+
+	inInitializer->InitializeOutput(pOutput.get());
+	m_tmpOutput.push_back(std::move(pOutput));
+
+	return *this;
+}
+
+FrameGraphNodeInitializer& FrameGraphNodeInitializer::AddInout(const IFrameGraphNodeInoutInitializer* inInitializer)
+{
+	std::unique_ptr<FrameGraphNodeInput> pInput = std::make_unique<FrameGraphNodeInput>();
+	std::unique_ptr<FrameGraphNodeOutput> pOutput = std::make_unique<FrameGraphNodeOutput>();
+
+	inInitializer->InitializeInout(pInput.get(), pOutput.get());
+	m_tmpInput.push_back(std::move(pInput));
+	m_tmpOutput.push_back(std::move(pOutput));
+
+	return *this;
+}
+
+FrameGraphNodeInitializer& FrameGraphNodeInitializer::SetQueueType(FrameGraphTaskThreadType inQueueType)
+{
+	m_taskType = inQueueType;
+
+	return *this;
+}
+
+void FrameGraphNodeInitializer::InitializeFrameGraphNode(FrameGraphNode* inFrameGraphNode)
+{
+	for (auto& uptrToMove : m_tmpInput)
+	{
+		uptrToMove->m_owner = inFrameGraphNode;
+		inFrameGraphNode->m_inputs.push_back(std::move(uptrToMove));
+	}
+	m_tmpInput.clear();
+
+	for (auto& uptrToMove : m_tmpOutput)
+	{
+		uptrToMove->m_owner = inFrameGraphNode;
+		inFrameGraphNode->m_outputs.push_back(std::move(uptrToMove));
+	}
+	m_tmpOutput.clear();
+}
+
+
+#undef FRAME_GRAPH_RESOURCE_STATE
+#undef FRAME_GRAPH_RESOURCE_HANDLE

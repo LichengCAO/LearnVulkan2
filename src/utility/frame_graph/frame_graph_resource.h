@@ -52,12 +52,12 @@ class Buffer;
 class FrameGraphNodeInput;
 class FrameGraphNodeOutput;
 
-struct BufferResourceHandle
+struct FrameGraphBufferResourceHandle
 {
 	uint32_t handle;
 };
 
-struct ImageResourceHandle
+struct FrameGraphImageResourceHandle
 {
 	uint32_t handle;
 };
@@ -67,40 +67,25 @@ struct SemaphoreHandle
 	uint32_t handle;
 };
 
-struct ImageResourceState
+struct FrameGraphImageResourceState
 {
 	VkImageSubresourceRange range;
 	VkImageLayout layout;
 	uint32_t queueFamily;
-	VkAccessFlags availableAccess;
-	VkPipelineStageFlags availabeStage; // when does output ready
+	VkAccessFlags access;
+	VkPipelineStageFlags stage; // when does output ready
 };
 
-struct BufferResourceState
+struct FrameGraphBufferResourceState
 {
 	VkDeviceSize offset;
 	VkDeviceSize range;
 	uint32_t queueFamily;
-	VkAccessFlags availableAccess;
-	VkPipelineStageFlags availabeStage; // when does output ready
+	VkAccessFlags access;
+	VkPipelineStageFlags stage; // when does output ready
 };
 
-struct ImageResource
-{
-	Image* image;
-	std::vector<ImageResourceState> states;
-	std::vector<ImageView*> views;
-	std::vector<bool> stateAvailability;
-};
-
-struct BufferResource
-{
-	Buffer* buffer;
-	std::vector<BufferResourceState> states;
-	std::vector<bool> stateAvailability;
-};
-
-enum class TaskThreadType
+enum class FrameGraphTaskThreadType
 {
 	GRAPHICS_ONLY,  // so, it can be delegated to graphics recording thread
 	COMPUTE_ONLY,	// so, it can be delegated to compute recording thread
@@ -117,10 +102,10 @@ private:
 	std::vector<VkPipelineStageFlags> m_computeWaitStages;
 
 public:
-	void SetResourceState(BufferResourceHandle inHandle, const BufferResourceState& inNewState);
-	void SetResourceState(ImageResourceHandle inHandle, const ImageResourceState& inNewState);
-	const std::vector<BufferResourceState>& GetResourceState(BufferResourceHandle inHandle) const;
-	const std::vector<ImageResourceState>& GetResourceState(ImageResourceHandle inHandle) const;
+	void SetResourceState(FrameGraphBufferResourceHandle inHandle, const FrameGraphBufferResourceState& inNewState);
+	void SetResourceState(FrameGraphImageResourceHandle inHandle, const FrameGraphImageResourceState& inNewState);
+	const std::vector<FrameGraphBufferResourceState>& GetResourceState(FrameGraphBufferResourceHandle inHandle) const;
+	const std::vector<FrameGraphImageResourceState>& GetResourceState(FrameGraphImageResourceHandle inHandle) const;
 	void MergeFrameGraphNodeInput(const FrameGraphNodeInput* inFrameGraphNodeInput);
 	void MergeFrameGraphNodeOutput(const FrameGraphNodeOutput* inFrameGraphNodeOutput);
 	void SetFrameGraphNodeOutputToExecutionState(
