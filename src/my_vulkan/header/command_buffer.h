@@ -6,6 +6,7 @@
 
 class GraphicsPipeline;
 class RenderPass;
+class Framebuffer;
 class CommandPool;
 class CommandBuffer;
 
@@ -193,14 +194,23 @@ public:
 		uint32_t data);
 	
 	void BlitImage(
-		VkImage srcImage, VkImageLayout srcLayout,
-		VkImage dstImage, VkImageLayout dstLayout,
+		VkImage srcImage, 
+		VkImageLayout srcLayout,
+		VkImage dstImage, 
+		VkImageLayout dstLayout,
 		std::vector<VkImageBlit> const& regions,
 		VkFilter filter = VK_FILTER_LINEAR);  // this will change image layout
 
-	void CopyBuffer(VkBuffer vkBufferFrom, VkBuffer vkBufferTo, std::vector<VkBufferCopy> const& copies) const;
+	void CopyBuffer(
+		VkBuffer vkBufferFrom, 
+		VkBuffer vkBufferTo, 
+		std::vector<VkBufferCopy> const& copies) const;
 
-	void CopyBufferToImage(VkBuffer vkBuffer, VkImage vkImage, VkImageLayout layout, const std::vector<VkBufferImageCopy>& regions) const;
+	void CopyBufferToImage(
+		VkBuffer vkBuffer, 
+		VkImage vkImage, 
+		VkImageLayout layout, 
+		const std::vector<VkBufferImageCopy>& regions) const;
 
 	void BuildAccelerationStructures(
 		const std::vector<VkAccelerationStructureBuildGeometryInfoKHR>& buildGeomInfos,
@@ -290,6 +300,9 @@ public:
 	// End recording commands
 	CommandBuffer& EndCommands();
 
+	// Record commands from an external function that takes a VkCommandBuffer as input.
+	CommandBuffer& CmdFromExternal(std::function<void(VkCommandBuffer)> inExternalRecord);
+
 	// Starts a render pass, providing detailed settings for the render pass context.
 	CommandBuffer& CmdBeginRenderPass(
 		const VkRenderPassBeginInfo& inRenderPassBeginInfo,
@@ -358,8 +371,10 @@ public:
 
 	// Performs an image blit operation, copying data from one image to another with optional filtering.
 	CommandBuffer& CmdBlitImage(
-		VkImage inSrcImage, VkImageLayout inSrcLayout,
-		VkImage inDstImage, VkImageLayout inDstLayout,
+		VkImage inSrcImage, 
+		VkImageLayout inSrcLayout,
+		VkImage inDstImage, 
+		VkImageLayout inDstLayout,
 		const std::vector<VkImageBlit>& inRegions,
 		VkFilter inFilter = VK_FILTER_LINEAR);
 
@@ -446,7 +461,9 @@ public:
 	CommandPool& ResetPool();
 
 	// Allocate a ready command buffer(inited) from current pool
-	CommandPool& AllocateCommandBuffer(CommandBuffer* outCommandBufferPtr, VkCommandBufferLevel inBufferLevel = VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+	CommandPool& AllocateCommandBuffer(
+		CommandBuffer* outCommandBufferPtr, 
+		VkCommandBufferLevel inBufferLevel = VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 
 	// Return command buffer to this pool
 	CommandPool& FreeCommandBuffer(CommandBuffer* inoutBufferReturnedPtr);

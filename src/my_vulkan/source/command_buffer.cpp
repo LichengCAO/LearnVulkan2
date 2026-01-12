@@ -633,6 +633,17 @@ CommandBuffer& CommandBuffer::EndCommands()
 	return *this;
 }
 
+CommandBuffer& CommandBuffer::CmdFromExternal(std::function<void(VkCommandBuffer)> inExternalRecord)
+{
+	_ProcessInCmdScope(
+		[this, inExternalRecord]() 
+		{ 
+			inExternalRecord(this->m_vkCommandBuffer); 
+		});
+
+	return *this;
+}
+
 CommandBuffer& CommandBuffer::CmdBeginRenderPass(const VkRenderPassBeginInfo& inRenderPassBeginInfo, VkSubpassContents inContents)
 {
 	m_isInRenderPass = true;

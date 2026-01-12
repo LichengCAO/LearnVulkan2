@@ -49,6 +49,8 @@
 class Image;
 class ImageView;
 class Buffer;
+class FrameGraphNodeInput;
+class FrameGraphNodeOutput;
 
 struct BufferResourceHandle
 {
@@ -56,6 +58,11 @@ struct BufferResourceHandle
 };
 
 struct ImageResourceHandle
+{
+	uint32_t handle;
+};
+
+struct SemaphoreHandle
 {
 	uint32_t handle;
 };
@@ -103,9 +110,20 @@ enum class TaskThreadType
 // Context that helps us to decide whether to add barrier between execution of frame graph nodes
 class FrameGraphCompileContext
 {
+private:
+	std::vector<VkSemaphore> m_graphicsWaitSemaphores;
+	std::vector<VkPipelineStageFlags> m_graphicsWaitStages;
+	std::vector<VkSemaphore> m_computeWaitSemaphores;
+	std::vector<VkPipelineStageFlags> m_computeWaitStages;
+
 public:
 	void SetResourceState(BufferResourceHandle inHandle, const BufferResourceState& inNewState);
 	void SetResourceState(ImageResourceHandle inHandle, const ImageResourceState& inNewState);
 	const std::vector<BufferResourceState>& GetResourceState(BufferResourceHandle inHandle) const;
 	const std::vector<ImageResourceState>& GetResourceState(ImageResourceHandle inHandle) const;
+	void MergeFrameGraphNodeInput(const FrameGraphNodeInput* inFrameGraphNodeInput);
+	void MergeFrameGraphNodeOutput(const FrameGraphNodeOutput* inFrameGraphNodeOutput);
+	void SetFrameGraphNodeOutputToExecutionState(
+		const FrameGraphNodeOutput* inNodeOutputSubmitted, 
+		SemaphoreHandle inSemaphoreHandle) const;
 };

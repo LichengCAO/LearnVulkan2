@@ -8,6 +8,20 @@ class Image;
 class Buffer;
 class CommandBuffer;
 
+// Blueprint that helps to construct a frame graph by
+// automatically connect nodes based on names of input and outputs
+class FrameGraphBlueprint
+{
+private:
+	std::unordered_map<std::string, FrameGraphNodeOutput*> m_availableOutputs;
+	
+private:
+	FrameGraphNodeOutput* _FindAvailableOutputByName(const std::string& inName);
+
+public:
+	FrameGraphBlueprint& AddFrameGraphNode(std::unique_ptr<FrameGraphNode> inFrameGraphNode);
+};
+
 class FrameGraph
 {
 private:
@@ -27,14 +41,13 @@ private:
 	// Once barrier is recorded, the current thread can release the ownership
 	// of command buffers, and different threads can record command buffers
 	// separately
-	void _GenerateNodeBatchExecutionTasks(const std::set<size_t>& inNodeBatch);
+	void _GenerateFrameGraphNodeBatchExecutionTasks(const std::set<size_t>& inNodeBatch);
 
 	// Wait till all command buffer recording done on different threads, and then:
 	// If we have cross queue data, we need to submit it as soon as possible,
 	// and we also need to provide a new command buffer to record new command for
 	// the queue that submit command buffer
 	void _GenerateFrameGraphNodeBatchEpilogue(const std::set<size_t>& inNodeBatch);
-
 	struct ExecutionTask
 	{
 		TaskThreadType type;
@@ -75,9 +88,7 @@ public:
 	
 	BufferResourceHandle RegisterExternalBufferResource(Buffer* inBufferPtr, const BufferResourceState& inInitialState);
 
-	void AddFrameGraphNode();
-
-	void SetUp();
+	void SetUp(FrameGraphBlueprint* inBlueprint);
 
 	// Decide static process based in input, only do once,
 	// unless window resized, or other dramatic change

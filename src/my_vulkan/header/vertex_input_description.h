@@ -26,7 +26,10 @@ public:
 	// inFormat: input, format of the input
 	// inOffset: input, offset of the data of VBO from host
 	// inLocation: input, should match layout(location = ...) in shader
-	VertexInputDescriptionBuilder& AddLocation(VkFormat inFormat, uint32_t inOffset, uint32_t inLocation);
+	VertexInputDescriptionBuilder& AddLocation(
+		VkFormat inFormat, 
+		uint32_t inOffset, 
+		uint32_t inLocation);
 
 	// outBindingDescription: output, defines vertex stride and input rate
 	// outAttributeDescriptions: output, associate layout(location = ...) with segments in vertex stride
