@@ -1,7 +1,30 @@
 #include "frame_graph_node.h"
+#include "device.h"
 #include <forward_list>
+#undef FRAME_GRAPH_RESOURCE_STATE
+#undef FRAME_GRAPH_RESOURCE_HANDLE
 #define FRAME_GRAPH_RESOURCE_HANDLE std::variant<FrameGraphBufferResourceHandle, FrameGraphImageResourceHandle>
 #define FRAME_GRAPH_RESOURCE_STATE std::variant<FrameGraphBufferResourceState, FrameGraphImageResourceState>
+
+namespace
+{
+	uint32_t& _GetResourceStateQueueFamilyIndex(FRAME_GRAPH_RESOURCE_STATE& inoutState)
+	{
+		if (std::holds_alternative<FrameGraphImageResourceState>(inoutState))
+		{
+			FrameGraphImageResourceState& stateToModify = std::get<FrameGraphImageResourceState>(inoutState);
+			return stateToModify.queueFamily;
+		}
+		else
+		{
+			CHECK_TRUE(std::holds_alternative<FrameGraphBufferResourceState>(inoutState));
+			FrameGraphBufferResourceState& stateToModify = std::get<FrameGraphBufferResourceState>(inoutState);
+			return stateToModify.queueFamily;
+		}
+	}
+}
+
+#pragma region Initializer
 
 FrameGraphNodeInputInitializer& FrameGraphNodeInputInitializer::Reset()
 {
@@ -10,25 +33,29 @@ FrameGraphNodeInputInitializer& FrameGraphNodeInputInitializer::Reset()
     m_stages = 0;
     m_layout.reset();
     m_queueFamilyIndex.reset(); 
-    return *this;    
+    
+	return *this;    
 }
 
 FrameGraphNodeInputInitializer& FrameGraphNodeInputInitializer::SetName(const std::string& inName)
 {
     m_name = inName;
-    return *this;
+    
+	return *this;
 }
 
 FrameGraphNodeInputInitializer& FrameGraphNodeInputInitializer::SetAccessState(VkAccessFlags inAccessFlags)
 {
     m_access = inAccessFlags;
-    return *this;
+    
+	return *this;
 }
 
 FrameGraphNodeInputInitializer& FrameGraphNodeInputInitializer::SetVisiblePipelineStage(VkPipelineStageFlags inPipelineStageFlags)
 {
     m_stages = inPipelineStageFlags;
-    return *this;
+    
+	return *this;
 }
 
 FrameGraphNodeInputInitializer& FrameGraphNodeInputInitializer::SetImageLayout(VkImageLayout inImageLayout)
@@ -113,12 +140,14 @@ FrameGraphNodeOutputInitializer& FrameGraphNodeOutputInitializer::SetResourceHan
 FrameGraphNodeOutputInitializer& FrameGraphNodeOutputInitializer::SetImageLayout(VkImageLayout inImageLayout)
 {
 	m_layout = inImageLayout;
+	
 	return *this;
 }
 
 FrameGraphNodeOutputInitializer& FrameGraphNodeOutputInitializer::CustomizeQueueFamilyIndex(uint32_t inQueueFamilyIndex)
 {
 	m_queueFamilyIndex = inQueueFamilyIndex;
+	
 	return *this;
 }
 
@@ -261,6 +290,7 @@ void FrameGraphNodeInoutInitializer::InitializeInout(FrameGraphNodeInput* inoutN
 	inoutNodeOutput->m_name = m_name;
 	inoutNodeOutput->m_connectedInputs.clear();
 	inoutNodeOutput->m_owner = nullptr;
+	inoutNodeOutput->m_correlatedInput = inoutNodeInput;
 	if (isImage)
 	{
 		FrameGraphImageResourceState imgOutState{};
@@ -287,6 +317,8 @@ FrameGraphNodeInitializer& FrameGraphNodeInitializer::Reset()
 {
 	m_tmpInput.clear();
 	m_tmpOutput.clear();
+	m_queueType = FrameGraphQueueType::GRAPHICS_ONLY;
+	m_frameGraph = nullptr;
 	return *this;
 }
 
@@ -322,18 +354,35 @@ FrameGraphNodeInitializer& FrameGraphNodeInitializer::AddInout(const IFrameGraph
 	return *this;
 }
 
-FrameGraphNodeInitializer& FrameGraphNodeInitializer::SetQueueType(FrameGraphTaskThreadType inQueueType)
+FrameGraphNodeInitializer& FrameGraphNodeInitializer::SetQueueType(FrameGraphQueueType inQueueType)
 {
-	m_taskType = inQueueType;
+	m_queueType = inQueueType;
+
+	return *this;
+}
+
+FrameGraphNodeInitializer& FrameGraphNodeInitializer::SetOwner(FrameGraph* inFrameGraph)
+{
+	m_frameGraph = inFrameGraph;
 
 	return *this;
 }
 
 void FrameGraphNodeInitializer::InitializeFrameGraphNode(FrameGraphNode* inFrameGraphNode)
 {
+	auto& device = MyDevice::GetInstance();
+	uint32_t graphicsQueue = device.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
+	uint32_t computeQueue = device.GetQueueFamilyIndexOfType(QueueFamilyType::COMPUTE);
+	uint32_t defaultQueue = m_queueType == FrameGraphQueueType::COMPUTE_ONLY ? computeQueue : graphicsQueue;
+
 	for (auto& uptrToMove : m_tmpInput)
 	{
 		uptrToMove->m_owner = inFrameGraphNode;
+		auto& queueFamilyIndex = _GetResourceStateQueueFamilyIndex(uptrToMove->m_resourceState);
+		if (queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED)
+		{
+			queueFamilyIndex = defaultQueue;
+		}
 		inFrameGraphNode->m_inputs.push_back(std::move(uptrToMove));
 	}
 	m_tmpInput.clear();
@@ -341,11 +390,129 @@ void FrameGraphNodeInitializer::InitializeFrameGraphNode(FrameGraphNode* inFrame
 	for (auto& uptrToMove : m_tmpOutput)
 	{
 		uptrToMove->m_owner = inFrameGraphNode;
+		auto& queueFamilyIndex = _GetResourceStateQueueFamilyIndex(uptrToMove->m_resourceState);
+		if (queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED)
+		{
+			queueFamilyIndex = defaultQueue;
+		}
 		inFrameGraphNode->m_outputs.push_back(std::move(uptrToMove));
 	}
 	m_tmpOutput.clear();
+
+	inFrameGraphNode->m_queueType = m_queueType;
+	inFrameGraphNode->m_graph = m_frameGraph;
 }
 
+#pragma endregion
 
-#undef FRAME_GRAPH_RESOURCE_STATE
-#undef FRAME_GRAPH_RESOURCE_HANDLE
+#pragma region InputOutput
+
+auto FrameGraphNodeInput::GetConnectedOutput() const -> FrameGraphNodeOutput*
+{
+	return m_connectedOutput;
+}
+
+auto FrameGraphNodeInput::GetResourceHandle() const -> const FRAME_GRAPH_RESOURCE_HANDLE&
+{
+	auto pOutput = GetConnectedOutput();
+	
+	CHECK_TRUE(pOutput != nullptr);
+
+	return pOutput->GetResourceHandle();
+}
+
+auto FrameGraphNodeInput::GetRequiredResourceState() const -> const FRAME_GRAPH_RESOURCE_STATE&
+{
+	return m_resourceState;
+}
+
+auto FrameGraphNodeInput::GetOwner() const -> const FrameGraphNode*
+{
+	return m_owner;
+}
+
+auto FrameGraphNodeInput::GetOwner() -> FrameGraphNode*
+{
+	return m_owner;
+}
+
+auto FrameGraphNodeInput::IsMutableReference() const -> bool
+{
+	return m_correlatedOutput != nullptr;
+}
+
+auto FrameGraphNodeOutput::GetConnectedInputs() const -> const std::vector<FrameGraphNodeInput*>&
+{
+	return m_connectedInputs;
+}
+
+auto FrameGraphNodeOutput::GetResourceHandle() const -> const FRAME_GRAPH_RESOURCE_HANDLE&
+{
+	return m_resourceHandle;
+}
+
+auto FrameGraphNodeOutput::GetProcessedResourceState() const -> const FRAME_GRAPH_RESOURCE_STATE&
+{
+	return m_resourceState;
+}
+
+auto FrameGraphNodeOutput::GetOwner() const -> const FrameGraphNode*
+{
+	return m_owner;
+}
+
+auto FrameGraphNodeOutput::GetOwner() -> FrameGraphNode*
+{
+	return m_owner;
+}
+
+auto FrameGraphNodeOutput::IsReference() const -> bool
+{
+	return m_correlatedInput != nullptr;
+}
+
+void FrameGraphNodeOutput::ConnectToInput(FrameGraphNodeInput* inoutFrameGraphInputPtr)
+{
+	bool hasThisConnected = false;
+
+	for (size_t i = 0; i < m_connectedInputs.size(); ++i)
+	{
+		hasThisConnected = (m_connectedInputs[i] == inoutFrameGraphInputPtr);
+		if (hasThisConnected)
+		{
+			break;
+		}
+	}
+
+	if (inoutFrameGraphInputPtr->IsMutableReference())
+	{
+		CHECK_TRUE(m_connectedInputs.empty() || (hasThisConnected && m_connectedInputs.size() == 1));
+	}
+
+	if (!hasThisConnected)
+	{
+		m_connectedInputs.push_back(inoutFrameGraphInputPtr);
+	}
+}
+
+#pragma endregion
+
+void FrameGraphNode::Init(FrameGraphNodeInitializer* inInitializer)
+{
+	inInitializer->InitializeFrameGraphNode(this);
+	CHECK_TRUE(m_graph != nullptr);
+}
+
+void FrameGraphNode::AddExtraDependency(FrameGraphNode* inNodeThisDependsOn)
+{
+	m_extraDependencies.insert(inNodeThisDependsOn);
+}
+
+void FrameGraphNode::GetPreGraphNodes(std::set<FrameGraphNode*>& outFrameGraphNodes) const
+{
+	outFrameGraphNodes.insert(m_extraDependencies.begin(), m_extraDependencies.end());
+	for (auto& uptrInput : m_inputs)
+	{
+		outFrameGraphNodes.insert(uptrInput->GetOwner());
+	}
+}

@@ -11,6 +11,8 @@ class FrameGraphNodeOutput;
 #define FRAME_GRAPH_RESOURCE_HANDLE std::variant<FrameGraphBufferResourceHandle, FrameGraphImageResourceHandle>
 #define FRAME_GRAPH_RESOURCE_STATE std::variant<FrameGraphBufferResourceState, FrameGraphImageResourceState>
 
+#pragma region Initializer
+
 class IFrameGraphNodeInputInitializer
 {
 public:
@@ -101,17 +103,22 @@ class FrameGraphNodeInitializer
 private:
 	std::vector<std::unique_ptr<FrameGraphNodeInput>> m_tmpInput;
 	std::vector<std::unique_ptr<FrameGraphNodeOutput>> m_tmpOutput;
-	FrameGraphTaskThreadType m_taskType;
+	FrameGraphQueueType m_queueType;
+	FrameGraph* m_frameGraph;
 
 public:
 	FrameGraphNodeInitializer& Reset();
 	FrameGraphNodeInitializer& AddInput(const IFrameGraphNodeInputInitializer* inInitializer);
 	FrameGraphNodeInitializer& AddOutput(const IFrameGraphNodeOutputInitializer* inInitializer);
 	FrameGraphNodeInitializer& AddInout(const IFrameGraphNodeInoutInitializer* inInitializer);
-	FrameGraphNodeInitializer& SetQueueType(FrameGraphTaskThreadType inQueueType);
+	FrameGraphNodeInitializer& SetQueueType(FrameGraphQueueType inQueueType);
+	FrameGraphNodeInitializer& SetOwner(FrameGraph* inFrameGraph);
 	void InitializeFrameGraphNode(FrameGraphNode* inFrameGraphNode);
 };
 
+#pragma endregion
+
+#pragma region InputOutput
 class FrameGraphNodeInput
 {
 private:
@@ -126,6 +133,8 @@ public:
 	auto GetResourceHandle() const -> const FRAME_GRAPH_RESOURCE_HANDLE&;
 	auto GetRequiredResourceState() const -> const FRAME_GRAPH_RESOURCE_STATE&;
 	auto GetOwner() const -> const FrameGraphNode*;
+	auto GetOwner() -> FrameGraphNode*;
+	auto IsMutableReference() const -> bool;
 
 	friend class FrameGraphNodeOutput;
 	friend class FrameGraphNodeInputInitializer;
@@ -138,6 +147,7 @@ class FrameGraphNodeOutput
 private:
 	FrameGraphNode* m_owner;
 	std::string m_name;
+	FrameGraphNodeInput* m_correlatedInput; // for output that modifies input
 	std::vector<FrameGraphNodeInput*> m_connectedInputs;
 	FRAME_GRAPH_RESOURCE_HANDLE m_resourceHandle;
 	FRAME_GRAPH_RESOURCE_STATE m_resourceState;
@@ -147,6 +157,8 @@ public:
 	auto GetResourceHandle() const -> const FRAME_GRAPH_RESOURCE_HANDLE&;
 	auto GetProcessedResourceState() const -> const FRAME_GRAPH_RESOURCE_STATE&;
 	auto GetOwner() const -> const FrameGraphNode*;
+	auto GetOwner() -> FrameGraphNode*;
+	auto IsReference() const -> bool;
 
 	// Connect this output to an input, if input will also serve as output, this output can only has one input connected
 	void ConnectToInput(FrameGraphNodeInput* inoutFrameGraphInputPtr);
@@ -156,6 +168,8 @@ public:
 	friend class FrameGraphNodeInitializer;
 };
 
+#pragma endregion
+
 class FrameGraphNode
 {
 private:
@@ -163,6 +177,7 @@ private:
 	std::vector<std::unique_ptr<FrameGraphNodeInput>> m_inputs;
 	std::vector<std::unique_ptr<FrameGraphNodeOutput>> m_outputs;
 	std::set<FrameGraphNode*> m_extraDependencies;
+	FrameGraphQueueType m_queueType = FrameGraphQueueType::GRAPHICS_ONLY;
 
 public:
 	void Init(FrameGraphNodeInitializer* inInitializer);

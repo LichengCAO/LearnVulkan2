@@ -457,7 +457,8 @@ public:
 
 	VkCommandPool GetVkCommandPool() const;
 
-	// Every command buffer allocated by this are reset, command buffers from this pool are all reset to initial state
+	// Every command buffer allocated by this are reset, 
+	// command buffers from this pool are all reset to initial state
 	CommandPool& ResetPool();
 
 	// Allocate a ready command buffer(inited) from current pool

@@ -1,0 +1,1 @@
+#include "frame_graph_resource_manager.h"

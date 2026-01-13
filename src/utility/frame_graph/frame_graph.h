@@ -48,36 +48,14 @@ private:
 	// and we also need to provide a new command buffer to record new command for
 	// the queue that submit command buffer
 	void _GenerateFrameGraphNodeBatchEpilogue(const std::set<size_t>& inNodeBatch);
+	
 	struct ExecutionTask
 	{
-		FrameGraphTaskThreadType type;
+		FrameGraphQueueType type;
 		std::function<void()> task;
 	};
 
-public:
-	class BufferResourceFetcher
-	{
-	public:
-		BufferResourceFetcher& SetSize(VkDeviceSize inSize);
-		// If this enabled, we do not apply memory aliasing and create
-		// a new device object during compilation instead
-		BufferResourceFetcher& CustomizeAsDedicated();
-	};
-
-	class ImageResourceFetcher
-	{
-	public:
-		ImageResourceFetcher& SetSize2D(uint32_t inWidth, uint32_t inHeight);
-		ImageResourceFetcher& SetFormat(VkFormat inFormat);
-		// If this enabled, we do not apply memory aliasing and create
-		// a new device object during compilation instead
-		ImageResourceFetcher& CustomizeAsDedicated();
-	};
-
-	FrameGraphBufferResourceHandle FetchBufferResource(const BufferResourceFetcher* pFetcher);
-	
-	FrameGraphImageResourceHandle FetchImageResource(const ImageResourceFetcher* pFetcher);
-	
+public:	
 	void ReturnBufferResource(FrameGraphBufferResourceHandle inBufferHandle);
 	
 	void ReturnImageResource(FrameGraphImageResourceHandle inImageHandle);

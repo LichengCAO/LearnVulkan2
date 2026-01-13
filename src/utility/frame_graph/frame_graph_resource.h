@@ -85,7 +85,7 @@ struct FrameGraphBufferResourceState
 	VkPipelineStageFlags stage; // when does output ready
 };
 
-enum class FrameGraphTaskThreadType
+enum class FrameGraphQueueType
 {
 	GRAPHICS_ONLY,  // so, it can be delegated to graphics recording thread
 	COMPUTE_ONLY,	// so, it can be delegated to compute recording thread
