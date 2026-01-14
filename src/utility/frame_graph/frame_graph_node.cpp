@@ -4,21 +4,21 @@
 #undef FRAME_GRAPH_RESOURCE_STATE
 #undef FRAME_GRAPH_RESOURCE_HANDLE
 #define FRAME_GRAPH_RESOURCE_HANDLE std::variant<FrameGraphBufferResourceHandle, FrameGraphImageResourceHandle>
-#define FRAME_GRAPH_RESOURCE_STATE std::variant<FrameGraphBufferResourceState, FrameGraphImageResourceState>
+#define FRAME_GRAPH_RESOURCE_STATE std::variant<FrameGraphBufferSubResourceState, FrameGraphImageSubResourceState>
 
 namespace
 {
 	uint32_t& _GetResourceStateQueueFamilyIndex(FRAME_GRAPH_RESOURCE_STATE& inoutState)
 	{
-		if (std::holds_alternative<FrameGraphImageResourceState>(inoutState))
+		if (std::holds_alternative<FrameGraphImageSubResourceState>(inoutState))
 		{
-			FrameGraphImageResourceState& stateToModify = std::get<FrameGraphImageResourceState>(inoutState);
+			FrameGraphImageSubResourceState& stateToModify = std::get<FrameGraphImageSubResourceState>(inoutState);
 			return stateToModify.queueFamily;
 		}
 		else
 		{
-			CHECK_TRUE(std::holds_alternative<FrameGraphBufferResourceState>(inoutState));
-			FrameGraphBufferResourceState& stateToModify = std::get<FrameGraphBufferResourceState>(inoutState);
+			CHECK_TRUE(std::holds_alternative<FrameGraphBufferSubResourceState>(inoutState));
+			FrameGraphBufferSubResourceState& stateToModify = std::get<FrameGraphBufferSubResourceState>(inoutState);
 			return stateToModify.queueFamily;
 		}
 	}
@@ -83,7 +83,7 @@ void FrameGraphNodeInputInitializer::InitializeInput(FrameGraphNodeInput* inoutN
 	inoutNodeInput->m_owner = nullptr;
 	if (isImage)
 	{
-		FrameGraphImageResourceState state{};
+		FrameGraphImageSubResourceState state{};
 		state.access = m_access;
 		state.layout = m_layout.value();
 		state.queueFamily = queueFamilyIndex;
@@ -93,7 +93,7 @@ void FrameGraphNodeInputInitializer::InitializeInput(FrameGraphNodeInput* inoutN
 	}
 	else
 	{
-		FrameGraphBufferResourceState state{};
+		FrameGraphBufferSubResourceState state{};
 		state.access = m_access;
 		state.queueFamily = queueFamilyIndex;
 		state.stage = m_stages;
@@ -162,7 +162,7 @@ void FrameGraphNodeOutputInitializer::InitializeOutput(FrameGraphNodeOutput* ino
 	inoutNodeOutput->m_owner = nullptr;
 	if (isImage)
 	{
-		FrameGraphImageResourceState imgState{};
+		FrameGraphImageSubResourceState imgState{};
 		imgState.access = m_access;
 		imgState.layout = m_layout.value();
 		imgState.queueFamily = queueFamilyIndex;
@@ -172,7 +172,7 @@ void FrameGraphNodeOutputInitializer::InitializeOutput(FrameGraphNodeOutput* ino
 	}
 	else
 	{
-		FrameGraphBufferResourceState bufState{};
+		FrameGraphBufferSubResourceState bufState{};
 		bufState.access = m_access;
 		bufState.queueFamily = queueFamilyIndex;
 		bufState.stage = m_stages;
@@ -265,7 +265,7 @@ void FrameGraphNodeInoutInitializer::InitializeInout(FrameGraphNodeInput* inoutN
 	inoutNodeInput->m_owner = nullptr;
 	if (isImage)
 	{
-		FrameGraphImageResourceState imgInState{};
+		FrameGraphImageSubResourceState imgInState{};
 		imgInState.access = m_inAccess;
 		imgInState.layout = m_initialLayout.value();
 		imgInState.queueFamily = initialQueueFamily;
@@ -275,7 +275,7 @@ void FrameGraphNodeInoutInitializer::InitializeInout(FrameGraphNodeInput* inoutN
 	}
 	else
 	{
-		FrameGraphBufferResourceState bufInState{};
+		FrameGraphBufferSubResourceState bufInState{};
 		bufInState.access = m_inAccess;
 		bufInState.queueFamily = initialQueueFamily;
 		bufInState.stage = m_inStages;
@@ -293,7 +293,7 @@ void FrameGraphNodeInoutInitializer::InitializeInout(FrameGraphNodeInput* inoutN
 	inoutNodeOutput->m_correlatedInput = inoutNodeInput;
 	if (isImage)
 	{
-		FrameGraphImageResourceState imgOutState{};
+		FrameGraphImageSubResourceState imgOutState{};
 		imgOutState.access = m_outAccess;
 		imgOutState.layout = m_finalLayout.value();
 		imgOutState.queueFamily = finalQueueFamily;
@@ -303,7 +303,7 @@ void FrameGraphNodeInoutInitializer::InitializeInout(FrameGraphNodeInput* inoutN
 	}
 	else
 	{
-		FrameGraphBufferResourceState bufOutState{};
+		FrameGraphBufferSubResourceState bufOutState{};
 		bufOutState.access = m_outAccess;
 		bufOutState.queueFamily = finalQueueFamily;
 		bufOutState.stage = m_outStages;

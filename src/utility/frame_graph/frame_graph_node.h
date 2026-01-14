@@ -9,7 +9,7 @@ class FrameGraphNodeInput;
 class FrameGraphNodeOutput;
 
 #define FRAME_GRAPH_RESOURCE_HANDLE std::variant<FrameGraphBufferResourceHandle, FrameGraphImageResourceHandle>
-#define FRAME_GRAPH_RESOURCE_STATE std::variant<FrameGraphBufferResourceState, FrameGraphImageResourceState>
+#define FRAME_GRAPH_RESOURCE_STATE std::variant<FrameGraphBufferSubResourceState, FrameGraphImageSubResourceState>
 
 #pragma region Initializer
 
@@ -203,7 +203,7 @@ public:
 
 	// Since frame graph handles the resource management, we just ask it to
 	// give us resource if it is not external texture
-	void RequireGraphInternalResources();
+	void RequireResource();
 
 	// This graph nodes may need resource to be in certain state before
 	// the resource can safely run through recorded command, e.g. image
@@ -218,9 +218,9 @@ public:
 	void MergeOutputResourceState(FrameGraphCompileContext& inoutResultContext) const;
 
 	// After command execution, 
-	// some resources may no longer be useful, we can
-	// return it to graph
-	void ReleaseGraphInternalResources();
+	// decrease reference count of resource required by this node's inputs
+	// increase reference count of resource produced by this node's outputs based on how many inputs it connected to
+	void UpdateResourceReferenceCount();
 
 	//========================================================================
 

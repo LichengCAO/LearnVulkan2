@@ -48,4 +48,10 @@ private:
 	void _MapHandleToResource(FrameGraphImageResourceHandle& inHandle);
 	void _MapHandleToResource(FrameGraphBufferResourceHandle& inHandle);
 
+public:
+	// Preordain functions return a handle that can be used later to map to actual resources
+	FrameGraphImageResourceHandle PreordainImageResource();
+	FrameGraphBufferResourceHandle PreordainBufferResource();
+
+
 };

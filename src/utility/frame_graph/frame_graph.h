@@ -22,6 +22,24 @@ public:
 	FrameGraphBlueprint& AddFrameGraphNode(std::unique_ptr<FrameGraphNode> inFrameGraphNode);
 };
 
+// Context that helps us to decide whether to add barrier between execution of frame graph nodes
+class FrameGraphCompileContext
+{
+private:
+	std::vector<std::vector<FrameGraphImageSubResourceState>> m_imageResourceStates;
+	std::vector<std::vector<FrameGraphBufferSubResourceState>> m_bufferResourceStates;
+	std::unordered_map<uint32_t, size_t> m_imageResourceHandleToIndex;
+	std::unordered_map<uint32_t, size_t> m_bufferResourceHandleToIndex;
+
+private:
+	auto _GetImageResourceState(const FrameGraphImageResourceHandle& inHandle) -> std::vector<FrameGraphImageSubResourceState>&;
+	auto _GetBufferResourceState(const FrameGraphBufferResourceHandle& inHandle) -> std::vector<FrameGraphBufferSubResourceState>&;
+
+public:
+	void MergeImageResourceState(const FrameGraphImageResourceHandle& inHandle, const FrameGraphImageSubResourceState& inState);
+	void MergeBufferResourceState(const FrameGraphBufferResourceHandle& inHandle, const FrameGraphBufferSubResourceState& inState);
+};
+
 class FrameGraph
 {
 private:
@@ -62,9 +80,9 @@ public:
 
 	CommandBuffer* GetCommandBuffer();
 
-	FrameGraphImageResourceHandle RegisterExternalImageResource(Image* inImagePtr, const FrameGraphImageResourceState& inInitialState);
+	FrameGraphImageResourceHandle RegisterExternalImageResource(Image* inImagePtr, const FrameGraphImageSubResourceState& inInitialState);
 	
-	FrameGraphBufferResourceHandle RegisterExternalBufferResource(Buffer* inBufferPtr, const FrameGraphBufferResourceState& inInitialState);
+	FrameGraphBufferResourceHandle RegisterExternalBufferResource(Buffer* inBufferPtr, const FrameGraphBufferSubResourceState& inInitialState);
 
 	void SetUp(FrameGraphBlueprint* inBlueprint);
 
