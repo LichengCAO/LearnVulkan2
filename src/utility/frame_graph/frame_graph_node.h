@@ -208,19 +208,17 @@ public:
 	// This graph nodes may need resource to be in certain state before
 	// the resource can safely run through recorded command, e.g. image
 	// layout transform
-	void MergeInputResourceState(
-		const FrameGraphCompileContext& inPrevContext, 
-		FrameGraphCompileContext& inoutRequiredContext) const;
+	void RequireInputResourceState() const;
 
 	// Frame graph resource will change state after execution of device commands
 	// this node records, therefore we need to update it, e.g. after render pass
 	// image may transfer to color attachment layout
-	void MergeOutputResourceState(FrameGraphCompileContext& inoutResultContext) const;
+	void MergeOutputResourceState() const;
 
 	// After command execution, 
 	// decrease reference count of resource required by this node's inputs
 	// increase reference count of resource produced by this node's outputs based on how many inputs it connected to
-	void UpdateResourceReferenceCount();
+	void UpdateResourceReferenceCount() const;
 
 	//========================================================================
 

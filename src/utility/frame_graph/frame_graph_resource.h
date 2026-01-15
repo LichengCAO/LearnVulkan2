@@ -8,44 +8,45 @@
 
 namespace frame_graph_util
 {
-	template<typename T, typename BoundaryType>
+	template<class ValueType, class IntervalType>
 	class SegmentTree
 	{
 	private:
 		struct Segment
 		{
-			std::optional<T> value;
-			BoundaryType left;	// inclusive
-			BoundaryType right; // exclusive
+			std::optional<ValueType> value;
+			IntervalType left;	// inclusive
+			IntervalType right; // exclusive
 			Segment* leftChild;
 			Segment* rightChild;
 		};
 		// Segment tree
 		std::vector<std::unique_ptr<Segment>> m_segments;
-		// Sometimes T has attributes that based on segment range, 
-		// this tree may create new T inside, so we need to know how to update it
-		std::function<void(BoundaryType, BoundaryType, T&)> m_updateFunction;
+		// Sometimes ValueType has attributes that based on segment range, 
+		// this tree may create new ValueType inside, so we need to know how to update it
+		std::function<void(IntervalType, IntervalType, ValueType&)> m_updateFunction;
 
 	public:
 		SegmentTree(
-			BoundaryType inSize,
-			std::function<void(BoundaryType, BoundaryType, T&)> inUpdateFunction)
-			: m_updateFunction(inUpdateFunction)
+			IntervalType inStartInclusive,
+			IntervalType inEndExclusive,
+			std::function<void(IntervalType, IntervalType, ValueType&)> inRangeUpdateFunc)
+			: m_updateFunction(inRangeUpdateFunc)
 		{
 			std::unique_ptr<Segment> rootSegment = std::make_unique<Segment>();
-			rootSegment->left = 0;
-			rootSegment->right = inSize;
+			rootSegment->left = inStartInclusive;
+			rootSegment->right = inEndExclusive;
 			m_segments.push_back(std::move(rootSegment));
 		}
 
 		void SetSegment(
-			BoundaryType inStartInclusive,
-			BoundaryType inEndExclusive, 
-			const T& inSubState)
+			IntervalType inStartInclusive,
+			IntervalType inEndExclusive,
+			const ValueType& inUpdateValue)
 		{
 			std::queue<Segment*> segmentQueue;
-			BoundaryType subLeft = inStartInclusive;
-			BoundaryType subRight = inEndExclusive;
+			IntervalType subLeft = inStartInclusive;
+			IntervalType subRight = inEndExclusive;
 
 			segmentQueue.push(m_segments[0].get()); // start from root
 			while (!segmentQueue.empty())
@@ -67,23 +68,38 @@ namespace frame_graph_util
 					// fully overlapped, set state and continue
 					if (fullyOverlap)
 					{
-						T newState = inSubState;
+						ValueType newState = inUpdateValue;
 						m_updateFunction(currentSegment->left, currentSegment->right, newState);
 						currentSegment->state = newState;
 						continue;
 					}
 
-					currentSegment->state.reset(); // invalidate current state
 					bool needSplit = currentSegment->leftChild == nullptr;
+					bool hasPrevState = currentSegment->state.has_value();
 					if (!needSplit)
 					{
+						if (hasPrevState)
+						{
+							ValueType prevStateLeft = currentSegment->state.value();
+							ValueType prevStateRight = currentSegment->state.value();
+							
+							// invalidate current state
+							currentSegment->state.reset();
+
+							// propagate previous state to children
+							m_updateFunction(currentSegment->leftChild->left, currentSegment->leftChild->right, prevStateLeft);
+							m_updateFunction(currentSegment->rightChild->left, currentSegment->rightChild->right, prevStateRight);
+							currentSegment->leftChild->state = prevStateLeft;
+							currentSegment->rightChild->state = prevStateRight;
+						}
+						
 						segmentQueue.push(currentSegment->leftChild);
 						segmentQueue.push(currentSegment->rightChild);
 						continue;
 					}
 
 					// need split, try to find split point
-					BoundaryType splitPoint{};
+					IntervalType splitPoint{};
 					if (subLeft > currentSegment->left && subLeft < currentSegment->right)
 					{
 						splitPoint = subLeft;
@@ -108,20 +124,35 @@ namespace frame_graph_util
 					rightChild->right = currentSegment->right;
 					m_segments.push_back(std::move(leftChild));
 					m_segments.push_back(std::move(rightChild));
+					if (hasPrevState)
+					{
+						ValueType prevStateLeft = currentSegment->state.value();
+						ValueType prevStateRight = currentSegment->state.value();
+
+						// invalidate current state
+						currentSegment->state.reset();
+
+						// propagate previous state to children
+						m_updateFunction(currentSegment->leftChild->left, currentSegment->leftChild->right, prevStateLeft);
+						m_updateFunction(currentSegment->rightChild->left, currentSegment->rightChild->right, prevStateRight);
+						currentSegment->leftChild->state = prevStateLeft;
+						currentSegment->rightChild->state = prevStateRight;
+					}
+
 					segmentQueue.push(currentSegment->leftChild);
 					segmentQueue.push(currentSegment->rightChild);
 				}
 			}
 		}
 		
-		void GetSegments(
-			BoundaryType inStartInclusive,
-			BoundaryType inEndExclusive,
-			std::vector<T>& outSubState) const
+		void GetSegment(
+			IntervalType inStartInclusive,
+			IntervalType inEndExclusive,
+			std::vector<ValueType>& outSubState) const
 		{
 			std::queue<Segment*> segmentQueue;
-			BoundaryType subLeft = inStartInclusive;
-			BoundaryType subRight = inEndExclusive;
+			IntervalType subLeft = inStartInclusive;
+			IntervalType subRight = inEndExclusive;
 
 			segmentQueue.push(m_segments[0].get()); // start from root
 			while (!segmentQueue.empty())
@@ -151,9 +182,9 @@ namespace frame_graph_util
 					}
 					else
 					{
-						T subState = currentSegment->state.value();
-						BoundaryType leftBound = std::max(subLeft, currentSegment->left);
-						BoundaryType rightBound = std::min(subRight, currentSegment->right);
+						ValueType subState = currentSegment->state.value();
+						IntervalType leftBound = std::max(subLeft, currentSegment->left);
+						IntervalType rightBound = std::min(subRight, currentSegment->right);
 
 						CHECK_TRUE(leftBound < rightBound);
 						m_updateFunction(leftBound, rightBound, subState);

@@ -1,8 +1,8 @@
 #include "frame_graph_node.h"
+#include "frame_graph.h"
 #include "device.h"
 #include <forward_list>
-#undef FRAME_GRAPH_RESOURCE_STATE
-#undef FRAME_GRAPH_RESOURCE_HANDLE
+
 #define FRAME_GRAPH_RESOURCE_HANDLE std::variant<FrameGraphBufferResourceHandle, FrameGraphImageResourceHandle>
 #define FRAME_GRAPH_RESOURCE_STATE std::variant<FrameGraphBufferSubResourceState, FrameGraphImageSubResourceState>
 
@@ -516,3 +516,139 @@ void FrameGraphNode::GetPreGraphNodes(std::set<FrameGraphNode*>& outFrameGraphNo
 		outFrameGraphNodes.insert(uptrInput->GetOwner());
 	}
 }
+
+void FrameGraphNode::RequireInputResourceState() const
+{
+	FrameGraphCompileContext compileContext{}; // TODO
+
+	for (auto& uptrInput : m_inputs)
+	{
+		auto& handle = uptrInput->GetResourceHandle();
+
+		if (std::holds_alternative<FrameGraphImageResourceHandle>(handle))
+		{
+			const FrameGraphImageResourceHandle& imgHandle = 
+				std::get<FrameGraphImageResourceHandle>(handle);
+			const FrameGraphImageSubResourceState& imgResource = 
+				std::get<FrameGraphImageSubResourceState>(uptrInput->GetRequiredResourceState());
+			
+			compileContext.RequireImageResourceStateBeforePass(imgHandle, imgResource);
+		}
+		else if (std::holds_alternative<FrameGraphBufferResourceHandle>(handle))
+		{
+			const FrameGraphBufferResourceHandle& bufHandle = 
+				std::get<FrameGraphBufferResourceHandle>(handle);
+			const FrameGraphBufferSubResourceState& bufResource = 
+				std::get<FrameGraphBufferSubResourceState>(uptrInput->GetRequiredResourceState());
+			
+			compileContext.RequireBufferResourceStateBeforePass(bufHandle, bufResource);
+		}
+		else
+		{
+			CHECK_TRUE(false);
+		}
+	}
+}
+
+void FrameGraphNode::MergeOutputResourceState() const
+{
+	FrameGraphCompileContext compileContext{}; // TODO
+
+	for (auto& uptrOutput : m_outputs)
+	{
+		auto& handle = uptrOutput->GetResourceHandle();
+		if (std::holds_alternative<FrameGraphImageResourceHandle>(handle))
+		{
+			const FrameGraphImageResourceHandle& imgHandle = 
+				std::get<FrameGraphImageResourceHandle>(handle);
+			const FrameGraphImageSubResourceState& imgResource = 
+				std::get<FrameGraphImageSubResourceState>(uptrOutput->GetProcessedResourceState());
+			
+			compileContext.MergeImageResourceStateAfterPass(imgHandle, imgResource);
+		}
+		else if (std::holds_alternative<FrameGraphBufferResourceHandle>(handle))
+		{
+			const FrameGraphBufferResourceHandle& bufHandle = 
+				std::get<FrameGraphBufferResourceHandle>(handle);
+			const FrameGraphBufferSubResourceState& bufResource = 
+				std::get<FrameGraphBufferSubResourceState>(uptrOutput->GetProcessedResourceState());
+			
+			compileContext.MergeBufferResourceStateAfterPass(bufHandle, bufResource);
+		}
+		else
+		{
+			CHECK_TRUE(false);
+		}
+	}
+}
+
+void FrameGraphNode::UpdateResourceReferenceCount() const
+{
+	FrameGraphCompileContext compileContext{}; // TODO
+
+	for (auto& uptrInput : m_inputs)
+	{
+		auto& handle = uptrInput->GetResourceHandle();
+
+		if (std::holds_alternative<FrameGraphImageResourceHandle>(handle))
+		{
+			const FrameGraphImageResourceHandle& imgHandle = 
+				std::get<FrameGraphImageResourceHandle>(handle);
+			const FrameGraphImageSubResourceState& imgResource = 
+				std::get<FrameGraphImageSubResourceState>(uptrInput->GetRequiredResourceState());
+			
+			compileContext.ReleaseImageResourceReference(imgHandle, imgResource.range);
+		}
+		else if (std::holds_alternative<FrameGraphBufferResourceHandle>(handle))
+		{
+			const FrameGraphBufferResourceHandle& bufHandle = 
+				std::get<FrameGraphBufferResourceHandle>(handle);
+			const FrameGraphBufferSubResourceState& bufResource = 
+				std::get<FrameGraphBufferSubResourceState>(uptrInput->GetRequiredResourceState());
+			
+			compileContext.ReleaseBufferResourceReference(bufHandle, bufResource.offset, bufResource.range);
+		}
+		else
+		{
+			CHECK_TRUE(false);
+		}
+	}
+
+	for (auto& uptrOutput : m_outputs)
+	{
+		auto& handle = uptrOutput->GetResourceHandle();
+		const std::vector<FrameGraphNodeInput*>& connectedInputs = uptrOutput->GetConnectedInputs();
+
+		if (std::holds_alternative<FrameGraphImageResourceHandle>(handle))
+		{
+			for (auto pInput : connectedInputs)
+			{
+				const FrameGraphImageResourceHandle& imgHandle =
+					std::get<FrameGraphImageResourceHandle>(pInput->GetResourceHandle());
+				const FrameGraphImageSubResourceState& imgResource =
+					std::get<FrameGraphImageSubResourceState>(pInput->GetRequiredResourceState());
+
+				compileContext.AddImageResourceReference(imgHandle, imgResource.range);
+			}
+		}
+		else if (std::holds_alternative<FrameGraphBufferResourceHandle>(handle))
+		{
+			for (auto pInput : connectedInputs)
+			{
+				const FrameGraphBufferResourceHandle& bufHandle =
+					std::get<FrameGraphBufferResourceHandle>(pInput->GetResourceHandle());
+				const FrameGraphBufferSubResourceState& bufResource =
+					std::get<FrameGraphBufferSubResourceState>(pInput->GetRequiredResourceState());
+
+				compileContext.AddBufferResourceReference(bufHandle, bufResource.offset, bufResource.range);
+			}
+		}
+		else
+		{
+			CHECK_TRUE(false);
+		}
+	}
+}
+
+#undef FRAME_GRAPH_RESOURCE_STATE
+#undef FRAME_GRAPH_RESOURCE_HANDLE

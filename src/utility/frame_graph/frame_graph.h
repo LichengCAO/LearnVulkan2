@@ -26,18 +26,54 @@ public:
 class FrameGraphCompileContext
 {
 private:
-	std::vector<std::vector<FrameGraphImageSubResourceState>> m_imageResourceStates;
-	std::vector<std::vector<FrameGraphBufferSubResourceState>> m_bufferResourceStates;
+	std::vector<FrameGraphImageResourceState> m_imageResourceStates;
+	std::vector<FrameGraphImageResourceState> m_imageResourceRequireStates;
+	std::vector<FrameGraphBufferResourceState> m_bufferResourceStates;
+	std::vector<FrameGraphBufferResourceState> m_bufferResourceRequireStates;
 	std::unordered_map<uint32_t, size_t> m_imageResourceHandleToIndex;
 	std::unordered_map<uint32_t, size_t> m_bufferResourceHandleToIndex;
 
 private:
 	auto _GetImageResourceState(const FrameGraphImageResourceHandle& inHandle) -> std::vector<FrameGraphImageSubResourceState>&;
+	
 	auto _GetBufferResourceState(const FrameGraphBufferResourceHandle& inHandle) -> std::vector<FrameGraphBufferSubResourceState>&;
 
 public:
-	void MergeImageResourceState(const FrameGraphImageResourceHandle& inHandle, const FrameGraphImageSubResourceState& inState);
-	void MergeBufferResourceState(const FrameGraphBufferResourceHandle& inHandle, const FrameGraphBufferSubResourceState& inState);
+	void RequireImageResourceStateBeforePass(
+		const FrameGraphImageResourceHandle& inHandle, 
+		const FrameGraphImageSubResourceState& inState);
+
+	void RequireBufferResourceStateBeforePass(
+		const FrameGraphBufferResourceHandle& inHandle, 
+		const FrameGraphBufferSubResourceState& inState);
+	
+	void GenerateSynchronizationProcess();
+
+	void MergeImageResourceStateAfterPass(
+		const FrameGraphImageResourceHandle& inHandle, 
+		const FrameGraphImageSubResourceState& inState);
+
+	void MergeBufferResourceStateAfterPass(
+		const FrameGraphBufferResourceHandle& inHandle, 
+		const FrameGraphBufferSubResourceState& inState);
+	
+	void AddImageResourceReference(
+		const FrameGraphImageResourceHandle& inHandle, 
+		const VkImageSubresourceRange& inRange);
+
+	void ReleaseImageResourceReference(
+		const FrameGraphImageResourceHandle& inHandle, 
+		const VkImageSubresourceRange& inRange);
+	
+	void AddBufferResourceReference(
+		const FrameGraphBufferResourceHandle& inHandle, 
+		VkDeviceSize inOffset, 
+		VkDeviceSize inSize);
+	
+	void ReleaseBufferResourceReference(
+		const FrameGraphBufferResourceHandle& inHandle, 
+		VkDeviceSize inOffset, 
+		VkDeviceSize inSize);
 };
 
 class FrameGraph

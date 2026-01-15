@@ -9,6 +9,7 @@ FrameGraphBufferResourceState::FrameGraphBufferResourceState(VkDeviceSize size)
 {
 	m_segmentTree = 
 		std::make_unique<BUFFER_SEGMENT_TREE>(
+			0,
 			size,
 			[](VkDeviceSize inStart, VkDeviceSize inEnd, FrameGraphBufferSubResourceState& inoutState)
 			{
@@ -31,7 +32,7 @@ void FrameGraphBufferResourceState::GetSubResourceState(
 	VkDeviceSize inRange, 
 	std::vector<FrameGraphBufferSubResourceState>& outSubState) const
 {
-	m_segmentTree->GetSegments(
+	m_segmentTree->GetSegment(
 		inOffset,
 		inOffset + inRange,
 		outSubState);
@@ -58,6 +59,7 @@ FrameGraphImageResourceState::FrameGraphImageResourceState(
 	for (uint32_t i = 0; i < numTrees; ++i)
 	{
 		std::unique_ptr<IMAGE_SEGMENT_TREE> tree = std::make_unique<IMAGE_SEGMENT_TREE>(
+			0,
 			m_splitByMipLevels ? arrayLayers : mipLevels,
 			m_splitByMipLevels ? mipMajorLamda : arrayMajorLamda);
 		m_segmentTrees.push_back(std::move(tree));
@@ -105,7 +107,7 @@ void FrameGraphImageResourceState::GetSubResourceState(
 	{
 		for (uint32_t i = 0; i < inRange.levelCount; ++i)
 		{
-			m_segmentTrees[inRange.baseMipLevel + i]->GetSegments(
+			m_segmentTrees[inRange.baseMipLevel + i]->GetSegment(
 				inRange.baseArrayLayer,
 				inRange.baseArrayLayer + inRange.layerCount,
 				outSubState);
@@ -115,7 +117,7 @@ void FrameGraphImageResourceState::GetSubResourceState(
 	{
 		for (uint32_t i = 0; i < inRange.layerCount; ++i)
 		{
-			m_segmentTrees[inRange.baseArrayLayer + i]->GetSegments(
+			m_segmentTrees[inRange.baseArrayLayer + i]->GetSegment(
 				inRange.baseMipLevel,
 				inRange.baseMipLevel + inRange.levelCount,
 				outSubState);
