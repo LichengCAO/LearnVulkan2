@@ -179,6 +179,8 @@ private:
 	std::set<FrameGraphNode*> m_extraDependencies;
 	FrameGraphQueueType m_queueType = FrameGraphQueueType::GRAPHICS_ONLY;
 
+	void _DoForEachNextInput(std::function<void(FrameGraphNodeInput*)> inFuncToDo) const;
+
 public:
 	void Init(FrameGraphNodeInitializer* inInitializer);
 
@@ -214,6 +216,12 @@ public:
 	// this node records, therefore we need to update it, e.g. after render pass
 	// image may transfer to color attachment layout
 	void MergeOutputResourceState() const;
+
+	// According to spec, queue ownership transform requires both release operation and acquire operation,
+	// see: https://docs.vulkan.org/spec/latest/chapters/synchronization.html#synchronization-queue-transfers
+	// this requires memory barriers be on both queue.
+	// Therefore, we'd better to inform incoming resource state after this pass.
+	void PresageResourceStateTransfer() const;
 
 	// After command execution, 
 	// decrease reference count of resource required by this node's inputs

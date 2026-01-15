@@ -39,38 +39,48 @@ private:
 	auto _GetBufferResourceState(const FrameGraphBufferResourceHandle& inHandle) -> std::vector<FrameGraphBufferSubResourceState>&;
 
 public:
-	void RequireImageResourceStateBeforePass(
+	// Resource layout, queue ownership may not meet requirement,
+	// so we need add barrier, wait semaphore based on these requirements
+	void RequireSubResourceStateBeforePass(
 		const FrameGraphImageResourceHandle& inHandle, 
 		const FrameGraphImageSubResourceState& inState);
-
-	void RequireBufferResourceStateBeforePass(
+	void RequireSubResourceStateBeforePass(
 		const FrameGraphBufferResourceHandle& inHandle, 
 		const FrameGraphBufferSubResourceState& inState);
-	
-	void GenerateSynchronizationProcess();
 
-	void MergeImageResourceStateAfterPass(
+	// After pass, resource state changes, we store it for next pass
+	void MergeSubResourceStateAfterPass(
 		const FrameGraphImageResourceHandle& inHandle, 
 		const FrameGraphImageSubResourceState& inState);
-
-	void MergeBufferResourceStateAfterPass(
+	void MergeSubResourceStateAfterPass(
 		const FrameGraphBufferResourceHandle& inHandle, 
 		const FrameGraphBufferSubResourceState& inState);
-	
-	void AddImageResourceReference(
-		const FrameGraphImageResourceHandle& inHandle, 
-		const VkImageSubresourceRange& inRange);
 
-	void ReleaseImageResourceReference(
+	// According to spec, queue ownership transform requires both release operation and acquire operation,
+	// see: https://docs.vulkan.org/spec/latest/chapters/synchronization.html#synchronization-queue-transfers
+	// this requires memory barriers be on both queue.
+	// Therefore, we'd better to check every incoming resource state
+	// transform ahead and build necessary release operation memory barrier
+	// and semaphore in current batch
+	void PresageSubResourceStateNextPass(
 		const FrameGraphImageResourceHandle& inHandle, 
-		const VkImageSubresourceRange& inRange);
+		const FrameGraphImageSubResourceState& inNewState);
+	void PresageSubResourceStateNextPass(
+		const FrameGraphBufferResourceHandle& inHandle, 
+		const FrameGraphBufferSubResourceState& inNewState);
 	
-	void AddBufferResourceReference(
+	void AddSubResourceReference(
+		const FrameGraphImageResourceHandle& inHandle, 
+		const VkImageSubresourceRange& inRange);	
+	void AddSubResourceReference(
 		const FrameGraphBufferResourceHandle& inHandle, 
 		VkDeviceSize inOffset, 
 		VkDeviceSize inSize);
 	
-	void ReleaseBufferResourceReference(
+	void ReleaseSubResourceReference(
+		const FrameGraphImageResourceHandle& inHandle,
+		const VkImageSubresourceRange& inRange);
+	void ReleaseSubResourceReference(
 		const FrameGraphBufferResourceHandle& inHandle, 
 		VkDeviceSize inOffset, 
 		VkDeviceSize inSize);
