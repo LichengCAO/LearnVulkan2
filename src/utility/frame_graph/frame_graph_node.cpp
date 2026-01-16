@@ -661,7 +661,7 @@ void FrameGraphNode::UpdateResourceReferenceCount() const
 			const FrameGraphBufferSubResourceState& bufResource = 
 				std::get<FrameGraphBufferSubResourceState>(uptrInput->GetRequiredResourceState());
 			
-			compileContext.ReleaseSubResourceReference(bufHandle, bufResource.offset, bufResource.range);
+			compileContext.ReleaseSubResourceReference(bufHandle, bufResource.offset, bufResource.size);
 		}
 		else
 		{
@@ -688,7 +688,7 @@ void FrameGraphNode::UpdateResourceReferenceCount() const
 			const FrameGraphBufferSubResourceState& bufResource =
 				std::get<FrameGraphBufferSubResourceState>(pInput->GetRequiredResourceState());
 
-			compileContext.AddSubResourceReference(bufHandle, bufResource.offset, bufResource.range);
+			compileContext.AddSubResourceReference(bufHandle, bufResource.offset, bufResource.size);
 		}
 		else
 		{

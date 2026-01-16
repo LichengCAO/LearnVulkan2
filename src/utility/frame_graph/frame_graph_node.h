@@ -179,15 +179,21 @@ private:
 	std::set<FrameGraphNode*> m_extraDependencies;
 	FrameGraphQueueType m_queueType = FrameGraphQueueType::GRAPHICS_ONLY;
 
+private:
 	void _DoForEachNextInput(std::function<void(FrameGraphNodeInput*)> inFuncToDo) const;
 
 public:
 	void Init(FrameGraphNodeInitializer* inInitializer);
 
 	// Normally, dependency based on node input and output will suffice,
-	// however, there might be cases where this node represent a secondary buffer
-	// recording behavior where we actually record a command buffer for other
-	// frame graph node to use
+	// however, there might be cases where:
+	// 1. this node represent a secondary buffer
+	//     recording behavior that records a command buffer for other
+	//     frame graph node to use
+	// 2. this node reads and modifies a image, but the image is also
+	//     read by other nodes. If we solely build dependency based on
+	//     resource flow, we will not add barrier between the read only
+	//     pass and read-write pass and this will be problematic
 	void AddExtraDependency(FrameGraphNode* inNodeThisDependsOn);
 
 	// Get frame graph nodes this nodes depends on, I consider 3 cases: 
@@ -225,7 +231,8 @@ public:
 
 	// After command execution, 
 	// decrease reference count of resource required by this node's inputs
-	// increase reference count of resource produced by this node's outputs based on how many inputs it connected to
+	// increase reference count of resource produced by this node's outputs 
+	// based on how many inputs it connected to
 	void UpdateResourceReferenceCount() const;
 
 	//========================================================================

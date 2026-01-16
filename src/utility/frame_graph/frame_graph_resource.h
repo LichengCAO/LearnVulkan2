@@ -39,6 +39,55 @@ namespace frame_graph_util
 			m_segments.push_back(std::move(rootSegment));
 		}
 
+		SegmentTree(const SegmentTree& inTreeToClone)
+		{
+			std::queue<Segment*> modifyChildQueue;
+			static auto funcShallowCopy = [](const Segment* inSrcSegment, Segment* outDstSegment)
+			{
+				outDstSegment->left = inSrcSegment->left;
+				outDstSegment->right = inSrcSegment->right;
+				outDstSegment->value = inSrcSegment->value;
+				outDstSegment->leftChild = inSrcSegment->leftChild;	// process later
+				outDstSegment->rightChild = inSrcSegment->rightChild; // process later
+			};
+			
+			this->m_updateFunction = inTreeToClone.m_updateFunction;
+			if (inTreeToClone.m_segments.empty())
+			{
+				return;
+			}
+			
+			std::unique_ptr<Segment> rootSegment = std::make_unique<Segment>();
+			funcShallowCopy(inTreeToClone.m_segments[0].get(), rootSegment.get());
+			modifyChildQueue.push(rootSegment.get()); // start from root
+			m_segments.push_back(std::move(rootSegment));
+
+			while (!modifyChildQueue.empty())
+			{
+				size_t n = modifyChildQueue.size();
+				for (size_t i = 0; i < n; ++i)
+				{
+					auto currentParentSegment = modifyChildQueue.front();
+					bool hasValidChildToClone = (currentParentSegment->leftChild != nullptr);
+					modifyChildQueue.pop();
+					if (!hasValidChildToClone)
+					{
+						continue;
+					}
+					std::unique_ptr<Segment> newLeftChild = std::make_unique<Segment>();
+					std::unique_ptr<Segment> newRightChild = std::make_unique<Segment>();
+					funcShallowCopy(currentParentSegment->leftChild, newLeftChild.get());
+					funcShallowCopy(currentParentSegment->rightChild, newRightChild.get());
+					currentParentSegment->leftChild = newLeftChild.get();
+					currentParentSegment->rightChild = newRightChild.get();
+					modifyChildQueue.push(newLeftChild.get());
+					modifyChildQueue.push(newRightChild.get());
+					m_segments.push_back(std::move(newLeftChild));
+					m_segments.push_back(std::move(newRightChild));
+				}
+			}
+		}
+
 		void SetSegment(
 			IntervalType inStartInclusive,
 			IntervalType inEndExclusive,
@@ -235,12 +284,14 @@ public:
 	void GetSubResourceState(
 		const VkImageSubresourceRange& inRange,
 		std::vector<FrameGraphImageSubResourceState>& outSubState) const;
+	uint32_t GetMipLevelCount() const;
+	uint32_t GetArrayLayerCount() const;
 };
 
 struct FrameGraphBufferSubResourceState
 {
 	VkDeviceSize offset;
-	VkDeviceSize range;
+	VkDeviceSize size;
 	uint32_t queueFamily;
 	VkAccessFlags access;
 	VkPipelineStageFlags stage; // last time resource is used
@@ -259,6 +310,7 @@ public:
 		VkDeviceSize inOffset, 
 		VkDeviceSize inRange, 
 		std::vector<FrameGraphBufferSubResourceState>& outSubState) const;
+	VkDeviceSize GetSize() const { return m_size; };
 };
 
 enum class FrameGraphQueueType

@@ -1,6 +1,7 @@
 #pragma once
 #include "common.h"
 #include "frame_graph_resource.h"
+#include "frame_graph_compile_context.h"
 #include "task_scheduler.h"
 
 class FrameGraphNode;
@@ -20,70 +21,6 @@ private:
 
 public:
 	FrameGraphBlueprint& AddFrameGraphNode(std::unique_ptr<FrameGraphNode> inFrameGraphNode);
-};
-
-// Context that helps us to decide whether to add barrier between execution of frame graph nodes
-class FrameGraphCompileContext
-{
-private:
-	std::vector<FrameGraphImageResourceState> m_imageResourceStates;
-	std::vector<FrameGraphImageResourceState> m_imageResourceRequireStates;
-	std::vector<FrameGraphBufferResourceState> m_bufferResourceStates;
-	std::vector<FrameGraphBufferResourceState> m_bufferResourceRequireStates;
-	std::unordered_map<uint32_t, size_t> m_imageResourceHandleToIndex;
-	std::unordered_map<uint32_t, size_t> m_bufferResourceHandleToIndex;
-
-private:
-	auto _GetImageResourceState(const FrameGraphImageResourceHandle& inHandle) -> std::vector<FrameGraphImageSubResourceState>&;
-	
-	auto _GetBufferResourceState(const FrameGraphBufferResourceHandle& inHandle) -> std::vector<FrameGraphBufferSubResourceState>&;
-
-public:
-	// Resource layout, queue ownership may not meet requirement,
-	// so we need add barrier, wait semaphore based on these requirements
-	void RequireSubResourceStateBeforePass(
-		const FrameGraphImageResourceHandle& inHandle, 
-		const FrameGraphImageSubResourceState& inState);
-	void RequireSubResourceStateBeforePass(
-		const FrameGraphBufferResourceHandle& inHandle, 
-		const FrameGraphBufferSubResourceState& inState);
-
-	// After pass, resource state changes, we store it for next pass
-	void MergeSubResourceStateAfterPass(
-		const FrameGraphImageResourceHandle& inHandle, 
-		const FrameGraphImageSubResourceState& inState);
-	void MergeSubResourceStateAfterPass(
-		const FrameGraphBufferResourceHandle& inHandle, 
-		const FrameGraphBufferSubResourceState& inState);
-
-	// According to spec, queue ownership transform requires both release operation and acquire operation,
-	// see: https://docs.vulkan.org/spec/latest/chapters/synchronization.html#synchronization-queue-transfers
-	// this requires memory barriers be on both queue.
-	// Therefore, we'd better to check every incoming resource state
-	// transform ahead and build necessary release operation memory barrier
-	// and semaphore in current batch
-	void PresageSubResourceStateNextPass(
-		const FrameGraphImageResourceHandle& inHandle, 
-		const FrameGraphImageSubResourceState& inNewState);
-	void PresageSubResourceStateNextPass(
-		const FrameGraphBufferResourceHandle& inHandle, 
-		const FrameGraphBufferSubResourceState& inNewState);
-	
-	void AddSubResourceReference(
-		const FrameGraphImageResourceHandle& inHandle, 
-		const VkImageSubresourceRange& inRange);	
-	void AddSubResourceReference(
-		const FrameGraphBufferResourceHandle& inHandle, 
-		VkDeviceSize inOffset, 
-		VkDeviceSize inSize);
-	
-	void ReleaseSubResourceReference(
-		const FrameGraphImageResourceHandle& inHandle,
-		const VkImageSubresourceRange& inRange);
-	void ReleaseSubResourceReference(
-		const FrameGraphBufferResourceHandle& inHandle, 
-		VkDeviceSize inOffset, 
-		VkDeviceSize inSize);
 };
 
 class FrameGraph

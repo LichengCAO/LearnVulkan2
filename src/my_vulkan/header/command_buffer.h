@@ -2,6 +2,7 @@
 #include "common.h"
 #include <queue>
 #include "common_enums.h"
+#include "vulkan_struct_util.h"
 // https://stackoverflow.com/questions/44105058/implementing-component-system-from-unity-in-c
 
 class GraphicsPipeline;
@@ -20,79 +21,6 @@ class ICommandBufferInitializer
 {
 public:
 	virtual void InitCommandBuffer(CommandBuffer* outCommandBufferPtr) const = 0;
-};
-
-class ImageBarrierBuilder
-{
-private:
-	const void* pNext = nullptr;
-	uint32_t                   m_srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	uint32_t                   m_dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	VkImageSubresourceRange    m_subresourceRange{};
-
-public:
-	ImageBarrierBuilder();
-	
-	ImageBarrierBuilder& Reset();
-
-	// optional, set mip level range of the barrier
-	ImageBarrierBuilder& CustomizeMipLevelRange(uint32_t baseMipLevel, uint32_t levelCount = 1);
-
-	// optional, set array layer range of the barrier
-	ImageBarrierBuilder& CustomizeArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount = 1);
-
-	// optional, set aspect of the image barrier, default: VK_IMAGE_ASPECT_COLOR_BIT
-	ImageBarrierBuilder& CustomizeImageAspect(VkImageAspectFlags aspectMask);
-
-	// optional, useful when trying to upload image in a command buffer from queue family other than the graphics queue family
-	ImageBarrierBuilder& CustomizeQueueFamilyTransfer(uint32_t inQueueFamilyTransferFrom, uint32_t inQueueFamilyTransferTo);
-	
-	// _srcAccessMask: when the data is updated (available)
-	// _dstAccessMask: when the data is visible
-	// see: https://themaister.net/blog/2019/08/14/yet-another-blog-explaining-vulkan-synchronization/
-	VkImageMemoryBarrier NewBarrier(
-		VkImage _image,
-		VkImageLayout _oldLayout,
-		VkImageLayout _newLayout,
-		VkAccessFlags _srcAccessMask,
-		VkAccessFlags _dstAccessMask) const;
-};
-
-class ImageBlitBuilder
-{
-private:
-	VkImageSubresourceLayers m_srcSubresourceLayers{};
-	VkImageSubresourceLayers m_dstSubresourceLayers{};
-
-public:
-	ImageBlitBuilder();
-	ImageBlitBuilder& Reset();
-	ImageBlitBuilder& CustomizeSrcAspect(VkImageAspectFlags aspectMask);
-	ImageBlitBuilder& CustomizeDstAspect(VkImageAspectFlags aspectMask);
-	ImageBlitBuilder& CustomizeSrcArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount = 1);
-	ImageBlitBuilder& CustomizeDstArrayLayerRange(uint32_t baseArrayLayer, uint32_t layerCount = 1);
-	
-	VkImageBlit NewBlit(
-		const VkOffset3D& srcOffsetUL, 
-		const VkOffset3D& srcOffsetLR, 
-		uint32_t srcMipLevel, 
-		const VkOffset3D& dstOffsetUL,
-		const VkOffset3D& dstOffsetLR,
-		uint32_t dstMipLevel) const;
-	
-	VkImageBlit NewBlit(
-		const VkExtent2D& inSrcImageSize,
-		uint32_t srcMipLevel, 
-		const VkExtent2D& inDstImageSize,
-		uint32_t dstMipLevel) const;
-	
-	VkImageBlit NewBlit(
-		const VkOffset2D& inSrcOffsetUpperLeftXY,
-		const VkOffset2D& inSrcOffsetLowerRightXY,
-		uint32_t inSrcMipLevel,
-		const VkOffset2D& inDstOffsetUpperLeftXY,
-		const VkOffset2D& inDstOffsetLowerRightXY,
-		uint32_t inDstMipLevel) const;
 };
 
 // class handles commandbuffer and queue submission, synchronization

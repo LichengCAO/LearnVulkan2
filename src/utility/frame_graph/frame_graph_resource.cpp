@@ -14,7 +14,7 @@ FrameGraphBufferResourceState::FrameGraphBufferResourceState(VkDeviceSize size)
 			[](VkDeviceSize inStart, VkDeviceSize inEnd, FrameGraphBufferSubResourceState& inoutState)
 			{
 				inoutState.offset = inStart;
-				inoutState.range = inEnd - inStart;
+				inoutState.size = inEnd - inStart;
 			});
 }
 
@@ -23,7 +23,7 @@ void FrameGraphBufferResourceState::SetSubResourceState(
 {
 	m_segmentTree->SetSegment(
 		inSubState.offset,
-		inSubState.offset + inSubState.range,
+		inSubState.offset + inSubState.size,
 		inSubState);
 }
 
@@ -123,6 +123,16 @@ void FrameGraphImageResourceState::GetSubResourceState(
 				outSubState);
 		}
 	}
+}
+
+uint32_t FrameGraphImageResourceState::GetMipLevelCount() const
+{
+    return m_arrayLayers;
+}
+
+uint32_t FrameGraphImageResourceState::GetArrayLayerCount() const
+{
+	return m_mipLevels;
 }
 
 #undef BUFFER_SEGMENT_TREE
