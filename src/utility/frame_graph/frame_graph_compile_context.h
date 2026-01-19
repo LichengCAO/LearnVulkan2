@@ -15,16 +15,23 @@ private:
 		uint32_t count;
 	};
 
+	struct ImageRefCountTree
+	{
+		std::vector<std::unique_ptr<REF_COUNT_SEG_TREE(uint32_t)>> tree;
+		bool splitByMipLevel = false;
+		uint32_t mipLevelCount = 0;
+		uint32_t arrayLayerCount = 0;
+	};
+
 	std::vector<FrameGraphImageResourceState> m_imageResourceStates;
 	std::vector<FrameGraphImageResourceState> m_imageResourceRequireStates;
 	std::vector<FrameGraphBufferResourceState> m_bufferResourceStates;
 	std::vector<FrameGraphBufferResourceState> m_bufferResourceRequireStates;
 	std::unordered_map<uint32_t, size_t> m_imageResourceHandleToIndex;
 	std::unordered_map<uint32_t, size_t> m_bufferResourceHandleToIndex;
-	std::unique_ptr<REF_COUNT_SEG_TREE(VkDeviceSize)> m_bufferRefCount;
-	std::vector<std::unique_ptr<REF_COUNT_SEG_TREE(uint32_t)>> m_subImageRefCounts;
-	bool m_splitByMipLevel = false;
-
+	std::vector<std::unique_ptr<REF_COUNT_SEG_TREE(VkDeviceSize)>> m_bufferRefCounts;
+	std::vector<std::unique_ptr<ImageRefCountTree>> m_subImageRefCounts;
+	
 private:
 	auto _GetResourceState(const FrameGraphImageResourceHandle& inHandle) -> FrameGraphImageResourceState&;
 

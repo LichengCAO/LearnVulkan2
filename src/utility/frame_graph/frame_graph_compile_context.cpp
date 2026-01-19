@@ -1,6 +1,8 @@
 #include "frame_graph_compile_context.h"
 #include "vulkan_struct_util.h"
 
+#define REF_COUNT_SEG_TREE(intervalType) frame_graph_util::SegmentTree<RefCount<intervalType>, intervalType>
+
 void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 	const FrameGraphImageResourceHandle& inHandle, 
 	const FrameGraphImageSubResourceState& inState)
@@ -167,6 +169,28 @@ void FrameGraphCompileContext::AddSubResourceReference(
 	const FrameGraphImageResourceHandle& inHandle, 
 	const VkImageSubresourceRange& inRange)
 {
+	ImageRefCountTree* refCountTree = nullptr; // TODO
+	uint32_t mainIntervalStart = refCountTree->splitByMipLevel ? inRange.baseMipLevel : inRange.baseArrayLayer;
+	uint32_t mainIntervalEnd = refCountTree->splitByMipLevel ? 
+		(inRange.baseMipLevel + inRange.levelCount) : 
+		(inRange.baseArrayLayer + inRange.layerCount);
+	uint32_t subIntervalStart = refCountTree->splitByMipLevel ? inRange.baseArrayLayer : inRange.baseMipLevel;
+	uint32_t subIntervalEnd = refCountTree->splitByMipLevel ? 
+		(inRange.baseArrayLayer + inRange.layerCount) : 
+		(inRange.baseMipLevel + inRange.levelCount);
+
+	for (uint32_t i = mainIntervalStart; i < mainIntervalEnd; ++i)
+	{
+		std::vector<RefCount<uint32_t>> currentCounts;
+		auto subTree = refCountTree->tree[i].get();
+
+		subTree->GetSegment(subIntervalStart, subIntervalEnd, currentCounts);
+		for (auto& currentCount : currentCounts)
+		{
+			currentCount.count += 1;
+			subTree->SetSegment(currentCount.left, currentCount.right, currentCount);
+		}
+	}
 }
 
 void FrameGraphCompileContext::AddSubResourceReference(
@@ -174,12 +198,46 @@ void FrameGraphCompileContext::AddSubResourceReference(
 	VkDeviceSize inOffset, 
 	VkDeviceSize inSize)
 {
+	REF_COUNT_SEG_TREE(VkDeviceSize)* refCountTree = nullptr; // TODO
+	std::vector<RefCount<VkDeviceSize>> currentCounts;
+
+	refCountTree->GetSegment(inOffset, inOffset + inSize, currentCounts);
+	for (auto& currentCount : currentCounts)
+	{
+		currentCount.count += 1;
+		refCountTree->SetSegment(currentCount.left, currentCount.right, currentCount);
+	}
 }
 
 void FrameGraphCompileContext::ReleaseSubResourceReference(
 	const FrameGraphImageResourceHandle& inHandle, 
 	const VkImageSubresourceRange& inRange)
 {
+	ImageRefCountTree* refCountTree = nullptr; // TODO
+	uint32_t mainIntervalStart = refCountTree->splitByMipLevel ? inRange.baseMipLevel : inRange.baseArrayLayer;
+	uint32_t mainIntervalEnd = refCountTree->splitByMipLevel ?
+		(inRange.baseMipLevel + inRange.levelCount) :
+		(inRange.baseArrayLayer + inRange.layerCount);
+	uint32_t subIntervalStart = refCountTree->splitByMipLevel ? inRange.baseArrayLayer : inRange.baseMipLevel;
+	uint32_t subIntervalEnd = refCountTree->splitByMipLevel ?
+		(inRange.baseArrayLayer + inRange.layerCount) :
+		(inRange.baseMipLevel + inRange.levelCount);
+
+	for (uint32_t i = mainIntervalStart; i < mainIntervalEnd; ++i)
+	{
+		std::vector<RefCount<uint32_t>> currentCounts;
+		auto subTree = refCountTree->tree[i].get();
+
+		subTree->GetSegment(subIntervalStart, subIntervalEnd, currentCounts);
+		for (auto& currentCount : currentCounts)
+		{
+			if (currentCount.count > 0)
+			{
+				currentCount.count -= 1;
+			}
+			subTree->SetSegment(currentCount.left, currentCount.right, currentCount);
+		}
+	}
 }
 
 void FrameGraphCompileContext::ReleaseSubResourceReference(
@@ -187,4 +245,18 @@ void FrameGraphCompileContext::ReleaseSubResourceReference(
 	VkDeviceSize inOffset, 
 	VkDeviceSize inSize)
 {
+	REF_COUNT_SEG_TREE(VkDeviceSize)* refCountTree = nullptr; // TODO
+	std::vector<RefCount<VkDeviceSize>> currentCounts;
+
+	refCountTree->GetSegment(inOffset, inOffset + inSize, currentCounts);
+	for (auto& currentCount : currentCounts)
+	{
+		if (currentCount.count > 0)
+		{
+			currentCount.count -= 1;
+		}
+		refCountTree->SetSegment(currentCount.left, currentCount.right, currentCount);
+	}
 }
+
+#undef REF_COUNT_SEG_TREE
