@@ -30,14 +30,15 @@ private:
 	std::vector<std::unique_ptr<Image>> m_imageResources;
 	std::vector<std::unique_ptr<Buffer>> m_bufferResources;
 	std::vector<std::unique_ptr<ISingleThreadTask>> m_hostExecution; // graph node recording tasks
+	FrameGraphCompileContext m_currentContext;
 
-	void _TopologicalSortFrameGraphNodes(std::vector<std::set<size_t>>& outOrderedNodeIndex);
+	void _TopologicalSortFrameGraphNodes(std::vector<std::set<FrameGraphNode*>>& outOrderedNodeIndex);
 
-	void _CreateRequiredDeviceRescource(const std::set<size_t>& inNodeBatch);
+	void _CreateRequiredDeviceRescource(const std::set<FrameGraphNode*>& inNodeBatch);
 
 	// Handles barrier insertion for the command buffers in each queue,
 	// here, the current thread will hold ownership of all command buffer
-	void _GenerateFrameGraphNodeBatchPrologue(const std::set<size_t>& inNodeBatch);
+	void _GenerateFrameGraphNodeBatchPrologue(const std::set<FrameGraphNode*>& inNodeBatch);
 
 	// Once barrier is recorded, the current thread can release the ownership
 	// of command buffers, and different threads can record command buffers

@@ -160,7 +160,7 @@ public:
 	auto GetOwner() -> FrameGraphNode*;
 	auto IsReference() const -> bool;
 
-	// Connect this output to an input, if input will also serve as output, this output can only has one input connected
+	// Connect this output to an input
 	void ConnectToInput(FrameGraphNodeInput* inoutFrameGraphInputPtr);
 
 	friend class FrameGraphNodeOutputInitializer;
@@ -184,6 +184,10 @@ private:
 
 public:
 	void Init(FrameGraphNodeInitializer* inInitializer);
+
+	FrameGraphQueueType GetQueueType() const;
+
+	bool UseExternalCommandPool() const;
 
 	// Normally, dependency based on node input and output will suffice,
 	// however, there might be cases where:
@@ -226,6 +230,9 @@ public:
 	// According to spec, queue ownership transform requires both release operation and acquire operation,
 	// see: https://docs.vulkan.org/spec/latest/chapters/synchronization.html#synchronization-queue-transfers
 	// this requires memory barriers be on both queue.
+	// PS: If an application does not need the contents of a resource to 
+	// remain valid when transferring from one queue family to another, 
+	// then the ownership transfer SHOULD be SKIPPED.
 	// Therefore, we'd better to inform incoming resource state after this pass.
 	void PresageResourceStateTransfer() const;
 

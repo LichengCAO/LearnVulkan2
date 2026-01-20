@@ -242,6 +242,12 @@ namespace frame_graph_util
 				}
 			}
 		}
+
+		void GetRange(IntervalType& outStartInclusive, IntervalType& outEndExclusive)
+		{
+			outStartInclusive = m_segments[0]->left;
+			outEndExclusive = m_segments[0]->right;
+		}
 	};
 }
 
@@ -315,6 +321,7 @@ public:
 
 enum class FrameGraphQueueType
 {
+	EXTERNAL,
 	GRAPHICS_ONLY,  // so, it can be delegated to graphics recording thread
 	COMPUTE_ONLY,	// so, it can be delegated to compute recording thread
 	ALL				// it can only be run on main thread

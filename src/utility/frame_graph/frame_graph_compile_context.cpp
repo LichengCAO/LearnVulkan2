@@ -3,6 +3,12 @@
 
 #define REF_COUNT_SEG_TREE(intervalType) frame_graph_util::SegmentTree<RefCount<intervalType>, intervalType>
 
+namespace
+{
+	FrameGraphQueueType _GetTypeFromQueueFamilyIndex()
+}
+
+
 void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 	const FrameGraphImageResourceHandle& inHandle, 
 	const FrameGraphImageSubResourceState& inState)
@@ -11,6 +17,7 @@ void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 	std::vector<FrameGraphImageSubResourceState> origStates;
 	std::vector<VkImageMemoryBarrier> barriers;
 	std::vector<VkSemaphore> waitSemaphores;
+	std::vector<VkPipelineStageFlags> waitStages;
 	ImageBarrierBuilder barrierBuilder{};
 	VkImage image = VK_NULL_HANDLE; // _GetImageResourceVulkanImage(inHandle); TODO
 
@@ -28,8 +35,22 @@ void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 		if (involveQueueTransfer)
 		{
 			barrierBuilder.CustomizeQueueFamilyTransfer(origState.queueFamily, inState.queueFamily);
-			_PullPendingSemaphore(inHandle, origState.range, localWaitSemaphores);
-			waitSemaphores.insert(waitSemaphores.end(), localWaitSemaphores.begin(), localWaitSemaphores.end());
+			
+			_PullPendingSemaphore(
+				inHandle, 
+				origState.range, 
+				localWaitSemaphores);
+
+			std::vector<VkPipelineStageFlags> localStages(localWaitSemaphores.size(), inState.stage);
+
+			waitSemaphores.insert(
+				waitSemaphores.end(), 
+				std::make_move_iterator(localWaitSemaphores.begin()), 
+				std::make_move_iterator(localWaitSemaphores.end()));
+			waitStages.insert(
+				waitStages.end(),
+				std::make_move_iterator(localStages.begin()),
+				std::make_move_iterator(localStages.end()));
 		}
 		VkImageMemoryBarrier barrier = barrierBuilder.Build(
 			image, 
@@ -38,7 +59,13 @@ void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 			origState.access, 
 			inState.access);
 
-		_AddPrologueBarrier(origState.stage, inState.stage, {}, {}, { barrier });
+		_AddPrologueBarrier(
+
+			origState.stage, 
+			inState.stage, 
+			{}, 
+			{}, 
+			{ barrier });
 	}
 }
 

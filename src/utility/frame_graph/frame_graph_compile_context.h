@@ -23,6 +23,22 @@ private:
 		uint32_t arrayLayerCount = 0;
 	};
 
+	struct LocalSyncInfo
+	{
+		FrameGraphQueueType queueType;
+		VkPipelineStageFlags srcStage;
+		VkPipelineStageFlags dstStage;
+		std::vector<VkMemoryBarrier> memoryBarriers;
+		std::vector<VkBufferMemoryBarrier> bufferBarriers;
+		std::vector<VkImageMemoryBarrier> imageBarriers;
+	};
+
+	struct GlobalSyncInfo
+	{
+		VkSemaphore semaphore;
+		VkPipelineStageFlags stage;
+	};
+
 	std::vector<FrameGraphImageResourceState> m_imageResourceStates;
 	std::vector<FrameGraphImageResourceState> m_imageResourceRequireStates;
 	std::vector<FrameGraphBufferResourceState> m_bufferResourceStates;
@@ -31,6 +47,10 @@ private:
 	std::unordered_map<uint32_t, size_t> m_bufferResourceHandleToIndex;
 	std::vector<std::unique_ptr<REF_COUNT_SEG_TREE(VkDeviceSize)>> m_bufferRefCounts;
 	std::vector<std::unique_ptr<ImageRefCountTree>> m_subImageRefCounts;
+	std::vector<LocalSyncInfo> m_prologueLocalSync;
+	std::vector<LocalSyncInfo> m_epilogueLocalSync;
+	std::vector<GlobalSyncInfo> m_waitSemaphoresInNextGraphicsSubmit;
+	std::vector<GlobalSyncInfo> m_waitSemaphoresInNextComputeSubmit;
 	
 private:
 	auto _GetResourceState(const FrameGraphImageResourceHandle& inHandle) -> FrameGraphImageResourceState&;
@@ -40,6 +60,7 @@ private:
 	// When there is a queue ownership transfer, we need to create a semaphore
 	// and submit it in the release operation queue, and wait it in the acquire operation queue
 	void _PushPendingSemaphore(
+		FrameGraphQueueType inQueueToSignal,
 		const FrameGraphImageResourceHandle& inHandle,
 		const VkImageSubresourceRange& inRange,
 		VkSemaphore inSemaphoreToWait);
@@ -57,6 +78,7 @@ private:
 		std::vector<VkSemaphore>& outSemaphoresToWait);
 
 	void _AddPrologueBarrier(
+		FrameGraphQueueType inQueueToSync,
 		VkPipelineStageFlags inSrcStage,
 		VkPipelineStageFlags inDstStage,
 		const std::vector<VkMemoryBarrier>& inBarriers,
@@ -64,6 +86,7 @@ private:
 		const std::vector<VkImageMemoryBarrier>& inImageBarriers);
 
 	void _AddEpilogueBarrier(
+		FrameGraphQueueType inQueueToSync,
 		VkPipelineStageFlags inSrcStage,
 		VkPipelineStageFlags inDstStage,
 		const std::vector<VkMemoryBarrier>& inBarriers,

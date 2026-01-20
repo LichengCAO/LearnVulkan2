@@ -2,6 +2,14 @@
 #include "frame_graph_node.h"
 #include <queue>
 
+namespace
+{
+	uint32_t _GetThreadByQueueType(FrameGraphQueueType inQueueType)
+	{
+		return 0;
+	}
+}
+
 void FrameGraph::_TopologicalSortFrameGraphNodes(std::vector<std::set<size_t>>& outOrderedNodeIndex)
 {
 	size_t remainCount = 0;
@@ -53,4 +61,76 @@ void FrameGraph::_TopologicalSortFrameGraphNodes(std::vector<std::set<size_t>>& 
 		remainCount -= n;
 	}
 	CHECK_TRUE(remainCount == 0);
+}
+
+void FrameGraph::_GenerateFrameGraphNodeBatchPrologue(const std::set<FrameGraphNode*>& inNodeBatch)
+{
+	FrameGraphCompileContext& context = m_currentContext;
+
+	for (auto pNode : inNodeBatch)
+	{
+		pNode->RequireInputResourceState();
+	}
+
+	// from context, get semaphore and stage to wait
+	// add memory barrier in current command buffers
+}
+
+void FrameGraph::_GenerateFrameGraphNodeBatchExecutionTasks(const std::set<size_t>& inNodeBatch)
+{
+	std::set<FrameGraphNode*> nodePtrs;
+	MySinglThreadTask* prologueTask;
+	MySinglThreadTask* epilogueTask;
+
+	for (auto nodePtr : nodePtrs)
+	{
+		std::unique_ptr<MySinglThreadTask> newTask = std::make_unique<MySinglThreadTask>(
+			[=]()
+			{
+				nodePtr->Execute();
+			},
+			_GetThreadByQueueType(nodePtr->GetQueueType()));
+
+		if (!nodePtr->UseExternalCommandPool())
+		{
+			epilogueTask->DependOn(newTask.get());
+		}
+		newTask->DependOn(prologueTask);
+		//if ()
+
+		m_hostExecution.push_back(std::move(newTask));
+	}
+}
+
+void FrameGraph::_GenerateFrameGraphNodeBatchEpilogue(const std::set<size_t>& inNodeBatch)
+{
+	std::vector<VkSemaphore> toSubmit;
+	std::vector<VkSemaphore> toWait;
+	bool needSubmitCmd = false;
+	MySinglThreadTask* epilogueTask = nullptr;
+
+	if (needSubmitCmd)
+	{
+		// create new cmd
+		std::unique_ptr<MySinglThreadTask> task = std::make_unique<MySinglThreadTask>(
+			[]()
+			{
+				// add barrier
+				// submit queue
+			}
+			);
+		epilogueTask = task.get();
+		m_hostExecution.push_back(std::move(task));
+	}
+	else
+	{
+		std::unique_ptr<MySinglThreadTask> task = std::make_unique<MySinglThreadTask>(
+			[]()
+			{
+				// add barrier
+			}
+			);
+		epilogueTask = task.get();
+		m_hostExecution.push_back(std::move(task));
+	}
 }
