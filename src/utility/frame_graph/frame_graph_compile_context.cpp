@@ -1,11 +1,30 @@
 #include "frame_graph_compile_context.h"
 #include "vulkan_struct_util.h"
+#include "device.h"
 
 #define REF_COUNT_SEG_TREE(intervalType) frame_graph_util::SegmentTree<RefCount<intervalType>, intervalType>
 
 namespace
 {
-	FrameGraphQueueType _GetTypeFromQueueFamilyIndex()
+	FrameGraphQueueType _GetTypeFromQueueFamilyIndex(uint32_t inQueueFamilyIndex)
+	{
+		auto& device = MyDevice::GetInstance();
+
+		uint32_t graphicsIndex = device.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
+		uint32_t computeIndex = device.GetQueueFamilyIndexOfType(QueueFamilyType::COMPUTE);
+
+		if (graphicsIndex == inQueueFamilyIndex)
+		{
+			return FrameGraphQueueType::GRAPHICS_ONLY;
+		}
+		else if (inQueueFamilyIndex == computeIndex)
+		{
+			return FrameGraphQueueType::COMPUTE_ONLY;
+		}
+		CHECK_TRUE(false);
+
+		return FrameGraphQueueType::GRAPHICS_ONLY;
+	}
 }
 
 
@@ -60,7 +79,7 @@ void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 			inState.access);
 
 		_AddPrologueBarrier(
-
+			_GetTypeFromQueueFamilyIndex(inState.queueFamily),
 			origState.stage, 
 			inState.stage, 
 			{}, 

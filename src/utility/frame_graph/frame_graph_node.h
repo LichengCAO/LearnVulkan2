@@ -209,6 +209,8 @@ public:
 	// 3. if they are in the same queue, but pre-nodes record a secondary buffer
 	void GetPreGraphNodes(std::set<FrameGraphNode*>& outFrameGraphNodes) const;
 
+	void GetPostGraphNodes(std::set<FrameGraphNode*>& outFrameGraphNodes) const;
+
 	//========================================================================
 	// Process in Compile()
 	//------------------------------------------------------------------------

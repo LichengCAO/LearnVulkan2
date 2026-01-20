@@ -134,3 +134,76 @@ void FrameGraph::_GenerateFrameGraphNodeBatchEpilogue(const std::set<size_t>& in
 		m_hostExecution.push_back(std::move(task));
 	}
 }
+
+void FrameGraph::Compile()
+{
+	std::vector<std::set<FrameGraphNode*>> nodeBatches;
+
+	_TopologicalSortFrameGraphNodes(nodeBatches);
+
+	// first we will do device object creation for each internal device resource
+	for (const auto& nodeBatch : nodeBatches)
+	{
+		for (auto nodePtr : nodeBatch)
+		{
+			// Here, we check resource handle generate inside, if we already assign device object,
+			// we're good. If not, we check if there is a no longer referenced device object,
+			// if there is one, we assign this object to the handle, and attach a prologue barrier to the node;
+			// if there is not, we create a new device object for the handle
+			nodePtr->RequireResource();
+		}
+
+		for (auto nodePtr : nodeBatch)
+		{
+			// Here, we decrease reference count for input, and increase reference count for output
+			nodePtr->UpdateResourceReferenceCount();
+		}
+	}
+
+	// at this point, all resource handle should point to an existed device object
+	for (const auto& nodeBatch : nodeBatches)
+	{
+		// create new free command buffer if we don't have one
+
+		for (auto nodePtr : nodeBatch)
+		{
+			// immediate barrier to graphics cmd and compute cmd, 
+			// add wait semaphore info for next graphics queue submission and next compute queue submission
+			nodePtr->RequireInputResourceState();
+		}
+
+		// build a single thread task T1 to record barrier
+
+		// update resource state after barriers complete
+
+		for (auto nodePtr : nodeBatch)
+		{
+			// update resource state after passes complete
+			nodePtr->MergeOutputResourceState();
+		}
+
+		// build single thread tasks, those that record graphics cmd and compute cmd
+		// should depends on single thread task T1 (this also implies tasks that use external
+		// command pool do not need to wait task T1 done)
+
+		// add <nodePtr, task> to a map in case there is a execution dependency
+
+		// add dependency for tasks that has extra execution dependency
+
+		for (auto nodePtr : nodeBatch)
+		{
+			// immediate barrier to graphics cmd and compute cmd,
+			// record semaphore for each queue ownership transfer
+			nodePtr->PresageResourceStateTransfer();
+		}
+		
+		// build a single thread task T2 to record barrier,
+		// if there is queue ownership transfer, submit queue with stored wait semaphore info
+		// and semaphore to signal
+
+		// add dependency for task T2, it depends on tasks that record graphics cmd and compute cmd
+		// in this batch
+	}
+
+	// we collect tasks from first node batch as initial task
+}
