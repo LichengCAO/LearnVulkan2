@@ -177,7 +177,7 @@ public:
 	// Thin wraps for device Vulkan functions
 	//---------------------------------------------
 	// Create a VkFence, _pCreateInfo is optional, if it's not nullptr, VkFence will be created based on it
-	VkFence CreateFence(
+	VkFence CreateVkFence(
 		VkFenceCreateFlags inFlags = VK_FENCE_CREATE_SIGNALED_BIT, 
 		const void* inNextPtr = nullptr, 
 		const VkAllocationCallbacks* inCallbacks = nullptr);

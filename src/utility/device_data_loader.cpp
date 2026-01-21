@@ -14,7 +14,7 @@ void AsyncDeviceDataLoader::Init()
 	Buffer::Initializer bufferInit{};
 	VkCommandPoolCreateInfo cmdPoolCreateInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 
-	m_vkFence = device.CreateFence(VK_FENCE_CREATE_SIGNALED_BIT);
+	m_vkFence = device.CreateVkFence(VK_FENCE_CREATE_SIGNALED_BIT);
 
 	cmdPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 	cmdPoolCreateInfo.queueFamilyIndex = device.GetQueueFamilyIndexOfType(QueueFamilyType::TRANSFER);

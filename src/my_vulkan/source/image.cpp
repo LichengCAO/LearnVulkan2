@@ -145,7 +145,6 @@ void Image::Initializer::InitImage(Image* outImage) const
 	infoToFill.arrayLayers = imageInfo.arrayLayers;
 	infoToFill.format = imageInfo.format;
 	infoToFill.tiling = imageInfo.tiling;
-	infoToFill.layout = imageInfo.initialLayout;
 	infoToFill.usage = imageInfo.usage;
 	infoToFill.samples = imageInfo.samples;
 	infoToFill.isSwapchainImage = false;

@@ -1,57 +1,48 @@
 #pragma once
 
 #include "frame_graph_resource.h"
-class FrameGraph;
-
-class FrameGraphBufferResourceAllocator
-{
-public:
-	FrameGraphBufferResourceAllocator& SetSize(VkDeviceSize inSize);
-	// If this enabled, we do not apply memory aliasing and create
-	// a new device object during compilation instead
-	FrameGraphBufferResourceAllocator& CustomizeAsDedicated();
-	FrameGraphBufferResourceAllocator& CustomizeLoadOperationAsClear(uint32_t inClearValue);
-	FrameGraphBufferResourceHandle Allocate(FrameGraph* inFrameGraph);
-};
-
-class FrameGraphImageResourceAllocator
-{
-private:
-
-public:
-	FrameGraphImageResourceAllocator& SetSize2D(uint32_t inWidth, uint32_t inHeight);
-	FrameGraphImageResourceAllocator& SetFormat(VkFormat inFormat);
-	// If this enabled, we do not apply memory aliasing and create
-	// a new device object during compilation instead
-	FrameGraphImageResourceAllocator& CustomizeAsDedicated();
-	FrameGraphImageResourceAllocator& CustomizeArrayLayer(uint32_t inArrayLength);
-	FrameGraphImageResourceAllocator& CustomizeMipLevel(uint32_t inLevelCount);
-	FrameGraphImageResourceHandle Allocate(FrameGraph* inFrameGraph);
-};
+#include "image.h"
+#include "buffer.h"
 
 class FrameGraphResourceManager
 {
 private:
-	struct LocalImageResourceManager
+	struct ResourceProducer
 	{
-		Image* GetImage();
-		ImageView* GetImageView();
+		size_t initializerIndex;
+		std::vector<uint32_t> referenceCount;
+		std::vector<Image*>  referenceBuffers;
+		std::vector<Buffer*> referenceImages;
+		bool isImage;
+		bool isBuffer;
 	};
+	std::vector<Image::Initializer> m_promisedImageInitializers;
+	std::vector<Buffer::Initializer> m_promisedBufferInitializers;
+	std::vector<ResourceProducer> m_resourceProducers;
 
-	struct LocalBufferResourceManager
-	{
-		Buffer* GetBuffer();
-	};
-
-
-private:
-	void _MapHandleToResource(FrameGraphImageResourceHandle& inHandle);
-	void _MapHandleToResource(FrameGraphBufferResourceHandle& inHandle);
+	void _MapHandleToIndices(
+		const FrameGraphImageResourceHandle& inHandle, 
+		size_t& outProducerIndex, 
+		size_t& outResourcePtrIndex);
+	void _MapHandleToIndices(
+		const FrameGraphBufferResourceHandle& inHandle, 
+		size_t& outProducerIndex, 
+		size_t& outResourcePtrIndex);
 
 public:
+	struct Initializer
+	{
+		std::function<Buffer*()> bufferCreator;
+		std::function<Image*()>  imageCreator;
+	};
+	void Init(const FrameGraphResourceManager::Initializer* inInitPtr);
+
 	// Preordain functions return a handle that can be used later to map to actual resources
-	FrameGraphImageResourceHandle PreordainImageResource();
-	FrameGraphBufferResourceHandle PreordainBufferResource();
+	FrameGraphImageResourceHandle PromiseImageResource(const FrameGraphBufferResourceAllocator* inAllocatorPtr);
+	FrameGraphBufferResourceHandle PromiseBufferResource(const FrameGraphImageResourceAllocator* inAllocatorPtr);
 
+	void 
 
+	Image* GetImageResource(const FrameGraphImageResourceHandle& inHandle);
+	Buffer* GetBufferResource(const FrameGraphBufferResourceHandle& inHandle);
 };

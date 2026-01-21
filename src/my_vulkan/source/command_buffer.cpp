@@ -7,7 +7,7 @@ void CommandSubmission::_CreateSynchronizeObjects()
 	auto& device = MyDevice::GetInstance();
 
 	m_vkSemaphore = device.CreateVkSemaphore();
-	vkFence = device.CreateFence();
+	vkFence = device.CreateVkFence();
 }
 
 void CommandSubmission::_UpdateImageLayout(VkImage vkImage, VkImageSubresourceRange range, VkImageLayout layout) const

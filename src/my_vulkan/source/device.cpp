@@ -666,7 +666,7 @@ SamplerPool* MyDevice::GetSamplerPool()
 	return samplerPool.get();
 }
 
-VkFence MyDevice::CreateFence(
+VkFence MyDevice::CreateVkFence(
 	VkFenceCreateFlags inFlags, 
 	const void* inNextPtr, 
 	const VkAllocationCallbacks* inCallbacks)
