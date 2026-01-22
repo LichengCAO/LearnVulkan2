@@ -29,7 +29,7 @@ namespace
 
 
 void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
-	const FrameGraphImageResourceHandle& inHandle, 
+	const FrameGraphImageHandle& inHandle, 
 	const FrameGraphImageSubResourceState& inState)
 {
 	const auto& currentState = _GetResourceState(inHandle);
@@ -89,7 +89,7 @@ void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 }
 
 void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
-	const FrameGraphBufferResourceHandle& inHandle, 
+	const FrameGraphBufferHandle& inHandle, 
 	const FrameGraphBufferSubResourceState& inState)
 {
 	const auto& currentState = _GetResourceState(inHandle);
@@ -123,7 +123,7 @@ void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 }
 
 void FrameGraphCompileContext::MergeSubResourceStateAfterPass(
-	const FrameGraphImageResourceHandle& inHandle, 
+	const FrameGraphImageHandle& inHandle, 
 	const FrameGraphImageSubResourceState& inState)
 {
 	auto& currentState = _GetResourceState(inHandle);
@@ -131,7 +131,7 @@ void FrameGraphCompileContext::MergeSubResourceStateAfterPass(
 }
 
 void FrameGraphCompileContext::MergeSubResourceStateAfterPass(
-	const FrameGraphBufferResourceHandle& inHandle, 
+	const FrameGraphBufferHandle& inHandle, 
 	const FrameGraphBufferSubResourceState& inState)
 {
 	auto& currentState = _GetResourceState(inHandle);
@@ -139,7 +139,7 @@ void FrameGraphCompileContext::MergeSubResourceStateAfterPass(
 }
 
 void FrameGraphCompileContext::PresageSubResourceStateNextPass(
-	const FrameGraphImageResourceHandle& inHandle, 
+	const FrameGraphImageHandle& inHandle, 
 	const FrameGraphImageSubResourceState& inNewState)
 {
 	const auto& currentState = _GetResourceState(inHandle);
@@ -177,7 +177,7 @@ void FrameGraphCompileContext::PresageSubResourceStateNextPass(
 }
 
 void FrameGraphCompileContext::PresageSubResourceStateNextPass(
-	const FrameGraphBufferResourceHandle& inHandle, 
+	const FrameGraphBufferHandle& inHandle, 
 	const FrameGraphBufferSubResourceState& inNewState)
 {
 	const auto& currentState = _GetResourceState(inHandle);
@@ -212,7 +212,7 @@ void FrameGraphCompileContext::PresageSubResourceStateNextPass(
 }
 
 void FrameGraphCompileContext::AddSubResourceReference(
-	const FrameGraphImageResourceHandle& inHandle, 
+	const FrameGraphImageHandle& inHandle, 
 	const VkImageSubresourceRange& inRange)
 {
 	ImageRefCountTree* refCountTree = nullptr; // TODO
@@ -240,7 +240,7 @@ void FrameGraphCompileContext::AddSubResourceReference(
 }
 
 void FrameGraphCompileContext::AddSubResourceReference(
-	const FrameGraphBufferResourceHandle& inHandle, 
+	const FrameGraphBufferHandle& inHandle, 
 	VkDeviceSize inOffset, 
 	VkDeviceSize inSize)
 {
@@ -256,7 +256,7 @@ void FrameGraphCompileContext::AddSubResourceReference(
 }
 
 void FrameGraphCompileContext::ReleaseSubResourceReference(
-	const FrameGraphImageResourceHandle& inHandle, 
+	const FrameGraphImageHandle& inHandle, 
 	const VkImageSubresourceRange& inRange)
 {
 	ImageRefCountTree* refCountTree = nullptr; // TODO
@@ -287,7 +287,7 @@ void FrameGraphCompileContext::ReleaseSubResourceReference(
 }
 
 void FrameGraphCompileContext::ReleaseSubResourceReference(
-	const FrameGraphBufferResourceHandle& inHandle, 
+	const FrameGraphBufferHandle& inHandle, 
 	VkDeviceSize inOffset, 
 	VkDeviceSize inSize)
 {

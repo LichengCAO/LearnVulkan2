@@ -21,11 +21,11 @@ private:
 	std::vector<ResourceProducer> m_resourceProducers;
 
 	void _MapHandleToIndices(
-		const FrameGraphImageResourceHandle& inHandle, 
+		const FrameGraphImageHandle& inHandle, 
 		size_t& outProducerIndex, 
 		size_t& outResourcePtrIndex);
 	void _MapHandleToIndices(
-		const FrameGraphBufferResourceHandle& inHandle, 
+		const FrameGraphBufferHandle& inHandle, 
 		size_t& outProducerIndex, 
 		size_t& outResourcePtrIndex);
 
@@ -38,11 +38,11 @@ public:
 	void Init(const FrameGraphResourceManager::Initializer* inInitPtr);
 
 	// Preordain functions return a handle that can be used later to map to actual resources
-	FrameGraphImageResourceHandle PromiseImageResource(const FrameGraphBufferResourceAllocator* inAllocatorPtr);
-	FrameGraphBufferResourceHandle PromiseBufferResource(const FrameGraphImageResourceAllocator* inAllocatorPtr);
+	FrameGraphImageHandle PromiseImageResource(const FrameGraphBufferResourceAllocator* inAllocatorPtr);
+	FrameGraphBufferHandle PromiseBufferResource(const FrameGraphImageResourceAllocator* inAllocatorPtr);
 
 	void 
 
-	Image* GetImageResource(const FrameGraphImageResourceHandle& inHandle);
-	Buffer* GetBufferResource(const FrameGraphBufferResourceHandle& inHandle);
+	Image* GetImageResource(const FrameGraphImageHandle& inHandle);
+	Buffer* GetBufferResource(const FrameGraphBufferHandle& inHandle);
 };

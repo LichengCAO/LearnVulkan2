@@ -3,7 +3,7 @@
 #include "device.h"
 #include <forward_list>
 
-#define FRAME_GRAPH_RESOURCE_HANDLE std::variant<FrameGraphBufferResourceHandle, FrameGraphImageResourceHandle>
+#define FRAME_GRAPH_RESOURCE_HANDLE std::variant<FrameGraphBufferHandle, FrameGraphImageHandle>
 #define FRAME_GRAPH_RESOURCE_STATE std::variant<FrameGraphBufferSubResourceState, FrameGraphImageSubResourceState>
 
 namespace
@@ -548,19 +548,19 @@ void FrameGraphNode::RequireInputResourceState() const
 	{
 		auto& handle = uptrInput->GetResourceHandle();
 
-		if (std::holds_alternative<FrameGraphImageResourceHandle>(handle))
+		if (std::holds_alternative<FrameGraphImageHandle>(handle))
 		{
-			const FrameGraphImageResourceHandle& imgHandle = 
-				std::get<FrameGraphImageResourceHandle>(handle);
+			const FrameGraphImageHandle& imgHandle = 
+				std::get<FrameGraphImageHandle>(handle);
 			const FrameGraphImageSubResourceState& imgResource = 
 				std::get<FrameGraphImageSubResourceState>(uptrInput->GetRequiredResourceState());
 			
 			compileContext.RequireSubResourceStateBeforePass(imgHandle, imgResource);
 		}
-		else if (std::holds_alternative<FrameGraphBufferResourceHandle>(handle))
+		else if (std::holds_alternative<FrameGraphBufferHandle>(handle))
 		{
-			const FrameGraphBufferResourceHandle& bufHandle = 
-				std::get<FrameGraphBufferResourceHandle>(handle);
+			const FrameGraphBufferHandle& bufHandle = 
+				std::get<FrameGraphBufferHandle>(handle);
 			const FrameGraphBufferSubResourceState& bufResource = 
 				std::get<FrameGraphBufferSubResourceState>(uptrInput->GetRequiredResourceState());
 			
@@ -580,19 +580,19 @@ void FrameGraphNode::MergeOutputResourceState() const
 	for (auto& uptrOutput : m_outputs)
 	{
 		auto& handle = uptrOutput->GetResourceHandle();
-		if (std::holds_alternative<FrameGraphImageResourceHandle>(handle))
+		if (std::holds_alternative<FrameGraphImageHandle>(handle))
 		{
-			const FrameGraphImageResourceHandle& imgHandle = 
-				std::get<FrameGraphImageResourceHandle>(handle);
+			const FrameGraphImageHandle& imgHandle = 
+				std::get<FrameGraphImageHandle>(handle);
 			const FrameGraphImageSubResourceState& imgResource = 
 				std::get<FrameGraphImageSubResourceState>(uptrOutput->GetProcessedResourceState());
 			
 			compileContext.MergeSubResourceStateAfterPass(imgHandle, imgResource);
 		}
-		else if (std::holds_alternative<FrameGraphBufferResourceHandle>(handle))
+		else if (std::holds_alternative<FrameGraphBufferHandle>(handle))
 		{
-			const FrameGraphBufferResourceHandle& bufHandle = 
-				std::get<FrameGraphBufferResourceHandle>(handle);
+			const FrameGraphBufferHandle& bufHandle = 
+				std::get<FrameGraphBufferHandle>(handle);
 			const FrameGraphBufferSubResourceState& bufResource = 
 				std::get<FrameGraphBufferSubResourceState>(uptrOutput->GetProcessedResourceState());
 			
@@ -611,19 +611,19 @@ void FrameGraphNode::PresageResourceStateTransfer() const
 	auto funcInformNextState = [&](FrameGraphNodeInput* pInput)
 	{
 		auto& handle = pInput->GetResourceHandle();
-		if (std::holds_alternative<FrameGraphImageResourceHandle>(handle))
+		if (std::holds_alternative<FrameGraphImageHandle>(handle))
 		{
-			const FrameGraphImageResourceHandle& imgHandle =
-				std::get<FrameGraphImageResourceHandle>(pInput->GetResourceHandle());
+			const FrameGraphImageHandle& imgHandle =
+				std::get<FrameGraphImageHandle>(pInput->GetResourceHandle());
 			const FrameGraphImageSubResourceState& imgResource =
 				std::get<FrameGraphImageSubResourceState>(pInput->GetRequiredResourceState());
 
 			compileContext.PresageSubResourceStateNextPass(imgHandle, imgResource);
 		}
-		else if (std::holds_alternative<FrameGraphBufferResourceHandle>(handle))
+		else if (std::holds_alternative<FrameGraphBufferHandle>(handle))
 		{
-			const FrameGraphBufferResourceHandle& bufHandle =
-				std::get<FrameGraphBufferResourceHandle>(pInput->GetResourceHandle());
+			const FrameGraphBufferHandle& bufHandle =
+				std::get<FrameGraphBufferHandle>(pInput->GetResourceHandle());
 			const FrameGraphBufferSubResourceState& bufResource =
 				std::get<FrameGraphBufferSubResourceState>(pInput->GetRequiredResourceState());
 
@@ -645,19 +645,19 @@ void FrameGraphNode::UpdateResourceReferenceCount() const
 	{
 		auto& handle = uptrInput->GetResourceHandle();
 
-		if (std::holds_alternative<FrameGraphImageResourceHandle>(handle))
+		if (std::holds_alternative<FrameGraphImageHandle>(handle))
 		{
-			const FrameGraphImageResourceHandle& imgHandle = 
-				std::get<FrameGraphImageResourceHandle>(handle);
+			const FrameGraphImageHandle& imgHandle = 
+				std::get<FrameGraphImageHandle>(handle);
 			const FrameGraphImageSubResourceState& imgResource = 
 				std::get<FrameGraphImageSubResourceState>(uptrInput->GetRequiredResourceState());
 			
 			compileContext.ReleaseSubResourceReference(imgHandle, imgResource.range);
 		}
-		else if (std::holds_alternative<FrameGraphBufferResourceHandle>(handle))
+		else if (std::holds_alternative<FrameGraphBufferHandle>(handle))
 		{
-			const FrameGraphBufferResourceHandle& bufHandle = 
-				std::get<FrameGraphBufferResourceHandle>(handle);
+			const FrameGraphBufferHandle& bufHandle = 
+				std::get<FrameGraphBufferHandle>(handle);
 			const FrameGraphBufferSubResourceState& bufResource = 
 				std::get<FrameGraphBufferSubResourceState>(uptrInput->GetRequiredResourceState());
 			
@@ -672,19 +672,19 @@ void FrameGraphNode::UpdateResourceReferenceCount() const
 	auto funcAddReference = [&](FrameGraphNodeInput* pInput)
 	{
 		auto& handle = pInput->GetResourceHandle();
-		if (std::holds_alternative<FrameGraphImageResourceHandle>(handle))
+		if (std::holds_alternative<FrameGraphImageHandle>(handle))
 		{
-			const FrameGraphImageResourceHandle& imgHandle =
-				std::get<FrameGraphImageResourceHandle>(pInput->GetResourceHandle());
+			const FrameGraphImageHandle& imgHandle =
+				std::get<FrameGraphImageHandle>(pInput->GetResourceHandle());
 			const FrameGraphImageSubResourceState& imgResource =
 				std::get<FrameGraphImageSubResourceState>(pInput->GetRequiredResourceState());
 
 			compileContext.AddSubResourceReference(imgHandle, imgResource.range);
 		}
-		else if (std::holds_alternative<FrameGraphBufferResourceHandle>(handle))
+		else if (std::holds_alternative<FrameGraphBufferHandle>(handle))
 		{
-			const FrameGraphBufferResourceHandle& bufHandle =
-				std::get<FrameGraphBufferResourceHandle>(pInput->GetResourceHandle());
+			const FrameGraphBufferHandle& bufHandle =
+				std::get<FrameGraphBufferHandle>(pInput->GetResourceHandle());
 			const FrameGraphBufferSubResourceState& bufResource =
 				std::get<FrameGraphBufferSubResourceState>(pInput->GetRequiredResourceState());
 
@@ -701,3 +701,119 @@ void FrameGraphNode::UpdateResourceReferenceCount() const
 
 #undef FRAME_GRAPH_RESOURCE_STATE
 #undef FRAME_GRAPH_RESOURCE_HANDLE
+
+FrameGraphPass& FrameGraphPass::AddInAttachment(const FrameGraphImageSubResourceState* inRequireState)
+{
+	AttachmentInfo info{};
+
+	info.imageState = *inRequireState;
+	info.shouldHoldResource = false;
+	info.hasInput = true;
+	info.hasOutput = false;
+	attachments.push_back(std::move(info));
+
+	return *this;
+}
+
+FrameGraphPass& FrameGraphPass::AddOutAttachment(const FrameGraphImageSubResourceState* inFinalState)
+{
+	AttachmentInfo info{};
+
+	info.imageState = *inFinalState;
+	info.shouldHoldResource = true;
+	info.hasInput = false;
+	info.hasOutput = true;
+	attachments.push_back(std::move(info));
+
+	return *this;
+}
+
+FrameGraphPass& FrameGraphPass::AddInoutAttachment(
+	const FrameGraphImageSubResourceState* inInitialState, 
+	const FrameGraphImageSubResourceState* inFinalState)
+{
+	AttachmentInfo info{};
+
+	info.imageState = *inInitialState;
+	info.imageState2 = *inFinalState;
+	info.shouldHoldResource = false;
+	info.hasInput = true;
+	info.hasOutput = true;
+	attachments.push_back(std::move(info));
+
+	return *this;
+}
+
+FrameGraphPass& FrameGraphPass::AddTransientAttachment(
+	const FrameGraphImageSubResourceState* inInitialState, 
+	const FrameGraphImageSubResourceState* inFinalState)
+{
+	AttachmentInfo info{};
+
+	info.imageState = *inInitialState;
+	info.imageState2 = *inFinalState;
+	info.shouldHoldResource = true;
+	info.hasInput = false;
+	info.hasOutput = false;
+	attachments.push_back(std::move(info));
+
+	return *this;
+}
+
+FrameGraphPass& FrameGraphPass::AddInAttachment(const FrameGraphBufferSubResourceState* inRequireState)
+{
+	AttachmentInfo info{};
+
+	info.bufferState = *inRequireState;
+	info.shouldHoldResource = false;
+	info.hasInput = true;
+	info.hasOutput = false;
+	attachments.push_back(std::move(info));
+
+	return *this;
+}
+
+FrameGraphPass& FrameGraphPass::AddOutAttachment(const FrameGraphBufferSubResourceState* inFinalState)
+{
+	AttachmentInfo info{};
+
+	info.bufferState = *inFinalState;
+	info.shouldHoldResource = true;
+	info.hasInput = false;
+	info.hasOutput = true;
+	attachments.push_back(std::move(info));
+
+	return *this;
+}
+
+FrameGraphPass& FrameGraphPass::AddInoutAttachment(
+	const FrameGraphBufferSubResourceState* inInitialState, 
+	const FrameGraphBufferSubResourceState* inFinalState)
+{
+	AttachmentInfo info{};
+
+	info.bufferState = *inInitialState;
+	info.bufferState2 = *inFinalState;
+	info.shouldHoldResource = false;
+	info.hasInput = true;
+	info.hasOutput = true;
+	attachments.push_back(std::move(info));
+
+	return *this;
+}
+
+FrameGraphPass& FrameGraphPass::AddTransientAttachment(
+	const FrameGraphBufferSubResourceState* inInitialState, 
+	const FrameGraphBufferSubResourceState* inFinalState)
+{
+	AttachmentInfo info{};
+
+	info.bufferState = *inInitialState;
+	info.bufferState2 = *inFinalState;
+	info.shouldHoldResource = true;
+	info.hasInput = false;
+	info.hasOutput = false;
+	attachments.push_back(std::move(info));
+
+	return *this;
+}

@@ -8,8 +8,8 @@ class FrameGraphNode;
 class FrameGraphNodeInput;
 class FrameGraphNodeOutput;
 
-#define FRAME_GRAPH_RESOURCE_HANDLE std::variant<FrameGraphBufferResourceHandle, FrameGraphImageResourceHandle>
-#define FRAME_GRAPH_RESOURCE_STATE std::variant<FrameGraphBufferSubResourceState, FrameGraphImageSubResourceState>
+#define FRAME_GRAPH_RESOURCE_HANDLE std::variant<std::monostate, FrameGraphBufferHandle, FrameGraphImageHandle>
+#define FRAME_GRAPH_RESOURCE_STATE std::variant<std::monostate, FrameGraphBufferSubResourceState, FrameGraphImageSubResourceState>
 
 #pragma region Initializer
 
@@ -111,6 +111,7 @@ public:
 	FrameGraphNodeInitializer& AddInput(const IFrameGraphNodeInputInitializer* inInitializer);
 	FrameGraphNodeInitializer& AddOutput(const IFrameGraphNodeOutputInitializer* inInitializer);
 	FrameGraphNodeInitializer& AddInout(const IFrameGraphNodeInoutInitializer* inInitializer);
+	FrameGraphNodeInitializer& AddTransient(const IFrameGraphNodeInoutInitializer* inInitializer);
 	FrameGraphNodeInitializer& SetQueueType(FrameGraphQueueType inQueueType);
 	FrameGraphNodeInitializer& SetOwner(FrameGraph* inFrameGraph);
 	void InitializeFrameGraphNode(FrameGraphNode* inFrameGraphNode);
@@ -183,6 +184,10 @@ private:
 	void _DoForEachNextInput(std::function<void(FrameGraphNodeInput*)> inFuncToDo) const;
 
 public:
+	struct AttachmentHandle
+	{
+		std::string name;
+	};
 	void Init(FrameGraphNodeInitializer* inInitializer);
 
 	FrameGraphQueueType GetQueueType() const;
@@ -246,12 +251,50 @@ public:
 
 	//========================================================================
 
+	Image* GetImageResource(const AttachmentHandle& inHandle, const FrameGraph* inFrameGraphPtr);
+	
+	Buffer* GetBufferResource(const AttachmentHandle& inHandle, const FrameGraph* inFrameGraphPtr);
+
+	void BindProcess(std::function<void(FrameGraph*)>);
+
 	// Do things in a frame graph execution, i.e. record command buffer
 	void Execute();
 
 	void Uninit();
 
 	friend class FrameGraphNodeInitializer;
+};
+
+struct FrameGraphPass
+{
+	struct AttachmentInfo
+	{
+		bool shouldHoldResource = false;
+		bool hasOutput = false;
+		bool hasInput = false;
+		std::optional<FrameGraphImageSubResourceState> imageState;
+		std::optional<FrameGraphImageSubResourceState> imageState2;
+		std::optional<FrameGraphBufferSubResourceState> bufferState;
+		std::optional<FrameGraphBufferSubResourceState> bufferState2;
+	};
+	std::vector<AttachmentInfo> attachments;
+
+	FrameGraphPass& AddInAttachment(const FrameGraphImageSubResourceState* inRequireState);
+	FrameGraphPass& AddOutAttachment(const FrameGraphImageSubResourceState* inFinalState);
+	FrameGraphPass& AddInoutAttachment(
+		const FrameGraphImageSubResourceState* inInitialState,
+		const FrameGraphImageSubResourceState* inFinalState);
+	FrameGraphPass& AddTransientAttachment(
+		const FrameGraphImageSubResourceState* inInitialState,
+		const FrameGraphImageSubResourceState* inFinalState);
+	FrameGraphPass& AddInAttachment(const FrameGraphBufferSubResourceState* inRequireState);
+	FrameGraphPass& AddOutAttachment(const FrameGraphBufferSubResourceState* inFinalState);
+	FrameGraphPass& AddInoutAttachment(
+		const FrameGraphBufferSubResourceState* inInitialState,
+		const FrameGraphBufferSubResourceState* inFinalState);
+	FrameGraphPass& AddTransientAttachment(
+		const FrameGraphBufferSubResourceState* inInitialState,
+		const FrameGraphBufferSubResourceState* inFinalState);
 };
 
 #undef FRAME_GRAPH_RESOURCE_STATE

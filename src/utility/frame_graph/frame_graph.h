@@ -58,27 +58,15 @@ private:
 	};
 
 public:	
-	void ReturnBufferResource(FrameGraphBufferResourceHandle inBufferHandle);
+	void ReturnBufferResource(FrameGraphBufferHandle inBufferHandle);
 	
-	void ReturnImageResource(FrameGraphImageResourceHandle inImageHandle);
+	void ReturnImageResource(FrameGraphImageHandle inImageHandle);
 
 	CommandBuffer* GetCommandBuffer();
 
-	FrameGraphImageResourceHandle RegisterExternalImageResource(
-		Image* inImagePtr,
-		const FrameGraphImageSubResourceState& inInitialState);
-	
-	FrameGraphBufferResourceHandle RegisterExternalBufferResource(
-		Buffer* inBufferPtr, 
-		const FrameGraphBufferSubResourceState& inInitialState);
+	Image* GetImageResource(const FrameGraphImageHandle& inHandle);
 
-	FrameGraphImageResourceHandle PromiseInternalImageResource(
-		const FrameGraphImageResourceAllocator* inAllocator,
-		Image*& outFutureImagePtr);
-
-	FrameGraphBufferResourceHandle PromiseInternalBufferResource(
-		const FrameGraphBufferResourceAllocator* inAllocator,
-		Buffer*& outFutureBufferPtr);
+	Buffer* GetBufferResource(const FrameGraphBufferHandle& inHandle);
 
 	void SetUp(FrameGraphBlueprint* inBlueprint);
 

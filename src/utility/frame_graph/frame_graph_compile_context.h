@@ -53,26 +53,26 @@ private:
 	std::vector<GlobalSyncInfo> m_waitSemaphoresInNextComputeSubmit;
 	
 private:
-	auto _GetResourceState(const FrameGraphImageResourceHandle& inHandle) -> FrameGraphImageResourceState&;
+	auto _GetResourceState(const FrameGraphImageHandle& inHandle) -> FrameGraphImageResourceState&;
 
-	auto _GetResourceState(const FrameGraphBufferResourceHandle& inHandle) -> FrameGraphBufferResourceState&;
+	auto _GetResourceState(const FrameGraphBufferHandle& inHandle) -> FrameGraphBufferResourceState&;
 
 	// When there is a queue ownership transfer, we need to create a semaphore
 	// and submit it in the release operation queue, and wait it in the acquire operation queue
 	void _PushPendingSemaphore(
 		FrameGraphQueueType inQueueToSignal,
-		const FrameGraphImageResourceHandle& inHandle,
+		const FrameGraphImageHandle& inHandle,
 		const VkImageSubresourceRange& inRange,
 		VkSemaphore inSemaphoreToWait);
 
 	// When we are about to record command buffer that uses the resource,
 	// we need to pull all semaphores that are pending for this resource
 	void _PullPendingSemaphore(
-		const FrameGraphImageResourceHandle& inHandle,
+		const FrameGraphImageHandle& inHandle,
 		const VkImageSubresourceRange& inRange,
 		std::vector<VkSemaphore>& outSemaphoresToWait);
 	void _PullPendingSemaphore(
-		const FrameGraphBufferResourceHandle& inHandle,
+		const FrameGraphBufferHandle& inHandle,
 		VkDeviceSize inOffset,
 		VkDeviceSize inSize,
 		std::vector<VkSemaphore>& outSemaphoresToWait);
@@ -97,10 +97,10 @@ public:
 	// Resource layout, queue ownership may not meet requirement,
 	// so we need add barrier, wait semaphore based on these requirements
 	void RequireSubResourceStateBeforePass(
-		const FrameGraphImageResourceHandle& inHandle,
+		const FrameGraphImageHandle& inHandle,
 		const FrameGraphImageSubResourceState& inState);
 	void RequireSubResourceStateBeforePass(
-		const FrameGraphBufferResourceHandle& inHandle,
+		const FrameGraphBufferHandle& inHandle,
 		const FrameGraphBufferSubResourceState& inState);
 
 	// Report semaphore to wait in current submission, and barriers to apply before pass
@@ -108,10 +108,10 @@ public:
 
 	// After pass, resource state changes, we store it for next pass
 	void MergeSubResourceStateAfterPass(
-		const FrameGraphImageResourceHandle& inHandle,
+		const FrameGraphImageHandle& inHandle,
 		const FrameGraphImageSubResourceState& inState);
 	void MergeSubResourceStateAfterPass(
-		const FrameGraphBufferResourceHandle& inHandle,
+		const FrameGraphBufferHandle& inHandle,
 		const FrameGraphBufferSubResourceState& inState);
 
 	// According to spec, queue ownership transform requires both release operation and acquire operation,
@@ -121,10 +121,10 @@ public:
 	// transform ahead and build necessary release operation memory barrier
 	// and semaphore in current batch
 	void PresageSubResourceStateNextPass(
-		const FrameGraphImageResourceHandle& inHandle,
+		const FrameGraphImageHandle& inHandle,
 		const FrameGraphImageSubResourceState& inNewState);
 	void PresageSubResourceStateNextPass(
-		const FrameGraphBufferResourceHandle& inHandle,
+		const FrameGraphBufferHandle& inHandle,
 		const FrameGraphBufferSubResourceState& inNewState);
 
 	// Report semaphore to signal in current submission, 
@@ -132,18 +132,18 @@ public:
 	void ApplyEpilogueSynchronization();
 
 	void AddSubResourceReference(
-		const FrameGraphImageResourceHandle& inHandle,
+		const FrameGraphImageHandle& inHandle,
 		const VkImageSubresourceRange& inRange);
 	void AddSubResourceReference(
-		const FrameGraphBufferResourceHandle& inHandle,
+		const FrameGraphBufferHandle& inHandle,
 		VkDeviceSize inOffset,
 		VkDeviceSize inSize);
 
 	void ReleaseSubResourceReference(
-		const FrameGraphImageResourceHandle& inHandle,
+		const FrameGraphImageHandle& inHandle,
 		const VkImageSubresourceRange& inRange);
 	void ReleaseSubResourceReference(
-		const FrameGraphBufferResourceHandle& inHandle,
+		const FrameGraphBufferHandle& inHandle,
 		VkDeviceSize inOffset,
 		VkDeviceSize inSize);
 };

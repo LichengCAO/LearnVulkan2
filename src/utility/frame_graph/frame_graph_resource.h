@@ -253,12 +253,12 @@ namespace frame_graph_util
 
 // Resource handle represent a device object (i.e. Image, Buffer) in frame graph
 // different handle may represent the same device object due to memory aliasing
-struct FrameGraphBufferResourceHandle
+struct FrameGraphBufferHandle
 {
 	uint32_t handle;
 };
 
-struct FrameGraphImageResourceHandle
+struct FrameGraphImageHandle
 {
 	uint32_t handle;
 };
