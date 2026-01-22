@@ -23,30 +23,6 @@ public:
 	FrameGraphBlueprint& AddFrameGraphNode(std::unique_ptr<FrameGraphNode> inFrameGraphNode);
 };
 
-class FrameGraphBufferResourceAllocator
-{
-public:
-	FrameGraphBufferResourceAllocator& SetSize(VkDeviceSize inSize);
-	// If this enabled, we do not apply memory aliasing and create
-	// a new device object during compilation instead
-	FrameGraphBufferResourceAllocator& CustomizeAsDedicated();
-	FrameGraphBufferResourceAllocator& CustomizeLoadOperationAsClear(uint32_t inClearValue);
-};
-
-class FrameGraphImageResourceAllocator
-{
-private:
-
-public:
-	FrameGraphImageResourceAllocator& SetSize2D(uint32_t inWidth, uint32_t inHeight);
-	FrameGraphImageResourceAllocator& SetFormat(VkFormat inFormat);
-	// If this enabled, we do not apply memory aliasing and create
-	// a new device object during compilation instead
-	FrameGraphImageResourceAllocator& CustomizeAsDedicated();
-	FrameGraphImageResourceAllocator& CustomizeArrayLayer(uint32_t inArrayLength);
-	FrameGraphImageResourceAllocator& CustomizeMipLevel(uint32_t inLevelCount);
-};
-
 class FrameGraph
 {
 private:
