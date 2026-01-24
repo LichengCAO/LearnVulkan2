@@ -2,9 +2,20 @@
 #include "common.h"
 #include <queue>
 #include <functional>
+#include <variant>
 
+#ifndef FRAME_GRAPH_RESOURCE_HANDLE
+#define FRAME_GRAPH_RESOURCE_HANDLE std::variant<std::monostate, FrameGraphBufferHandle, FrameGraphImageHandle>
+#endif // FRAME_GRAPH_RESOURCE_HANDLE
+#ifndef FRAME_GRAPH_RESOURCE_STATE
+#define FRAME_GRAPH_RESOURCE_STATE std::variant<std::monostate, FrameGraphBufferSubResourceState, FrameGraphImageSubResourceState>
+#endif //FRAME_GRAPH_RESOURCE_STATE
+#ifndef BUFFER_SEGMENT_TREE
 #define BUFFER_SEGMENT_TREE frame_graph_util::SegmentTree<FrameGraphBufferSubResourceState, VkDeviceSize>
+#endif // BUFFER_SEGMENT_TREE
+#ifndef IMAGE_SEGMENT_TREE
 #define IMAGE_SEGMENT_TREE frame_graph_util::SegmentTree<FrameGraphImageSubResourceState, uint32_t>
+#endif // IMAGE_SEGMENT_TREE
 
 namespace frame_graph_util
 {
@@ -255,13 +266,54 @@ namespace frame_graph_util
 // different handle may represent the same device object due to memory aliasing
 struct FrameGraphBufferHandle
 {
-	uint32_t handle;
+	uint32_t handle = ~0u;
+	bool operator==(const FrameGraphBufferHandle& other) const 
+	{
+		return this->handle == other.handle;
+	}
 };
-
 struct FrameGraphImageHandle
 {
-	uint32_t handle;
+	uint32_t handle = ~0u;
+	bool operator==(const FrameGraphImageHandle& other) const 
+	{
+		return this->handle == other.handle;
+	}
 };
+struct FrameGraphNodeHandle
+{
+	uint32_t handle = ~0u;
+	bool operator==(const FrameGraphNodeHandle& other) const 
+	{
+		return this->handle == other.handle;
+	}
+};
+namespace std {
+	template<>
+	struct hash<FrameGraphBufferHandle> 
+	{
+		size_t operator()(const FrameGraphBufferHandle& key) const 
+		{
+			return hash<uint32_t>()(key.handle);
+		}
+	};
+	template<>
+	struct hash<FrameGraphImageHandle>
+	{
+		size_t operator()(const FrameGraphImageHandle& key) const
+		{
+			return hash<uint32_t>()(key.handle);
+		}
+	};
+	template<>
+	struct hash<FrameGraphNodeHandle>
+	{
+		size_t operator()(const FrameGraphNodeHandle& key) const
+		{
+			return hash<uint32_t>()(key.handle);
+		}
+	};
+}
 
 // Resource state tracks the state of a device object in frame graph,
 // it holds multiple sub-resource states which are modified by
@@ -271,6 +323,14 @@ struct FrameGraphImageSubResourceState
 {
 	VkImageSubresourceRange range;
 	VkImageLayout layout;
+	uint32_t queueFamily;
+	VkAccessFlags access;
+	VkPipelineStageFlags stage; // last time resource is used
+};
+struct FrameGraphBufferSubResourceState
+{
+	VkDeviceSize offset;
+	VkDeviceSize size;
 	uint32_t queueFamily;
 	VkAccessFlags access;
 	VkPipelineStageFlags stage; // last time resource is used
@@ -286,6 +346,7 @@ private:
 
 public:
 	FrameGraphImageResourceState(uint32_t mipLevels = 1, uint32_t arrayLayers = 1);
+	FrameGraphImageResourceState(const FrameGraphImageResourceState& inOther);
 	void SetSubResourceState(const FrameGraphImageSubResourceState& inSubState);
 	void GetSubResourceState(
 		const VkImageSubresourceRange& inRange,
@@ -293,16 +354,6 @@ public:
 	uint32_t GetMipLevelCount() const;
 	uint32_t GetArrayLayerCount() const;
 };
-
-struct FrameGraphBufferSubResourceState
-{
-	VkDeviceSize offset;
-	VkDeviceSize size;
-	uint32_t queueFamily;
-	VkAccessFlags access;
-	VkPipelineStageFlags stage; // last time resource is used
-};
-
 class FrameGraphBufferResourceState
 {
 private:
@@ -311,6 +362,7 @@ private:
 
 public:
 	FrameGraphBufferResourceState(VkDeviceSize size);
+	FrameGraphBufferResourceState(const FrameGraphBufferResourceState& inOther);
 	void SetSubResourceState(const FrameGraphBufferSubResourceState& inSubState);
 	void GetSubResourceState(
 		VkDeviceSize inOffset, 
@@ -325,6 +377,3 @@ enum class FrameGraphQueueType
 	COMPUTE_ONLY,	// so, it can be delegated to compute recording thread
 	ALL				// it can only be run on main thread
 };
-
-#undef BUFFER_SEGMENT_TREE
-#undef IMAGE_SEGMENT_TREE

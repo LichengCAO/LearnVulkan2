@@ -1,12 +1,10 @@
 #pragma once
 #include "frame_graph_resource.h"
 #include "frame_graph_node.h"
+#include "image.h"
+#include "buffer.h"
 
-class Image;
-class Buffer;
 class FrameGraphBuilder;
-#define FRAME_GRAPH_RESOURCE_HANDLE std::variant<std::monostate, FrameGraphBufferHandle, FrameGraphImageHandle>
-#define FRAME_GRAPH_SUBRESOURCE_STATE std::variant<std::monostate, FrameGraphBufferSubResourceState, FrameGraphImageSubResourceState>
 
 class FrameGraphBufferResourceAllocator
 {
@@ -31,75 +29,6 @@ public:
 	FrameGraphImageResourceAllocator& CustomizeArrayLayer(uint32_t inArrayLength);
 	FrameGraphImageResourceAllocator& CustomizeMipLevel(uint32_t inLevelCount);
 };
-
-struct FrameGraphNodeHandle
-{
-	uint32_t index = ~0u;
-};
-
-struct FrameGraphPassBind;
-
-class FrameGraphBuilder
-{
-private:
-	std::vector<Image*> m_externalImages;
-	std::vector<Buffer*> m_externalBuffers;
-	std::vector<std::function<void(FrameGraph*)>> m_initProcesses;
-
-	auto _MapHandleToResource(const FrameGraphImageHandle& inHandle) -> Image*;
-	auto _MapHandleToResource(const FrameGraphBufferHandle& inHandle) -> Buffer*;
-	auto _CreateNewImageResourceHandle() -> FrameGraphImageHandle;
-	auto _CreateNewBufferResourceHandle() -> FrameGraphBufferHandle;
-	
-	struct NodeBlueprint;
-	struct NodeOutput;
-	struct NodeInput
-	{
-		NodeBlueprint* owner;
-		NodeOutput* prev;
-		NodeOutput* next;
-		FRAME_GRAPH_RESOURCE_HANDLE handle;
-		FRAME_GRAPH_SUBRESOURCE_STATE state;
-		std::string name;
-	};
-	struct NodeOutput
-	{
-		NodeBlueprint* owner;
-		NodeInput* prev;
-		std::vector<NodeInput*> nexts;
-		FRAME_GRAPH_RESOURCE_HANDLE handle;
-		FRAME_GRAPH_SUBRESOURCE_STATE state;
-		std::string name;
-	};
-	struct NodeBlueprint
-	{
-		std::vector<std::unique_ptr<NodeInput>> inputs;
-		std::vector<std::unique_ptr<NodeOutput>> outputs;
-		FrameGraphQueueType type;
-	};
-
-	std::unordered_map<std::string, NodeOutput*> m_nameToOutput;
-	std::vector<std::unique_ptr<NodeBlueprint>> m_nodeBlueprints;
-
-public:
-	struct ExternalImageResourceRegisterInfo
-	{
-		Image* image;
-		FrameGraphImageResourceState initialState;
-	};
-	struct ExternalBufferResourceRegisterInfo
-	{
-		Buffer* buffer;
-		FrameGraphBufferResourceState initialState;
-	};
-	auto RegisterExternalResource(const ExternalImageResourceRegisterInfo& inRegisterInfo) -> FrameGraphImageHandle;
-	auto RegisterExternalResource(const ExternalBufferResourceRegisterInfo& inRegisterInfo) -> FrameGraphBufferHandle;
-	auto PromiseInternalResource(const FrameGraphImageResourceAllocator& inAllocator) -> FrameGraphImageHandle;
-	auto PromiseInternalResource(const FrameGraphBufferResourceAllocator& inAllocator) -> FrameGraphBufferHandle;
-	auto AddFrameGraphPass(const FrameGraphPassBind* inPassBind) -> FrameGraphNodeHandle;
-	void AddExtraDependency(FrameGraphNodeHandle inSooner, FrameGraphNodeHandle inLater);
-};
-
 
 struct FrameGraphPassBind
 {
@@ -141,4 +70,122 @@ public:
 	FrameGraphPassBind& SetQueueType(FrameGraphQueueType inType);
 
 	friend class FrameGraphBuilder;
+};
+
+class FrameGraphBuilder
+{
+private:
+	std::vector<Image*> m_externalImages;
+	std::vector<Buffer*> m_externalBuffers;
+	std::vector<std::function<void(FrameGraph*)>> m_initProcesses;
+
+	auto _CreateNewImageResourceHandle() -> FrameGraphImageHandle;
+	auto _CreateNewBufferResourceHandle() -> FrameGraphBufferHandle;
+	
+	struct NodeBlueprint;
+	struct NodeOutput;
+	struct NodeInput
+	{
+		NodeBlueprint* owner;
+		NodeOutput* prev;
+		NodeOutput* next;
+		FRAME_GRAPH_RESOURCE_HANDLE handle;
+		FRAME_GRAPH_SUBRESOURCE_STATE state;
+		std::string name;
+	};
+	struct NodeOutput
+	{
+		NodeBlueprint* owner;
+		NodeInput* prev;
+		std::set<NodeInput*> nexts;
+		FRAME_GRAPH_RESOURCE_HANDLE handle;
+		FRAME_GRAPH_SUBRESOURCE_STATE state;
+		std::string name;
+	};
+	struct NodeTransient
+	{
+		NodeBlueprint* owner;
+		FRAME_GRAPH_RESOURCE_HANDLE handle;
+		FRAME_GRAPH_SUBRESOURCE_STATE initialState;
+		FRAME_GRAPH_SUBRESOURCE_STATE finalState;
+		std::string name;
+	};
+	struct NodeBlueprint
+	{
+		std::vector<std::unique_ptr<NodeInput>> inputs;
+		std::vector<std::unique_ptr<NodeOutput>> outputs;
+		std::vector<std::unique_ptr<NodeTransient>> transients;
+		std::set<NodeBlueprint*> extraNexts;
+		std::set<NodeBlueprint*> extraPrevs;
+		FrameGraphQueueType type;
+		void GetFullNext(std::set<NodeBlueprint*>& output);
+		void GetFullPrev(std::set<NodeBlueprint*>& output);
+	};
+	struct ImageBlueprint
+	{
+		bool external;
+		std::unique_ptr<FrameGraphImageResourceState> initialState;
+		std::unique_ptr<IImageInitializer> initializer;
+
+		//============= instance ==============
+		std::unordered_map<FrameGraphImageHandle, size_t> handleToIndex; // index of 'refCounts' 'states'
+		std::vector<uint32_t> refCounts;
+		std::vector<std::unique_ptr<FrameGraphImageResourceState>> states;
+		
+		bool HaveResourceAssigned(FrameGraphImageHandle inHandle);
+	};
+	struct BufferBlueprint
+	{
+		bool external;
+		std::unique_ptr<FrameGraphBufferResourceState> initialState;
+		std::unique_ptr<IBufferInitializer> initializer;
+
+		// ============= instance =============
+		std::unordered_map<FrameGraphBufferHandle, size_t> handleToIndex; // index of 'refCounts' 'states'
+		std::vector<uint32_t> refCounts;
+		std::vector<std::unique_ptr<FrameGraphBufferResourceState>> states;
+		
+		bool HaveResourceAssigned(FrameGraphBufferHandle inHandle);
+	};
+
+	std::unordered_map<std::string, NodeOutput*> m_nameToOutput;
+	std::vector<std::unique_ptr<NodeBlueprint>> m_nodeBlueprints;
+	std::vector<std::unique_ptr<ImageBlueprint>> m_imageBlueprints;
+	std::vector<std::unique_ptr<BufferBlueprint>> m_bufferBlueprints;
+	std::unordered_map<FrameGraphImageHandle, size_t> m_handleToImageBlueprint;
+	std::unordered_map<FrameGraphBufferHandle, size_t> m_handleToBufferBlueprint;
+
+	NodeBlueprint* _GetNodeBlueprint(FrameGraphNodeHandle inHandle);
+	ImageBlueprint* _GetImageBlueprint(FrameGraphImageHandle inHandle);
+	BufferBlueprint* _GetBufferBlueprint(FrameGraphBufferHandle inHandle);
+	void _TopologicalSort(std::vector<std::set<NodeBlueprint*>>& outBatches);
+	void _GenerateResourceCreationTask(const std::vector<std::set<NodeBlueprint*>>& inBatches);
+	
+	// update frame graph private member
+	void _AddInternalBufferToGraph(FrameGraph* inGraph,std::unique_ptr<Buffer> inBufferToOwn) const;
+	void _AddExternalBufferToGraph(FrameGraph* inGraph,Buffer* inBuffer) const;
+	void _AddInternalImageToGraph(FrameGraph* inGraph, std::unique_ptr<Image> inImageToOwn) const;
+	void _AddExternalImageToGraph(FrameGraph* inGraph, Image* inImage) const;
+
+	void _RegisterHandleToResource(FrameGraph* inGraph, FrameGraphBufferHandle inHandle, Buffer* inResource) const;
+	void _RegisterHandleToResource(FrameGraph* inGraph, FrameGraphImageHandle inHandle, Image* inResource) const;
+
+public:
+	struct ExternalImageResourceRegisterInfo
+	{
+		Image* image;
+		FrameGraphImageResourceState initialState;
+	};
+	struct ExternalBufferResourceRegisterInfo
+	{
+		Buffer* buffer;
+		FrameGraphBufferResourceState initialState;
+	};
+	auto RegisterExternalResource(const ExternalImageResourceRegisterInfo& inRegisterInfo) -> FrameGraphImageHandle;
+	auto RegisterExternalResource(const ExternalBufferResourceRegisterInfo& inRegisterInfo) -> FrameGraphBufferHandle;
+	auto PromiseInternalResource(const FrameGraphImageResourceAllocator& inAllocator) -> FrameGraphImageHandle;
+	auto PromiseInternalResource(const FrameGraphBufferResourceAllocator& inAllocator) -> FrameGraphBufferHandle;
+	auto AddFrameGraphPass(const FrameGraphPassBind* inPassBind) -> FrameGraphNodeHandle;
+	void AddExtraDependency(FrameGraphNodeHandle inSooner, FrameGraphNodeHandle inLater);
+	void ArrangePasses();
 };

@@ -3,8 +3,6 @@
 #include "device.h"
 #include <forward_list>
 
-#define FRAME_GRAPH_RESOURCE_HANDLE std::variant<FrameGraphBufferHandle, FrameGraphImageHandle>
-#define FRAME_GRAPH_RESOURCE_STATE std::variant<FrameGraphBufferSubResourceState, FrameGraphImageSubResourceState>
 
 namespace
 {

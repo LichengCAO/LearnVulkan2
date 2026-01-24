@@ -8,29 +8,21 @@ class FrameGraphNode;
 class Image;
 class Buffer;
 class CommandBuffer;
-
-// Blueprint that helps to construct a frame graph by
-// automatically connect nodes based on names of input and outputs
-class FrameGraphBlueprint
-{
-private:
-	std::unordered_map<std::string, FrameGraphNodeOutput*> m_availableOutputs;
-	
-private:
-	FrameGraphNodeOutput* _FindAvailableOutputByName(const std::string& inName);
-
-public:
-	FrameGraphBlueprint& AddFrameGraphNode(std::unique_ptr<FrameGraphNode> inFrameGraphNode);
-};
+class FrameGraphBuilder;
 
 class FrameGraph
 {
 private:
 	std::vector<std::unique_ptr<FrameGraphNode>> m_nodes;
-	std::vector<std::unique_ptr<Image>> m_imageResources;
-	std::vector<std::unique_ptr<Buffer>> m_bufferResources;
+	std::vector<std::unique_ptr<Image>> m_internalImages;
+	std::vector<std::unique_ptr<Buffer>> m_internalBuffers;
+	std::vector<Image*> m_externalImages;
+	std::vector<Buffer*> m_externalBuffers;
 	std::vector<std::unique_ptr<ISingleThreadTask>> m_hostExecution; // graph node recording tasks
 	FrameGraphCompileContext m_currentContext;
+
+	std::unordered_map<uint32_t, Image*> m_handleToImage;
+	std::unordered_map<uint32_t, Buffer*> m_handleToBuffer;
 
 	void _TopologicalSortFrameGraphNodes(std::vector<std::set<FrameGraphNode*>>& outOrderedNodeIndex);
 
@@ -83,4 +75,6 @@ public:
 	void Execute();
 
 	void EndFrame();
+
+	friend class FrameGraphBuilder;
 };

@@ -8,9 +8,6 @@ class FrameGraphNode;
 class FrameGraphNodeInput;
 class FrameGraphNodeOutput;
 
-#define FRAME_GRAPH_RESOURCE_HANDLE std::variant<std::monostate, FrameGraphBufferHandle, FrameGraphImageHandle>
-#define FRAME_GRAPH_RESOURCE_STATE std::variant<std::monostate, FrameGraphBufferSubResourceState, FrameGraphImageSubResourceState>
-
 #pragma region Initializer
 
 class IFrameGraphNodeInputInitializer
@@ -296,6 +293,3 @@ struct FrameGraphPass
 		const FrameGraphBufferSubResourceState* inInitialState,
 		const FrameGraphBufferSubResourceState* inFinalState);
 };
-
-#undef FRAME_GRAPH_RESOURCE_STATE
-#undef FRAME_GRAPH_RESOURCE_HANDLE

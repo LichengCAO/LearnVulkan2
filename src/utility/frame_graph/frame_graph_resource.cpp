@@ -1,9 +1,6 @@
 #include "frame_graph_resource.h"
 #include <queue>
 
-#define BUFFER_SEGMENT_TREE frame_graph_util::SegmentTree<FrameGraphBufferSubResourceState, VkDeviceSize>
-#define IMAGE_SEGMENT_TREE frame_graph_util::SegmentTree<FrameGraphImageSubResourceState, uint32_t>
-
 FrameGraphBufferResourceState::FrameGraphBufferResourceState(VkDeviceSize size)
 	:m_size(size)
 {
@@ -134,6 +131,3 @@ uint32_t FrameGraphImageResourceState::GetArrayLayerCount() const
 {
 	return m_mipLevels;
 }
-
-#undef BUFFER_SEGMENT_TREE
-#undef IMAGE_SEGMENT_TREE
