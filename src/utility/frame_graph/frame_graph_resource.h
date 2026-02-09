@@ -7,9 +7,9 @@
 #ifndef FRAME_GRAPH_RESOURCE_HANDLE
 #define FRAME_GRAPH_RESOURCE_HANDLE std::variant<std::monostate, FrameGraphBufferHandle, FrameGraphImageHandle>
 #endif // FRAME_GRAPH_RESOURCE_HANDLE
-#ifndef FRAME_GRAPH_RESOURCE_STATE
-#define FRAME_GRAPH_RESOURCE_STATE std::variant<std::monostate, FrameGraphBufferSubResourceState, FrameGraphImageSubResourceState>
-#endif //FRAME_GRAPH_RESOURCE_STATE
+#ifndef FRAME_GRAPH_SUBRESOURCE_STATE
+#define FRAME_GRAPH_SUBRESOURCE_STATE std::variant<std::monostate, FrameGraphBufferSubResourceState, FrameGraphImageSubResourceState>
+#endif //FRAME_GRAPH_SUBRESOURCE_STATE
 #ifndef BUFFER_SEGMENT_TREE
 #define BUFFER_SEGMENT_TREE frame_graph_util::SegmentTree<FrameGraphBufferSubResourceState, VkDeviceSize>
 #endif // BUFFER_SEGMENT_TREE
@@ -373,7 +373,6 @@ public:
 
 enum class FrameGraphQueueType
 {
-	GRAPHICS_ONLY,  // so, it can be delegated to graphics recording thread
-	COMPUTE_ONLY,	// so, it can be delegated to compute recording thread
-	ALL				// it can only be run on main thread
+	GRAPHICS,  // so, it can be delegated to graphics recording thread
+	COMPUTE,	// so, it can be delegated to compute recording thread
 };

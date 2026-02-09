@@ -113,6 +113,38 @@ FrameGraphBuilder::BufferBlueprint* FrameGraphBuilder::_GetBufferBlueprint(Frame
     return m_bufferBlueprints.at(blueprintIndex).get();
 }
 
+auto FrameGraphBuilder::_GetResourceState(FrameGraphImageHandle inHandle) -> FrameGraphImageResourceState*
+{
+    FrameGraphImageResourceState* result = nullptr;
+    auto blueprint = _GetImageBlueprint(inHandle);
+
+    if (blueprint && blueprint->HaveResourceAssigned(inHandle))
+    {
+        size_t index = blueprint->handleToIndex[inHandle];
+        result = blueprint->states[index].get();
+    }
+
+    CHECK_TRUE(result);
+
+    return result;
+}
+
+auto FrameGraphBuilder::_GetResourceState(FrameGraphBufferHandle inHandle) -> FrameGraphBufferResourceState*
+{
+    FrameGraphBufferResourceState* result = nullptr;
+    auto blueprint = _GetBufferBlueprint(inHandle);
+
+    if (blueprint && blueprint->HaveResourceAssigned(inHandle))
+    {
+        size_t index = blueprint->handleToIndex[inHandle];
+        result = blueprint->states[index].get();
+    }
+
+    CHECK_TRUE(result);
+
+    return result;
+}
+
 void FrameGraphBuilder::_TopologicalSort(std::vector<std::set<NodeBlueprint*>>& outBatches)
 {
     std::vector<size_t> indegree(m_nodeBlueprints.size(), 0);
@@ -189,7 +221,7 @@ void FrameGraphBuilder::_GenerateResourceCreationTask(const std::vector<std::set
                         auto blueprint = _GetBufferBlueprint(handle);
 
                         // should be first time the handle appear in our view
-                        CHECK_TRUE(!blueprint->HaveResourceAssigned(handle));
+                        CHECK_TRUE(!blueprint->HaveResourceAssigned(handle) || blueprint->external);
 
                         outBufRequests.emplace_back(handle);
                     }
@@ -199,7 +231,7 @@ void FrameGraphBuilder::_GenerateResourceCreationTask(const std::vector<std::set
                         auto blueprint = _GetImageBlueprint(handle);
 
                         // should be first time the handle appear in our view
-                        CHECK_TRUE(!blueprint->HaveResourceAssigned(handle));
+                        CHECK_TRUE(!blueprint->HaveResourceAssigned(handle) || blueprint->external);
 
                         outImgRequests.emplace_back(handle);
                     }
@@ -424,6 +456,18 @@ void FrameGraphBuilder::_GenerateResourceCreationTask(const std::vector<std::set
     }
 }
 
+void FrameGraphBuilder::_GenerateSyncTask(const std::vector<std::set<NodeBlueprint*>>& inBatches)
+{
+    size_t wave = 0;
+
+    for (const auto& nodeBatch : inBatches)
+    {
+
+
+        wave++;
+    }
+}
+
 void FrameGraphBuilder::_AddInternalBufferToGraph(FrameGraph* inGraph, std::unique_ptr<Buffer> inBufferToOwn) const
 {
     inGraph->m_internalBuffers.push_back(std::move(inBufferToOwn));
@@ -604,6 +648,19 @@ void FrameGraphBuilder::AddExtraDependency(FrameGraphNodeHandle inSooner, FrameG
     second->extraPrevs.insert(first);
 }
 
+void FrameGraphBuilder::SetGraphicsCommandPool(VkCommandPool inPool)
+{
+    m_graphicsCmdBlueprint = std::make_unique<CommandBufferBlueprint>();
+
+    auto uptrInitializer = std::make_unique<CommandBuffer::Initializer>();
+    uptrInitializer->SetCommandPool(inPool);
+    m_graphicsCmdBlueprint->initializer = 
+}
+
+void FrameGraphBuilder::SetComputeCommandPool(VkCommandPool inPool)
+{
+}
+
 void FrameGraphBuilder::ArrangePasses()
 {
     std::vector<std::set<NodeBlueprint*>> nodeBatches;
@@ -644,10 +701,9 @@ void FrameGraphBuilder::NodeBlueprint::GetFullPrev(std::set<NodeBlueprint*>& out
 
 bool FrameGraphBuilder::ImageBlueprint::HaveResourceAssigned(FrameGraphImageHandle inHandle)
 {
-    return handleToIndex.find(inHandle.handle) != handleToIndex.end();
+    return handleToIndex.find(inHandle) != handleToIndex.end();
 }
-
 bool FrameGraphBuilder::BufferBlueprint::HaveResourceAssigned(FrameGraphBufferHandle inHandle)
 {
-    return handleToIndex.find(inHandle.handle) != handleToIndex.end();
+    return handleToIndex.find(inHandle) != handleToIndex.end();
 }

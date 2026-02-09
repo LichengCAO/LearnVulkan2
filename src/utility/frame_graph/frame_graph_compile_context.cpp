@@ -15,15 +15,15 @@ namespace
 
 		if (graphicsIndex == inQueueFamilyIndex)
 		{
-			return FrameGraphQueueType::GRAPHICS_ONLY;
+			return FrameGraphQueueType::GRAPHICS;
 		}
 		else if (inQueueFamilyIndex == computeIndex)
 		{
-			return FrameGraphQueueType::COMPUTE_ONLY;
+			return FrameGraphQueueType::COMPUTE;
 		}
 		CHECK_TRUE(false);
 
-		return FrameGraphQueueType::GRAPHICS_ONLY;
+		return FrameGraphQueueType::GRAPHICS;
 	}
 }
 

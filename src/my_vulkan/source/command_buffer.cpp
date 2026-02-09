@@ -408,12 +408,12 @@ CommandBuffer::~CommandBuffer()
 	// Do nothing, it's ok that command buffer is not freed, it will be freed by comannd pool when it is destroyed anyway
 }
 
-void CommandBuffer::_Init(const ICommandBufferInitializer* inInitializerPtr)
+void CommandBuffer::Init(const ICommandBufferInitializer* inInitializerPtr)
 {
 	inInitializerPtr->InitCommandBuffer(this);
 }
 
-void CommandBuffer::_Uninit()
+void CommandBuffer::Uninit()
 {
 	auto& myDevice = MyDevice::GetInstance();
 
@@ -435,7 +435,10 @@ void CommandBuffer::Reset(VkCommandBufferResetFlags inFlags)
 	VK_CHECK(vkResetCommandBuffer(m_vkCommandBuffer, inFlags));
 }
 
-CommandBuffer& CommandBuffer::BeginCommands(VkCommandBufferUsageFlags inFlags, const std::optional<VkCommandBufferInheritanceInfo>& inInheritanceInfo, const void* inNextPtr)
+CommandBuffer& CommandBuffer::BeginCommands(
+	VkCommandBufferUsageFlags inFlags, 
+	const std::optional<VkCommandBufferInheritanceInfo>& inInheritanceInfo, 
+	const void* inNextPtr)
 {
 	VkCommandBufferBeginInfo beginInfo;
 	
@@ -778,7 +781,7 @@ CommandPool& CommandPool::FreeCommandBuffer(CommandBuffer* inoutBufferReturnedPt
 {
 	auto& device = MyDevice::GetInstance();
 
-	inoutBufferReturnedPtr->_Uninit();
+	inoutBufferReturnedPtr->Uninit();
 
 	return *this;
 }
@@ -851,16 +854,6 @@ CommandPool& CommandPool::ResetPool()
 
 		device.ResetCommandPool(m_vkCommandPool);
 	}
-
-	return *this;
-}
-
-CommandPool& CommandPool::AllocateCommandBuffer(CommandBuffer* outCommandBufferPtr, VkCommandBufferLevel inBufferLevel)
-{
-	CommandBuffer::Initializer bufferInit{};
-
-	bufferInit.CustomizeCommandBufferLevel(inBufferLevel).SetCommandPool(m_vkCommandPool);
-	outCommandBufferPtr->_Init(&bufferInit);
 
 	return *this;
 }

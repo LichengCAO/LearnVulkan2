@@ -321,7 +321,7 @@ FrameGraphNodeInitializer& FrameGraphNodeInitializer::Reset()
 {
 	m_tmpInput.clear();
 	m_tmpOutput.clear();
-	m_queueType = FrameGraphQueueType::GRAPHICS_ONLY;
+	m_queueType = FrameGraphQueueType::GRAPHICS;
 	m_frameGraph = nullptr;
 	return *this;
 }
@@ -377,7 +377,7 @@ void FrameGraphNodeInitializer::InitializeFrameGraphNode(FrameGraphNode* inFrame
 	auto& device = MyDevice::GetInstance();
 	uint32_t graphicsQueue = device.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
 	uint32_t computeQueue = device.GetQueueFamilyIndexOfType(QueueFamilyType::COMPUTE);
-	uint32_t defaultQueue = m_queueType == FrameGraphQueueType::COMPUTE_ONLY ? computeQueue : graphicsQueue;
+	uint32_t defaultQueue = m_queueType == FrameGraphQueueType::COMPUTE ? computeQueue : graphicsQueue;
 
 	for (auto& uptrToMove : m_tmpInput)
 	{

@@ -175,7 +175,7 @@ private:
 private:
 	void _ProcessInCmdScope(const std::function<void()>& inFunction);
 
-private:
+public:
 	class Initializer : public ICommandBufferInitializer
 	{
 	private:
@@ -194,16 +194,16 @@ private:
 		CommandBuffer::Initializer& CustomizeCommandBufferLevel(VkCommandBufferLevel inBufferLevel);
 	};
 
-	void _Init(const ICommandBufferInitializer* inInitializerPtr);
-	
+public:
+	~CommandBuffer();
+
+	void Init(const ICommandBufferInitializer* inInitializerPtr);
+
 	// Free command buffer to pool. It's not mandatory, since command buffer will
 	// be freed when its parent command pool is destroyed.
 	// According to spec, the allocated command buffer will not be freed until
 	// the command pool is reset, even with this function invoked.
-	void _Uninit();
-
-public:
-	~CommandBuffer();
+	void Uninit();
 
 	uint32_t GetQueueFamliyIndex() const;
 
@@ -388,11 +388,6 @@ public:
 	// Every command buffer allocated by this are reset, 
 	// command buffers from this pool are all reset to initial state
 	CommandPool& ResetPool();
-
-	// Allocate a ready command buffer(inited) from current pool
-	CommandPool& AllocateCommandBuffer(
-		CommandBuffer* outCommandBufferPtr, 
-		VkCommandBufferLevel inBufferLevel = VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 
 	// Return command buffer to this pool
 	CommandPool& FreeCommandBuffer(CommandBuffer* inoutBufferReturnedPtr);

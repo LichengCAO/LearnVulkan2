@@ -175,7 +175,7 @@ private:
 	std::vector<std::unique_ptr<FrameGraphNodeInput>> m_inputs;
 	std::vector<std::unique_ptr<FrameGraphNodeOutput>> m_outputs;
 	std::set<FrameGraphNode*> m_extraDependencies;
-	FrameGraphQueueType m_queueType = FrameGraphQueueType::GRAPHICS_ONLY;
+	FrameGraphQueueType m_queueType = FrameGraphQueueType::GRAPHICS;
 
 private:
 	void _DoForEachNextInput(std::function<void(FrameGraphNodeInput*)> inFuncToDo) const;

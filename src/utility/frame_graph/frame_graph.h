@@ -18,11 +18,16 @@ private:
 	std::vector<std::unique_ptr<Buffer>> m_internalBuffers;
 	std::vector<Image*> m_externalImages;
 	std::vector<Buffer*> m_externalBuffers;
+
+	std::vector<std::function<void(FrameGraph*)>> m_serializedTask;
+	std::vector<std::vector<size_t>> m_batchPrologues; // [batch][step] -> index in m_serializedTask
+	std::vector<std::vector<size_t>> m_batchEpilogues; // [batch][step] -> index in m_serializedTask
+
 	std::vector<std::unique_ptr<ISingleThreadTask>> m_hostExecution; // graph node recording tasks
 	FrameGraphCompileContext m_currentContext;
 
-	std::unordered_map<uint32_t, Image*> m_handleToImage;
-	std::unordered_map<uint32_t, Buffer*> m_handleToBuffer;
+	std::unordered_map<FrameGraphImageHandle, Image*> m_handleToImage;
+	std::unordered_map<FrameGraphBufferHandle, Buffer*> m_handleToBuffer;
 
 	void _TopologicalSortFrameGraphNodes(std::vector<std::set<FrameGraphNode*>>& outOrderedNodeIndex);
 
@@ -54,11 +59,13 @@ public:
 	
 	void ReturnImageResource(FrameGraphImageHandle inImageHandle);
 
-	CommandBuffer* GetCommandBuffer();
+	size_t GetBatchOfNode(FrameGraphNodeHandle inHandle);
 
-	Image* GetImageResource(const FrameGraphImageHandle& inHandle);
+	CommandBuffer* GetCommandBuffer(FrameGraphQueueType inQueue, size_t inBatch);
 
-	Buffer* GetBufferResource(const FrameGraphBufferHandle& inHandle);
+	Image* GetImage(const FrameGraphImageHandle& inHandle);
+
+	Buffer* GetBuffer(const FrameGraphBufferHandle& inHandle);
 
 	void SetUp(FrameGraphBlueprint* inBlueprint);
 

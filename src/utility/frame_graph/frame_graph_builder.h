@@ -3,6 +3,7 @@
 #include "frame_graph_node.h"
 #include "image.h"
 #include "buffer.h"
+#include "command_buffer.h"
 
 class FrameGraphBuilder;
 
@@ -30,6 +31,27 @@ public:
 	FrameGraphImageResourceAllocator& CustomizeMipLevel(uint32_t inLevelCount);
 };
 
+class FrameGraphCommandBufferAllocator
+{
+public:
+	FrameGraphCommandBufferAllocator& AddGraphicsCommandPool(VkCommandPool inPool);
+	FrameGraphCommandBufferAllocator& AddComputeCommandPool(VkCommandPool inPool);
+};
+
+class FrameGraphSemaphoreAllocator
+{
+public:
+	VkSemaphore AllocateSemaphore();
+	void FreeSemaphore(VkSemaphore inSemaphore);
+};
+
+class FrameGraphFenceAllocator
+{
+public:
+	VkFence GetFence();
+	void FreeFence(VkFence inFence);
+};
+
 struct FrameGraphPassBind
 {
 private:
@@ -44,7 +66,9 @@ private:
 	const FrameGraphPass* m_pass;
 
 public:
-	FrameGraphPassBind(const FrameGraphBuilder* inBuilder, const FrameGraphPass* inPassToBind) : m_pass(inPassToBind) {};
+	FrameGraphPassBind(
+		const FrameGraphBuilder* inBuilder, 
+		const FrameGraphPass* inPassToBind) : m_pass(inPassToBind) {};
 	FrameGraphPassBind& BindInAttachment(
 		uint32_t inAttachmentIndex,
 		const std::string& inName);
@@ -155,18 +179,21 @@ private:
 	std::unordered_map<FrameGraphImageHandle, size_t> m_handleToImageBlueprint;
 	std::unordered_map<FrameGraphBufferHandle, size_t> m_handleToBufferBlueprint;
 
-	NodeBlueprint* _GetNodeBlueprint(FrameGraphNodeHandle inHandle);
-	ImageBlueprint* _GetImageBlueprint(FrameGraphImageHandle inHandle);
-	BufferBlueprint* _GetBufferBlueprint(FrameGraphBufferHandle inHandle);
+	auto _GetNodeBlueprint(FrameGraphNodeHandle inHandle) -> NodeBlueprint*;
+	auto _GetImageBlueprint(FrameGraphImageHandle inHandle) -> ImageBlueprint*;
+	auto _GetBufferBlueprint(FrameGraphBufferHandle inHandle) -> BufferBlueprint*;
+	auto _GetResourceState(FrameGraphImageHandle inHandle) -> FrameGraphImageResourceState*;
+	auto _GetResourceState(FrameGraphBufferHandle inHandle) -> FrameGraphBufferResourceState*;
+
 	void _TopologicalSort(std::vector<std::set<NodeBlueprint*>>& outBatches);
 	void _GenerateResourceCreationTask(const std::vector<std::set<NodeBlueprint*>>& inBatches);
+	void _GenerateSyncTask(const std::vector<std::set<NodeBlueprint*>>& inBatches);
 	
 	// update frame graph private member
 	void _AddInternalBufferToGraph(FrameGraph* inGraph,std::unique_ptr<Buffer> inBufferToOwn) const;
 	void _AddExternalBufferToGraph(FrameGraph* inGraph,Buffer* inBuffer) const;
 	void _AddInternalImageToGraph(FrameGraph* inGraph, std::unique_ptr<Image> inImageToOwn) const;
 	void _AddExternalImageToGraph(FrameGraph* inGraph, Image* inImage) const;
-
 	void _RegisterHandleToResource(FrameGraph* inGraph, FrameGraphBufferHandle inHandle, Buffer* inResource) const;
 	void _RegisterHandleToResource(FrameGraph* inGraph, FrameGraphImageHandle inHandle, Image* inResource) const;
 
