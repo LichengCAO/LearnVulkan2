@@ -1,7 +1,7 @@
 #pragma once
 #include "common.h"
 
-class ImageBarrierBuilder
+class ImageBarrierBuilder final
 {
 private:
 	const void* pNext = nullptr;
@@ -37,7 +37,7 @@ public:
 		VkAccessFlags _dstAccessMask) const;
 };
 
-class BufferBarrierBuilder
+class BufferBarrierBuilder final
 {
 private:
 	const void* pNext = nullptr;
@@ -61,7 +61,7 @@ public:
 		VkAccessFlags inDstAccessMask) const;
 };
 
-class ImageBlitBuilder
+class ImageBlitBuilder final
 {
 private:
 	VkImageSubresourceLayers m_srcSubresourceLayers{};
