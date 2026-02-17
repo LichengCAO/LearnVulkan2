@@ -462,7 +462,20 @@ void FrameGraphBuilder::_GenerateSyncTask(const std::vector<std::set<NodeBluepri
 
     for (const auto& nodeBatch : inBatches)
     {
+        for (const NodeBlueprint* node : nodeBatch)
+        {
+            VkPipelineStageFlags dstStage{};
+            std::vector<VkMemoryBarrier> memBarriers;
+            std::vector<VkBufferMemoryBarrier> bufBarriers;
+            std::vector<VkImageMemoryBarrier> imgBarriers;
+            bool emitSemaphore = false;
+            bool catchSemaphore = false;
 
+            for (const auto& curInput : node->inputs)
+            {
+                if (std::)
+            }
+        }
 
         wave++;
     }
@@ -490,12 +503,12 @@ void FrameGraphBuilder::_AddExternalImageToGraph(FrameGraph* inGraph, Image* inI
 
 void FrameGraphBuilder::_RegisterHandleToResource(FrameGraph* inGraph, FrameGraphBufferHandle inHandle, Buffer* inResource) const
 {
-    inGraph->m_handleToBuffer[inHandle.handle] = inResource;
+    inGraph->m_handleToBuffer[inHandle] = inResource;
 }
 
 void FrameGraphBuilder::_RegisterHandleToResource(FrameGraph* inGraph, FrameGraphImageHandle inHandle, Image* inResource) const
 {
-    inGraph->m_handleToImage[inHandle.handle] = inResource;
+    inGraph->m_handleToImage[inHandle] = inResource;
 }
 
 auto FrameGraphBuilder::AddFrameGraphPass(const FrameGraphPassBind* inPassBind) -> FrameGraphNodeHandle
@@ -646,19 +659,6 @@ void FrameGraphBuilder::AddExtraDependency(FrameGraphNodeHandle inSooner, FrameG
 
     first->extraNexts.insert(second);
     second->extraPrevs.insert(first);
-}
-
-void FrameGraphBuilder::SetGraphicsCommandPool(VkCommandPool inPool)
-{
-    m_graphicsCmdBlueprint = std::make_unique<CommandBufferBlueprint>();
-
-    auto uptrInitializer = std::make_unique<CommandBuffer::Initializer>();
-    uptrInitializer->SetCommandPool(inPool);
-    m_graphicsCmdBlueprint->initializer = 
-}
-
-void FrameGraphBuilder::SetComputeCommandPool(VkCommandPool inPool)
-{
 }
 
 void FrameGraphBuilder::ArrangePasses()

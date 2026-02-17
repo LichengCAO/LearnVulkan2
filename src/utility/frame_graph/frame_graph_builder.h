@@ -171,11 +171,31 @@ private:
 		
 		bool HaveResourceAssigned(FrameGraphBufferHandle inHandle);
 	};
+	struct FenceBlueprint
+	{
+		enum class State
+		{
+			SIGNALED,
+			UNSIGNALED
+		};
+		std::vector<FenceBlueprint::State> state;
+	};
+	struct SemaphoreBlueprint
+	{
+		enum class State
+		{
+			FREE,
+			PENDING,
+		};
+		std::vector<SemaphoreBlueprint::State> state;
+	};
 
 	std::unordered_map<std::string, NodeOutput*> m_nameToOutput;
 	std::vector<std::unique_ptr<NodeBlueprint>> m_nodeBlueprints;
 	std::vector<std::unique_ptr<ImageBlueprint>> m_imageBlueprints;
 	std::vector<std::unique_ptr<BufferBlueprint>> m_bufferBlueprints;
+	std::vector<std::unique_ptr<FenceBlueprint>> m_fenceBlueprints;
+	std::vector<std::unique_ptr<SemaphoreBlueprint>> m_semaphoreBlueprints;
 	std::unordered_map<FrameGraphImageHandle, size_t> m_handleToImageBlueprint;
 	std::unordered_map<FrameGraphBufferHandle, size_t> m_handleToBufferBlueprint;
 
@@ -190,8 +210,8 @@ private:
 	void _GenerateSyncTask(const std::vector<std::set<NodeBlueprint*>>& inBatches);
 	
 	// update frame graph private member
-	void _AddInternalBufferToGraph(FrameGraph* inGraph,std::unique_ptr<Buffer> inBufferToOwn) const;
-	void _AddExternalBufferToGraph(FrameGraph* inGraph,Buffer* inBuffer) const;
+	void _AddInternalBufferToGraph(FrameGraph* inGraph, std::unique_ptr<Buffer> inBufferToOwn) const;
+	void _AddExternalBufferToGraph(FrameGraph* inGraph, Buffer* inBuffer) const;
 	void _AddInternalImageToGraph(FrameGraph* inGraph, std::unique_ptr<Image> inImageToOwn) const;
 	void _AddExternalImageToGraph(FrameGraph* inGraph, Image* inImage) const;
 	void _RegisterHandleToResource(FrameGraph* inGraph, FrameGraphBufferHandle inHandle, Buffer* inResource) const;
