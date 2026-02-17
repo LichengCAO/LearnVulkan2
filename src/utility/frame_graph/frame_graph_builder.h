@@ -101,7 +101,7 @@ class FrameGraphBuilder
 private:
 	std::vector<Image*> m_externalImages;
 	std::vector<Buffer*> m_externalBuffers;
-	std::vector<std::function<void(FrameGraph*)>> m_initProcesses;
+	std::vector<std::function<void(FrameGraph*)>> m_initResourceProcesses;
 
 	auto _CreateNewImageResourceHandle() -> FrameGraphImageHandle;
 	auto _CreateNewBufferResourceHandle() -> FrameGraphBufferHandle;
@@ -188,6 +188,20 @@ private:
 			PENDING,
 		};
 		std::vector<SemaphoreBlueprint::State> state;
+	};
+	struct ImageMemoryBarrierBlueprint
+	{
+		VkPipelineStageFlags srcStage;
+		VkPipelineStageFlags dstStage;
+		VkImageMemoryBarrier barrier;
+		FrameGraphImageHandle resourceHandle;
+	};
+	struct BufferMemoryBarrierBlueprint
+	{
+		VkPipelineStageFlags srcStage;
+		VkPipelineStageFlags dstStage;
+		VkBufferMemoryBarrier barrier;
+		FrameGraphBufferHandle resourceHandle;
 	};
 
 	std::unordered_map<std::string, NodeOutput*> m_nameToOutput;

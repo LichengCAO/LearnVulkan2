@@ -1,5 +1,6 @@
 #include "frame_graph_builder.h"
 #include "frame_graph.h"
+#include "vulkan_struct_util.h"
 
 FrameGraphPassBind& FrameGraphPassBind::BindInAttachment(uint32_t inAttachmentIndex, const std::string& inName)
 {
@@ -315,7 +316,7 @@ void FrameGraphBuilder::_GenerateResourceCreationTask(const std::vector<std::set
                             _AddInternalBufferToGraph(toInit, std::move(newBuffer));
                         };
 
-                    m_initProcesses.push_back(std::move(funcCreateBuffer));
+                    m_initResourceProcesses.push_back(std::move(funcCreateBuffer));
                 }
             }
             for (auto handle : imageToCreate)
@@ -371,7 +372,7 @@ void FrameGraphBuilder::_GenerateResourceCreationTask(const std::vector<std::set
                             _AddInternalImageToGraph(toInit, std::move(newImage));
                         };
 
-                    m_initProcesses.push_back(std::move(funcCreateImage));
+                    m_initResourceProcesses.push_back(std::move(funcCreateImage));
                 }
             }
         }
@@ -462,18 +463,85 @@ void FrameGraphBuilder::_GenerateSyncTask(const std::vector<std::set<NodeBluepri
 
     for (const auto& nodeBatch : inBatches)
     {
+        std::vector<BufferMemoryBarrierBlueprint> bufBarriers;
+        std::vector<ImageMemoryBarrierBlueprint> imgBarriers;
+
         for (const NodeBlueprint* node : nodeBatch)
         {
-            VkPipelineStageFlags dstStage{};
-            std::vector<VkMemoryBarrier> memBarriers;
-            std::vector<VkBufferMemoryBarrier> bufBarriers;
-            std::vector<VkImageMemoryBarrier> imgBarriers;
-            bool emitSemaphore = false;
-            bool catchSemaphore = false;
-
+            // collect prologue barriers
             for (const auto& curInput : node->inputs)
             {
-                if (std::)
+                if (std::holds_alternative<FrameGraphBufferHandle>(curInput->handle))
+                {
+                    std::vector<FrameGraphBufferSubResourceState> curStates;
+                    FrameGraphBufferHandle curHandle = std::get<FrameGraphBufferHandle>(curInput->handle);
+                    auto pResourceState = _GetResourceState(curHandle);
+                    auto aimState = std::get<FrameGraphBufferSubResourceState>(curInput->state);
+                    
+                    pResourceState->GetSubResourceState(
+                        aimState.offset, 
+                        aimState.size, 
+                        curStates);
+                    for (const auto& curState : curStates)
+                    {
+                        bool queueTransfer = curState.queueFamily == ~0 ? false : curState.queueFamily != aimState.queueFamily;
+                        BufferBarrierBuilder builder{};
+                        BufferMemoryBarrierBlueprint barrierBlueprint{};
+                        
+                        builder.CustomizeOffsetAndSize(curState.offset, curState.size);
+                        if (queueTransfer)
+                        {
+                            builder.CustomizeQueueFamilyTransfer(curState.queueFamily, aimState.queueFamily);
+                        }
+                        barrierBlueprint.barrier = builder.Build(
+                            VK_NULL_HANDLE, 
+                            curState.access, 
+                            aimState.access);
+                        barrierBlueprint.resourceHandle = curHandle;
+                        barrierBlueprint.srcStage = curState.stage;
+                        barrierBlueprint.dstStage = aimState.stage;
+
+                        bufBarriers.emplace_back(barrierBlueprint);
+                    }
+                }
+                else if (std::holds_alternative<FrameGraphImageHandle>(curInput->handle))
+                {
+                    std::vector<FrameGraphImageSubResourceState> curStates;
+                    FrameGraphImageHandle curHandle = std::get<FrameGraphImageHandle>(curInput->handle);
+                    auto pResourceState = _GetResourceState(curHandle);
+                    auto aimState = std::get<FrameGraphImageSubResourceState>(curInput->state);
+
+                    pResourceState->GetSubResourceState(aimState.range, curStates);
+                    for (const auto& curState : curStates)
+                    {
+                        ImageMemoryBarrierBlueprint barrierBlueprint{};
+                        ImageBarrierBuilder builder{};
+                        bool queueTransfer = curState.queueFamily == ~0 ? false : curState.queueFamily != aimState.queueFamily;
+
+                        builder.CustomizeImageAspect(curState.range.aspectMask);
+                        builder.CustomizeArrayLayerRange(curState.range.baseArrayLayer, curState.range.layerCount);
+                        builder.CustomizeMipLevelRange(curState.range.baseMipLevel, curState.range.levelCount);
+                        if (queueTransfer)
+                        {
+                            builder.CustomizeQueueFamilyTransfer(curState.queueFamily, aimState.queueFamily);
+                        }
+                        barrierBlueprint.barrier = builder.Build(
+                            VK_NULL_HANDLE, 
+                            curState.layout, 
+                            aimState.layout, 
+                            curState.access, 
+                            aimState.access);
+                        barrierBlueprint.srcStage = curState.stage;
+                        barrierBlueprint.dstStage = aimState.stage;
+                        barrierBlueprint.resourceHandle = curHandle;
+
+                        imgBarriers.emplace_back(barrierBlueprint);
+                    }
+                }
+                else
+                {
+                    CHECK_TRUE(false);
+                }
             }
         }
 

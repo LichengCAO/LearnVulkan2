@@ -323,7 +323,7 @@ struct FrameGraphImageSubResourceState
 {
 	VkImageSubresourceRange range;
 	VkImageLayout layout;
-	uint32_t queueFamily;
+	uint32_t queueFamily = ~0;
 	VkAccessFlags access;
 	VkPipelineStageFlags stage; // last time resource is used
 };
@@ -331,7 +331,7 @@ struct FrameGraphBufferSubResourceState
 {
 	VkDeviceSize offset;
 	VkDeviceSize size;
-	uint32_t queueFamily;
+	uint32_t queueFamily = ~0;
 	VkAccessFlags access;
 	VkPipelineStageFlags stage; // last time resource is used
 };
