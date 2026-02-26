@@ -244,6 +244,15 @@ public:
 class TopLevelAccelStruct final
 {
 public:
+	class VkStructFiller
+	{
+	public:
+		void AddInstance();
+		void FillVkAccelerationStructureInstanceKHRs(std::vector<VkAccelerationStructureInstanceKHR>& outInstanceInfo);
+		void FillVkAccelerationStructureBuildSizesInfoKHR();
+		void FillVkAccelerationStructureBuildGeometryInfoKHR();
+	};
+
 	class Initializer : public ITopLevelAccelStructInitializer
 	{
 	private:
@@ -280,6 +289,12 @@ public:
 			const BottomLevelAccelStruct* inBLAS,
 			const glm::mat4* inTransform,
 			uint32_t inShaderGroupOffset = 0) -> TopLevelAccelStruct::Initializer&;
+		void BuildAccelStruct(CommandBuffer* inCmd) const;
+	};
+
+	class DeviceSideBuilder
+	{
+	public:
 	};
 
 private:
