@@ -174,6 +174,7 @@ public:
 
 	void GetPhysicalDeviceRayTracingProperties(VkPhysicalDeviceRayTracingPipelinePropertiesKHR& outProperties) const;
 
+#pragma region VulkanFunctions
 	// Thin wraps for device Vulkan functions
 	//---------------------------------------------
 	// Create a VkFence, _pCreateInfo is optional, if it's not nullptr, VkFence will be created based on it
@@ -365,7 +366,19 @@ public:
 	void DestroyFramebuffer(
 		VkFramebuffer inFramebuffer, 
 		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	void GetAccelerationStructureBuildSizes(
+		VkAccelerationStructureBuildTypeKHR inBuildType, 
+		const VkAccelerationStructureBuildGeometryInfoKHR& inBuildInfo,
+		const std::vector<uint32_t>& inMaxPrimitiveCounts,
+		VkAccelerationStructureBuildSizesInfoKHR& outSizeInfo);
+
+	VkAccelerationStructureKHR CreateAccelerationStructure(
+		const VkAccelerationStructureCreateInfoKHR& inCreateInfo,
+		const VkAllocationCallbacks* pAllocator = nullptr);
 	//---------------------------------------------
+#pragma endregion
+
 public:
 	static MyDevice& GetInstance();
 	

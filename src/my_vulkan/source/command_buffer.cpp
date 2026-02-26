@@ -690,7 +690,7 @@ CommandBuffer& CommandBuffer::CmdCopyBuffer(VkBuffer inSrcBuffer, VkBuffer inDst
 
 CommandBuffer& CommandBuffer::CmdBuildAccelerationStructuresKHR(
 	const std::vector<VkAccelerationStructureBuildGeometryInfoKHR>& inBuildInfos,
-	const std::vector<VkAccelerationStructureBuildRangeInfoKHR*>& inBuildRanges)
+	const std::vector<const VkAccelerationStructureBuildRangeInfoKHR*>& inBuildRanges)
 {
 	_ProcessInCmdScope(
 		[&]()

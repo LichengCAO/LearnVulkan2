@@ -322,7 +322,7 @@ public:
 	// Builds acceleration structures for ray tracing pipelines using provided geometry and range information.
 	CommandBuffer& CmdBuildAccelerationStructuresKHR(
 		const std::vector<VkAccelerationStructureBuildGeometryInfoKHR>& inBuildInfos,
-		const std::vector<VkAccelerationStructureBuildRangeInfoKHR*>& inBuildRanges);
+		const std::vector<const VkAccelerationStructureBuildRangeInfoKHR*>& inBuildRanges);
 
 	// Writes properties of specified acceleration structures into a query pool.
 	CommandBuffer& CmdWriteAccelerationStructuresPropertiesKHR(

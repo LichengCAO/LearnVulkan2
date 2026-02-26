@@ -1162,6 +1162,20 @@ void MyDevice::DestroyFramebuffer(VkFramebuffer inFramebuffer, const VkAllocatio
 	vkDestroyFramebuffer(vkDevice, inFramebuffer, pAllocator);
 }
 
+void MyDevice::GetAccelerationStructureBuildSizes(VkAccelerationStructureBuildTypeKHR inBuildType, const VkAccelerationStructureBuildGeometryInfoKHR& inBuildInfo, const std::vector<uint32_t>& inMaxPrimitiveCounts, VkAccelerationStructureBuildSizesInfoKHR& outSizeInfo)
+{
+	vkGetAccelerationStructureBuildSizesKHR(vkDevice, inBuildType, &inBuildInfo, inMaxPrimitiveCounts.data(), &outSizeInfo);
+}
+
+VkAccelerationStructureKHR MyDevice::CreateAccelerationStructure(const VkAccelerationStructureCreateInfoKHR& inCreateInfo, const VkAllocationCallbacks* pAllocator)
+{
+	VkAccelerationStructureKHR result = VK_NULL_HANDLE;
+
+	VK_CHECK(vkCreateAccelerationStructureKHR(vkDevice, &inCreateInfo, pAllocator, &result), "Failed to create acceleration structure!");
+	
+	return result;
+}
+
 MyDevice& MyDevice::GetInstance()
 {
 	if (s_uptrInstance.get() == nullptr)

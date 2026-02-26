@@ -244,57 +244,42 @@ public:
 class TopLevelAccelStruct final
 {
 public:
-	class VkStructFiller
-	{
-	public:
-		void AddInstance();
-		void FillVkAccelerationStructureInstanceKHRs(std::vector<VkAccelerationStructureInstanceKHR>& outInstanceInfo);
-		void FillVkAccelerationStructureBuildSizesInfoKHR();
-		void FillVkAccelerationStructureBuildGeometryInfoKHR();
-	};
-
 	class Initializer : public ITopLevelAccelStructInitializer
 	{
 	private:
 		VkBuildAccelerationStructureFlagsKHR			m_vkBuildFlags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+		VkAccelerationStructureGeometryKHR				m_vkGeometry;
+		VkAccelerationStructureBuildSizesInfoKHR		m_vkBuildSizesInfo;
 		std::unique_ptr<Buffer>							m_uptrInstanceBuffer;
 		std::unique_ptr<Buffer>							m_uptrScratchBuffer;
 		std::vector<VkAccelerationStructureInstanceKHR> m_accelStructInstances;
-		CommandBuffer*									m_pCommandBuffer = nullptr;
 
 	private:
-		// Copy data from input to instance buffer, which may involves command submission
-		void _LoadDataFromInputToInstanceBuffer() const;
-		void _PrepareGeometryInstanceData(VkAccelerationStructureGeometryInstancesDataKHR& outGeometryInstanceData) const;
-		void _PrepareGeometry(std::vector<VkAccelerationStructureGeometryKHR>& outGeometries) const;
-		void _PrepareBuildSizesInfo(VkAccelerationStructureBuildSizesInfoKHR& outBuildSizesInfo) const;
+		void _PrepareInstanceBuffer();
+		void _PrepareGeometry();
+		void _FillBuildGeometryInfo(
+			VkAccelerationStructureBuildGeometryInfoKHR& outBuildGeometryInfo,
+			VkAccelerationStructureKHR inDstAccelStruct = VK_NULL_HANDLE,
+			VkDeviceAddress inScratchBufferAddr = 0) const;
+		void _PrepareBuildSizesInfo();
+		void _CreateAccelStructToBuild(TopLevelAccelStruct* inoutTLAS) const;
 		void _PrepareScratchBuffer(
-			VkDeviceSize inMaxBudget,
-			const VkAccelerationStructureBuildSizesInfoKHR& inBuildSizesInfo, 
-			std::vector<VkDeviceAddress>& outSlotAddresses);
-		void _CreateAccelStructToBuild(
-			const VkAccelerationStructureBuildSizesInfoKHR& inBuildSizesInfo, 
-			TopLevelAccelStruct* inoutTLAS) const;
-		void _PrepareBuildGeometryInfo(
-			const TopLevelAccelStruct* inTLAS,
-			VkAccelerationStructureBuildGeometryInfoKHR& outBuildGeometryInfo) const;
+			std::vector<VkDeviceAddress>& outSlotAddresses,
+			VkDeviceSize inMaxBudget = 256'000'000);
 
     public:
 		virtual void InitAccelStruct(TopLevelAccelStruct* outTLAS) const override;
 		virtual ~Initializer();
-		auto Reset() -> TopLevelAccelStruct::Initializer&;
-		auto CustomizeBuildFlags(VkBuildAccelerationStructureFlagsKHR inFlags) -> TopLevelAccelStruct::Initializer&;
-		auto SetCommandBuffer(CommandBuffer* inCmd) -> TopLevelAccelStruct::Initializer&;
-		auto AddInstance(
-			const BottomLevelAccelStruct* inBLAS,
-			const glm::mat4* inTransform,
-			uint32_t inShaderGroupOffset = 0) -> TopLevelAccelStruct::Initializer&;
-		void BuildAccelStruct(CommandBuffer* inCmd) const;
-	};
 
-	class DeviceSideBuilder
-	{
 	public:
+		auto Reset() -> TopLevelAccelStruct::Initializer&;
+		auto AddInstance(const BottomLevelAccelStruct* inBLAS, const glm::mat4* inTransform, uint32_t inShaderGroupOffset = 0) -> TopLevelAccelStruct::Initializer&;
+		auto CustomizeBuildFlags(VkBuildAccelerationStructureFlagsKHR inFlags) -> TopLevelAccelStruct::Initializer&;
+		
+	public:
+		void CreateAccelStruct(TopLevelAccelStruct* outTLAS);
+		void BuildAccelStruct(CommandBuffer* inoutCmd, TopLevelAccelStruct* outTLAS);
+		void AddAccelStructBuildBarrier(CommandBuffer* inoutCmd) const;
 	};
 
 private:
