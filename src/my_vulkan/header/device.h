@@ -376,6 +376,9 @@ public:
 	VkAccelerationStructureKHR CreateAccelerationStructure(
 		const VkAccelerationStructureCreateInfoKHR& inCreateInfo,
 		const VkAllocationCallbacks* pAllocator = nullptr);
+
+	VkDeviceAddress GetAccelerationStructureDeviceAddress(const VkAccelerationStructureDeviceAddressInfoKHR& inInfo);
+
 	//---------------------------------------------
 #pragma endregion
 

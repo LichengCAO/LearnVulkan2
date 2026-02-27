@@ -1176,6 +1176,12 @@ VkAccelerationStructureKHR MyDevice::CreateAccelerationStructure(const VkAcceler
 	return result;
 }
 
+VkDeviceAddress MyDevice::GetAccelerationStructureDeviceAddress(const VkAccelerationStructureDeviceAddressInfoKHR& inInfo)
+{
+	// Provided by VK_KHR_acceleration_structure
+	return vkGetAccelerationStructureDeviceAddressKHR(vkDevice, &inInfo);
+}
+
 MyDevice& MyDevice::GetInstance()
 {
 	if (s_uptrInstance.get() == nullptr)

@@ -229,7 +229,19 @@ public:
 class BottomLevelAccelStruct final
 {
 public:
+	struct Info
+	{
+		VkDeviceSize buildScratchBufferSize;
+		VkDeviceSize updateScratchBufferSize;
+		VkDeviceAddress accelStructReference;
+	};
+
+private:
+	BottomLevelAccelStruct::Info m_info;
+
+public:
 	auto GetVkDeviceAddress() const -> VkDeviceAddress;
+	auto GetInfo() const -> const BottomLevelAccelStruct::Info& { return m_info; };
 };
 
 #pragma endregion
