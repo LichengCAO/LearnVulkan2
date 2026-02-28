@@ -273,7 +273,17 @@ public:
 			VkAccelerationStructureBuildGeometryInfoKHR& outBuildGeometryInfo,
 			VkAccelerationStructureKHR inDstAccelStruct = VK_NULL_HANDLE,
 			VkDeviceAddress inScratchBufferAddr = 0) const;
+	
+		/// <summary>
+		/// Calculate size Info of AccelStruct, DO NOT need any data from device. 
+		/// From specification of vkGetAccelerationStructureBuildSizesKHR:
+		/// "The srcAccelerationStructure, dstAccelerationStructure, and mode members of pBuildInfo are ignored. 
+		/// VkDeviceOrHostAddressKHR or VkDeviceOrHostAddressConstKHR... are ignored by this command, 
+		/// except that the hostAddress member of 
+		/// VkAccelerationStructureGeometryTrianglesDataKHR::transformData 
+		/// will be examined to check if it is NULL."</summary>
 		void _PrepareBuildSizesInfo();
+
 		void _CreateAccelStructToBuild(TopLevelAccelStruct* inoutTLAS) const;
 		void _PrepareScratchBuffer(
 			std::vector<VkDeviceAddress>& outSlotAddresses,
