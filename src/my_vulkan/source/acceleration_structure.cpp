@@ -876,11 +876,11 @@ void RayTracingAccelerationStructure::TLASInput::Reset()
 	*this = TLASInput{};
 }
 
-void TopLevelAccelStruct::Init(const ITopLevelAccelStructInitializer* inInitializer)
+void TopLevelAccelStruct::Init(const ITopLevelAccelStructBuilder* inInitializer)
 {
 	Uninit();
 
-	inInitializer->InitAccelStruct(this);
+	inInitializer->BuildAccelStruct(this);
 
 	CHECK_TRUE(m_vkAccelStruct != VK_NULL_HANDLE);
 	CHECK_TRUE(m_uptrBuffer != nullptr);

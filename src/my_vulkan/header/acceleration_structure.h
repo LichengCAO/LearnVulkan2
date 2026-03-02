@@ -214,7 +214,7 @@ public:
 	static void RecordPipelineBarrier(CommandSubmission* pCmd);
 };
 
-class ITopLevelAccelStructInitializer;
+class ITopLevelAccelStructBuilder;
 class IBottomLevelAccelStructInitializer;
 class TopLevelAccelStruct;
 class BottomLevelAccelStruct;
@@ -223,7 +223,7 @@ class BottomLevelAccelStruct;
 class IBottomLevelAccelStructInitializer
 {
 public:
-	virtual void InitAccelStruct(BottomLevelAccelStruct* outBLAS) const = 0;
+	virtual void BuildAccelStruct(BottomLevelAccelStruct* outBLAS) const = 0;
 };
 
 class BottomLevelAccelStruct final
@@ -247,16 +247,21 @@ public:
 #pragma endregion
 
 #pragma region TLAS
-class ITopLevelAccelStructInitializer
+class ITopLevelAccelStructBuilder
 {
 public:
-	virtual void InitAccelStruct(TopLevelAccelStruct* outTLAS) const = 0;
+	virtual void BuildAccelStruct(TopLevelAccelStruct* outTLAS) const = 0;
+};
+class ITopLevelAccelStructUpdater
+{
+public:
+	virtual void UpdateAccelStruct(TopLevelAccelStruct* outTLAS) const = 0;
 };
 
 class TopLevelAccelStruct final
 {
 public:
-	class Initializer : public ITopLevelAccelStructInitializer
+	class Initializer : public ITopLevelAccelStructBuilder
 	{
 	private:
 		VkBuildAccelerationStructureFlagsKHR			m_vkBuildFlags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
@@ -290,7 +295,7 @@ public:
 			VkDeviceSize inMaxBudget = 256'000'000);
 
     public:
-		virtual void InitAccelStruct(TopLevelAccelStruct* outTLAS) const override;
+		virtual void BuildAccelStruct(TopLevelAccelStruct* outTLAS) const override;
 		virtual ~Initializer();
 
 	public:
@@ -304,12 +309,47 @@ public:
 		void AddAccelStructBuildBarrier(CommandBuffer* inoutCmd) const;
 	};
 
+	class TopLevelAccelStructPreBuilder
+	{
+	private:
+		std::vector<VkAccelerationStructureInstanceKHR> m_instanceData;
+
+	public:
+		auto AddInstance(
+			const BottomLevelAccelStruct* inBLAS,
+			std::optional<glm::mat4> inTransform = {},
+			std::optional<uint32_t> inShaderGroupOffset = {},
+			std::optional<uint32_t> inInstanceCustomIndex = {})->TopLevelAccelStructPreBuilder&;
+		auto GetInstanceBufferSize() const->VkDeviceSize;
+		auto GetBuildSizeInfo(VkBuildAccelerationStructureFlagsKHR inFlags) const->VkAccelerationStructureBuildSizesInfoKHR;
+		void UploadInstanceBufferData(CommandBuffer* inoutCmd, Buffer* inoutInstanceBuffer, VkDeviceSize inOffset = 0) const;
+	};
+
+	class TopLevelAccelStructHelper : public ITopLevelAccelStructBuilder, public ITopLevelAccelStructUpdater
+	{
+	private:
+
+
+	public:
+		auto CustomizeBuildFlags()->TopLevelAccelStructHelper&;
+		auto SetBuildSizesInfo(const VkAccelerationStructureBuildSizesInfoKHR& inBuildSize)->TopLevelAccelStructHelper&;
+		auto SetScratchBufferAddress(VkDeviceAddress inAddress)->TopLevelAccelStructHelper&;
+		auto SetInstanceBufferAddress(VkDeviceAddress inAddress)->TopLevelAccelStructHelper&;
+		auto CustomizeSourceUpdateAccelStruct(TopLevelAccelStruct* inTLAS)->TopLevelAccelStructHelper&;
+
+		auto SetCommandBufferUsed(CommandBuffer* inoutCmd)->TopLevelAccelStructHelper&;
+		virtual void BuildAccelStruct(TopLevelAccelStruct* outTLAS) const override;
+		virtual void UpdateAccelStruct(TopLevelAccelStruct* outTLAS) const override;
+	};
+
 private:
 	VkAccelerationStructureKHR m_vkAccelStruct = VK_NULL_HANDLE;
 	std::unique_ptr<Buffer> m_uptrBuffer;
 
 public:
-	void Init(const ITopLevelAccelStructInitializer* inInitializer);
+	static auto GetBuildSizeInfo()->VkAccelerationStructureBuildSizesInfoKHR;
+	void Init(const ITopLevelAccelStructBuilder* inInitializer);
+	void Update(const ITopLevelAccelStructUpdater* inUpdater);
 	auto GetVkAccelerationStructure() const -> VkAccelerationStructureKHR;
 	void Uninit();
 };
