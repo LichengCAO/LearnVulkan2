@@ -309,7 +309,7 @@ public:
 		void AddAccelStructBuildBarrier(CommandBuffer* inoutCmd) const;
 	};
 
-	class TopLevelAccelStructPreBuilder
+	class TopLevelAccelStructPreBuildData
 	{
 	private:
 		std::vector<VkAccelerationStructureInstanceKHR> m_instanceData;
@@ -319,18 +319,20 @@ public:
 			const BottomLevelAccelStruct* inBLAS,
 			std::optional<glm::mat4> inTransform = {},
 			std::optional<uint32_t> inShaderGroupOffset = {},
-			std::optional<uint32_t> inInstanceCustomIndex = {})->TopLevelAccelStructPreBuilder&;
-		auto GetInstanceBufferSize() const->VkDeviceSize;
-		auto GetBuildSizeInfo(VkBuildAccelerationStructureFlagsKHR inFlags) const->VkAccelerationStructureBuildSizesInfoKHR;
-		void UploadInstanceBufferData(CommandBuffer* inoutCmd, Buffer* inoutInstanceBuffer, VkDeviceSize inOffset = 0) const;
+			std::optional<uint32_t> inInstanceCustomIndex = {},
+			std::optional<VkGeometryInstanceFlagsKHR> inInstanceFlags = {},
+			std::optional<uint32_t> inMask = {})->TopLevelAccelStructPreBuildData&;
+		auto GetBuildSizeInfo(VkBuildAccelerationStructureFlagsKHR inFlags) const noexcept->VkAccelerationStructureBuildSizesInfoKHR;
+		auto GetInstanceBufferData(const char* & outDataAddr, size_t& outDataSize) const noexcept->const TopLevelAccelStructPreBuildData&;
 	};
 
 	class TopLevelAccelStructHelper : public ITopLevelAccelStructBuilder, public ITopLevelAccelStructUpdater
 	{
 	private:
-
+		VkAccelerationStructureBuildSizesInfoKHR m_buildSizesInfo;
 
 	public:
+		auto Reset()->TopLevelAccelStructHelper&;
 		auto CustomizeBuildFlags()->TopLevelAccelStructHelper&;
 		auto SetBuildSizesInfo(const VkAccelerationStructureBuildSizesInfoKHR& inBuildSize)->TopLevelAccelStructHelper&;
 		auto SetScratchBufferAddress(VkDeviceAddress inAddress)->TopLevelAccelStructHelper&;

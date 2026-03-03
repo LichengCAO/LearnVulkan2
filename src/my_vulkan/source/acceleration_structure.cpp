@@ -1057,3 +1057,46 @@ void TopLevelAccelStruct::Initializer::BuildAccelStruct(CommandBuffer* inoutCmd,
 	_PrepareScratchBuffer(slotAddresses);
 	inoutCmd->CmdBuildAccelerationStructuresKHR({ buildGeoInfo }, { &buildRangeInfo });
 }
+
+auto TopLevelAccelStruct::TopLevelAccelStructPreBuildData::AddInstance(
+	const BottomLevelAccelStruct* inBLAS, 
+	std::optional<glm::mat4> inTransform, 
+	std::optional<uint32_t> inShaderGroupOffset, 
+	std::optional<uint32_t> inInstanceCustomIndex, 
+	std::optional<VkGeometryInstanceFlagsKHR> inInstanceFlags, 
+	std::optional<uint32_t> inMask) -> TopLevelAccelStructPreBuildData&
+{
+	VkAccelerationStructureInstanceKHR accelStructInst{};
+
+	accelStructInst.accelerationStructureReference = inBLAS->GetVkDeviceAddress();
+	if (inTransform.has_value())
+	{
+		accelStructInst.transform = common_utils::ToTransformMatrixKHR(inTransform.value());
+	}
+	else
+	{
+		static const glm::mat4 identity{ 1 };
+		accelStructInst.transform = common_utils::ToTransformMatrixKHR(identity);
+	}
+	accelStructInst.instanceShaderBindingTableRecordOffset = inShaderGroupOffset.value_or(0);
+	accelStructInst.instanceCustomIndex = inInstanceCustomIndex.value_or(static_cast<uint32_t>(m_instanceData.size()));
+	accelStructInst.flags = inInstanceFlags.value_or(VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR);
+	accelStructInst.mask = inMask.value_or(0xFF);
+	
+	m_instanceData.emplace_back(accelStructInst);
+
+	return *this;
+}
+
+auto TopLevelAccelStruct::TopLevelAccelStructPreBuildData::GetBuildSizeInfo(VkBuildAccelerationStructureFlagsKHR inFlags) const -> VkAccelerationStructureBuildSizesInfoKHR
+{
+	return VkAccelerationStructureBuildSizesInfoKHR();
+}
+
+auto TopLevelAccelStruct::TopLevelAccelStructPreBuildData::GetInstanceBufferData(const char*& outDataAddr, size_t& outDataSize) const noexcept-> const TopLevelAccelStructPreBuildData&
+{
+	outDataAddr = reinterpret_cast<const char*>(m_instanceData.data());
+	outDataSize = m_instanceData.size() * sizeof(VkAccelerationStructureInstanceKHR);
+	
+	return *this;
+}
