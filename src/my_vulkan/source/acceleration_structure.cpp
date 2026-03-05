@@ -908,195 +908,172 @@ void TopLevelAccelStruct::Uninit()
 	}
 }
 
-void TopLevelAccelStruct::Initializer::_LoadDataFromInputToInstanceBuffer()
+auto TopLevelAccelStruct::Descriptor::AddInstances(const InstanceDescription* inDescriptions, size_t inCount) -> size_t
 {
-	std::vector<VkAccelerationStructureInstanceKHR> accelStructInstances;
-	uint32_t gl_InstanceCustomIndex = 0u;
+	size_t result = m_accelStructInstances.size();
 
-	accelStructInstances.reserve(m_instanceData.size());
-	for (const auto& instance : m_instanceData)
+	m_accelStructInstances.resize(result + inCount);
+	SetInstances(inDescriptions, result, inCount);
+
+	return result;
+}
+
+void TopLevelAccelStruct::Descriptor::SetInstances(const InstanceUpdateDescription* inUpdateDescriptions, size_t inBeginIndex, size_t inCount)
+{
+	for (size_t i = 0; i < inCount; ++i)
 	{
-		VkAccelerationStructureInstanceKHR accelStructInstance{};
-		accelStructInstance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-		accelStructInstance.mask = 0xFF;
-		accelStructInstance.instanceCustomIndex = gl_InstanceCustomIndex;
-		accelStructInstance.accelerationStructureReference = instance.accelStructAddress;
-		accelStructInstance.instanceShaderBindingTableRecordOffset = instance.shaderGroupOffset;
-		accelStructInstance.transform = instance.
+		auto& vkInst = m_accelStructInstances[inBeginIndex++];
+		const auto& desc = inUpdateDescriptions[i];
 
-		gl_InstanceCustomIndex++;
-		accelStructInstances.emplace_back(accelStructInstance);
+		vkInst.accelerationStructureReference = desc.accelStruct->GetVkDeviceAddress();
+		vkInst.flags = desc.flags;
+		vkInst.instanceCustomIndex = desc.instanceCustomIndex;
+		vkInst.instanceShaderBindingTableRecordOffset = desc.shaderGroupIndexOffset;
+		vkInst.mask = desc.mask;
+		vkInst.transform = common_utils::ToTransformMatrixKHR(desc.transform);
 	}
 }
 
-void TopLevelAccelStruct::Initializer::_PrepareInstanceBuffer()
+auto TopLevelAccelStruct::Descriptor::GetBuildSizesInfo(VkBuildAccelerationStructureFlagsKHR inFlags) const->VkAccelerationStructureBuildSizesInfoKHR
 {
-	Buffer::Initializer bufferInit{};
+	auto& device = MyDevice::GetInstance();
+	std::vector<uint32_t> primitiveCounts;
+	VkAccelerationStructureBuildSizesInfoKHR result{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
+	VkAccelerationStructureBuildGeometryInfoKHR buildGeometryInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
+	VkAccelerationStructureGeometryKHR geometry{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
+	VkAccelerationStructureGeometryInstancesDataKHR geometryInstData{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR };
 
-	bufferInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	bufferInit.SetBufferUsage(
-		VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
-		| VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
-		| VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-	bufferInit.SetBufferSize(m_accelStructInstances.size() * sizeof(VkAccelerationStructureInstanceKHR));
+	geometry.flags = 0; // instance flags serves the same purpose, so leave it 0
+	geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+	geometry.geometry.instances = geometryInstData; // no need to set device address, VkDeviceOrHostAddressConstKHR is ignored: https://github.khronos.org/Vulkan-Site/refpages/latest/refpages/source/vkGetAccelerationStructureBuildSizesKHR.html
 
-	if (m_uptrInstanceBuffer)
-	{
-		m_uptrInstanceBuffer->Uninit();
-		m_uptrInstanceBuffer.reset();
-	}
-	m_uptrInstanceBuffer = std::make_unique<Buffer>();
-	m_uptrInstanceBuffer->Init(&bufferInit);
-}
+	buildGeometryInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+	buildGeometryInfo.flags = inFlags;
+	buildGeometryInfo.geometryCount = 1; // must be 1 for TLAS
+	buildGeometryInfo.pGeometries = &geometry;
 
-void TopLevelAccelStruct::Initializer::_PrepareGeometry()
-{
-	VkAccelerationStructureGeometryInstancesDataKHR instancesData{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR };
+	primitiveCounts.emplace_back(static_cast<uint32_t>(GetInstanceCount()));
 
-	instancesData.data.deviceAddress = m_uptrInstanceBuffer->GetDeviceAddress();
-	m_vkGeometry = VkAccelerationStructureGeometryKHR{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
-	m_vkGeometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
-	m_vkGeometry.geometry.instances = instancesData;
-}
-
-void TopLevelAccelStruct::Initializer::_FillBuildGeometryInfo(
-	VkAccelerationStructureBuildGeometryInfoKHR& outBuildGeometryInfo,
-	VkAccelerationStructureKHR inDstAccelStruct,
-	VkDeviceAddress inScratchBufferAddr) const
-{
-	outBuildGeometryInfo = VkAccelerationStructureBuildGeometryInfoKHR{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
-	outBuildGeometryInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-	outBuildGeometryInfo.flags = m_vkBuildFlags;
-	outBuildGeometryInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-	outBuildGeometryInfo.srcAccelerationStructure = VK_NULL_HANDLE;
-	outBuildGeometryInfo.dstAccelerationStructure = inDstAccelStruct;
-	outBuildGeometryInfo.geometryCount = 1u;
-	outBuildGeometryInfo.pGeometries = &m_vkGeometry;
-	outBuildGeometryInfo.scratchData.deviceAddress = inScratchBufferAddr;
-}
-
-void TopLevelAccelStruct::Initializer::_PrepareBuildSizesInfo()
-{
-	VkAccelerationStructureBuildGeometryInfoKHR buildGeomInfo;
-	
-	m_vkBuildSizesInfo = VkAccelerationStructureBuildSizesInfoKHR{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
-	_FillBuildGeometryInfo(buildGeomInfo);
-
-	MyDevice::GetInstance().GetAccelerationStructureBuildSizes(
+	device.GetAccelerationStructureBuildSizes(
 		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
-		buildGeomInfo,
-		{ static_cast<uint32_t>(m_accelStructInstances.size()) },
-		m_vkBuildSizesInfo);
+		buildGeometryInfo,
+		primitiveCounts,
+		result);
+
+	return result;
 }
 
-void TopLevelAccelStruct::Initializer::_CreateAccelStructToBuild(TopLevelAccelStruct* outTLAS) const
+void TopLevelAccelStruct::TopLevelAccelStructHelper::BuildAccelStruct(TopLevelAccelStruct* outTLAS) const
 {
-	VkAccelerationStructureCreateInfoKHR createInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
-	Buffer::Initializer bufferInit{};
+	auto& device = MyDevice::GetInstance();
+	VkAccelerationStructureBuildGeometryInfoKHR buildGeomInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
+	VkAccelerationStructureBuildRangeInfoKHR buildRangeInfo{};
+	VkAccelerationStructureGeometryKHR geometry{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
+	VkAccelerationStructureGeometryInstancesDataKHR geometryInstData{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR };
+	auto buildSizesInfo = m_descriptor->GetBuildSizesInfo(m_flags);
 
-	outTLAS->m_uptrBuffer = std::make_unique<Buffer>();
-	auto& uptrBuffer = outTLAS->m_uptrBuffer;
-	bufferInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	bufferInit.SetBufferSize(m_vkBuildSizesInfo.accelerationStructureSize);
-	bufferInit.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-	uptrBuffer->Init(&bufferInit);
+	geometryInstData.data.deviceAddress = m_instanceBuffer;
+	
+	geometry.flags = 0; // instance flags serves the same purpose, so leave it 0
+	geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+	geometry.geometry.instances = geometryInstData; // no need to set device address, VkDeviceOrHostAddressConstKHR is ignored: https://github.khronos.org/Vul
+	
+	if (outTLAS->GetVkAccelerationStructure() == VK_NULL_HANDLE)
+	{
+		_CreateAccelStruct(outTLAS);
+	}
+	CHECK_TRUE(common_utils::FlagsHaveBits(outTLAS->m_flags, m_flags));
+
+	buildGeomInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+	buildGeomInfo.flags = m_flags;
+	buildGeomInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+	buildGeomInfo.srcAccelerationStructure = VK_NULL_HANDLE;
+	buildGeomInfo.scratchData.deviceAddress = m_scratchBuffer;
+	buildGeomInfo.dstAccelerationStructure = outTLAS->GetVkAccelerationStructure();
+	buildGeomInfo.geometryCount = 1;
+	buildGeomInfo.pGeometries = &geometry;
+	buildRangeInfo.primitiveCount = static_cast<uint32_t>(m_descriptor->GetInstanceCount());
+
+	m_cmd->CmdBuildAccelerationStructuresKHR({ buildGeomInfo }, { &buildRangeInfo });
+	outTLAS->m_flags = m_flags;
+}
+
+void TopLevelAccelStruct::TopLevelAccelStructHelper::UpdateAccelStruct(TopLevelAccelStruct* outTLAS) const
+{
+	auto& device = MyDevice::GetInstance();
+	VkAccelerationStructureBuildGeometryInfoKHR buildGeomInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
+	VkAccelerationStructureBuildRangeInfoKHR buildRangeInfo{};
+	VkAccelerationStructureGeometryKHR geometry{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
+	VkAccelerationStructureGeometryInstancesDataKHR geometryInstData{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR };
+	auto buildSizesInfo = m_descriptor->GetBuildSizesInfo(m_flags);
+	const TopLevelAccelStruct* srcTLAS = m_srcAccelStruct == nullptr ? outTLAS : m_srcAccelStruct;
+
+	geometryInstData.data.deviceAddress = m_instanceBuffer;
+
+	geometry.flags = 0;								// instance flags serves the same purpose, so leave it 0
+	geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+	geometry.geometry.instances = geometryInstData; // no need to set device address, VkDeviceOrHostAddressConstKHR is ignored: https://github.khronos.org/Vul
+
+	CHECK_TRUE(srcTLAS->GetVkAccelerationStructure() != VK_NULL_HANDLE);
+	if (outTLAS->GetVkAccelerationStructure() == VK_NULL_HANDLE)
+	{
+		_CreateAccelStruct(outTLAS);
+	}
+	CHECK_TRUE(common_utils::FlagsHaveBits(srcTLAS->m_flags, m_flags));
+	CHECK_TRUE(common_utils::FlagsHaveBits(outTLAS->m_flags, m_flags));
+
+	buildGeomInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+	buildGeomInfo.flags = m_flags;
+	buildGeomInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+	buildGeomInfo.srcAccelerationStructure = srcTLAS->GetVkAccelerationStructure();
+	buildGeomInfo.scratchData.deviceAddress = m_scratchBuffer;
+	buildGeomInfo.dstAccelerationStructure = outTLAS->GetVkAccelerationStructure();
+	buildGeomInfo.geometryCount = 1;
+	buildGeomInfo.pGeometries = &geometry;
+	buildRangeInfo.primitiveCount = static_cast<uint32_t>(m_descriptor->GetInstanceCount());
+
+	m_cmd->CmdBuildAccelerationStructuresKHR({ buildGeomInfo }, { &buildRangeInfo });
+	outTLAS->m_flags = m_flags;
+}
+
+void TopLevelAccelStruct::TopLevelAccelStructHelper::_CreateAccelStruct(TopLevelAccelStruct* outTLAS) const
+{
+	// create VkAcceleartionStructure
+	VkAccelerationStructureCreateInfoKHR createInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
+	VkAccelerationStructureDeviceAddressInfoKHR addrInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR };
+	auto buildSizesInfo = m_descriptor->GetBuildSizesInfo(m_flags);
+	auto& device = MyDevice::GetInstance();
+
+	if (outTLAS->m_uptrBuffer == nullptr)
+	{
+		Buffer::Initializer bufferInit{};
+
+		bufferInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		bufferInit.SetBufferSize(buildSizesInfo.accelerationStructureSize);
+		bufferInit.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+		outTLAS->m_uptrBuffer = std::make_unique<Buffer>();
+		outTLAS->m_uptrBuffer->Init(&bufferInit);
+	}
+	else if (outTLAS->m_uptrBuffer->GetBufferInformation().size < buildSizesInfo.accelerationStructureSize)
+	{
+		Buffer::Initializer bufferInit{};
+
+		bufferInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		bufferInit.SetBufferSize(buildSizesInfo.accelerationStructureSize);
+		bufferInit.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+		outTLAS->m_uptrBuffer->Uninit();
+		outTLAS->m_uptrBuffer->Init(&bufferInit);
+	}
 
 	createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-	createInfo.size = m_vkBuildSizesInfo.accelerationStructureSize;
+	createInfo.size = buildSizesInfo.accelerationStructureSize;
 	createInfo.pNext = nullptr;
 	createInfo.offset = 0;
-	createInfo.buffer = uptrBuffer->GetVkBuffer();
-	createInfo.deviceAddress = 0; // https://registry.khronos.org/vulkan/specs/latest/man/html/VkAccelerationStructureCreateInfoKHR.html
-	createInfo.createFlags = 0;
+	createInfo.buffer = outTLAS->m_uptrBuffer->GetVkBuffer();
+	// following info are for replay https://registry.khronos.org/vulkan/specs/latest/man/html/VkAccelerationStructureCreateInfoKHR.html
+	// createInfo.deviceAddress = 0;
+	// createInfo.createFlags = 0;
 
-	outTLAS->m_vkAccelStruct = MyDevice::GetInstance().CreateAccelerationStructure(createInfo);
-}
-
-void TopLevelAccelStruct::Initializer::_PrepareScratchBuffer(std::vector<VkDeviceAddress>& outSlotAddresses, VkDeviceSize inMaxBudget)
-{
-	m_uptrScratchBuffer = std::make_unique<Buffer>();
-	_InitScratchBuffer({ m_vkBuildSizesInfo }, *m_uptrScratchBuffer, outSlotAddresses, true, inMaxBudget);
-}
-
-auto TopLevelAccelStruct::Initializer::AddInstance(
-	const BottomLevelAccelStruct* inBLAS, 
-	const glm::mat4* inTransform, 
-	uint32_t inShaderGroupOffset) -> TopLevelAccelStruct::Initializer&
-{
-	VkAccelerationStructureInstanceKHR accelStructInst{};
-
-	accelStructInst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-	accelStructInst.mask = 0xFF;
-	accelStructInst.instanceCustomIndex = static_cast<uint32_t>(m_accelStructInstances.size());
-	accelStructInst.accelerationStructureReference = inBLAS->GetVkDeviceAddress();
-	accelStructInst.instanceShaderBindingTableRecordOffset = inShaderGroupOffset;
-	accelStructInst.transform = common_utils::ToTransformMatrixKHR(*inTransform);
-
-	m_accelStructInstances.push_back(accelStructInst);
-
-	return *this;
-}
-
-void TopLevelAccelStruct::Initializer::CreateAccelStruct(TopLevelAccelStruct* outTLAS)
-{
-	_PrepareInstanceBuffer();
-	m_uptrInstanceBuffer->CopyFromHost(m_accelStructInstances.data());
-	_PrepareGeometry();
-	_PrepareBuildSizesInfo();
-	_CreateAccelStructToBuild(outTLAS);
-}
-
-void TopLevelAccelStruct::Initializer::BuildAccelStruct(CommandBuffer* inoutCmd, TopLevelAccelStruct* outTLAS)
-{
-	std::vector<VkDeviceAddress> slotAddresses;
-	VkAccelerationStructureBuildGeometryInfoKHR buildGeoInfo;
-	VkAccelerationStructureBuildRangeInfoKHR buildRangeInfo{};
-
-	buildRangeInfo.primitiveCount = static_cast<uint32_t>(m_accelStructInstances.size());
-	_FillBuildGeometryInfo(buildGeoInfo, outTLAS->GetVkAccelerationStructure(), m_uptrScratchBuffer->GetDeviceAddress());
-	_PrepareScratchBuffer(slotAddresses);
-	inoutCmd->CmdBuildAccelerationStructuresKHR({ buildGeoInfo }, { &buildRangeInfo });
-}
-
-auto TopLevelAccelStruct::TopLevelAccelStructPreBuildData::AddInstance(
-	const BottomLevelAccelStruct* inBLAS, 
-	std::optional<glm::mat4> inTransform, 
-	std::optional<uint32_t> inShaderGroupOffset, 
-	std::optional<uint32_t> inInstanceCustomIndex, 
-	std::optional<VkGeometryInstanceFlagsKHR> inInstanceFlags, 
-	std::optional<uint32_t> inMask) -> TopLevelAccelStructPreBuildData&
-{
-	VkAccelerationStructureInstanceKHR accelStructInst{};
-
-	accelStructInst.accelerationStructureReference = inBLAS->GetVkDeviceAddress();
-	if (inTransform.has_value())
-	{
-		accelStructInst.transform = common_utils::ToTransformMatrixKHR(inTransform.value());
-	}
-	else
-	{
-		static const glm::mat4 identity{ 1 };
-		accelStructInst.transform = common_utils::ToTransformMatrixKHR(identity);
-	}
-	accelStructInst.instanceShaderBindingTableRecordOffset = inShaderGroupOffset.value_or(0);
-	accelStructInst.instanceCustomIndex = inInstanceCustomIndex.value_or(static_cast<uint32_t>(m_instanceData.size()));
-	accelStructInst.flags = inInstanceFlags.value_or(VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR);
-	accelStructInst.mask = inMask.value_or(0xFF);
-	
-	m_instanceData.emplace_back(accelStructInst);
-
-	return *this;
-}
-
-auto TopLevelAccelStruct::TopLevelAccelStructPreBuildData::GetBuildSizeInfo(VkBuildAccelerationStructureFlagsKHR inFlags) const -> VkAccelerationStructureBuildSizesInfoKHR
-{
-	return VkAccelerationStructureBuildSizesInfoKHR();
-}
-
-auto TopLevelAccelStruct::TopLevelAccelStructPreBuildData::GetInstanceBufferData(const char*& outDataAddr, size_t& outDataSize) const noexcept-> const TopLevelAccelStructPreBuildData&
-{
-	outDataAddr = reinterpret_cast<const char*>(m_instanceData.data());
-	outDataSize = m_instanceData.size() * sizeof(VkAccelerationStructureInstanceKHR);
-	
-	return *this;
+	outTLAS->m_vkAccelStruct = device.CreateAccelerationStructure(createInfo);
+	outTLAS->m_flags = m_flags;
 }

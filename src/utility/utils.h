@@ -9,6 +9,17 @@ namespace common_utils
 	{
 		return intType((x + intType(a) - 1) & ~intType(a - 1));
 	}
+	
+	template <class EnumType>
+	constexpr bool FlagsHaveBits(EnumType flags, EnumType bits)
+	{
+		static_assert(std::is_enum_v<EnumType>, "HasBits only supports enum types!");
+		using UnderlyingType = std::underlying_type_t<EnumType>;
+		const UnderlyingType flagsVal = static_cast<UnderlyingType>(flags);
+		const UnderlyingType bitsVal = static_cast<UnderlyingType>(bits);
+
+		return ((flagsVal & bitsVal) == bitsVal);
+	}
 
 	// code from Nvidia vk_raytracing_tutorial: VkTransformMatrixKHR toTransformMatrixKHR(glm::mat4 matrix)
 	// Convert a Mat4x4 to the matrix required by acceleration structures
@@ -41,4 +52,5 @@ namespace common_utils
 			return h1 ^ h2;
 		}
 	};
+
 }
