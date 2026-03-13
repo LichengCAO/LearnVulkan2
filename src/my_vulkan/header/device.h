@@ -174,6 +174,8 @@ public:
 
 	void GetPhysicalDeviceRayTracingProperties(VkPhysicalDeviceRayTracingPipelinePropertiesKHR& outProperties) const;
 
+	auto GetVkDevice()->VkDevice { return vkDevice; };
+
 #pragma region VulkanFunctions
 	// Thin wraps for device Vulkan functions
 	//---------------------------------------------

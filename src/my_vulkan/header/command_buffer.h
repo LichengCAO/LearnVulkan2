@@ -218,7 +218,7 @@ public:
 
 	// Commands to record
 	// ------------------------------------------------------
-
+#pragma region VkCmds
 	// Begin recording commands
 	CommandBuffer& BeginCommands(
 		VkCommandBufferUsageFlags inFlags = 0, 
@@ -347,6 +347,7 @@ public:
 	CommandBuffer& CmdExecuteCommands(
 		const std::vector<VkCommandBuffer>& inCommandBuffers);
 
+#pragma endregion
 	// end of commands
 	// ------------------------------------------------------
 
