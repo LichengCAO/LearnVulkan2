@@ -105,7 +105,7 @@ void Buffer::_CopyFromHostWithStaggingBuffer(const void* src, size_t bufferOffes
 	initializer.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	
 	stagingBuffer.Init(&initializer);
-	stagingBuffer.CopyFromHost(src);
+	stagingBuffer.CopyFromHost(src, 0, size);
 	
 	CopyFromBuffer(&stagingBuffer, 0, bufferOffest, size);
 
@@ -125,11 +125,6 @@ Buffer::Buffer(Buffer&& _toMove)
 	_toMove.m_mappedMemory = nullptr;
 }
 
-void Buffer::CopyFromHost(const void* src)
-{
-	CopyFromHost(src, 0, static_cast<size_t>(m_bufferInformation.size));
-}
-
 void Buffer::CopyFromHost(const void* src, size_t bufferOffset, size_t size)
 {
 	CHECK_TRUE(size <= static_cast<size_t>(m_bufferInformation.size), "Try to copy too much data from host!");
@@ -142,11 +137,6 @@ void Buffer::CopyFromHost(const void* src, size_t bufferOffset, size_t size)
 	{
 		_CopyFromHostWithStaggingBuffer(src, bufferOffset, size);
 	}
-}
-
-void Buffer::CopyFromBuffer(const Buffer* pOtherBuffer)
-{
-	CopyFromBuffer(pOtherBuffer, 0, 0, m_bufferInformation.size);
 }
 
 void Buffer::CopyFromBuffer(const Buffer* pOtherBuffer, size_t srcOffset, size_t dstOffset, size_t size)
@@ -165,27 +155,6 @@ void Buffer::CopyFromBuffer(const Buffer* pOtherBuffer, size_t srcOffset, size_t
 	tmpPool.Uninit();
 }
 
-void Buffer::CopyFromBuffer(
-	const Buffer* pOtherBuffer, 
-	size_t srcOffset, 
-	size_t dstOffset, 
-	size_t size, 
-	CommandBuffer* inCmdPtr)
-{
-	VkBufferCopy copyInfo{};
-
-	CHECK_TRUE(pOtherBuffer != nullptr);
-	CHECK_TRUE(inCmdPtr != nullptr);
-	CHECK_TRUE(m_vkBuffer != VK_NULL_HANDLE);
-	CHECK_TRUE(CONTAIN_BITS(m_bufferInformation.usage, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
-
-	copyInfo.size = size;
-	copyInfo.dstOffset = dstOffset;
-	copyInfo.srcOffset = srcOffset;
-
-	inCmdPtr->CmdCopyBuffer(pOtherBuffer->m_vkBuffer, m_vkBuffer, { copyInfo });
-}
-
 void Buffer::Fill(uint32_t inData)
 {
 	CommandPool tmpPool{};
@@ -200,12 +169,6 @@ void Buffer::Fill(uint32_t inData)
 	cmd.EndCommands();
 	_SubmitToGraphicsQueueAndWait(cmd.GetVkCommandBuffer());
 	tmpPool.Uninit();
-}
-
-void Buffer::Fill(uint32_t inData, CommandBuffer* inCmdPtr)
-{
-	CHECK_TRUE(inCmdPtr != nullptr);
-	inCmdPtr->CmdFillBuffer(m_vkBuffer, 0, m_bufferInformation.size, inData);
 }
 
 const Buffer::Information& Buffer::GetBufferInformation() const

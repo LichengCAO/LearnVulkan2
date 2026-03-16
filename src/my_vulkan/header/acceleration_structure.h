@@ -669,21 +669,21 @@ public:
         /// Provides instance data to populate Vulkan command structures
         /// </summary>
         /// <param name="inDescriptor">Pointer to valid TLAS descriptor</param>
-        void SetDescriptor(const TopLevelAccelStruct::Descriptor* inDescriptor) { m_descriptor = inDescriptor; }
+        void SetDescriptor(const TopLevelAccelStruct::Descriptor* inDescriptor) noexcept { m_descriptor = inDescriptor; }
 
         /// <summary>
         /// Sets the GPU device address of the scratch buffer
         /// Scratch buffer is required for temporary TLAS build operations
         /// </summary>
         /// <param name="inAddress">Device address of scratch buffer</param>
-        void SetScratchBufferAddress(VkDeviceAddress inAddress) { m_scratchBuffer = inAddress; };
+        void SetScratchBufferAddress(VkDeviceAddress inAddress) noexcept { m_scratchBuffer = inAddress; };
 
         /// <summary>
         /// Sets the GPU device address of the instance buffer
         /// Instance buffer holds TLAS instance data (copied from descriptor)
         /// </summary>
         /// <param name="inAddress">Device address of instance buffer</param>
-        void SetInstanceBufferAddress(VkDeviceAddress inAddress) { m_instanceBuffer = inAddress; };
+        void SetInstanceBufferAddress(VkDeviceAddress inAddress) noexcept { m_instanceBuffer = inAddress; };
 
         /// <summary>
         /// Populates Vulkan build info structure for TLAS creation

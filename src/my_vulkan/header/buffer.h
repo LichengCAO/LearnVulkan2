@@ -99,15 +99,9 @@ public:
 	
 	void Uninit();
 
-	// Copy from host, will use stagging buffer if necessary, use buffer's size as length
-	void CopyFromHost(const void* src);
-	
-	// Copy from host, will use stagging buffer if necessary
+	// Copy from host wait till finish, will use stagging buffer if necessary
 	void CopyFromHost(const void* src, size_t bufferOffset, size_t size);
-	
-	// Copy from source buffer, will wait until copy is done, use dist buffer's size as length
-	void CopyFromBuffer(const Buffer* pOtherBuffer);
-	
+
 	// Copy from buffer on graphics queue, wait till copy finish
 	void CopyFromBuffer(
 		const Buffer* inSrcBufferPtr, 
@@ -115,19 +109,8 @@ public:
 		size_t inDstOffset, 
 		size_t inSize);
 
-	// Record copy command to command buffer
-	void CopyFromBuffer(
-		const Buffer* inSrcBufferPtr,
-		size_t inSrcOffset,
-		size_t inDstOffset,
-		size_t inSize,
-		CommandBuffer* outCmdPtr);
-
 	// Fill buffer with input data by graphics queue, wait till finish
 	void Fill(uint32_t inData);
-
-	// Record fill data command into command buffer
-	void Fill(uint32_t inData, CommandBuffer* outCmdPtr);
 
 	// Get buffer information
 	const Buffer::Information& GetBufferInformation() const;
