@@ -2,6 +2,7 @@
 #include "buffer.h"
 #include "device.h"
 #include "push_constant_manager.h"
+#include "command_buffer.h"
 
 // RayTracingShaderGroupSet implementation
 RayTracingShaderGroupSet::RayTracingShaderGroupSet()
@@ -286,28 +287,42 @@ auto ShaderBindingTable::Descriptor::SetShaderTableBinding(
 	}
 	size_t oldStride = m_recordStrides[idx];
 	size_t newStride = std::max(oldStride, totalSize);
-
 	size_t oldCount = (oldStride == 0) ? 0 : (m_shaderRecordData[idx].size() / oldStride);
 	size_t newCount = std::max(oldCount, static_cast<size_t>(inBinding) + 1);
 
-	std::vector<uint8_t> newBuffer(newCount * newStride, 0u);
-
-	// copy old entries
-	for (size_t i = 0; i < oldCount; ++i)
+	if (oldStride == newStride && oldStride != 0)
 	{
-		memcpy(newBuffer.data() + i * newStride, m_shaderRecordData[idx].data() + i * oldStride, oldStride);
+		size_t requiredSize = (static_cast<size_t>(inBinding) + 1) * oldStride;
+		if (m_shaderRecordData[idx].size() < requiredSize)
+		{
+			m_shaderRecordData[idx].resize(requiredSize, 0u);
+		}
+		uint8_t* dst = m_shaderRecordData[idx].data() + static_cast<size_t>(inBinding) * oldStride;
+		memcpy(dst, handlePtr, handleSize);
+		if (inData != nullptr && inDataSize > 0)
+		{
+			memcpy(dst + handleSize, inData, inDataSize);
+		}
 	}
-
-	// write this binding: handle then optional data
-	uint8_t* dst = newBuffer.data() + static_cast<size_t>(inBinding) * newStride;
-	memcpy(dst, handlePtr, handleSize);
-	if (inData != nullptr && inDataSize > 0)
+	else
 	{
-		memcpy(dst + handleSize, inData, inDataSize);
-	}
+		std::vector<uint8_t> newBuffer(newCount * newStride, 0u);
 
-	m_shaderRecordData[idx].swap(newBuffer);
-	m_recordStrides[idx] = newStride;
+		for (size_t i = 0; i < oldCount; ++i)
+		{
+			memcpy(newBuffer.data() + i * newStride, m_shaderRecordData[idx].data() + i * oldStride, oldStride);
+		}
+
+		uint8_t* dst = newBuffer.data() + static_cast<size_t>(inBinding) * newStride;
+		memcpy(dst, handlePtr, handleSize);
+		if (inData != nullptr && inDataSize > 0)
+		{
+			memcpy(dst + handleSize, inData, inDataSize);
+		}
+
+		m_shaderRecordData[idx].swap(newBuffer);
+		m_recordStrides[idx] = newStride;
+	}
 
 	return *this;
 }
@@ -615,7 +630,7 @@ uint32_t RayTracingPipeline::Builder::AddShader(const VkPipelineShaderStageCreat
 	return uIndex;
 }
 
-uint32_t RayTracingPipeline::Builder::SetRayGenerationShaderGroup(uint32_t inRayGenShaderIndex)
+uint32_t RayTracingPipeline::Builder::AddRayGenerationShaderGroup(uint32_t inRayGenShaderIndex)
 {
 	VkRayTracingShaderGroupCreateInfoKHR shaderRecord{ VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR };
 	uint32_t uRet = static_cast<uint32_t>(m_shaderRecords.size());

@@ -6,6 +6,7 @@ class RayTracingPipeline;
 class PushConstantManager;
 class RayTracingPipeline;
 class ShaderBindingTable;
+class CommandBuffer;
 
 using ShaderGroupIndex = uint32_t;
 
@@ -115,7 +116,7 @@ public:
 	void Init(const IShaderBindingTableInitializer* pInit);
 	void PopulateShaderBindingTable(CommandBuffer* inoutCommandBuffer, const Descriptor* inDescriptor);
 	void UpdateShaderBindingTable(CommandBuffer* inoutCommandBuffer, const UpdateDescriptor* inDescriptor);
-	void GetShaderTableRegion(ShaderTableType inType) const -> VkStridedDeviceAddressRegionKHR;
+	auto GetShaderTableRegion(ShaderTableType inType) const -> VkStridedDeviceAddressRegionKHR;
 	void Uninit();
 };
 
@@ -171,7 +172,7 @@ public:
 		// return shader group index for shader binding table build.
 		auto AddTriangleHitShaderGroup(
 			ShaderIndex inClosestHitShaderIndex, 
-			ShaderIndex inAnyHitShaderIndex = VK_SHADER_UNUSED_KHR);
+			ShaderIndex inAnyHitShaderIndex = VK_SHADER_UNUSED_KHR)->ShaderGroupIndex;
 
 		// Add hit shader group record for AABB geometries, 
 		// return shader group index for shader binding table build.
