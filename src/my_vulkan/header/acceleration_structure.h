@@ -1,5 +1,5 @@
 #pragma once
-#include "common.h";
+#include "common.h"
 #include "buffer.h"
 
 class CommandSubmission;
@@ -15,7 +15,7 @@ class RayTracingAccelerationStructure final
 	// but one BLAS holding multiple models is also allowed, 
 	// in that case, gl_PrimitiveID will be the offset plus the triangle ID in the hit model
 	// ===================
-	// UPDATE RULES£º
+	// UPDATE RULESï¿½ï¿½
 	// ===================
 	// An update operation imposes certain constraints on the input, in exchange for considerably faster execution.
 	// When performing an update, the application is required to provide a full description of the acceleration structure, 
