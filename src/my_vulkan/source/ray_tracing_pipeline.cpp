@@ -164,68 +164,6 @@ void ShaderBindingTable::Init(const IShaderBindingTableInitializer* pInit)
 	CHECK_TRUE(m_uptrBuffer->GetVkBuffer() != VK_NULL_HANDLE);
 }
 
-void ShaderBindingTable::PopulateShaderBindingTable(CommandBuffer* inoutCommandBuffer, const Descriptor* inDescriptor)
-{
-	CHECK_TRUE(inDescriptor != nullptr);
-	(void)inoutCommandBuffer;
-
-	CHECK_TRUE(m_uptrBuffer != nullptr);
-	auto baseAddr = m_uptrBuffer->GetDeviceAddress();
-
-	for (size_t t = 0; t < static_cast<size_t>(ShaderTableType::Max); ++t)
-	{
-		std::vector<uint8_t> data;
-		size_t stride = 0;
-		inDescriptor->GetShaderTableData(static_cast<ShaderTableType>(t), data, stride);
-		if (data.empty())
-		{
-			continue;
-		}
-
-		const auto& region = m_vkShaderTableRegions[t];
-		CHECK_TRUE(region.deviceAddress >= baseAddr);
-		size_t offset = static_cast<size_t>(region.deviceAddress - baseAddr);
-		CHECK_TRUE(offset + data.size() <= static_cast<size_t>(m_uptrBuffer->GetBufferInformation().size));
-		m_uptrBuffer->CopyFromHost(data.data(), offset, data.size());
-	}
-}
-
-void ShaderBindingTable::UpdateShaderBindingTable(CommandBuffer* inoutCommandBuffer, const UpdateDescriptor* inDescriptor)
-{
-	CHECK_TRUE(inDescriptor != nullptr);
-	CHECK_TRUE(m_uptrBuffer != nullptr);
-	(void)inoutCommandBuffer;
-
-	auto baseAddr = m_uptrBuffer->GetDeviceAddress();
-
-	for (const auto& update : inDescriptor->m_bindingInfos)
-	{
-		size_t t = static_cast<size_t>(update.type);
-		CHECK_TRUE(t < static_cast<size_t>(ShaderTableType::Max));
-		CHECK_TRUE(t < m_recordStrides.size());
-		CHECK_TRUE(t < m_vkShaderTableRegions.size());
-
-		const auto& region = m_vkShaderTableRegions[t];
-		CHECK_TRUE(region.deviceAddress != 0);
-		CHECK_TRUE(region.stride != 0);
-		CHECK_TRUE(region.size != 0);
-
-		size_t updateStride = update.data.size();
-		size_t recordStride = m_recordStrides[t];
-		CHECK_TRUE(updateStride <= recordStride, "Update stride exceeds record stride for target shader table.");
-
-		size_t recordOffsetInRegion = static_cast<size_t>(update.binding) * static_cast<size_t>(region.stride);
-		CHECK_TRUE(recordOffsetInRegion + updateStride <= static_cast<size_t>(region.size));
-		CHECK_TRUE(region.deviceAddress >= baseAddr);
-
-		size_t regionOffsetInBuffer = static_cast<size_t>(region.deviceAddress - baseAddr);
-		size_t dstOffset = regionOffsetInBuffer + recordOffsetInRegion;
-		CHECK_TRUE(dstOffset + updateStride <= static_cast<size_t>(m_uptrBuffer->GetBufferInformation().size));
-
-		m_uptrBuffer->CopyFromHost(update.data.data(), dstOffset, updateStride);
-	}
-}
-
 auto ShaderBindingTable::GetShaderTableRegion(ShaderTableType inType) const -> VkStridedDeviceAddressRegionKHR
 {
 	size_t idx = static_cast<size_t>(inType);
@@ -254,7 +192,7 @@ ShaderBindingTable::Descriptor::Descriptor(RayTracingShaderGroupSet inGroupSet)
 
 auto ShaderBindingTable::Descriptor::SetShaderTableBinding(
 	ShaderTableType inType, 
-	ShaderBindingTable::BindingLocation inBinding, 
+	uint32_t inBinding, 
 	ShaderGroupIndex inGroupIndex, 
 	const uint8_t* inData, 
 	size_t inDataSize) -> Descriptor&
@@ -329,10 +267,64 @@ auto ShaderBindingTable::Descriptor::SetShaderTableBinding(
 
 auto ShaderBindingTable::Descriptor::SetShaderTableBinding(
 	ShaderTableType inType, 
-	ShaderBindingTable::BindingLocation inBinding, 
+	uint32_t inBinding, 
 	ShaderGroupIndex inGroupIndex) -> Descriptor&
 {
 	return SetShaderTableBinding(inType, inBinding, inGroupIndex, nullptr, 0);
+}
+
+auto ShaderBindingTable::Descriptor::UpdateShaderTableBinding(
+	ShaderTableType inType,
+	uint32_t inBinding,
+	ShaderGroupIndex inGroupIndex,
+	const uint8_t* inData,
+	size_t inDataSize) -> Descriptor&
+{
+	CHECK_TRUE(inType >= ShaderTableType::RayGeneration && inType <= ShaderTableType::Callable);
+
+	const size_t idx = static_cast<size_t>(inType);
+	CHECK_TRUE(idx < m_recordStrides.size());
+	const size_t stride = m_recordStrides[idx];
+	CHECK_TRUE(stride > 0, "Cannot update shader table binding before its stride is initialized.");
+
+	const uint8_t* handlePtr = nullptr;
+	size_t handleSize = 0;
+	m_groupSet.GetShaderGroupHandleData(inType, inGroupIndex, handlePtr, handleSize);
+	CHECK_TRUE(handlePtr != nullptr && handleSize != 0);
+
+	static const size_t sShaderGroupHandleAlignment = []() -> size_t
+	{
+		VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
+		MyDevice::GetInstance().GetPhysicalDeviceRayTracingProperties(rtProps);
+		return static_cast<size_t>(rtProps.shaderGroupHandleAlignment);
+	}();
+	static const size_t sShaderGroupBaseAlignment = []() -> size_t
+	{
+		VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
+		MyDevice::GetInstance().GetPhysicalDeviceRayTracingProperties(rtProps);
+		return static_cast<size_t>(rtProps.shaderGroupBaseAlignment);
+	}();
+	auto alignUp = [](size_t v, size_t a) { return (v + a - 1) & ~(a - 1); };
+
+	CHECK_TRUE(sShaderGroupHandleAlignment > 0);
+	CHECK_TRUE(sShaderGroupBaseAlignment > 0);
+
+	size_t packedSize = alignUp(handleSize + inDataSize, sShaderGroupHandleAlignment);
+	if (inType == ShaderTableType::RayGeneration)
+	{
+		packedSize = alignUp(packedSize, sShaderGroupBaseAlignment);
+	}
+	CHECK_TRUE(packedSize <= stride, "Updated shader table binding data exceeds the current stride.");
+
+	return SetShaderTableBinding(inType, inBinding, inGroupIndex, inData, inDataSize);
+}
+
+auto ShaderBindingTable::Descriptor::UpdateShaderTableBinding(
+	ShaderTableType inType,
+	uint32_t inBinding,
+	ShaderGroupIndex inGroupIndex) -> Descriptor&
+{
+	return UpdateShaderTableBinding(inType, inBinding, inGroupIndex, nullptr, 0);
 }
 
 void ShaderBindingTable::Descriptor::GetShaderTableData(
@@ -398,67 +390,6 @@ void ShaderBindingTable::Descriptor::InitShaderBindingTable(ShaderBindingTable* 
 		region.size = static_cast<VkDeviceSize>(alignedRecordSize);
 		curAddr += region.size;
 	}
-}
-
-auto ShaderBindingTable::UpdateDescriptor::AddShaderTableBindingUpdate(
-	ShaderTableType inType,
-	ShaderBindingTable::BindingLocation inBinding,
-	ShaderGroupIndex inGroupIndex,
-	const uint8_t* inData,
-	size_t inDataSize) -> UpdateDescriptor&
-{
-	CHECK_TRUE(inType >= ShaderTableType::RayGeneration && inType <= ShaderTableType::Callable);
-
-	const uint8_t* handlePtr = nullptr;
-	size_t handleSize = 0;
-	m_groupSet.GetShaderGroupHandleData(inType, inGroupIndex, handlePtr, handleSize);
-	CHECK_TRUE(handlePtr != nullptr && handleSize > 0);
-
-	static const size_t sShaderGroupHandleAlignment = []() -> size_t
-	{
-		VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
-		MyDevice::GetInstance().GetPhysicalDeviceRayTracingProperties(rtProps);
-		return static_cast<size_t>(rtProps.shaderGroupHandleAlignment);
-	}();
-	static const size_t sShaderGroupBaseAlignment = []() -> size_t
-	{
-		VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
-		MyDevice::GetInstance().GetPhysicalDeviceRayTracingProperties(rtProps);
-		return static_cast<size_t>(rtProps.shaderGroupBaseAlignment);
-	}();
-	auto alignUp = [](size_t v, size_t a) { return (v + a - 1) & ~(a - 1); };
-
-	CHECK_TRUE(sShaderGroupHandleAlignment > 0);
-	CHECK_TRUE(sShaderGroupBaseAlignment > 0);
-
-	size_t packedSize = alignUp(handleSize + inDataSize, sShaderGroupHandleAlignment);
-	if (inType == ShaderTableType::RayGeneration)
-	{
-		packedSize = alignUp(packedSize, sShaderGroupBaseAlignment);
-	}
-
-	ShaderTableBindingInfo info{};
-	info.type = inType;
-	info.binding = inBinding;
-	info.groupIndex = inGroupIndex;
-	info.data.resize(packedSize, 0u);
-
-	memcpy(info.data.data(), handlePtr, handleSize);
-	if (inData != nullptr && inDataSize > 0)
-	{
-		memcpy(info.data.data() + handleSize, inData, inDataSize);
-	}
-
-	m_bindingInfos.emplace_back(std::move(info));
-	return *this;
-}
-
-auto ShaderBindingTable::UpdateDescriptor::AddShaderTableBindingUpdate(
-	ShaderTableType inType,
-	ShaderBindingTable::BindingLocation inBinding,
-	ShaderGroupIndex inGroupIndex) -> UpdateDescriptor&
-{
-	return AddShaderTableBindingUpdate(inType, inBinding, inGroupIndex, nullptr, 0);
 }
 
 void RayTracingPipeline::Builder::InitRayTracingPipeline(RayTracingPipeline* pPipeline) const

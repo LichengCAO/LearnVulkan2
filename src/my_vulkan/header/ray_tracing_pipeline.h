@@ -55,8 +55,6 @@ private:
 	std::vector<VkStridedDeviceAddressRegionKHR> m_vkShaderTableRegions;
 
 public:
-	using BindingLocation = uint32_t;
-
 	class Descriptor : public IShaderBindingTableInitializer
 	{
 	private:
@@ -68,45 +66,25 @@ public:
 		Descriptor(RayTracingShaderGroupSet inGroupSet);
 		
 		template<typename T>
-		auto SetShaderTableBinding(ShaderTableType inType, ShaderBindingTable::BindingLocation inBinding, ShaderGroupIndex inGroupIndex, const T* inData) -> Descriptor&
+		auto SetShaderTableBinding(ShaderTableType inType, uint32_t inBinding, ShaderGroupIndex inGroupIndex, const T* inData) -> Descriptor&
 		{
 			CHECK_TRUE(inType >= ShaderTableType::RayGeneration && inType <= ShaderTableType::Callable);
 			return SetShaderTableBinding(inType, inBinding, inGroupIndex, reinterpret_cast<const uint8_t*>(inData), sizeof(T));
 		}
-		auto SetShaderTableBinding(ShaderTableType inType, ShaderBindingTable::BindingLocation inBinding, ShaderGroupIndex inGroupIndex, const uint8_t* inData, size_t inDataSize) -> Descriptor&;
-		auto SetShaderTableBinding(ShaderTableType inType, ShaderBindingTable::BindingLocation inBinding, ShaderGroupIndex inGroupIndex) -> Descriptor&;
+		auto SetShaderTableBinding(ShaderTableType inType, uint32_t inBinding, ShaderGroupIndex inGroupIndex, const uint8_t* inData, size_t inDataSize) -> Descriptor&;
+		auto SetShaderTableBinding(ShaderTableType inType, uint32_t inBinding, ShaderGroupIndex inGroupIndex) -> Descriptor&;
+
+		template<typename T>
+		auto UpdateShaderTableBinding(ShaderTableType inType, uint32_t inBinding, ShaderGroupIndex inGroupIndex, const T* inData) -> Descriptor&
+		{
+			CHECK_TRUE(inType >= ShaderTableType::RayGeneration && inType <= ShaderTableType::Callable);
+			return UpdateShaderTableBinding(inType, inBinding, inGroupIndex, reinterpret_cast<const uint8_t*>(inData), sizeof(T));
+		}
+		auto UpdateShaderTableBinding(ShaderTableType inType, uint32_t inBinding, ShaderGroupIndex inGroupIndex, const uint8_t* inData, size_t inDataSize) -> Descriptor&;
+		auto UpdateShaderTableBinding(ShaderTableType inType, uint32_t inBinding, ShaderGroupIndex inGroupIndex) -> Descriptor&;
 
 		void GetShaderTableData(ShaderTableType inType, std::vector<uint8_t>& outData, size_t& outStride) const;
 		virtual void InitShaderBindingTable(ShaderBindingTable* pShaderBindingTable) const override;
-	};
-
-	class UpdateDescriptor
-	{
-	private:
-		struct ShaderTableBindingInfo
-		{
-			ShaderTableType type;
-			ShaderBindingTable::BindingLocation binding;
-			ShaderGroupIndex groupIndex;
-			std::vector<uint8_t> data;
-		};
-
-	private:
-		RayTracingShaderGroupSet m_groupSet;
-		std::vector<ShaderTableBindingInfo> m_bindingInfos;
-		friend class ShaderBindingTable;
-
-	public:
-		UpdateDescriptor(RayTracingShaderGroupSet inGroupSet) : m_groupSet(inGroupSet) {};
-
-		template<typename T>
-		auto AddShaderTableBindingUpdate(ShaderTableType inType, ShaderBindingTable::BindingLocation inBinding, ShaderGroupIndex inGroupIndex, const T* inData) -> UpdateDescriptor&
-		{
-			CHECK_TRUE(inType >= ShaderTableType::RayGeneration && inType <= ShaderTableType::Callable);
-			return AddShaderTableBindingUpdate(inType, inBinding, inGroupIndex, reinterpret_cast<const uint8_t*>(inData), sizeof(T));
-		}
-		auto AddShaderTableBindingUpdate(ShaderTableType inType, ShaderBindingTable::BindingLocation inBinding, ShaderGroupIndex inGroupIndex, const uint8_t* inData, size_t inDataSize) -> UpdateDescriptor&;
-		auto AddShaderTableBindingUpdate(ShaderTableType inType, ShaderBindingTable::BindingLocation inBinding, ShaderGroupIndex inGroupIndex) -> UpdateDescriptor&;
 	};
 
 public:
@@ -114,8 +92,6 @@ public:
 	ShaderBindingTable& operator=(const ShaderBindingTable& _other) = delete;
 
 	void Init(const IShaderBindingTableInitializer* pInit);
-	void PopulateShaderBindingTable(CommandBuffer* inoutCommandBuffer, const Descriptor* inDescriptor);
-	void UpdateShaderBindingTable(CommandBuffer* inoutCommandBuffer, const UpdateDescriptor* inDescriptor);
 	auto GetShaderTableRegion(ShaderTableType inType) const -> VkStridedDeviceAddressRegionKHR;
 	void Uninit();
 };
