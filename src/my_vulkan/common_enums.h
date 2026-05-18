@@ -4,7 +4,8 @@
 enum class QueueFamilyType
 {
 	// According to Vulkan 1.3 spec:
+	UNSET,
 	GRAPHICS, // supports graphics, compute, transfer
 	COMPUTE,  // supports compute, transfer
-	TRANSFER  // supports transfer
+	TRANSFER,  // supports transfer
 };
