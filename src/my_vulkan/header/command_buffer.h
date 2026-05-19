@@ -397,3 +397,12 @@ public:
 
 	void Uninit();
 };
+
+/// <summary>
+/// A snippet of commands that can be recorded to command buffer.
+/// </summary>
+class CommandSnippet
+{
+public:
+	virtual void Attach(CommandBuffer* inoutCmd) const = 0;
+};
