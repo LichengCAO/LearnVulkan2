@@ -189,7 +189,7 @@ MyTaskScheduler& MyTaskScheduler::GetInstance()
 	return *g_uptrInstance;
 }
 
-void MyTaskScheduler::Init()
+void MyTaskScheduler::Create()
 {
 	enki::TaskScheduler* piImpl = dynamic_cast<enki::TaskScheduler*>(m_uptrImpl.get());
 	CHECK_TRUE(piImpl != nullptr);
@@ -216,7 +216,7 @@ void MyTaskScheduler::WaitForAll()
 	m_uptrImpl->WaitForAll();
 }
 
-void MyTaskScheduler::Uninit()
+void MyTaskScheduler::Destroy()
 {
 	enki::TaskScheduler* piImpl = dynamic_cast<enki::TaskScheduler*>(m_uptrImpl.get());
 	CHECK_TRUE(piImpl != nullptr);

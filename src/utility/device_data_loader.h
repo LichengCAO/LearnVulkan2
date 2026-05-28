@@ -18,10 +18,10 @@ private:
 	void _CopyToStagingBuffer(const void* inSrcData, size_t inSize);
 
 public:
-	void Init();
+	void Create();
 
 	void Process();
 
-	void Uninit();
+	void Destroy();
 };
 

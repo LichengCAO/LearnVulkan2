@@ -185,7 +185,7 @@ public:
 	{
 		std::string name;
 	};
-	void Init(FrameGraphNodeInitializer* inInitializer);
+	void Create(FrameGraphNodeInitializer* inInitializer);
 
 	FrameGraphQueueType GetQueueType() const;
 
@@ -257,7 +257,7 @@ public:
 	// Do things in a frame graph execution, i.e. record command buffer
 	void Execute();
 
-	void Uninit();
+	void Destroy();
 
 	friend class FrameGraphNodeInitializer;
 };

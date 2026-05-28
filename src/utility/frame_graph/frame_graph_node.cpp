@@ -518,7 +518,7 @@ void FrameGraphNode::_DoForEachNextInput(std::function<void(FrameGraphNodeInput*
 	}
 }
 
-void FrameGraphNode::Init(FrameGraphNodeInitializer* inInitializer)
+void FrameGraphNode::Create(FrameGraphNodeInitializer* inInitializer)
 {
 	inInitializer->InitializeFrameGraphNode(this);
 	CHECK_TRUE(m_graph != nullptr);

@@ -49,9 +49,9 @@ public:
 	GUIPass();
 	~GUIPass();
 
-	void Init(uint32_t _frameInFlight);
+	void Create(uint32_t _frameInFlight);
 
-	void Uninit();
+	void Destroy();
 
 	void OnSwapchainRecreated();
 

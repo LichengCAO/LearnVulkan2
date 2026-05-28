@@ -104,7 +104,7 @@ public:
 	
 	~DescriptorSetManager();
 
-	void Init(const std::vector<std::string>& _pipelineShaders, uint32_t _uFrameInFlightCount);
+	void Create(const std::vector<std::string>& _pipelineShaders, uint32_t _uFrameInFlightCount);
 
 	void EndFrame();
 
@@ -185,82 +185,82 @@ public:
 	// clear all stored descriptor sets
 	void ClearDescriptorSets();
 
-	void Uninit();
+	void Destroy();
 
 	friend class GraphicsProgram;
 	friend class ComputeProgram;
 	friend class RayTracingProgram;
 };
 
-class GraphicsProgram
-{
-private:
-	std::unique_ptr<DescriptorSetManager> m_uptrDescriptorSetManager;
-	std::unique_ptr<GraphicsPipeline> m_uptrPipeline;
-	std::vector<std::string> m_vecShaderPath;
-	ShaderReflector	m_shaderReflector;
-
-	VkBuffer m_indexBuffer = VK_NULL_HANDLE;
-	std::vector<VkBuffer> m_vertexBuffers;
-	VkIndexType		m_vkIndexType = VK_INDEX_TYPE_UINT32;
-
-	std::vector<std::pair<VkShaderStageFlags, const void*>> m_pushConstants;
-	
-	// for vertex inputs
-	std::vector<std::function<void(GraphicsPipeline*)>> m_lateInitialization;
-	std::unordered_map<uint32_t, VkFormat>				m_mapVertexFormat;
-
-	// binded framebuffer
-	const Framebuffer* m_pFramebuffer = nullptr;
-
-private:
-	void _InitPipeline();
-
-	void _UninitPipeline();
-
-public:
-	void PresetRenderPass(const RenderPass* _pRenderPass, uint32_t _subpass);
-
-	void Init(const std::vector<std::string>& _shaderPaths, uint32_t _frameInFlight);
-
-	void EndFrame();
-
-	DescriptorSetManager& GetDescriptorSetManager();
-
-	void BindVertexBuffer(
-		VkBuffer _vertexBuffer,
-		uint32_t _vertexStride,
-		const std::unordered_map<uint32_t, uint32_t>& _mapLocationOffset);
-
-	void BindIndexBuffer(
-		VkBuffer _indexBuffer,
-		VkIndexType _indexType = VK_INDEX_TYPE_UINT32);
-
-	void PushConstant(VkShaderStageFlags _stages, const void* _data);
-
-	void BindFramebuffer(
-		CommandSubmission* _pCmd, 
-		const Framebuffer* _pFramebuffer);
-
-	void Draw(
-		CommandSubmission* _pCmd, 
-		uint32_t _vertexCount);
-
-	void DrawIndexed(
-		CommandSubmission* _pCmd,
-		uint32_t _indexCount);
-
-	void DispatchWorkGroup(
-		CommandSubmission* _pCmd,
-		uint32_t _groupCountX, 
-		uint32_t _groupCountY, 
-		uint32_t _groupCountZ);
-
-	// always call it before command submission if you call BindFramebuffer upfront 
-	void UnbindFramebuffer(CommandSubmission* _pCmd);
-
-	void Uninit();
-};
+//class GraphicsProgram
+//{
+//private:
+//	std::unique_ptr<DescriptorSetManager> m_uptrDescriptorSetManager;
+//	std::unique_ptr<GraphicsPipeline> m_uptrPipeline;
+//	std::vector<std::string> m_vecShaderPath;
+//	ShaderReflector	m_shaderReflector;
+//
+//	VkBuffer m_indexBuffer = VK_NULL_HANDLE;
+//	std::vector<VkBuffer> m_vertexBuffers;
+//	VkIndexType		m_vkIndexType = VK_INDEX_TYPE_UINT32;
+//
+//	std::vector<std::pair<VkShaderStageFlags, const void*>> m_pushConstants;
+//	
+//	// for vertex inputs
+//	std::vector<std::function<void(GraphicsPipeline*)>> m_lateInitialization;
+//	std::unordered_map<uint32_t, VkFormat>				m_mapVertexFormat;
+//
+//	// binded framebuffer
+//	const Framebuffer* m_pFramebuffer = nullptr;
+//
+//private:
+//	void _InitPipeline();
+//
+//	void _UninitPipeline();
+//
+//public:
+//	void PresetRenderPass(const RenderPass* _pRenderPass, uint32_t _subpass);
+//
+//	void Create(const std::vector<std::string>& _shaderPaths, uint32_t _frameInFlight);
+//
+//	void EndFrame();
+//
+//	DescriptorSetManager& GetDescriptorSetManager();
+//
+//	void BindVertexBuffer(
+//		VkBuffer _vertexBuffer,
+//		uint32_t _vertexStride,
+//		const std::unordered_map<uint32_t, uint32_t>& _mapLocationOffset);
+//
+//	void BindIndexBuffer(
+//		VkBuffer _indexBuffer,
+//		VkIndexType _indexType = VK_INDEX_TYPE_UINT32);
+//
+//	void PushConstant(VkShaderStageFlags _stages, const void* _data);
+//
+//	void BindFramebuffer(
+//		CommandSubmission* _pCmd, 
+//		const Framebuffer* _pFramebuffer);
+//
+//	void Draw(
+//		CommandSubmission* _pCmd, 
+//		uint32_t _vertexCount);
+//
+//	void DrawIndexed(
+//		CommandSubmission* _pCmd,
+//		uint32_t _indexCount);
+//
+//	void DispatchWorkGroup(
+//		CommandSubmission* _pCmd,
+//		uint32_t _groupCountX, 
+//		uint32_t _groupCountY, 
+//		uint32_t _groupCountZ);
+//
+//	// always call it before command submission if you call BindFramebuffer upfront 
+//	void UnbindFramebuffer(CommandSubmission* _pCmd);
+//
+//	void Destroy();
+//};
 
 class ComputeProgram
 {
@@ -277,7 +277,7 @@ private:
 	void _UninitPipeline();
 
 public:
-	void Init(const std::vector<std::string>& _shaderPaths, uint32_t _frameInFlight);
+	void Create(const std::vector<std::string>& _shaderPaths, uint32_t _frameInFlight);
 
 	void EndFrame();
 
@@ -291,7 +291,7 @@ public:
 		uint32_t _groupCountY,
 		uint32_t _groupCountZ);
 
-	void Uninit();
+	void Destroy();
 };
 
 class RayTracingProgram
@@ -316,7 +316,7 @@ public:
 	void PreAddMissShader(const std::string& _miss);
 	void PresetMaxRecursion(uint32_t _maxRecur);
 
-	void Init(uint32_t _frameInFlight);
+	void Create(uint32_t _frameInFlight);
 
 	void EndFrame();
 
@@ -329,7 +329,7 @@ public:
 		uint32_t _uWidth, 
 		uint32_t _uHeight);
 
-	void Uninit();
+	void Destroy();
 };
 
 // helper class that gives you a user controlled camera

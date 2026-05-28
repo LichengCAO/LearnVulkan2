@@ -8,7 +8,7 @@ void AsyncDeviceDataLoader::_CopyToStagingBuffer(const void* inSrcData, size_t i
 	m_uptrBuffer->CopyFromHost(inSrcData, 0, inSize);
 }
 
-void AsyncDeviceDataLoader::Init()
+void AsyncDeviceDataLoader::Create()
 {
 	auto& device = MyDevice::GetInstance();
 	Buffer::Initializer bufferInit{};
@@ -24,9 +24,9 @@ void AsyncDeviceDataLoader::Init()
 	bufferInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 	bufferInit.SetBufferSize(64 * 1024 * 1024);
 	bufferInit.SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-	m_uptrBuffer->Init(bufferInit);
+	m_uptrBuffer->Create(bufferInit);
 
 	m_uptrCommandBuffer = std::make_unique<CommandBuffer>();
 	m_uptrCommandBuffer->PreSetCommandPool(m_vkCommandPool);
-	m_uptrCommandBuffer->Init();
+	m_uptrCommandBuffer->Create();
 }

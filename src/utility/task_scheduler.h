@@ -74,11 +74,11 @@ private:
 
 public:
 	static MyTaskScheduler& GetInstance();
-	void Init();
+	void Create();
 	virtual void AddSingleThreadTask(ISingleThreadTask* pSingleThreadTask) override;
 	virtual void AddMutiThreadTask(IMultiThreadTask* pMultiThreadTask) override;
 	// Wait till the task is no longer pending/executing on the system
 	virtual void WaitForTask(const IWaitable* pToWait) override;
 	virtual void WaitForAll() override;
-	void Uninit();
+	void Destroy();
 };

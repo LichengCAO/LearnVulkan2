@@ -14,7 +14,7 @@ StagingBufferUploader::~StagingBufferUploader()
 	assert(!m_hasPendingUpload);
 }
 
-void StagingBufferUploader::Init(
+void StagingBufferUploader::Create(
 	VkDeviceSize inStagingBufferSize,
 	QueueFamilyType inQueueType)
 {
@@ -36,17 +36,17 @@ void StagingBufferUploader::Init(
 	m_uptrCommandPool = std::make_unique<CommandPool>();
 	poolInit.CustomizeCommandPoolCreateFlags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
 	poolInit.CustomizeQueueFamilyIndex(device.GetQueueFamilyIndexOfType(inQueueType));
-	m_uptrCommandPool->Init(&poolInit);
+	m_uptrCommandPool->Create(&poolInit);
 
 	m_uptrCommandBuffer = std::make_unique<CommandBuffer>();
 	cmdInit.SetCommandPool(m_uptrCommandPool->GetVkCommandPool());
-	m_uptrCommandBuffer->Init(&cmdInit);
+	m_uptrCommandBuffer->Create(&cmdInit);
 
 	m_uptrStagingBuffer = std::make_unique<Buffer>();
 	stagingInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	stagingInit.SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 	stagingInit.SetBufferSize(m_stagingBufferSize);
-	m_uptrStagingBuffer->Init(&stagingInit);
+	m_uptrStagingBuffer->Create(&stagingInit);
 
 	m_vkUploadFence = device.CreateVkFence(0);
 }
@@ -138,7 +138,7 @@ void StagingBufferUploader::WaitForUpload()
 	m_hasPendingUpload = false;
 }
 
-void StagingBufferUploader::Uninit()
+void StagingBufferUploader::Destroy()
 {
 	WaitForUpload();
 
@@ -150,17 +150,17 @@ void StagingBufferUploader::Uninit()
 
 	if (m_uptrCommandBuffer != nullptr)
 	{
-		m_uptrCommandBuffer->Uninit();
+		m_uptrCommandBuffer->Destroy();
 		m_uptrCommandBuffer.reset();
 	}
 	if (m_uptrCommandPool != nullptr)
 	{
-		m_uptrCommandPool->Uninit();
+		m_uptrCommandPool->Destroy();
 		m_uptrCommandPool.reset();
 	}
 	if (m_uptrStagingBuffer != nullptr)
 	{
-		m_uptrStagingBuffer->Uninit();
+		m_uptrStagingBuffer->Destroy();
 		m_uptrStagingBuffer.reset();
 	}
 	m_stagingBufferSize = 0;

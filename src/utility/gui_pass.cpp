@@ -13,7 +13,7 @@ GUIPass::~GUIPass()
 {
 }
 
-void GUIPass::Init(uint32_t _frameInFlight)
+void GUIPass::Create(uint32_t _frameInFlight)
 {
 	m_uMaxFrameCount = _frameInFlight;
 	_InitImageAndViews();
@@ -25,7 +25,7 @@ void GUIPass::Init(uint32_t _frameInFlight)
 	_InitSampler();
 }
 
-void GUIPass::Uninit()
+void GUIPass::Destroy()
 {
 	_UninitSampler();
 	_UninitMyGUI();
@@ -110,10 +110,10 @@ void GUIPass::_InitImageAndViews()
 		ImageView* pView = nullptr;
 
 		uptrImage->PresetCreateInformation(imageInfo);
-		uptrImage->Init();
+		uptrImage->Create();
 		uptrImage->NewImageView(pView);
 		uptrView.reset(pView);
-		uptrView->Init();
+		uptrView->Create();
 		m_uptrImages.push_back(std::move(uptrImage));
 		m_uptrViews.push_back(std::move(uptrView));
 	}
@@ -123,13 +123,13 @@ void GUIPass::_UninitImageAndViews()
 {
 	for (std::unique_ptr<ImageView>& uptr : m_uptrViews)
 	{
-		uptr->Uninit();
+		uptr->Destroy();
 	}
 	m_uptrViews.clear();
 
 	for (auto& uptr : m_uptrImages)
 	{
-		uptr->Uninit();
+		uptr->Destroy();
 	}
 	m_uptrImages.clear();
 }
@@ -142,12 +142,12 @@ void GUIPass::_InitRenderPass()
 	subpass.AddColorAttachment(0);
 	m_uptrRenderPass->PreAddAttachment(RenderPass::AttachmentPreset::COLOR_OUTPUT);
 	m_uptrRenderPass->PreAddSubpass(subpass);
-	m_uptrRenderPass->Init();
+	m_uptrRenderPass->Create();
 }
 
 void GUIPass::_UninitRenderPass()
 {
-	m_uptrRenderPass->Uninit();
+	m_uptrRenderPass->Destroy();
 	m_uptrRenderPass.reset();
 }
 
@@ -161,7 +161,7 @@ void GUIPass::_InitFramebuffers()
 		m_uptrRenderPass->NewFramebuffer({ m_uptrViews[i].get() }, pFramebuffer);
 
 		uptrFramebuffer.reset(pFramebuffer);
-		uptrFramebuffer->Init();
+		uptrFramebuffer->Create();
 
 		m_uptrFramebuffers.push_back(std::move(uptrFramebuffer));
 	}
@@ -171,7 +171,7 @@ void GUIPass::_UninitFramebuffers()
 {
 	for (auto& uptr : m_uptrFramebuffers)
 	{
-		uptr->Uninit();
+		uptr->Destroy();
 	}
 	m_uptrFramebuffers.clear();
 }
@@ -181,12 +181,12 @@ void GUIPass::_InitPipeline()
 	m_uptrProgram = std::make_unique<GraphicsProgram>();
 
 	m_uptrProgram->PresetRenderPass(m_uptrRenderPass.get(), 0);
-	m_uptrProgram->Init({ "E:/GitStorage/LearnVulkan/bin/shaders/pass_through.vert.spv", "E:/GitStorage/LearnVulkan/bin/shaders/pass_through.frag.spv" }, m_uMaxFrameCount);
+	m_uptrProgram->Create({ "E:/GitStorage/LearnVulkan/bin/shaders/pass_through.vert.spv", "E:/GitStorage/LearnVulkan/bin/shaders/pass_through.frag.spv" }, m_uMaxFrameCount);
 }
 
 void GUIPass::_UninitPipeline()
 {
-	m_uptrProgram->Uninit();
+	m_uptrProgram->Destroy();
 	m_uptrProgram.reset();
 }
 
@@ -196,7 +196,7 @@ void GUIPass::_InitCommandBuffer()
 	{
 		std::unique_ptr<CommandSubmission> uptrCmd = std::make_unique<CommandSubmission>();
 
-		uptrCmd->Init();
+		uptrCmd->Create();
 		
 		m_uptrCmds.push_back(std::move(uptrCmd));
 	}
@@ -206,7 +206,7 @@ void GUIPass::_UninitCommandBuffer()
 {
 	for (auto& uptr : m_uptrCmds)
 	{
-		uptr->Uninit();
+		uptr->Destroy();
 	}
 	m_uptrCmds.clear();
 }
@@ -215,11 +215,11 @@ void GUIPass::_InitMyGUI()
 {
 	m_uptrGUI = std::make_unique<MyGUI>();
 	m_uptrGUI->SetUpRenderPass(m_uptrRenderPass->m_vkRenderPass);
-	m_uptrGUI->Init();
+	m_uptrGUI->Create();
 }
 
 void GUIPass::_UninitMyGUI()
 {
-	m_uptrGUI->Uninit();
+	m_uptrGUI->Destroy();
 	m_uptrGUI.reset();
 }

@@ -15,7 +15,7 @@ public:
 	~ShaderReflector();
 
 	// start reflect shaders of the same pipeline
-	void Init(const std::vector<std::string>& _spirvFiles);
+	void Create(const std::vector<std::string>& _spirvFiles);
 
 	// reflect descriptor sets of the pipeline,
 	// _mapSetBinding: output, map descriptor set name to {set, binding}, some descriptor sets may not have name
@@ -49,5 +49,5 @@ public:
 
 	void PrintReflectResult() const;
 
-	void Uninit();
+	void Destroy();
 };

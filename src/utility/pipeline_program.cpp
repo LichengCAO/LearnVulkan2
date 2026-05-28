@@ -68,7 +68,7 @@ void DescriptorSetManager::_InitDescriptorSetLayouts()
 				vkBinding.pImmutableSamplers);
 		}
 
-		uptrLayout->Init();
+		uptrLayout->Create();
 
 		m_vecUptrDescriptorSetLayout.push_back(std::move(uptrLayout));
 	}
@@ -78,7 +78,7 @@ void DescriptorSetManager::_UninitDescriptorSetLayouts()
 {
 	for (auto& uptrLayout : m_vecUptrDescriptorSetLayout)
 	{
-		uptrLayout->Uninit();
+		uptrLayout->Destroy();
 	}
 	m_vecUptrDescriptorSetLayout.clear();
 }
@@ -162,7 +162,7 @@ void DescriptorSetManager::_ProcessPlan()
 			{
 				std::unique_ptr<DescriptorSetData> setData = std::make_unique<DescriptorSetData>();
 				auto pDescriptorSet = m_vecUptrDescriptorSetLayout[j]->NewDescriptorSetPtr();
-				pDescriptorSet->Init();
+				pDescriptorSet->Create();
 				setData->uptrDescriptorSet.reset(pDescriptorSet);
 				m_uptrDescriptorSetSetting0.push_back(std::move(setData));
 				++j;
@@ -179,7 +179,7 @@ void DescriptorSetManager::_ProcessPlan()
 			{
 				std::unique_ptr<DescriptorSetData> setData = std::make_unique<DescriptorSetData>();
 				auto pDescriptorSet = m_vecUptrDescriptorSetLayout[j]->NewDescriptorSetPtr();
-				pDescriptorSet->Init();
+				pDescriptorSet->Create();
 				setData->uptrDescriptorSet.reset(pDescriptorSet);
 				m_uptrDescriptorSetSetting1[m_uCurrentFrame].push_back(std::move(setData));
 				++j;
@@ -252,7 +252,7 @@ void DescriptorSetManager::_ProcessPlan()
 			{
 				std::unique_ptr<DescriptorSetData> setData = std::make_unique<DescriptorSetData>();
 				DescriptorSet* pDescriptorSet = m_vecUptrDescriptorSetLayout[i]->NewDescriptorSetPtr();
-				pDescriptorSet->Init();
+				pDescriptorSet->Create();
 				setData->uptrDescriptorSet.reset(pDescriptorSet);
 				pDescriptorSetData = setData.get();
 				m_uptrDescriptorSetSetting2[m_uCurrentFrame][i].push_back(std::move(setData));
@@ -326,7 +326,7 @@ void DescriptorSetManager::_ProcessPlan()
 			{
 				std::unique_ptr<DescriptorSetData> setData = std::make_unique<DescriptorSetData>();
 				DescriptorSet* pDescriptorSet = m_vecUptrDescriptorSetLayout[i]->NewDescriptorSetPtr();
-				pDescriptorSet->Init();
+				pDescriptorSet->Create();
 				setData->uptrDescriptorSet.reset(pDescriptorSet);
 				pDescriptorSetData = setData.get();
 				m_uptrDescriptorSetSetting3[i].push_back(std::move(setData));
@@ -399,13 +399,13 @@ DescriptorSetManager::~DescriptorSetManager()
 {
 }
 
-void DescriptorSetManager::Init(const std::vector<std::string>& _pipelineShaders, uint32_t _uFrameInFlightCount)
+void DescriptorSetManager::Create(const std::vector<std::string>& _pipelineShaders, uint32_t _uFrameInFlightCount)
 {
 	ShaderReflector reflector{};
 
-	reflector.Init(_pipelineShaders);
+	reflector.Create(_pipelineShaders);
 	reflector.ReflectDescriptorSets(m_mapNameToSetBinding, m_vkDescriptorSetBindingInfo);
-	reflector.Uninit();
+	reflector.Destroy();
 
 	m_uFrameInFlightCount = _uFrameInFlightCount;
 	m_uCurrentFrame = 0u;
@@ -651,7 +651,7 @@ void DescriptorSetManager::ClearDescriptorSets()
 	m_pCurrentDescriptorSets.clear();
 }
 
-void DescriptorSetManager::Uninit()
+void DescriptorSetManager::Destroy()
 {
 	size_t count = 0;
 	std::cout << "====================================================" << std::endl;
@@ -724,7 +724,7 @@ void GraphicsProgram::_InitPipeline()
 	{
 		std::unique_ptr<SimpleShader> shader = std::make_unique<SimpleShader>();
 		shader->SetSPVFile(path);
-		shader->Init();
+		shader->Create();
 		m_uptrPipeline->AddShader(shader->GetShaderStageInfo());
 		shaders.push_back(std::move(shader));
 	}
@@ -761,11 +761,11 @@ void GraphicsProgram::_InitPipeline()
 		m_lateInitialization.clear();
 	}
 
-	m_uptrPipeline->Init();
+	m_uptrPipeline->Create();
 
 	for (auto& shader : shaders)
 	{
-		shader->Uninit();
+		shader->Destroy();
 	}
 	shaders.clear();
 }
@@ -774,7 +774,7 @@ void GraphicsProgram::_UninitPipeline()
 {
 	if (m_uptrPipeline)
 	{
-		m_uptrPipeline->Uninit();
+		m_uptrPipeline->Destroy();
 		m_uptrPipeline.reset();
 	}
 }
@@ -791,14 +791,14 @@ void GraphicsProgram::PresetRenderPass(const RenderPass* _pRenderPass, uint32_t 
 	);
 }
 
-void GraphicsProgram::Init(const std::vector<std::string>& _shaderPaths, uint32_t _frameInFlight = 3u)
+void GraphicsProgram::Create(const std::vector<std::string>& _shaderPaths, uint32_t _frameInFlight = 3u)
 {
 	auto pDescriptorSetManager = new DescriptorSetManager();
 
 	m_vecShaderPath = _shaderPaths;
 	m_uptrDescriptorSetManager.reset(pDescriptorSetManager);
-	m_uptrDescriptorSetManager->Init(_shaderPaths, _frameInFlight);
-	m_shaderReflector.Init(_shaderPaths);
+	m_uptrDescriptorSetManager->Create(_shaderPaths, _frameInFlight);
+	m_shaderReflector.Create(_shaderPaths);
 	{
 		std::unordered_map<std::string, uint32_t> mapLocation;
 		std::map<uint32_t, VkFormat> mapFormat;
@@ -953,19 +953,19 @@ void GraphicsProgram::UnbindFramebuffer(CommandSubmission* _pCmd)
 	m_pFramebuffer = nullptr;
 }
 
-void GraphicsProgram::Uninit()
+void GraphicsProgram::Destroy()
 {
 	_UninitPipeline();
 	if (m_uptrDescriptorSetManager)
 	{
-		m_uptrDescriptorSetManager->Uninit();
+		m_uptrDescriptorSetManager->Destroy();
 		m_uptrDescriptorSetManager.reset();
 	}
 	m_vecShaderPath.clear();
 	m_vertexBuffers.clear();
 	m_vkIndexType = VK_INDEX_TYPE_UINT32;
 	m_pushConstants.clear();
-	m_shaderReflector.Uninit();
+	m_shaderReflector.Destroy();
 	m_mapVertexFormat.clear();
 }
 
@@ -978,7 +978,7 @@ void ComputeProgram::_InitPipeline()
 	{
 		std::unique_ptr<SimpleShader> shader = std::make_unique<SimpleShader>();
 		shader->SetSPVFile(path);
-		shader->Init();
+		shader->Create();
 		m_uptrPipeline->AddShader(shader->GetShaderStageInfo());
 		shaders.push_back(std::move(shader));
 	}
@@ -1006,11 +1006,11 @@ void ComputeProgram::_InitPipeline()
 		}
 	}
 
-	m_uptrPipeline->Init();
+	m_uptrPipeline->Create();
 
 	for (auto& shader : shaders)
 	{
-		shader->Uninit();
+		shader->Destroy();
 	}
 	shaders.clear();
 }
@@ -1019,19 +1019,19 @@ void ComputeProgram::_UninitPipeline()
 {
 	if (m_uptrPipeline)
 	{
-		m_uptrPipeline->Uninit();
+		m_uptrPipeline->Destroy();
 		m_uptrPipeline.reset();
 	}
 }
 
-void ComputeProgram::Init(const std::vector<std::string>& _shaderPaths, uint32_t _frameInFlight = 3u)
+void ComputeProgram::Create(const std::vector<std::string>& _shaderPaths, uint32_t _frameInFlight = 3u)
 {
 	auto pDescriptorSetManager = new DescriptorSetManager();
 
 	m_vecShaderPath = _shaderPaths;
 	m_uptrDescriptorSetManager.reset(pDescriptorSetManager);
-	m_uptrDescriptorSetManager->Init(_shaderPaths, _frameInFlight);
-	m_shaderReflector.Init(_shaderPaths);
+	m_uptrDescriptorSetManager->Create(_shaderPaths, _frameInFlight);
+	m_shaderReflector.Create(_shaderPaths);
 	m_shaderReflector.PrintReflectResult();
 }
 
@@ -1074,16 +1074,16 @@ void ComputeProgram::DispatchWorkGroup(CommandSubmission* _pCmd, uint32_t _group
 	m_uptrPipeline->Do(_pCmd->vkCommandBuffer, input);
 }
 
-void ComputeProgram::Uninit()
+void ComputeProgram::Destroy()
 {
 	_UninitPipeline();
 	if (m_uptrDescriptorSetManager)
 	{
-		m_uptrDescriptorSetManager->Uninit();
+		m_uptrDescriptorSetManager->Destroy();
 		m_uptrDescriptorSetManager.reset();
 	}
 	m_pushConstants.clear();
-	m_shaderReflector.Uninit();
+	m_shaderReflector.Destroy();
 }
 
 void RayTracingProgram::_InitPipeline()
@@ -1095,7 +1095,7 @@ void RayTracingProgram::_InitPipeline()
 	{
 		std::unique_ptr<SimpleShader> shader = std::make_unique<SimpleShader>();
 		shader->SetSPVFile(path);
-		shader->Init();
+		shader->Create();
 		m_uptrPipeline->AddShader(shader->GetShaderStageInfo());
 		shaders.push_back(std::move(shader));
 	}
@@ -1132,11 +1132,11 @@ void RayTracingProgram::_InitPipeline()
 		m_lateInitialization.clear();
 	}
 
-	m_uptrPipeline->Init();
+	m_uptrPipeline->Create();
 
 	for (auto& shader : shaders)
 	{
-		shader->Uninit();
+		shader->Destroy();
 	}
 	shaders.clear();
 }
@@ -1145,7 +1145,7 @@ void RayTracingProgram::_UninitPipeline()
 {
 	if (m_uptrPipeline)
 	{
-		m_uptrPipeline->Uninit();
+		m_uptrPipeline->Destroy();
 		m_uptrPipeline.reset();
 	}
 }
@@ -1268,13 +1268,13 @@ void RayTracingProgram::PresetMaxRecursion(uint32_t _maxRecur)
 	);
 }
 
-void RayTracingProgram::Init(uint32_t _frameInFlight = 3u)
+void RayTracingProgram::Create(uint32_t _frameInFlight = 3u)
 {
 	auto pDescriptorSetManager = new DescriptorSetManager();
 
 	m_uptrDescriptorSetManager.reset(pDescriptorSetManager);
-	m_uptrDescriptorSetManager->Init(m_vecShaderPath, _frameInFlight);
-	m_shaderReflector.Init(m_vecShaderPath);
+	m_uptrDescriptorSetManager->Create(m_vecShaderPath, _frameInFlight);
+	m_shaderReflector.Create(m_vecShaderPath);
 	m_shaderReflector.PrintReflectResult();
 }
 
@@ -1312,16 +1312,16 @@ void RayTracingProgram::TraceRay(CommandSubmission* _pCmd, uint32_t _uWidth, uin
 	m_uptrPipeline->Do(_pCmd->vkCommandBuffer, input);
 }
 
-void RayTracingProgram::Uninit()
+void RayTracingProgram::Destroy()
 {
 	_UninitPipeline();
 	if (m_uptrDescriptorSetManager)
 	{
-		m_uptrDescriptorSetManager->Uninit();
+		m_uptrDescriptorSetManager->Destroy();
 		m_uptrDescriptorSetManager.reset();
 	}
 	m_pushConstants.clear();
-	m_shaderReflector.Uninit();
+	m_shaderReflector.Destroy();
 	m_vecShaderPath.clear();
 	m_mapShaderToIndex.clear();
 	m_lateInitialization.clear();

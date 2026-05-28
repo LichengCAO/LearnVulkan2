@@ -1,0 +1,348 @@
+#include "image.h"
+#include "device.h"
+#include "buffer.h"
+#include "commandbuffer.h"
+#include "memory_allocator.h"
+//#ifndef STB_IMAGE_IMPLEMENTATION
+//#define STB_IMAGE_IMPLEMENTATION
+//#endif defined in tinyglTF
+
+Image::~Image()
+{
+	assert(m_vkImage == VK_NULL_HANDLE);
+}
+
+void Image::Create(const IImageInitializer* pInit)
+{
+	pInit->InitImage(this);
+}
+
+void Image::Destroy()
+{
+	if (m_imageInformation.isSwapchainImage)
+	{
+		if (m_vkImage != VK_NULL_HANDLE)
+		{
+			m_vkImage = VK_NULL_HANDLE;
+		}
+	}
+	else
+	{
+		if (m_vkImage != VK_NULL_HANDLE)
+		{
+			_FreeMemory();
+			vkDestroyImage(MyDevice::GetInstance().vkDevice, m_vkImage, nullptr);
+			m_vkImage = VK_NULL_HANDLE;
+		}
+	}
+}
+
+void Image::_AllocateMemory()
+{
+	MemoryAllocator* pAllocator = _GetMemoryAllocator();
+	pAllocator->AllocateForVkImage(m_vkImage, m_imageInformation.memoryProperty);
+}
+
+void Image::_FreeMemory()
+{
+	MemoryAllocator* pAllocator = _GetMemoryAllocator();
+	pAllocator->FreeMemory(m_vkImage);
+}
+
+MemoryAllocator* Image::_GetMemoryAllocator() const
+{
+	return MyDevice::GetInstance().GetMemoryAllocator();
+}
+
+const Image::Information& Image::GetImageInformation() const
+{
+	return m_imageInformation;
+}
+
+VkExtent3D Image::GetImageSize() const
+{
+	VkExtent3D extent{};
+	extent.width = m_imageInformation.width;
+	extent.height = m_imageInformation.height;
+	extent.depth = m_imageInformation.depth;
+	return extent;
+}
+
+VkImage Image::GetVkImage() const
+{
+	return m_vkImage;
+}
+
+ImageView::~ImageView()
+{
+	assert(m_vkImageView == VK_NULL_HANDLE);
+}
+
+namespace
+{
+VkImageAspectFlags _GetDefaultAspectMask(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_D16_UNORM:
+	case VK_FORMAT_X8_D24_UNORM_PACK32:
+	case VK_FORMAT_D32_SFLOAT:
+		return VK_IMAGE_ASPECT_DEPTH_BIT;
+	case VK_FORMAT_S8_UINT:
+		return VK_IMAGE_ASPECT_STENCIL_BIT;
+	case VK_FORMAT_D16_UNORM_S8_UINT:
+	case VK_FORMAT_D24_UNORM_S8_UINT:
+	case VK_FORMAT_D32_SFLOAT_S8_UINT:
+		return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+	default:
+		return VK_IMAGE_ASPECT_COLOR_BIT;
+	}
+}
+}
+
+void ImageView::Create(const CreateInfo* inCreateInfo)
+{
+	CHECK_TRUE(inCreateInfo != nullptr, "No image view create info!");
+	CHECK_TRUE(inCreateInfo->m_pImage != nullptr, "No image!");
+
+	auto& infoToFill = m_viewInformation;
+	auto& device = MyDevice::GetInstance();
+	VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+	const auto& imageInfo = inCreateInfo->m_pImage->GetImageInformation();
+	CHECK_TRUE(inCreateInfo->m_baseMipLevel < imageInfo.mipLevels, "Base mip level out of range!");
+	CHECK_TRUE(inCreateInfo->m_baseArrayLayer < imageInfo.arrayLayers, "Base array layer out of range!");
+	const uint32_t resolvedLevelCount = (inCreateInfo->m_levelCount == VK_REMAINING_MIP_LEVELS)
+		? (imageInfo.mipLevels - inCreateInfo->m_baseMipLevel)
+		: inCreateInfo->m_levelCount;
+	const uint32_t resolvedLayerCount = (inCreateInfo->m_layerCount == VK_REMAINING_ARRAY_LAYERS)
+		? (imageInfo.arrayLayers - inCreateInfo->m_baseArrayLayer)
+		: inCreateInfo->m_layerCount;
+	const VkImageAspectFlags aspectMask = _GetDefaultAspectMask(imageInfo.format);
+	CHECK_TRUE(resolvedLevelCount > 0, "Image view level count must be greater than 0!");
+	CHECK_TRUE(resolvedLayerCount > 0, "Image view layer count must be greater than 0!");
+	CHECK_TRUE((inCreateInfo->m_baseMipLevel + resolvedLevelCount) <= imageInfo.mipLevels, "Mip range out of range!");
+	CHECK_TRUE((inCreateInfo->m_baseArrayLayer + resolvedLayerCount) <= imageInfo.arrayLayers, "Array layer range out of range!");
+
+	infoToFill.width = imageInfo.width;
+	infoToFill.height = imageInfo.height;
+	infoToFill.depth = imageInfo.depth;
+	infoToFill.baseMipLevel = inCreateInfo->m_baseMipLevel;
+	infoToFill.levelCount = resolvedLevelCount;
+	infoToFill.baseArrayLayer = inCreateInfo->m_baseArrayLayer;
+	infoToFill.layerCount = resolvedLayerCount;
+	infoToFill.format = imageInfo.format;
+	infoToFill.aspectMask = aspectMask;
+	infoToFill.vkImage = inCreateInfo->m_pImage->GetVkImage();
+
+	switch (imageInfo.imageType)
+	{
+	case VK_IMAGE_TYPE_1D:
+	{
+		infoToFill.type = resolvedLayerCount == 1 ? VK_IMAGE_VIEW_TYPE_1D : VK_IMAGE_VIEW_TYPE_1D_ARRAY;
+	}
+	break;
+	case VK_IMAGE_TYPE_2D:
+	{
+		infoToFill.type = resolvedLayerCount == 1 ? VK_IMAGE_VIEW_TYPE_2D : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+	}
+	break;
+	case VK_IMAGE_TYPE_3D:
+	{
+		CHECK_TRUE(resolvedLayerCount == 1);
+		infoToFill.type = VK_IMAGE_VIEW_TYPE_3D;
+	}
+	break;
+	default:
+		CHECK_TRUE(false, "Unhandled image type!");
+		break;
+	}
+
+	viewInfo.image = infoToFill.vkImage;
+	viewInfo.viewType = infoToFill.type;
+	viewInfo.format = infoToFill.format;
+	viewInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+	viewInfo.subresourceRange.aspectMask = infoToFill.aspectMask;
+	viewInfo.subresourceRange.baseMipLevel = infoToFill.baseMipLevel;
+	viewInfo.subresourceRange.levelCount = infoToFill.levelCount;
+	viewInfo.subresourceRange.baseArrayLayer = infoToFill.baseArrayLayer;
+	viewInfo.subresourceRange.layerCount = infoToFill.layerCount;
+
+	m_vkImageView = device.CreateImageView(viewInfo);
+}
+
+void ImageView::Destroy()
+{
+	if (m_vkImageView != VK_NULL_HANDLE)
+	{
+		auto& device = MyDevice::GetInstance();
+		device.DestroyImageView(m_vkImageView);
+		m_vkImageView = VK_NULL_HANDLE;
+	}
+	m_viewInformation = ImageView::Information{};
+}
+
+const ImageView::Information& ImageView::GetImageViewInformation() const
+{
+	return m_viewInformation;
+}
+
+VkImageSubresourceRange ImageView::GetImageSubresourceRange() const
+{
+	VkImageSubresourceRange subRange{};
+	subRange.aspectMask = m_viewInformation.aspectMask;
+	subRange.baseMipLevel = m_viewInformation.baseMipLevel;
+	subRange.levelCount = m_viewInformation.levelCount;
+	subRange.baseArrayLayer = m_viewInformation.baseArrayLayer;
+	subRange.layerCount = m_viewInformation.layerCount;
+
+	return subRange;
+}
+
+VkImageView ImageView::GetVkImageView() const
+{
+	return m_vkImageView;
+}
+
+void Image::Initializer::InitImage(Image* outImage) const
+{
+	VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+	auto& device = MyDevice::GetInstance();
+	auto& infoToFill = outImage->m_imageInformation;
+	const auto swapchainSize = device.GetSwapchainExtent();
+
+	imageInfo.imageType = m_type;
+	imageInfo.arrayLayers = m_optArrayLayers.value_or(1);
+	imageInfo.flags = 0;
+	imageInfo.extent.width = m_optWidth.value_or(swapchainSize.width);
+	imageInfo.extent.height = m_optHeight.value_or(swapchainSize.height);
+	imageInfo.extent.depth = m_optDepth.value_or(1);
+	imageInfo.format = m_optFormat.value_or(VK_FORMAT_R32G32B32A32_SFLOAT);
+	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	imageInfo.mipLevels = m_optMipLevels.value_or(1);
+	imageInfo.samples = m_optSampleCount.value_or(VK_SAMPLE_COUNT_1_BIT);
+	imageInfo.usage = m_usage;
+	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	imageInfo.tiling = m_optTiling.value_or(VK_IMAGE_TILING_OPTIMAL);
+	
+	infoToFill.imageType = imageInfo.imageType;
+	infoToFill.width = imageInfo.extent.width;
+	infoToFill.height = imageInfo.extent.height;
+	infoToFill.depth = imageInfo.extent.depth;
+	infoToFill.mipLevels = imageInfo.mipLevels;
+	infoToFill.arrayLayers = imageInfo.arrayLayers;
+	infoToFill.format = imageInfo.format;
+	infoToFill.tiling = imageInfo.tiling;
+	infoToFill.usage = imageInfo.usage;
+	infoToFill.samples = imageInfo.samples;
+	infoToFill.isSwapchainImage = false;
+	infoToFill.memoryProperty = m_optMemoryProperty.value_or(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	outImage->m_vkImage = device.CreateImage(imageInfo);
+	outImage->_AllocateMemory();
+}
+
+Image::Initializer& Image::Initializer::Reset()
+{
+	*this = Image::Initializer{};
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::SetUsage(VkImageUsageFlags usage)
+{
+	m_usage = usage;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeSize1D(uint32_t width)
+{
+	m_optWidth = width;
+	m_type = VK_IMAGE_TYPE_1D;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeSize2D(uint32_t width, uint32_t height)
+{
+	m_optWidth = width;
+	m_optHeight = height;
+	m_type = VK_IMAGE_TYPE_2D;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeSize3D(uint32_t width, uint32_t height, uint32_t depth)
+{
+	m_optWidth = width;
+	m_optHeight = height;
+	m_optDepth = depth;
+	m_type = VK_IMAGE_TYPE_3D;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeMipLevels(uint32_t mipLevelCount)
+{
+	m_optMipLevels = mipLevelCount;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeArrayLayers(uint32_t layerCount)
+{
+	m_optArrayLayers = layerCount;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeFormat(VkFormat format)
+{
+	m_optFormat = format;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeImageTiling(VkImageTiling tiling)
+{
+	m_optTiling = tiling;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeMemoryProperty(VkMemoryPropertyFlags memoryProperty)
+{
+	m_optMemoryProperty = memoryProperty;
+	return *this;
+}
+
+Image::Initializer& Image::Initializer::CustomizeSampleCount(VkSampleCountFlagBits sampleCount)
+{
+	m_optSampleCount = sampleCount;
+	return *this;
+}
+
+void Image::SwapchainImageInit::InitImage(Image* outImagePtr) const
+{
+	auto& infoToFill = outImagePtr->m_imageInformation;
+	auto& device = MyDevice::GetInstance();
+	const auto size2D = device.GetSwapchainExtent();
+
+	infoToFill.arrayLayers = 1;
+	infoToFill.depth = 1;
+	infoToFill.format = m_format;
+	infoToFill.height = size2D.height;
+	infoToFill.imageType = VK_IMAGE_TYPE_2D;
+	infoToFill.isSwapchainImage = true;
+	infoToFill.layout = VK_IMAGE_LAYOUT_UNDEFINED; // TODO
+	infoToFill.memoryProperty = 0; // TODO
+	infoToFill.mipLevels = 1;
+	infoToFill.samples = VK_SAMPLE_COUNT_1_BIT;
+	infoToFill.tiling = VK_IMAGE_TILING_LINEAR;
+	infoToFill.usage = m_usage;
+	infoToFill.width = size2D.width;
+
+	outImagePtr->m_vkImage = m_vkHandle;
+}
+
+Image::SwapchainImageInit& Image::SwapchainImageInit::SetUp(VkImage inSwapchain, VkImageUsageFlags inUsage, VkFormat inFormat)
+{
+	m_vkHandle = inSwapchain;
+	m_usage = inUsage;
+	m_format = inFormat;
+
+	return *this;
+}

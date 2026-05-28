@@ -17,7 +17,7 @@ public:
 	// every other ui function call should be inside this render pass
 	inline void SetUpRenderPass(VkRenderPass _renderpass) { m_vkRenderPass = _renderpass; };
 	
-	void Init();
+	void Create();
 
 	// start to draw a window, render pass should be started and frame buffers should be bound before it
 	// _title: name of the window
@@ -56,5 +56,5 @@ public:
 	// record draw command into command buffer
 	void Apply(VkCommandBuffer _cmd);
 
-	void Uninit();
+	void Destroy();
 };

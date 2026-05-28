@@ -43,12 +43,12 @@ public:
 	~StagingBufferUploader();
 
 	// Create a persistent host-visible staging buffer and command resources for uploads.
-	void Init(const Creator* inCreator);
+	void Create(const Creator* inCreator);
 
     void UploadToBuffers(const UploadRequest* inRequests, size_t inRequestCount);
 
 	// Wait for the latest submitted upload to complete.
 	void WaitForUpload();
 
-	void Uninit();
+	void Destroy();
 };

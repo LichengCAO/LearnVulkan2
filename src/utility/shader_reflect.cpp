@@ -120,10 +120,10 @@ SpvReflectShaderModule* ShaderReflector::_FindShaderModule(VkShaderStageFlagBits
 
 ShaderReflector::~ShaderReflector()
 {
-	Uninit();
+	Destroy();
 }
 
-void ShaderReflector::Init(const std::vector<std::string>& _spirvFiles)
+void ShaderReflector::Create(const std::vector<std::string>& _spirvFiles)
 {
 	for (const auto& _shader : _spirvFiles)
 	{
@@ -504,7 +504,7 @@ void ShaderReflector::PrintReflectResult() const
 	}
 }
 
-void ShaderReflector::Uninit()
+void ShaderReflector::Destroy()
 {
 	for (auto& uptrReflectModule : m_vecReflectModule)
 	{

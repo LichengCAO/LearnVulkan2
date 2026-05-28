@@ -49,10 +49,10 @@ public:
 	~SwapchainPass();
 
 	// Init this pass
-	void Init(uint32_t _frameInFlight);
+	void Create(uint32_t _frameInFlight);
 
 	// Destroy attribute this pass holds
-	void Uninit();
+	void Destroy();
 
 	// call this after swapchain images are recreated,
 	// this pass will destroy necessary objects it holds and recreate them

@@ -11,7 +11,7 @@ void MyGUI::_StartNewFrame()
 	ImGui::NewFrame();
 }
 
-void MyGUI::Init()
+void MyGUI::Create()
 {
 	const auto& myDevice = MyDevice::GetInstance();
 
@@ -114,7 +114,7 @@ void MyGUI::Apply(VkCommandBuffer _cmd)
 	m_bFrameStarted = false;
 }
 
-void MyGUI::Uninit()
+void MyGUI::Destroy()
 {
 	MyDevice::GetInstance().WaitIdle();
 	ImGui_ImplVulkan_Shutdown();

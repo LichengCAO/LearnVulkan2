@@ -35,7 +35,7 @@ public:
 		std::function<Buffer*()> bufferCreator;
 		std::function<Image*()>  imageCreator;
 	};
-	void Init(const FrameGraphResourceManager::Initializer* inInitPtr);
+	void Create(const FrameGraphResourceManager::Initializer* inInitPtr);
 
 	// Preordain functions return a handle that can be used later to map to actual resources
 	FrameGraphImageHandle PromiseImageResource(const FrameGraphBufferResourceAllocator* inAllocatorPtr);

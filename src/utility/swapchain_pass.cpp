@@ -13,7 +13,7 @@ void SwapchainPass::_InitViews()
 	for (size_t i = 0; i < pSwapchainImages.size(); ++i)
 	{
 		std::unique_ptr<ImageView> uptrView = std::make_unique<ImageView>(pSwapchainImages[i]->NewImageView(VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1));
-		uptrView->Init();
+		uptrView->Create();
 		m_swapchainViews.push_back(std::move(uptrView));
 	}
 }
@@ -22,7 +22,7 @@ void SwapchainPass::_UninitViews()
 {
 	for (auto& uptrView : m_swapchainViews)
 	{
-		uptrView->Uninit();
+		uptrView->Destroy();
 		uptrView.reset();
 	}
 	m_swapchainViews.clear();
@@ -37,14 +37,14 @@ void SwapchainPass::_InitRenderPass()
 	subpass.AddColorAttachment(0);
 	m_renderPass->PreAddSubpass(subpass);
 
-	m_renderPass->Init();
+	m_renderPass->Create();
 }
 
 void SwapchainPass::_UninitRenderPass()
 {
 	if (m_renderPass.get() != nullptr)
 	{
-		m_renderPass->Uninit();
+		m_renderPass->Destroy();
 	}
 	m_renderPass.reset();
 }
@@ -53,14 +53,14 @@ void SwapchainPass::_InitPipeline()
 {
 	m_program = std::make_unique<GraphicsProgram>();
 	m_program->PresetRenderPass(m_renderPass.get(), 0);
-	m_program->Init({ "E:/GitStorage/LearnVulkan/bin/shaders/pass_through.vert.spv", "E:/GitStorage/LearnVulkan/bin/shaders/swapchain.frag.spv" }, m_uMaxFrameCount);
+	m_program->Create({ "E:/GitStorage/LearnVulkan/bin/shaders/pass_through.vert.spv", "E:/GitStorage/LearnVulkan/bin/shaders/swapchain.frag.spv" }, m_uMaxFrameCount);
 }
 
 void SwapchainPass::_UninitPipeline()
 {
 	if (m_program)
 	{
-		m_program->Uninit();
+		m_program->Destroy();
 		m_program.reset();
 	}
 }
@@ -74,7 +74,7 @@ void SwapchainPass::_InitFramebuffer()
 	{
 		std::unique_ptr<Framebuffer> uptrFramebuffer = std::make_unique<Framebuffer>(m_renderPass->NewFramebuffer({ m_swapchainViews[i].get() }));
 		
-		uptrFramebuffer->Init();
+		uptrFramebuffer->Create();
 
 		m_framebuffers.push_back(std::move(uptrFramebuffer));
 	}
@@ -86,7 +86,7 @@ void SwapchainPass::_UninitFramebuffer()
 	{
 		if (uptrFramebuffer.get() != nullptr)
 		{
-			uptrFramebuffer->Uninit();
+			uptrFramebuffer->Destroy();
 		}
 		uptrFramebuffer.reset();
 	}
@@ -98,7 +98,7 @@ void SwapchainPass::_InitCommandBuffer()
 	for (uint32_t i = 0; i < m_uMaxFrameCount; ++i)
 	{
 		std::unique_ptr<CommandSubmission> uptrCmd = std::make_unique<CommandSubmission>();
-		uptrCmd->Init();
+		uptrCmd->Create();
 		m_cmds.push_back(std::move(uptrCmd));
 	}
 }
@@ -107,7 +107,7 @@ void SwapchainPass::_UninitCommandBuffer()
 {
 	for (auto& uptr : m_cmds)
 	{
-		uptr->Uninit();
+		uptr->Destroy();
 	}
 	m_cmds.clear();
 }
@@ -143,7 +143,7 @@ SwapchainPass::~SwapchainPass()
 {
 }
 
-void SwapchainPass::Init(uint32_t _frameInFlight)
+void SwapchainPass::Create(uint32_t _frameInFlight)
 {
 	m_uMaxFrameCount = _frameInFlight;
 	_InitViews();
@@ -154,7 +154,7 @@ void SwapchainPass::Init(uint32_t _frameInFlight)
 	_InitSemaphores();
 }
 
-void SwapchainPass::Uninit()
+void SwapchainPass::Destroy()
 {
 	_UninitSemaphores();
 	_UninitCommandBuffer();
