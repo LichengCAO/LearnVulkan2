@@ -1,25 +1,66 @@
 #pragma once
 #include "common.h"
+#include <cstdint>
 #include <map>
+#include <variant>
 class DescriptorSet;
 class DescriptorSetLayout;
 
-class IDescriptorSetLayoutInitializer
+class DescriptorSetLayoutCreateInfo final
 {
-public:
-	virtual void InitDescriptorSetLayout(DescriptorSetLayout* pDescriptorSetLayout) const = 0;
-};
+	friend class DescriptorSetLayout;
+private:
+	std::vector<VkDescriptorSetLayoutBinding> m_layoutBindings;
+	std::vector<VkDescriptorBindingFlags> m_bindingFlags;
+	VkDescriptorPoolCreateFlags m_poolFlags = 0;
 
-class IDescriptorSetInitializer
-{
 public:
-	virtual void InitDescriptorSet(DescriptorSet* pDescriptorSet) const = 0;
+	enum class ExtraInfoType
+	{
+		UNSET,
+		ARRAY_SIZE,
+		BINDLESS,
+	};
+
+	struct ExtraInfo
+	{
+		ExtraInfoType			type = ExtraInfoType::UNSET;
+		const ExtraInfo*		extraInfo = nullptr;
+
+	public:
+		ExtraInfo() = default;
+		ExtraInfo(ExtraInfoType inType) : type(inType) {};
+	};
+
+	struct ArraySizeInfo final : public ExtraInfo
+	{
+		uint32_t size = 0;
+
+	public:
+		ArraySizeInfo() : ExtraInfo{ ExtraInfoType::ARRAY_SIZE } {};
+	};
+
+	struct BindlessInfo final : public ExtraInfo
+	{
+	public:
+		BindlessInfo() : ExtraInfo{ ExtraInfoType::BINDLESS } {};
+	};
+
+public:
+	void Reset();
+	void SetBinding(
+		uint32_t inBinding,
+		VkDescriptorType inType,
+		VkShaderStageFlags inStages,
+		const DescriptorSetLayoutCreateInfo::ExtraInfo* inExtraInfo = nullptr);
 };
 
 // Pipeline can have multiple DescriptorSetLayout, 
 // when execute the pipeline we need to provide DescriptorSets for each of the DescriptorSetLayout in order
-class DescriptorSetLayout
+class DescriptorSetLayout final
 {
+	friend class DescriptorSet;
+
 private:
 	std::unordered_map<uint32_t, size_t> m_bindingToIndex;
 	std::vector<VkDescriptorSetLayoutBinding> m_descriptorBindings;
@@ -27,40 +68,10 @@ private:
 	VkDescriptorPoolCreateFlags m_requiredPoolFlags = 0;
 
 public:
-	class Initializer : public IDescriptorSetLayoutInitializer
-	{
-	private:
-		std::vector<VkDescriptorBindingFlags> m_extraFlags;
-		std::vector<VkDescriptorSetLayoutBinding> m_layoutBindings;
-		VkDescriptorPoolCreateFlags m_poolFlags = 0;
-
-	public:
-		virtual void InitDescriptorSetLayout(DescriptorSetLayout* pDescriptorSetLayout) const override;
-
-		DescriptorSetLayout::Initializer& Reset();
-
-		DescriptorSetLayout::Initializer& AddBinding(
-			uint32_t inBinding,
-			VkDescriptorType inDescriptorType,
-			VkShaderStageFlags inStages,
-			uint32_t inDescriptorCount = 1,
-			const VkSampler* pImmutableSamplers = nullptr);
-
-		DescriptorSetLayout::Initializer& AddBindlessBinding(
-			uint32_t inBinding,
-			VkDescriptorType inDescriptorType,
-			VkShaderStageFlags inStages,
-			uint32_t inDescriptorCount = 100,
-			const VkSampler* pImmutableSamplers = nullptr);
-
-		friend class DescriptorSetLayout;
-	};
-
-public:
 	~DescriptorSetLayout();
 
 public:
-	void Create(const IDescriptorSetLayoutInitializer* inInitialzerPtr);
+	void Create(const DescriptorSetLayoutCreateInfo& inCreateInfo);
 
 	VkDescriptorSetLayout GetVkDescriptorSetLayout() const;
 
@@ -71,86 +82,94 @@ public:
 	void Destroy();
 };
 
-class DescriptorSet
+class DescriptorState final
+{
+	template<typename T>
+	friend struct std::hash;
+	friend class DescriptorSet;
+	friend bool operator==(const DescriptorState&, const DescriptorState&);
+	friend bool operator!=(const DescriptorState&, const DescriptorState&);
+	friend bool operator<(const DescriptorState&, const DescriptorState&);
+
+public:
+	using DescriptorBindingInfo = std::variant<VkDescriptorBufferInfo, VkDescriptorImageInfo, VkBufferView, VkAccelerationStructureKHR>;
+
+private:
+	std::vector<DescriptorBindingInfo> m_bindingInfo;
+	VkWriteDescriptorSet m_writeInfo{};
+
+public:
+	DescriptorState() = default;
+	~DescriptorState() = default;
+	DescriptorState(const DescriptorState&) noexcept = default;
+	DescriptorState& operator=(const DescriptorState&) noexcept = default;
+	DescriptorState(DescriptorState&& inOther) noexcept = default;
+	DescriptorState& operator=(DescriptorState&&) noexcept = default;
+
+	void Reset();
+	void SetBinding(const VkDescriptorBufferInfo& inBindingInfo, uint32_t inIndex = 0);
+	void SetBinding(const VkDescriptorImageInfo& inBindingInfo, uint32_t inIndex = 0);
+	void SetBinding(const VkBufferView& inBindingInfo, uint32_t inIndex = 0);
+	void SetBinding(const VkAccelerationStructureKHR& inBindingInfo, uint32_t inIndex = 0);
+};
+
+class DescriptorSetState final
+{
+	template<typename T>
+	friend struct std::hash;
+	friend class DescriptorSet;
+	friend bool operator==(const DescriptorState&, const DescriptorState&);
+	friend bool operator!=(const DescriptorState&, const DescriptorState&);
+	friend bool operator<(const DescriptorState&, const DescriptorState&);
+
+private:
+	std::unordered_map<uint32_t, DescriptorState> m_mapBindingToDescriptor;
+
+public:
+	DescriptorSetState() = default;
+	~DescriptorSetState() = default;
+	DescriptorSetState(const DescriptorSetState&) noexcept = default;
+	DescriptorSetState& operator=(const DescriptorSetState&) noexcept = default;
+	DescriptorSetState(DescriptorSetState&& inOther) noexcept = default;
+	DescriptorSetState& operator=(DescriptorSetState&&) noexcept = default;
+
+	void Reset();
+	void SetBinding(DescriptorState inBindingInfo, uint32_t inBinding);
+};
+
+class DescriptorSetCreateInfo final
+{
+	friend class DescriptorSet;
+private:
+	const DescriptorSetLayout* m_descriptorSetLayout{};
+
+public:
+	void Reset();
+	void SetDescriptorSeLayout(const DescriptorSetLayout* inLayout) { m_descriptorSetLayout = inLayout; };
+};
+
+class DescriptorSet final
 {
 private:
-	enum class DescriptorType { BUFFER, IMAGE, TEXEL_BUFFER, ACCELERATION_STRUCTURE };
-	struct DescriptorSetUpdate
+	struct BindingLayoutMetadata
 	{
-		uint32_t        binding = 0;
-		uint32_t        arrayElementIndex = 0;
-		DescriptorType  descriptorType = DescriptorType::BUFFER;
-		std::vector<VkDescriptorBufferInfo> bufferInfos;
-		std::vector<VkDescriptorImageInfo>  imageInfos;
-		std::vector<VkBufferView>           bufferViews;
-		std::vector<VkAccelerationStructureKHR> accelerationStructures;
+		VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_MAX_ENUM;
+		uint32_t descriptorCount = 0;
 	};
 
-public:
-	class Initializer : public IDescriptorSetInitializer
-	{
-	private:
-		VkDescriptorPoolCreateFlags m_poolFlags = 0;
-		const DescriptorSetLayout* m_pSetLayout = nullptr;
-
-	public:
-		virtual void InitDescriptorSet(DescriptorSet* pDescriptorSet) const override;
-
-		// Reset initializer
-		DescriptorSet::Initializer& Reset();
-
-		// Optional, add pool create flags only for special cases
-		DescriptorSet::Initializer& AddDescriptorPoolCreateFlags(VkDescriptorPoolCreateFlags inPoolFlags);
-
-		// Set descriptor set layout for allocation reference in descriptor pool, mandatory
-		DescriptorSet::Initializer& SetDescriptorSetLayout(const DescriptorSetLayout* inSetLayoutPtr);
-
-		friend class DescriptorSet;
-	};
-
-	class UpdateBuffer
-	{
-	private:
-		std::vector<DescriptorSetUpdate> m_updates;
-
-		void _UpdateDescriptorSet(DescriptorSet& inoutDescriptorSet) const;
-
-	public:
-		DescriptorSet::UpdateBuffer& Reset();
-
-		DescriptorSet::UpdateBuffer& WriteBinding(
-			uint32_t bindingId,
-			const std::vector<VkDescriptorImageInfo>& dImageInfo,
-			uint32_t inArrayIndexOffset = 0);
-
-		DescriptorSet::UpdateBuffer& WriteBinding(
-			uint32_t bindingId,
-			const std::vector<VkBufferView>& bufferViews,
-			uint32_t inArrayIndexOffset = 0);
-
-		DescriptorSet::UpdateBuffer& WriteBinding(
-			uint32_t bindingId,
-			const std::vector<VkDescriptorBufferInfo>& bufferInfos,
-			uint32_t inArrayIndexOffset = 0);
-
-		DescriptorSet::UpdateBuffer& WriteBinding(
-			uint32_t bindingId,
-			const std::vector<VkAccelerationStructureKHR>& _accelStructs,
-			uint32_t inArrayIndexOffset = 0);
-
-		friend class DescriptorSet;
-	};
-
-private:
-	const DescriptorSetLayout* m_pSetLayout = nullptr;
 	VkDescriptorSet m_vkDescriptorSet = VK_NULL_HANDLE;
+	std::unordered_map<uint32_t, BindingLayoutMetadata> m_bindingLayoutMetadata;
+	DescriptorSetState m_cachedState{};
 
 public:
+	DescriptorSet() = default;
 	~DescriptorSet();
 
-	void Create(const IDescriptorSetInitializer* inInitPtr);
+	void Create(const DescriptorSetCreateInfo& inCreateInfo);
 
-	DescriptorSet& UpdateDescriptors(const DescriptorSet::UpdateBuffer* inUpdaterPtr);
+	void WriteBindings(const DescriptorSetState& inBinding);
+
+	void Destroy();
 
 	VkDescriptorSet GetVkDescriptorSet() const;
 

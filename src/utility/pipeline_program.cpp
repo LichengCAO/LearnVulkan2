@@ -54,21 +54,33 @@ void DescriptorSetManager::_InitDescriptorSetLayouts()
 	{
 		const auto& bindings = m_vkDescriptorSetBindingInfo[setId];
 		std::unique_ptr<DescriptorSetLayout> uptrLayout = std::make_unique<DescriptorSetLayout>();
+		DescriptorSetLayoutCreateInfo layoutCreateInfo{};
 
 		for (const auto& binding : bindings)
 		{
-			uint32_t bindingId = binding.first;
 			const VkDescriptorSetLayoutBinding& vkBinding = binding.second;
+			CHECK_TRUE(vkBinding.pImmutableSamplers == nullptr, "Immutable samplers are not supported by DescriptorSetLayoutCreateInfo::SetBinding yet!");
 
-			uptrLayout->PreAddBinding(
-				vkBinding.binding,
-				vkBinding.descriptorCount,
-				vkBinding.descriptorType,
-				vkBinding.stageFlags,
-				vkBinding.pImmutableSamplers);
+			if (vkBinding.descriptorCount > 1)
+			{
+				DescriptorSetLayoutCreateInfo::ArraySizeInfo arraySizeInfo{};
+				arraySizeInfo.size = vkBinding.descriptorCount;
+				layoutCreateInfo.SetBinding(
+					vkBinding.binding,
+					vkBinding.descriptorType,
+					vkBinding.stageFlags,
+					&arraySizeInfo);
+			}
+			else
+			{
+				layoutCreateInfo.SetBinding(
+					vkBinding.binding,
+					vkBinding.descriptorType,
+					vkBinding.stageFlags);
+			}
 		}
 
-		uptrLayout->Create();
+		uptrLayout->Create(layoutCreateInfo);
 
 		m_vecUptrDescriptorSetLayout.push_back(std::move(uptrLayout));
 	}
