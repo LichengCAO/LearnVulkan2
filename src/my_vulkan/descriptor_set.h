@@ -55,15 +55,14 @@ public:
 		const DescriptorSetLayoutCreateInfo::ExtraInfo* inExtraInfo = nullptr);
 };
 
-// Pipeline can have multiple DescriptorSetLayout, 
-// when execute the pipeline we need to provide DescriptorSets for each of the DescriptorSetLayout in order
 class DescriptorSetLayout final
 {
+	// Pipeline can have multiple DescriptorSetLayout,
+	// when execute the pipeline we need to provide DescriptorSets for each of the DescriptorSetLayout in order
 	friend class DescriptorSet;
 
 private:
-	std::unordered_map<uint32_t, size_t> m_bindingToIndex;
-	std::vector<VkDescriptorSetLayoutBinding> m_descriptorBindings;
+	std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding> m_descriptorBindings;
 	VkDescriptorSetLayout m_vkDescriptorSetLayout = VK_NULL_HANDLE;
 	VkDescriptorPoolCreateFlags m_requiredPoolFlags = 0;
 

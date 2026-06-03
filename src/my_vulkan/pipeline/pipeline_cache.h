@@ -9,7 +9,7 @@ public:
 	virtual void InitPipelineCache(PipelineCache* outPipelineCachePtr) const = 0;
 };
 
-class PipelineCache
+class PipelineCache final
 {
 private:
 	VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;

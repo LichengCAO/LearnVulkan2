@@ -11,157 +11,110 @@ class CommandSubmission;
 class CommandBuffer;
 class DescriptorSetLayout;
 
-class IRenderPassInitializer
+class RenderTarget final
 {
 public:
-	virtual void InitRenderPass(RenderPass* pRenderPass) const = 0;
+	void CustomizeLoadOperationAndInitialLayout(VkAttachmentLoadOp inOperation, VkImageLayout inLayout);
+	void CustomizeStoreOperationAndFinalLayout(VkAttachmentStoreOp inOperation, VkImageLayout inLayout);
+	void SetAsColorAttachment(const ImageView* inView);
+	void SetAsResolvedColorAttachment(const ImageView* inMultiSampleView, const ImageView* in1SampleView);
+	void SetAsDepthStencilAttachment(const ImageView* inView);
 };
 
-class IFramebufferInitializer
+class RenderPassCreateInfo final
 {
 public:
-	virtual void InitFramebuffer(Framebuffer* pFramebuffer) const = 0;
-};
+	using AttachmentHandle = uint32_t;
+	using SubpassHandle = uint32_t;
 
-class AttachmentDescriptionBuilder
-{
-private:
-	VkFormat m_format = VK_FORMAT_MAX_ENUM;
-	std::optional<VkAttachmentLoadOp> m_loadOp;
-	std::optional<VkAttachmentStoreOp> m_storeOp;
-	std::optional<VkImageLayout> m_initialLayout;
-	std::optional<VkImageLayout> m_finalLayout;
+	class SubpassDescription final 
+	{
+		friend class RenderPassCreateInfo;
+
+	public:
+		void AddDepthStencilAttachment(
+			RenderPassCreateInfo::AttachmentHandle inHandle, 
+			VkImageLayout inFinalLayout);
+		void AddResolvedAttachment(
+			uint32_t inOutputSlot,
+			RenderPassCreateInfo::AttachmentHandle inMultiSampleAttachmentHandle,
+			VkImageLayout inMultiSampleLayout,
+			RenderPassCreateInfo::AttachmentHandle in1SampleAttachmentHandle,
+			VkImageLayout in1SampleLayout);
+		void AddColorAttachment(
+			uint32_t inOutputSlot, 
+			RenderPassCreateInfo::AttachmentHandle inColorAttachmentHandle, 
+			VkImageLayout inColorLayout);
+		void CustomizeAvailableState(
+			VkPipelineStageFlags inStage, 
+			VkAccessFlags inAccess);
+		void AddDependencyOnSubpass(
+			RenderPassCreateInfo::SubpassHandle inSrcSubpass, 
+			VkPipelineStageFlags inStage, 
+			VkAccessFlags inAccess);
+		void AllowLocalPipelineBarrier();
+	};
+
+	class AttachmentDescription final
+	{
+		friend class RenderPassCreateInfo;
+
+	public:
+		void CustomizeFormat(VkFormat inFormat, std::variant<std::pair<float, uint32_t>, glm::vec4> inClearValue);
+		void CustomizeSampleCount(VkSampleCountFlagBits inSampleCount);
+		void CustomizeLoadOperation(VkAttachmentLoadOp inLoadOp);
+		void CustomizeStoreOperation(VkAttachmentStoreOp inStoreOp);
+		void CustomizeStencilStoreLoadOperation(VkAttachmentLoadOp inLoadOp, VkAttachmentStoreOp inStoreOp);
+		void CustomizeInitialLayout(VkImageLayout inLayout);
+		void CustomizeFinalLayout(VkImageLayout inLayout);
+	};
 
 public:
-	AttachmentDescriptionBuilder& Reset();
-	AttachmentDescriptionBuilder& SetFormat(VkFormat inFormat);
-	AttachmentDescriptionBuilder& CustomizeLoadOperationAndInitialLayout(VkAttachmentLoadOp inOperation, VkImageLayout inLayout);
-	AttachmentDescriptionBuilder& CustomizeStoreOperationAndFinalLayout(VkAttachmentStoreOp inOperation, VkImageLayout inLayout);
-	VkAttachmentDescription Build() const;
+	RenderPassCreateInfo() = default;
+	RenderPassCreateInfo(const RenderPassCreateInfo&) = delete;
+	RenderPassCreateInfo(RenderPassCreateInfo&&) = delete;
+	RenderPassCreateInfo& operator=(const RenderPassCreateInfo&) = delete;
+	RenderPassCreateInfo& operator=(RenderPassCreateInfo&&) = delete;
+	~RenderPassCreateInfo() = default;
+
+	auto AddSubpass(const SubpassDescription& inSubpass)-> RenderPassCreateInfo::SubpassHandle;
+	auto AddAttachment(const AttachmentDescription& inAttachment) -> RenderPassCreateInfo::AttachmentHandle;
 };
 
 class RenderPass final
 {
-public:
-	enum class AttachmentPreset
-	{
-		SWAPCHAIN,
-		DEPTH,
-		GBUFFER_UV,
-		GBUFFER_NORMAL,
-		GBUFFER_POSITION,
-		GBUFFER_ALBEDO,
-		GBUFFER_DEPTH,
-		COLOR_OUTPUT,
-	};
-
-	struct Attachment
-	{
-		VkAttachmentDescription attachmentDescription{};
-		VkClearValue clearValue{};
-	};
-
-	class AttachmentBuilder
-	{
-	public:
-		static RenderPass::Attachment BuildByPreset(RenderPass::AttachmentPreset inPreset);
-	};
-
-	class Subpass final
-	{
-	private:
-		std::vector<VkAttachmentReference> colorAttachments;
-		std::vector<VkAttachmentReference> resolveAttachments;
-		std::optional<VkAttachmentReference> optDepthStencilAttachment;
-
-	public:
-		RenderPass::Subpass& AddColorAttachment(
-			uint32_t inLocationInShader,
-			uint32_t inAttachmentIndexInRenderPass,
-			VkImageLayout inLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-		RenderPass::Subpass& AddResolveAttachment(
-			uint32_t inColorReferenceLocation,
-			uint32_t inAttachmentIndexInRenderPass,
-			VkImageLayout inLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-		RenderPass::Subpass& AddDepthStencilAttachment(
-			uint32_t inAttachmentIndexInRenderPass,
-			VkImageLayout inLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-
-		VkSubpassDescription GetSubpassDescription() const;
-
-		friend class RenderPass;
-		friend class GraphicsPipeline;
-	};
-
-	class SingleSubpassInit : public IRenderPassInitializer
-	{
-	private:
-		Subpass m_subpass;
-		std::vector<Attachment> m_attachments;
-
-	public:
-		virtual void InitRenderPass(RenderPass* pRenderPass) const override;
-
-		RenderPass::SingleSubpassInit& Reset();
-		RenderPass::SingleSubpassInit& AddColorAttachment(const Attachment& inAttachment);
-		RenderPass::SingleSubpassInit& AddDepthStencilAttachment(const Attachment& inAttachment, bool inReadOnly = false);
-	};
-
 private:
-	std::vector<VkClearValue> m_clearValues;
-	std::vector<Subpass> m_subpasses;
 	VkRenderPass m_vkRenderPass = VK_NULL_HANDLE;
 
 public:
+	RenderPass() = default;
+	RenderPass(const RenderPass&) = delete;
+	RenderPass& operator=(const RenderPass&) = delete;
 	~RenderPass();
 
-	void Create(const IRenderPassInitializer* inIntializerPtr);
+	void Create(const RenderPassCreateInfo* inCreateInfo);
 	void Destroy();
-	VkRenderPass GetVkRenderPass() const;
-	const Subpass& GetSubpass(uint32_t index = 0) const;
-	void StartRenderPass(CommandSubmission* pCmd, const Framebuffer* pFramebuffer) const;
+	auto GetVkRenderPass()const -> VkRenderPass { m_vkRenderPass; };
+};
 
-	static VkRenderPassBeginInfo GetRenderPassBeginInfo(
-		const RenderPass* inRenderPassPtr,
-		const Framebuffer* inFramebuferrPtr);
+class FramebufferCreateInfo final
+{
+public:
+	void SetImageView(RenderPassCreateInfo::AttachmentHandle inTargetAttachment, const ImageView* inViewAttached);
+	void SetRenderPass(const RenderPass* inRenderPass);
 };
 
 class Framebuffer final
 {
 private:
-	const RenderPass* m_pRenderPass = nullptr;
 	VkFramebuffer m_vkFramebuffer = VK_NULL_HANDLE;
-	VkExtent2D m_imageSize{};
-
-public:
-	class FramebufferInit : public IFramebufferInitializer
-	{
-	private:
-		uint32_t m_width = 0;
-		uint32_t m_height = 0;
-		std::vector<VkImageView> m_views;
-		const RenderPass* m_pRenderPass = nullptr;
-
-	public:
-		virtual void InitFramebuffer(Framebuffer* pFramebuffer) const override;
-
-		Framebuffer::FramebufferInit& Reset();
-		Framebuffer::FramebufferInit& SetImageView(uint32_t inAttachmentIndex, const ImageView* inViewPtr);
-		Framebuffer::FramebufferInit& SetRenderPass(const RenderPass* inRenderPassPtr);
-	};
 
 public:
 	~Framebuffer();
 
-	void Create(const IFramebufferInitializer* inInitializerPtr);
+	void Create(const FramebufferCreateInfo* inCreateInfo);
 	void Destroy();
-	VkExtent2D GetImageSize() const;
 	VkFramebuffer GetVkFramebuffer() const;
-
-	friend class RenderPass;
-	friend class GraphicsProgram;
 };
 
 class IGraphicsPipelineInitializer
@@ -307,87 +260,4 @@ public:
 	void AddShaderModuleInfo(const ShaderModuleCreateInfo& inShaderModule);
 	void AddDepthStencilAttachment() { m_depthStencil = true; };
 	void CustomizeMultiSample(VkSampleCountFlagBits inSample) { m_sampleCount = inSample; };
-};
-
-class GraphicsPipelineLayout final
-{
-private:
-	std::vector<std::unique_ptr<DescriptorSetLayout>> m_descriptorSetLayouts;
-	std::unordered_map<std::string, VkFormat> m_mapAttachmentNameToFormat;
-	std::unordered_map<uint32_t, VkFormat> m_mapAttachmentIndexToFormat;
-	bool m_depthStencil = false;
-
-public:
-	void Create(const GraphicsProgramCreateInfo& inCreateInfo);
-
-	void Destroy();
-};
-
-class RenderTarget final
-{
-private:
-	bool m_isDepth = false;
-	const ImageView* m_view{};
-	const ImageView* m_resolveView{};
-
-public:
-	void SetColorImageView(const ImageView* inImageView);
-	void SetResolveColorImageView(const ImageView* inMultiSampleImageView, const ImageView* in1SampleImageView);
-	void SetDepthStencilImageView(const ImageView* inDepthStencilImageView);
-};
-
-class Viewport final
-{
-public:
-	void SetViewport(float inX, float inY, float inWidth, float inHeight);
-	void SetScissor(uint32_t inX, uint32_t inY, uint32_t inWidth, uint32_t inHeight);
-};
-
-class DrawState final
-{
-public:
-	void SetVertexBuffer();
-};
-
-class IndexedDrawState final
-{
-public:
-	void SetVertexBuffer();
-	void SetIndexBuffer();
-};
-
-class MeshTaskState final
-{
-public:
-	void SetDispatchSize();
-};
-
-class GraphicsPipelineState final : public PipelineState
-{
-public:
-	void CustomizeViewportAndScissor(const Viewport* inViewports, size_t inCount);
-	void SetGraphicsPipelineLayout(const GraphicsPipelineLayout* inLayout);
-	void SetDrawState();
-	void SetIndexedDrawState();
-	void SetMeshTaskState();
-};
-
-class SubpassState final
-{
-	void SetColorAttachment(std::variant<uint32_t, std::string> inAttachmentIdentifier, const RenderTarget& inTarget);
-	void SetDepthStencilAttachment(const RenderTarget& inTarget);
-};
-
-class RenderPassState final
-{
-public:
-	void AddSubpass(SubpassState, GraphicsPipelineState*, size_t);
-};
-
-class PipelineStateDispatcher final
-{
-public:
-	void DispatchRenderPassState();
-	void DispatchComputePipelineState();
-	void DispatchRayTracingPipelineState();
 };

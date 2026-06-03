@@ -6,21 +6,21 @@
 
 namespace
 {
-	bool IsEqual(const VkDescriptorBufferInfo& lhs, const VkDescriptorBufferInfo& rhs)
+	bool _IsEqual(const VkDescriptorBufferInfo& lhs, const VkDescriptorBufferInfo& rhs)
 	{
 		return lhs.buffer == rhs.buffer
 			&& lhs.offset == rhs.offset
 			&& lhs.range == rhs.range;
 	}
 
-	bool IsEqual(const VkDescriptorImageInfo& lhs, const VkDescriptorImageInfo& rhs)
+	bool _IsEqual(const VkDescriptorImageInfo& lhs, const VkDescriptorImageInfo& rhs)
 	{
 		return lhs.sampler == rhs.sampler
 			&& lhs.imageView == rhs.imageView
 			&& lhs.imageLayout == rhs.imageLayout;
 	}
 
-	bool IsEqual(const DescriptorState::DescriptorBindingInfo& lhs, const DescriptorState::DescriptorBindingInfo& rhs)
+	bool _IsEqual(const DescriptorState::DescriptorBindingInfo& lhs, const DescriptorState::DescriptorBindingInfo& rhs)
 	{
 		if (lhs.index() != rhs.index())
 		{
@@ -29,11 +29,11 @@ namespace
 
 		if (const auto* pLhs = std::get_if<VkDescriptorBufferInfo>(&lhs))
 		{
-			return IsEqual(*pLhs, std::get<VkDescriptorBufferInfo>(rhs));
+			return _IsEqual(*pLhs, std::get<VkDescriptorBufferInfo>(rhs));
 		}
 		if (const auto* pLhs = std::get_if<VkDescriptorImageInfo>(&lhs))
 		{
-			return IsEqual(*pLhs, std::get<VkDescriptorImageInfo>(rhs));
+			return _IsEqual(*pLhs, std::get<VkDescriptorImageInfo>(rhs));
 		}
 		if (const auto* pLhs = std::get_if<VkBufferView>(&lhs))
 		{
@@ -47,7 +47,7 @@ namespace
 		return false;
 	}
 
-	bool IsImageDescriptorType(VkDescriptorType inType)
+	bool _IsImageDescriptorType(VkDescriptorType inType)
 	{
 		switch (inType)
 		{
@@ -62,7 +62,7 @@ namespace
 		}
 	}
 
-	bool IsBufferDescriptorType(VkDescriptorType inType)
+	bool _IsBufferDescriptorType(VkDescriptorType inType)
 	{
 		switch (inType)
 		{
@@ -76,7 +76,7 @@ namespace
 		}
 	}
 
-	bool IsTexelBufferDescriptorType(VkDescriptorType inType)
+	bool _IsTexelBufferDescriptorType(VkDescriptorType inType)
 	{
 		switch (inType)
 		{
@@ -88,26 +88,26 @@ namespace
 		}
 	}
 
-	DescriptorState MakeNullDescriptorState(const VkDescriptorSetLayoutBinding& inLayoutBinding)
+	DescriptorState _MakeNullDescriptorState(const VkDescriptorSetLayoutBinding& inLayoutBinding)
 	{
 		DescriptorState state{};
 		const uint32_t descriptorCount = inLayoutBinding.descriptorCount;
 
-		if (IsBufferDescriptorType(inLayoutBinding.descriptorType))
+		if (_IsBufferDescriptorType(inLayoutBinding.descriptorType))
 		{
 			for (uint32_t i = 0; i < descriptorCount; ++i)
 			{
 				state.SetBinding(VkDescriptorBufferInfo{}, i);
 			}
 		}
-		else if (IsImageDescriptorType(inLayoutBinding.descriptorType))
+		else if (_IsImageDescriptorType(inLayoutBinding.descriptorType))
 		{
 			for (uint32_t i = 0; i < descriptorCount; ++i)
 			{
 				state.SetBinding(VkDescriptorImageInfo{}, i);
 			}
 		}
-		else if (IsTexelBufferDescriptorType(inLayoutBinding.descriptorType))
+		else if (_IsTexelBufferDescriptorType(inLayoutBinding.descriptorType))
 		{
 			for (uint32_t i = 0; i < descriptorCount; ++i)
 			{
@@ -153,13 +153,13 @@ void DescriptorSet::Create(const DescriptorSetCreateInfo& inCreateInfo)
 		"Failed to allocate descriptor set!");
 	m_bindingLayoutMetadata.clear();
 	m_cachedState.Reset();
-	for (const VkDescriptorSetLayoutBinding& layoutBinding : descriptorSetLayout.m_descriptorBindings)
+	for (const auto& [bindingId, layoutBinding] : descriptorSetLayout.m_descriptorBindings)
 	{
 		BindingLayoutMetadata metadata{};
 		metadata.descriptorType = layoutBinding.descriptorType;
 		metadata.descriptorCount = layoutBinding.descriptorCount;
-		m_bindingLayoutMetadata[layoutBinding.binding] = metadata;
-		m_cachedState.SetBinding(MakeNullDescriptorState(layoutBinding), layoutBinding.binding);
+		m_bindingLayoutMetadata[bindingId] = metadata;
+		m_cachedState.SetBinding(_MakeNullDescriptorState(layoutBinding), bindingId);
 	}
 }
 
@@ -254,15 +254,11 @@ void DescriptorSetLayout::Create(const DescriptorSetLayoutCreateInfo& inCreateIn
 	createInfo.pBindings = inCreateInfo.m_layoutBindings.data();
 
 	m_descriptorBindings.clear();
-	m_bindingToIndex.clear();
 	m_descriptorBindings.reserve(inCreateInfo.m_layoutBindings.size());
 	m_requiredPoolFlags = inCreateInfo.m_poolFlags;
-	for (size_t i = 0; i < inCreateInfo.m_layoutBindings.size(); ++i)
+	for (const VkDescriptorSetLayoutBinding& currentBinding : inCreateInfo.m_layoutBindings)
 	{
-		const auto& currentBinding = inCreateInfo.m_layoutBindings[i];
-
-		m_descriptorBindings.push_back(currentBinding);
-		m_bindingToIndex[currentBinding.binding] = i;
+		m_descriptorBindings[currentBinding.binding] = currentBinding;
 	}
 
 	const bool hasBindingFlags = std::any_of(
@@ -297,9 +293,7 @@ VkDescriptorPoolCreateFlags DescriptorSetLayout::GetRequiredPoolCreateFlags() co
 
 const VkDescriptorSetLayoutBinding& DescriptorSetLayout::GetDescriptorSetLayoutBinding(uint32_t inBinding) const
 {
-	size_t index = m_bindingToIndex.at(inBinding);
-
-	return m_descriptorBindings[index];
+	return m_descriptorBindings.at(inBinding);
 }
 
 void DescriptorSetLayout::Destroy()
@@ -310,7 +304,6 @@ void DescriptorSetLayout::Destroy()
 		m_vkDescriptorSetLayout = VK_NULL_HANDLE;
 	}
 	m_descriptorBindings.clear();
-	m_bindingToIndex.clear();
 }
 
 void DescriptorState::Reset()
@@ -365,7 +358,7 @@ bool operator==(const DescriptorState& lhs, const DescriptorState& rhs)
 
 	for (size_t i = 0; i < lhs.m_bindingInfo.size(); ++i)
 	{
-		if (!IsEqual(lhs.m_bindingInfo[i], rhs.m_bindingInfo[i]))
+		if (!_IsEqual(lhs.m_bindingInfo[i], rhs.m_bindingInfo[i]))
 		{
 			return false;
 		}
@@ -432,7 +425,7 @@ void DescriptorSet::WriteBindings(const DescriptorSetState& inBinding)
 		for (size_t i = 0; i < descriptorState.m_bindingInfo.size(); ++i)
 		{
 			const size_t cachedIndex = descriptorState.m_writeInfo.dstArrayElement + i;
-			if (!IsEqual(cachedIt->second.m_bindingInfo[cachedIndex], descriptorState.m_bindingInfo[i]))
+			if (!_IsEqual(cachedIt->second.m_bindingInfo[cachedIndex], descriptorState.m_bindingInfo[i]))
 			{
 				isStateChanged = true;
 				break;
@@ -450,7 +443,7 @@ void DescriptorSet::WriteBindings(const DescriptorSetState& inBinding)
 		write.descriptorType = layoutMetadata.descriptorType;
 		write.descriptorCount = static_cast<uint32_t>(descriptorState.m_bindingInfo.size());
 
-		if (IsBufferDescriptorType(layoutMetadata.descriptorType))
+		if (_IsBufferDescriptorType(layoutMetadata.descriptorType))
 		{
 			auto& currentStorage = bufferInfoStorage.emplace_back();
 			currentStorage.reserve(descriptorState.m_bindingInfo.size());
@@ -462,7 +455,7 @@ void DescriptorSet::WriteBindings(const DescriptorSetState& inBinding)
 			}
 			write.pBufferInfo = currentStorage.data();
 		}
-		else if (IsImageDescriptorType(layoutMetadata.descriptorType))
+		else if (_IsImageDescriptorType(layoutMetadata.descriptorType))
 		{
 			auto& currentStorage = imageInfoStorage.emplace_back();
 			currentStorage.reserve(descriptorState.m_bindingInfo.size());
@@ -474,7 +467,7 @@ void DescriptorSet::WriteBindings(const DescriptorSetState& inBinding)
 			}
 			write.pImageInfo = currentStorage.data();
 		}
-		else if (IsTexelBufferDescriptorType(layoutMetadata.descriptorType))
+		else if (_IsTexelBufferDescriptorType(layoutMetadata.descriptorType))
 		{
 			auto& currentStorage = bufferViewStorage.emplace_back();
 			currentStorage.reserve(descriptorState.m_bindingInfo.size());
