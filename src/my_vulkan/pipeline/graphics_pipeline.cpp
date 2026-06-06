@@ -452,11 +452,7 @@ void GraphicsPipeline::Destroy()
 		device.DestroyPipeline(m_vkPipeline);
 		m_vkPipeline = VK_NULL_HANDLE;
 	}
-	if (m_vkPipelineLayout != VK_NULL_HANDLE)
-	{
-		device.DestroyPipelineLayout(m_vkPipelineLayout);
-		m_vkPipelineLayout = VK_NULL_HANDLE;
-	}
+	m_vkPipelineLayout = VK_NULL_HANDLE;
 	m_uptrPushConstant.reset();
 }
 
@@ -581,6 +577,7 @@ GraphicsPipeline::BaseInit::BaseInit()
 void GraphicsPipeline::BaseInit::InitGraphicsPipeline(GraphicsPipeline* pPipeline) const
 {
 	auto& device = MyDevice::GetInstance();
+	CHECK_TRUE(m_pipelineLayout != VK_NULL_HANDLE, "Graphics pipeline needs a pipeline layout!");
 
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
 	vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(m_vertBindingDescriptions.size());
@@ -606,20 +603,12 @@ void GraphicsPipeline::BaseInit::InitGraphicsPipeline(GraphicsPipeline* pPipelin
 	colorBlendStateInfo.attachmentCount = static_cast<uint32_t>(m_colorBlendAttachmentStates.size());
 	colorBlendStateInfo.pAttachments = m_colorBlendAttachmentStates.data();
 
-	VkPipelineLayoutCreateInfo pipelineLayoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-	std::vector<VkPushConstantRange> pushConstantRanges{};
 	pPipeline->m_uptrPushConstant = std::make_unique<PushConstantManager>();
 	for (const auto& pushConstInfo : m_pushConstantInfos)
 	{
 		pPipeline->m_uptrPushConstant->AddConstantRange(pushConstInfo.stageFlags, pushConstInfo.offset, pushConstInfo.size);
 	}
-	pPipeline->m_uptrPushConstant->GetVkPushConstantRanges(pushConstantRanges);
-	pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(m_descriptorSetLayouts.size());
-	pipelineLayoutInfo.pSetLayouts = m_descriptorSetLayouts.data();
-	pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(pushConstantRanges.size());
-	pipelineLayoutInfo.pPushConstantRanges = pushConstantRanges.data();
-
-	pPipeline->m_vkPipelineLayout = device.CreatePipelineLayout(pipelineLayoutInfo);
+	pPipeline->m_vkPipelineLayout = m_pipelineLayout;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
 	pipelineInfo.stageCount = static_cast<uint32_t>(m_shaderStageInfos.size());
@@ -666,9 +655,11 @@ GraphicsPipeline::BaseInit& GraphicsPipeline::BaseInit::AddVertexInputDescriptio
 	return *this;
 }
 
-GraphicsPipeline::BaseInit& GraphicsPipeline::BaseInit::AddDescriptorSetLayout(VkDescriptorSetLayout inDescriptorSetLayout)
+GraphicsPipeline::BaseInit& GraphicsPipeline::BaseInit::SetPipelineLayout(VkPipelineLayout inPipelineLayout)
 {
-	m_descriptorSetLayouts.push_back(inDescriptorSetLayout);
+	CHECK_TRUE(inPipelineLayout != VK_NULL_HANDLE, "Invalid graphics pipeline layout!");
+
+	m_pipelineLayout = inPipelineLayout;
 
 	return *this;
 }

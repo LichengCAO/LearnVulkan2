@@ -119,10 +119,10 @@ public:
 	private:
 		std::vector<VkPipelineShaderStageCreateInfo> m_shaderStageInfos;
 		std::vector<VkRayTracingShaderGroupCreateInfoKHR> m_shaderRecords;
-		std::vector<VkDescriptorSetLayout> m_descriptorSetLayouts;
 		std::vector<VkPushConstantRange> m_pushConstants;
 		uint32_t m_maxRayRecursionDepth = 1u;
 		VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;
+		VkPipelineLayout m_vkPipelineLayout = VK_NULL_HANDLE;
 
 	public:
 		virtual void InitRayTracingPipeline(RayTracingPipeline* pPipeline) const override;
@@ -133,7 +133,7 @@ public:
 		// Optional, default: VK_NULL_HANDLE
 		RayTracingPipeline::Builder& CustomizePipelineCache(VkPipelineCache inCache);
 
-		RayTracingPipeline::Builder& AddDescriptorSetLayout(VkDescriptorSetLayout vkDSetLayout);
+		RayTracingPipeline::Builder& SetPipelineLayout(VkPipelineLayout inPipelineLayout);
 
 		RayTracingPipeline::Builder& AddPushConstant(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size);
 

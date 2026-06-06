@@ -179,7 +179,6 @@ public:
 		std::vector<VkVertexInputAttributeDescription> m_vertAttributeDescriptions;
 		std::vector<VkDynamicState> m_dynamicStates;
 		std::vector<VkPipelineColorBlendAttachmentState> m_colorBlendAttachmentStates;
-		std::vector<VkDescriptorSetLayout> m_descriptorSetLayouts;
 		std::vector<VkPushConstantRange> m_pushConstantInfos;
 		VkPipelineInputAssemblyStateCreateInfo m_inputAssemblyStateInfo{};
 		VkPipelineRasterizationStateCreateInfo m_rasterizerStateInfo{};
@@ -187,6 +186,7 @@ public:
 		VkPipelineViewportStateCreateInfo m_viewportStateInfo{};
 		VkPipelineDepthStencilStateCreateInfo m_depthStencilInfo{};
 		VkPipelineCache m_cache = VK_NULL_HANDLE;
+		VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
 		VkRenderPass m_renderPass = VK_NULL_HANDLE;
 		uint32_t m_subpassIndex = 0;
 
@@ -207,7 +207,7 @@ public:
 			const VkVertexInputBindingDescription& inBindingDescription,
 			const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions);
 
-		GraphicsPipeline::BaseInit& AddDescriptorSetLayout(VkDescriptorSetLayout inDescriptorSetLayout);
+		GraphicsPipeline::BaseInit& SetPipelineLayout(VkPipelineLayout inPipelineLayout);
 
 		GraphicsPipeline::BaseInit& CustomizeColorAttachmentAsAdd(uint32_t inAttachmentIndex);
 

@@ -9,6 +9,7 @@ class MemoryAllocator;
 class DescriptorSetAllocator;
 class FramebufferAllocator;
 class RenderPassAllocator;
+class PipelineLayoutAllocator;
 
 struct UserInput
 {
@@ -70,6 +71,7 @@ private:
 	std::unique_ptr<DescriptorSetAllocator> descriptorAllocator;
 	std::unique_ptr<FramebufferAllocator> m_uptrFramebufferAllocator;
 	std::unique_ptr<RenderPassAllocator> m_uptrRenderPassAllocator;
+	std::unique_ptr<PipelineLayoutAllocator> m_uptrPipelineLayoutAllocator;
 	std::unique_ptr<SamplerPool>  samplerPool;
 	std::unordered_map<VkCommandPool, uint32_t> m_mapPoolToQueueFamily;
 
@@ -97,6 +99,8 @@ private:
 	void _ResetFramebufferAllocator();
 	void _CreateRenderPassAllocator();
 	void _DestroyRenderPassAllocator();
+	void _CreatePipelineLayoutAllocator();
+	void _DestroyPipelineLayoutAllocator();
 	void _CreateSwapchain();
 	void _DestroySwapchain();
 	void _CreateMemoryAllocator();

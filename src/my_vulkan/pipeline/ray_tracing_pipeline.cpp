@@ -95,11 +95,8 @@ void RayTracingPipeline::Destroy()
 		device.DestroyPipeline(m_vkPipeline);
 		m_vkPipeline = VK_NULL_HANDLE;
 	}
-	if (m_vkPipelineLayout != VK_NULL_HANDLE)
-	{
-		device.DestroyPipelineLayout(m_vkPipelineLayout);
-		m_vkPipelineLayout = VK_NULL_HANDLE;
-	}
+	m_vkPipelineLayout = VK_NULL_HANDLE;
+	m_uptrPushConstant.reset();
 }
 
 uint32_t RayTracingPipeline::GetShaderGroupCount() const
@@ -395,10 +392,9 @@ void ShaderBindingTable::Descriptor::InitShaderBindingTable(ShaderBindingTable* 
 void RayTracingPipeline::Builder::InitRayTracingPipeline(RayTracingPipeline* pPipeline) const
 {
 	auto& device = MyDevice::GetInstance();
-	VkPipelineLayoutCreateInfo pipelineLayoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	VkRayTracingPipelineCreateInfoKHR pipelineInfo{ VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR };
 	VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingProperties{};
-	std::vector<VkPushConstantRange> pushConstantRanges{};
+	CHECK_TRUE(m_vkPipelineLayout != VK_NULL_HANDLE, "Ray tracing pipeline needs a pipeline layout!");
 
 	std::unique_ptr<PushConstantManager>& uptrToInit = pPipeline->m_uptrPushConstant;
 	VkPipeline& pipelineToInit = pPipeline->m_vkPipeline;
@@ -411,14 +407,7 @@ void RayTracingPipeline::Builder::InitRayTracingPipeline(RayTracingPipeline* pPi
 	{
 		uptrToInit->AddConstantRange(pushConstant.stageFlags, pushConstant.offset, pushConstant.size);
 	}
-	uptrToInit->GetVkPushConstantRanges(pushConstantRanges);
-
-	pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(m_descriptorSetLayouts.size());
-	pipelineLayoutInfo.pSetLayouts = m_descriptorSetLayouts.data();
-	pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(pushConstantRanges.size());
-	pipelineLayoutInfo.pPushConstantRanges = pushConstantRanges.data();
-
-	layoutToInit = device.CreatePipelineLayout(pipelineLayoutInfo);
+	layoutToInit = m_vkPipelineLayout;
 
 	pipelineInfo.pNext = nullptr;
 	pipelineInfo.flags = 0;
@@ -534,9 +523,11 @@ RayTracingPipeline::Builder& RayTracingPipeline::Builder::CustomizePipelineCache
 	return *this;
 }
 
-RayTracingPipeline::Builder& RayTracingPipeline::Builder::AddDescriptorSetLayout(VkDescriptorSetLayout vkDSetLayout)
+RayTracingPipeline::Builder& RayTracingPipeline::Builder::SetPipelineLayout(VkPipelineLayout inPipelineLayout)
 {
-	m_descriptorSetLayouts.push_back(vkDSetLayout);
+	CHECK_TRUE(inPipelineLayout != VK_NULL_HANDLE, "Invalid ray tracing pipeline layout!");
+
+	m_vkPipelineLayout = inPipelineLayout;
 
 	return *this;
 }

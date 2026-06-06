@@ -9,6 +9,7 @@
 #include "descriptor_set.h"
 #include "framebuffer_allocator.h"
 #include "render_pass_allocator.h"
+#include "pipeline_layout_allocator.h"
 #include <iomanip>
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
@@ -641,6 +642,21 @@ void MyDevice::_DestroyRenderPassAllocator()
 	}
 }
 
+void MyDevice::_CreatePipelineLayoutAllocator()
+{
+	m_uptrPipelineLayoutAllocator = std::make_unique<PipelineLayoutAllocator>();
+	m_uptrPipelineLayoutAllocator->Create(vkDevice);
+}
+
+void MyDevice::_DestroyPipelineLayoutAllocator()
+{
+	if (m_uptrPipelineLayoutAllocator != nullptr)
+	{
+		m_uptrPipelineLayoutAllocator->Destroy();
+		m_uptrPipelineLayoutAllocator.reset();
+	}
+}
+
 void MyDevice::Create()
 {
 	_InitVolk();
@@ -651,6 +667,7 @@ void MyDevice::Create()
 	_CreateLogicalDevice();
 	_CreateMemoryAllocator();
 	_CreateRenderPassAllocator();
+	_CreatePipelineLayoutAllocator();
 	_CreateFramebufferAllocator();
 	_CreateSwapchain();
 	_CreateDescriptorSetAllocator();
@@ -662,6 +679,7 @@ void MyDevice::Destroy()
 	_DestroyDescriptorSetAllocator();
 	_DestroySwapchain();
 	_DestroyFramebufferAllocator();
+	_DestroyPipelineLayoutAllocator();
 	_DestroyRenderPassAllocator();
 	_DestroyMemoryAllocator();
 	vkb::destroy_device(m_device);
@@ -1065,14 +1083,38 @@ VkPipelineLayout MyDevice::CreatePipelineLayout(
 {
 	VkPipelineLayout result = VK_NULL_HANDLE;
 
-	outProcessResult = vkCreatePipelineLayout(vkDevice, &inCreateInfo, pAllocator, &result);
+	if (pAllocator == nullptr)
+	{
+		CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr, "Pipeline layout allocator is not created!");
+		CHECK_TRUE(
+			m_uptrPipelineLayoutAllocator->AllocatePipelineLayout(&inCreateInfo, result),
+			"Failed to allocate pipeline layout!");
+		outProcessResult = VK_SUCCESS;
+	}
+	else
+	{
+		outProcessResult = vkCreatePipelineLayout(vkDevice, &inCreateInfo, pAllocator, &result);
+	}
 
 	return result;
 }
 
 void MyDevice::DestroyPipelineLayout(VkPipelineLayout inLayout, const VkAllocationCallbacks* pAllocator)
 {
-	vkDestroyPipelineLayout(vkDevice, inLayout, pAllocator);
+	if (inLayout == VK_NULL_HANDLE)
+	{
+		return;
+	}
+
+	if (pAllocator == nullptr)
+	{
+		CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr, "Pipeline layout allocator is not created!");
+		m_uptrPipelineLayoutAllocator->FreePipelineLayout(inLayout);
+	}
+	else
+	{
+		vkDestroyPipelineLayout(vkDevice, inLayout, pAllocator);
+	}
 }
 
 VkResult MyDevice::GetRayTracingShaderGroupHandles(VkPipeline inPipeline, uint32_t inFirstGroup, uint32_t inGroupCount, size_t inDataSize, void* outDataPtr)

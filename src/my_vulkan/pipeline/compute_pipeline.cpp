@@ -25,11 +25,8 @@ void ComputePipeline::Destroy()
 		device.DestroyPipeline(m_vkPipeline);
 		m_vkPipeline = VK_NULL_HANDLE;
 	}
-	if (m_vkPipelineLayout != VK_NULL_HANDLE)
-	{
-		device.DestroyPipelineLayout(m_vkPipelineLayout);
-		m_vkPipelineLayout = VK_NULL_HANDLE;
-	}
+	m_vkPipelineLayout = VK_NULL_HANDLE;
+	m_uptrPushConstant.reset();
 }
 
 void ComputePipeline::Do(VkCommandBuffer commandBuffer, const PipelineInput& input)
@@ -56,22 +53,15 @@ void ComputePipeline::Do(VkCommandBuffer commandBuffer, const PipelineInput& inp
 void ComputePipeline::Intializer::InitComputePipeline(ComputePipeline* pPipeline) const
 {
 	auto& device = MyDevice::GetInstance();
-	VkPipelineLayoutCreateInfo pipelineLayoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	VkComputePipelineCreateInfo pipelineInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
-	std::vector<VkPushConstantRange> pushConstantRanges{};
+	CHECK_TRUE(m_vkPipelineLayout != VK_NULL_HANDLE, "Compute pipeline needs a pipeline layout!");
 
 	pPipeline->m_uptrPushConstant = std::make_unique<PushConstantManager>();
 	for (const auto& pushConstant : m_pushConstants)
 	{
 		pPipeline->m_uptrPushConstant->AddConstantRange(pushConstant.stageFlags, pushConstant.offset, pushConstant.size);
 	}
-	pPipeline->m_uptrPushConstant->GetVkPushConstantRanges(pushConstantRanges);
-
-	pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(m_descriptorSetLayouts.size());
-	pipelineLayoutInfo.pSetLayouts = m_descriptorSetLayouts.data();
-	pipelineLayoutInfo.pPushConstantRanges = pushConstantRanges.data();
-	pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(pushConstantRanges.size());
-	pPipeline->m_vkPipelineLayout = device.CreatePipelineLayout(pipelineLayoutInfo);
+	pPipeline->m_vkPipelineLayout = m_vkPipelineLayout;
 
 	pipelineInfo.stage = m_shaderStageInfo;
 	pipelineInfo.layout = pPipeline->m_vkPipelineLayout;
@@ -85,9 +75,11 @@ ComputePipeline::Intializer& ComputePipeline::Intializer::SetShader(const VkPipe
 	return *this;
 }
 
-ComputePipeline::Intializer& ComputePipeline::Intializer::AddDescriptorSetLayout(VkDescriptorSetLayout inLayout)
+ComputePipeline::Intializer& ComputePipeline::Intializer::SetPipelineLayout(VkPipelineLayout inPipelineLayout)
 {
-	m_descriptorSetLayouts.push_back(inLayout);
+	CHECK_TRUE(inPipelineLayout != VK_NULL_HANDLE, "Invalid compute pipeline layout!");
+
+	m_vkPipelineLayout = inPipelineLayout;
 
 	return *this;
 }

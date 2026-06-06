@@ -27,8 +27,8 @@ public:
 	{
 	private:
 		VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;
+		VkPipelineLayout m_vkPipelineLayout = VK_NULL_HANDLE;
 		VkPipelineShaderStageCreateInfo m_shaderStageInfo{};
-		std::vector<VkDescriptorSetLayout> m_descriptorSetLayouts;
 		std::vector<VkPushConstantRange> m_pushConstants;
 
 	public:
@@ -36,7 +36,7 @@ public:
 
 		ComputePipeline::Intializer& SetShader(const VkPipelineShaderStageCreateInfo& shaderInfo);
 		
-		ComputePipeline::Intializer& AddDescriptorSetLayout(VkDescriptorSetLayout _vkLayout);
+		ComputePipeline::Intializer& SetPipelineLayout(VkPipelineLayout inPipelineLayout);
 		
 		ComputePipeline::Intializer& AddPushConstant(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size);
 		
