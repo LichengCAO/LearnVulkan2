@@ -7,6 +7,8 @@
 
 class MemoryAllocator;
 class DescriptorSetAllocator;
+class FramebufferAllocator;
+class RenderPassAllocator;
 
 struct UserInput
 {
@@ -66,6 +68,8 @@ private:
 	std::vector<std::unique_ptr<Image>> m_uptrSwapchainImages;
 	std::unique_ptr<MemoryAllocator> m_uptrMemoryAllocator;
 	std::unique_ptr<DescriptorSetAllocator> descriptorAllocator;
+	std::unique_ptr<FramebufferAllocator> m_uptrFramebufferAllocator;
+	std::unique_ptr<RenderPassAllocator> m_uptrRenderPassAllocator;
 	std::unique_ptr<SamplerPool>  samplerPool;
 	std::unordered_map<VkCommandPool, uint32_t> m_mapPoolToQueueFamily;
 
@@ -88,6 +92,11 @@ private:
 	void _CreateLogicalDevice();
 	void _CreateDescriptorSetAllocator();
 	void _DestroyDescriptorSetAllocator();
+	void _CreateFramebufferAllocator();
+	void _DestroyFramebufferAllocator();
+	void _ResetFramebufferAllocator();
+	void _CreateRenderPassAllocator();
+	void _DestroyRenderPassAllocator();
 	void _CreateSwapchain();
 	void _DestroySwapchain();
 	void _CreateMemoryAllocator();

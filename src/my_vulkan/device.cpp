@@ -7,6 +7,8 @@
 #include "image.h"
 #include "memory_allocator.h"
 #include "descriptor_set.h"
+#include "framebuffer_allocator.h"
+#include "render_pass_allocator.h"
 #include <iomanip>
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
@@ -600,6 +602,45 @@ void MyDevice::_DestroyDescriptorSetAllocator()
 	descriptorAllocator.reset();
 }
 
+void MyDevice::_CreateFramebufferAllocator()
+{
+	m_uptrFramebufferAllocator = std::make_unique<FramebufferAllocator>();
+	m_uptrFramebufferAllocator->Create(vkDevice);
+}
+
+void MyDevice::_DestroyFramebufferAllocator()
+{
+	if (m_uptrFramebufferAllocator != nullptr)
+	{
+		m_uptrFramebufferAllocator->Destroy();
+		m_uptrFramebufferAllocator.reset();
+	}
+}
+
+void MyDevice::_ResetFramebufferAllocator()
+{
+	if (m_uptrFramebufferAllocator != nullptr)
+	{
+		m_uptrFramebufferAllocator->Destroy();
+		m_uptrFramebufferAllocator->Create(vkDevice);
+	}
+}
+
+void MyDevice::_CreateRenderPassAllocator()
+{
+	m_uptrRenderPassAllocator = std::make_unique<RenderPassAllocator>();
+	m_uptrRenderPassAllocator->Create(vkDevice);
+}
+
+void MyDevice::_DestroyRenderPassAllocator()
+{
+	if (m_uptrRenderPassAllocator != nullptr)
+	{
+		m_uptrRenderPassAllocator->Destroy();
+		m_uptrRenderPassAllocator.reset();
+	}
+}
+
 void MyDevice::Create()
 {
 	_InitVolk();
@@ -609,6 +650,8 @@ void MyDevice::Create()
 	_SelectPhysicalDevice();
 	_CreateLogicalDevice();
 	_CreateMemoryAllocator();
+	_CreateRenderPassAllocator();
+	_CreateFramebufferAllocator();
 	_CreateSwapchain();
 	_CreateDescriptorSetAllocator();
 	m_initialized = true;
@@ -618,6 +661,8 @@ void MyDevice::Destroy()
 {
 	_DestroyDescriptorSetAllocator();
 	_DestroySwapchain();
+	_DestroyFramebufferAllocator();
+	_DestroyRenderPassAllocator();
 	_DestroyMemoryAllocator();
 	vkb::destroy_device(m_device);
 	vkb::destroy_surface(m_instance, vkSurface);
@@ -1131,6 +1176,7 @@ VkImageView MyDevice::CreateImageView(const VkImageViewCreateInfo& inCreateInfo,
 
 void MyDevice::DestroyImageView(VkImageView inView, const VkAllocationCallbacks* pAllocator)
 {
+	_ResetFramebufferAllocator();
 	vkDestroyImageView(vkDevice, inView, pAllocator);
 }
 
@@ -1138,28 +1184,70 @@ VkRenderPass MyDevice::CreateRenderPass(const VkRenderPassCreateInfo& inCreateIn
 {
 	VkRenderPass result = VK_NULL_HANDLE;
 
-	VK_CHECK(vkCreateRenderPass(vkDevice, &inCreateInfo, pAllocator, &result));
+	if (pAllocator == nullptr)
+	{
+		CHECK_TRUE(m_uptrRenderPassAllocator != nullptr, "Render pass allocator is not created!");
+		CHECK_TRUE(m_uptrRenderPassAllocator->AllocateRenderPass(&inCreateInfo, result), "Failed to allocate render pass!");
+	}
+	else
+	{
+		VK_CHECK(vkCreateRenderPass(vkDevice, &inCreateInfo, pAllocator, &result));
+	}
 
 	return result;
 }
 
-void MyDevice::DestroyRenderPass(VkRenderPass inRenderPass, const VkAllocationCallbacks* pAllocator = nullptr)
+void MyDevice::DestroyRenderPass(VkRenderPass inRenderPass, const VkAllocationCallbacks* pAllocator)
 {
-	vkDestroyRenderPass(vkDevice, inRenderPass, pAllocator);
+	if (inRenderPass == VK_NULL_HANDLE)
+	{
+		return;
+	}
+
+	if (pAllocator == nullptr)
+	{
+		CHECK_TRUE(m_uptrRenderPassAllocator != nullptr, "Render pass allocator is not created!");
+		m_uptrRenderPassAllocator->FreeRenderPass(inRenderPass);
+	}
+	else
+	{
+		vkDestroyRenderPass(vkDevice, inRenderPass, pAllocator);
+	}
 }
 
 VkFramebuffer MyDevice::CreateFramebuffer(const VkFramebufferCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator)
 {
 	VkFramebuffer result = VK_NULL_HANDLE;
 
-	VK_CHECK(vkCreateFramebuffer(vkDevice, &inCreateInfo, pAllocator, &result));
+	if (pAllocator == nullptr)
+	{
+		CHECK_TRUE(m_uptrFramebufferAllocator != nullptr, "Framebuffer allocator is not created!");
+		CHECK_TRUE(m_uptrFramebufferAllocator->AllocateFramebuffer(&inCreateInfo, result), "Failed to allocate framebuffer!");
+	}
+	else
+	{
+		VK_CHECK(vkCreateFramebuffer(vkDevice, &inCreateInfo, pAllocator, &result));
+	}
 
     return result;
 }
 
 void MyDevice::DestroyFramebuffer(VkFramebuffer inFramebuffer, const VkAllocationCallbacks* pAllocator)
 {
-	vkDestroyFramebuffer(vkDevice, inFramebuffer, pAllocator);
+	if (inFramebuffer == VK_NULL_HANDLE)
+	{
+		return;
+	}
+
+	if (pAllocator == nullptr)
+	{
+		CHECK_TRUE(m_uptrFramebufferAllocator != nullptr, "Framebuffer allocator is not created!");
+		m_uptrFramebufferAllocator->FreeFramebuffer(inFramebuffer);
+	}
+	else
+	{
+		vkDestroyFramebuffer(vkDevice, inFramebuffer, pAllocator);
+	}
 }
 
 void MyDevice::GetAccelerationStructureBuildSizes(VkAccelerationStructureBuildTypeKHR inBuildType, const VkAccelerationStructureBuildGeometryInfoKHR& inBuildInfo, const std::vector<uint32_t>& inMaxPrimitiveCounts, VkAccelerationStructureBuildSizesInfoKHR& outSizeInfo)
