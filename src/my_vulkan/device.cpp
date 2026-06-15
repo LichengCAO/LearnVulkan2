@@ -913,7 +913,7 @@ VkDescriptorPool MyDevice::CreateDescriptorPool(
 	VkDescriptorPool result;
 	VkResult processResult;
 
-	CreateDescriptorPool(inCreateInfo, processResult, inCallbacks);
+	result = CreateDescriptorPool(inCreateInfo, processResult, inCallbacks);
 	VK_CHECK(processResult);
 
 	return result;

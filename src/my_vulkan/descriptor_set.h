@@ -5,6 +5,7 @@
 #include <variant>
 class DescriptorSet;
 class DescriptorSetLayout;
+class DynamicDescriptorSetAllocator;
 
 class DescriptorSetLayoutCreateInfo final
 {
@@ -60,6 +61,7 @@ class DescriptorSetLayout final
 	// Pipeline can have multiple DescriptorSetLayout,
 	// when execute the pipeline we need to provide DescriptorSets for each of the DescriptorSetLayout in order
 	friend class DescriptorSet;
+	friend class DynamicDescriptorSetAllocator;
 
 private:
 	std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding> m_descriptorBindings;
@@ -69,7 +71,6 @@ private:
 public:
 	~DescriptorSetLayout();
 
-public:
 	void Create(const DescriptorSetLayoutCreateInfo& inCreateInfo);
 
 	VkDescriptorSetLayout GetVkDescriptorSetLayout() const;
@@ -86,6 +87,7 @@ class DescriptorState final
 	template<typename T>
 	friend struct std::hash;
 	friend class DescriptorSet;
+	friend class DynamicDescriptorSetAllocator;
 	friend bool operator==(const DescriptorState&, const DescriptorState&);
 	friend bool operator!=(const DescriptorState&, const DescriptorState&);
 	friend bool operator<(const DescriptorState&, const DescriptorState&);
@@ -110,6 +112,8 @@ public:
 	void SetBinding(const VkDescriptorImageInfo& inBindingInfo, uint32_t inIndex = 0);
 	void SetBinding(const VkBufferView& inBindingInfo, uint32_t inIndex = 0);
 	void SetBinding(const VkAccelerationStructureKHR& inBindingInfo, uint32_t inIndex = 0);
+	uint32_t GetDstArrayElement() const { return m_writeInfo.dstArrayElement; }
+	const std::vector<DescriptorBindingInfo>& GetBindingInfo() const { return m_bindingInfo; }
 };
 
 class DescriptorSetState final
@@ -117,6 +121,7 @@ class DescriptorSetState final
 	template<typename T>
 	friend struct std::hash;
 	friend class DescriptorSet;
+	friend class DynamicDescriptorSetAllocator;
 	friend bool operator==(const DescriptorState&, const DescriptorState&);
 	friend bool operator!=(const DescriptorState&, const DescriptorState&);
 	friend bool operator<(const DescriptorState&, const DescriptorState&);
@@ -134,6 +139,8 @@ public:
 
 	void Reset();
 	void SetBinding(DescriptorState inBindingInfo, uint32_t inBinding);
+	void SetBindings(const DescriptorState* inBindingInfo, const uint32_t* inBindings, size_t inCount);
+	const std::unordered_map<uint32_t, DescriptorState>& GetMapBindingToDescriptor() const { return m_mapBindingToDescriptor; }
 };
 
 class DescriptorSetCreateInfo final
@@ -144,12 +151,13 @@ private:
 
 public:
 	void Reset();
-	void SetDescriptorSeLayout(const DescriptorSetLayout* inLayout) { m_descriptorSetLayout = inLayout; };
+	void SetDescriptorSetLayout(const DescriptorSetLayout* inLayout) { m_descriptorSetLayout = inLayout; };
 };
 
 class DescriptorSet final
 {
 private:
+	friend class DynamicDescriptorSetAllocator;
 	struct BindingLayoutMetadata
 	{
 		VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_MAX_ENUM;
@@ -175,10 +183,10 @@ public:
 	friend class DescriptorSetLayout;
 };
 
-class DescriptorSetAllocator
+class DescriptorSetAllocator final
 {
 	// https://vkguide.dev/docs/extra-chapter/abstracting_descriptors/
-public:
+private:
 	struct PoolSizes {
 		std::vector<std::pair<VkDescriptorType, uint32_t>> sizes =
 		{
@@ -207,6 +215,8 @@ private:
 	VkDescriptorPool _GrabPool(VkDescriptorPoolCreateFlags inPoolFlags);
 
 public:
+	void Create();
+
 	void ResetPools();
 
 	bool Allocate(
@@ -214,8 +224,58 @@ public:
 		VkDescriptorSet& outDescriptorSet, 
 		VkDescriptorPoolCreateFlags inPoolFlags = 0,
 		const void* inNextPtr = nullptr);
+	
+	auto AllocateDescriptorSet(
+		VkDescriptorSetLayout inLayout, 
+		VkDescriptorPoolCreateFlags inPoolFlags = 0, 
+		const void* inNextPtr = nullptr) -> std::pair<VkDescriptorSet, VkResult>;
 
+	void Destroy();
+};
+
+class DynamicDescriptorSetAllocator final
+{
+private:
+	struct CachedDescriptorSetInfo
+	{
+		std::unordered_map<size_t, VkDescriptorSet> mapHashToDescriptorSet;
+	};
+
+public:
+	class AllocateInfo final
+	{
+		friend class DynamicDescriptorSetAllocator;
+
+	private:
+		VkDescriptorSetLayout m_vkDescriptorSetLayout = VK_NULL_HANDLE;
+		const DescriptorSetLayout* m_descriptorSetLayout = nullptr;
+		DescriptorSetState m_state{};
+
+	public:
+		void SetLayout(VkDescriptorSetLayout inLayout)
+		{
+			m_vkDescriptorSetLayout = inLayout;
+			m_descriptorSetLayout = nullptr;
+		}
+		void SetLayout(const DescriptorSetLayout* inLayout);
+		void SetDescriptorSetState(const DescriptorSetState& inState) { m_state = inState; }
+	};
+
+private:
+	std::unique_ptr<DescriptorSetAllocator> m_uptrDescriptorSetAllocator;
+	std::unordered_map<VkDescriptorSetLayout, CachedDescriptorSetInfo> m_cachedDescriptorSets;
+
+private:
+	auto _AllocateDescriptorSet(const AllocateInfo& inAllocateInfo) -> VkDescriptorSet;
+	auto _GetCachedDescriptorSet(const AllocateInfo& inAllocateInfo) -> std::optional<VkDescriptorSet>;
+	auto _HashDescriptorSetState(const DescriptorSetState& inState) const -> size_t;
+	auto _HashDescriptorState(const DescriptorState& inState) const -> size_t;
+	auto _HashDescriptorBindingInfo(const DescriptorState::DescriptorBindingInfo& inInfo) const -> size_t;
+	void _WriteDescriptorSet(VkDescriptorSet inDescriptorSet, const AllocateInfo& inAllocateInfo);
+
+public:
 	void Create();
-
+	void Reset();
+	auto GetOrAllocateDescriptorSet(const AllocateInfo& inAllocateInfo) -> VkDescriptorSet;
 	void Destroy();
 };

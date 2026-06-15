@@ -9,7 +9,7 @@ class AccelStruct;
 class PipelineState
 {
 public:
-	void SetDescriptorSet(uint32_t inSet, const DescriptorSet& inState, const std::vector<uint32_t>& inDynamicOffsets);
+	void SetDescriptorSet(uint32_t inSet, const VkDescriptorSet inState, const uint32_t* inDynamicOffsets, size_t inDynamicOffsetCount);
 	void SetPushConstant(VkPipelineStageFlagBits inStage, const void* inData, uint32_t inSize, bool inDontCopy = false);
 };
 
