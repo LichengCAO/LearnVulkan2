@@ -5,6 +5,7 @@
 #include <variant>
 class DescriptorSet;
 class DescriptorSetLayout;
+class DescriptorSetAllocator;
 class DynamicDescriptorSetAllocator;
 
 class DescriptorSetLayoutCreateInfo final
@@ -140,6 +141,7 @@ public:
 	void Reset();
 	void SetBinding(DescriptorState inBindingInfo, uint32_t inBinding);
 	void SetBindings(const DescriptorState* inBindingInfo, const uint32_t* inBindings, size_t inCount);
+	void Merge(const DescriptorSetState& inOther);
 	const std::unordered_map<uint32_t, DescriptorState>& GetMapBindingToDescriptor() const { return m_mapBindingToDescriptor; }
 };
 
@@ -183,56 +185,6 @@ public:
 	friend class DescriptorSetLayout;
 };
 
-class DescriptorSetAllocator final
-{
-	// https://vkguide.dev/docs/extra-chapter/abstracting_descriptors/
-private:
-	struct PoolSizes {
-		std::vector<std::pair<VkDescriptorType, uint32_t>> sizes =
-		{
-			{ VK_DESCRIPTOR_TYPE_SAMPLER, 500 },
-			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4000 },
-			{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4000 },
-			{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
-			{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
-			{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
-			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2000 },
-			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2000 },
-			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
-			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
-			{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 500 }
-		};
-	};
-
-private:
-	PoolSizes m_poolSizes{};
-	std::map<VkDescriptorPoolCreateFlags, VkDescriptorPool> m_candidatePool;
-	std::map<VkDescriptorPoolCreateFlags, std::vector<VkDescriptorPool>> m_usedPools;
-	std::map<VkDescriptorPoolCreateFlags, std::vector<VkDescriptorPool>> m_freePools;
-
-private:
-	VkDescriptorPool _CreatePool(VkDescriptorPoolCreateFlags inPoolFlags);
-	VkDescriptorPool _GrabPool(VkDescriptorPoolCreateFlags inPoolFlags);
-
-public:
-	void Create();
-
-	void ResetPools();
-
-	bool Allocate(
-		VkDescriptorSetLayout inLayout, 
-		VkDescriptorSet& outDescriptorSet, 
-		VkDescriptorPoolCreateFlags inPoolFlags = 0,
-		const void* inNextPtr = nullptr);
-	
-	auto AllocateDescriptorSet(
-		VkDescriptorSetLayout inLayout, 
-		VkDescriptorPoolCreateFlags inPoolFlags = 0, 
-		const void* inNextPtr = nullptr) -> std::pair<VkDescriptorSet, VkResult>;
-
-	void Destroy();
-};
-
 class DynamicDescriptorSetAllocator final
 {
 private:
@@ -248,16 +200,10 @@ public:
 
 	private:
 		VkDescriptorSetLayout m_vkDescriptorSetLayout = VK_NULL_HANDLE;
-		const DescriptorSetLayout* m_descriptorSetLayout = nullptr;
 		DescriptorSetState m_state{};
 
 	public:
-		void SetLayout(VkDescriptorSetLayout inLayout)
-		{
-			m_vkDescriptorSetLayout = inLayout;
-			m_descriptorSetLayout = nullptr;
-		}
-		void SetLayout(const DescriptorSetLayout* inLayout);
+		void SetLayout(VkDescriptorSetLayout inLayout){ m_vkDescriptorSetLayout = inLayout; }
 		void SetDescriptorSetState(const DescriptorSetState& inState) { m_state = inState; }
 	};
 

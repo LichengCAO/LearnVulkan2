@@ -6,7 +6,7 @@
 #include <limits>
 #include "image.h"
 #include "memory_allocator.h"
-#include "descriptor_set.h"
+#include "allocator/descriptor_set_allocator.h"
 #include "framebuffer_allocator.h"
 #include "render_pass_allocator.h"
 #include "pipeline_layout_allocator.h"
