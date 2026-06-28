@@ -1,53 +1,57 @@
 #pragma once
 #include "common.h"
 
-class SamplerPool
+class SamplerAllocator;
+
+class SamplerCreateInfo final
 {
 private:
-	struct SamplerInfo
-	{
-		VkSamplerCreateInfo info{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-		
-		SamplerInfo() { memset(this, 0, sizeof(SamplerInfo)); }
-		bool operator==(const SamplerInfo& other) const { return memcmp(this, &other, sizeof(SamplerInfo)) == 0; }
-	};
-	struct SamplerEntry
-	{
-		VkSampler vkSampler = VK_NULL_HANDLE;
-		SamplerInfo info{};
-		uint32_t refCount = 0;
-		uint32_t nextId = static_cast<uint32_t>(~0);
-	};
-	struct hash_fn
-	{
-		std::size_t operator() (const SamplerInfo& node) const
-		{
-			std::size_t h1 = std::hash<int>()(static_cast<int>(node.info.addressModeU));
-			std::size_t h2 = std::hash<int>()(static_cast<int>(node.info.addressModeV));
+	VkSamplerCreateInfo m_createInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
 
-			return h1 ^ h2;
-		}
-	};
-
-private:
-	std::unordered_map<SamplerInfo, uint32_t, hash_fn> m_mapInfoToIndex;
-	std::unordered_map<VkSampler, uint32_t> m_mapSamplerToIndex;
-	std::vector<SamplerEntry> m_vecSamplerEntries;
-	uint32_t m_currentId = ~0;
-
-private:
-	VkSampler _GetSampler(const SamplerInfo _info);
+	friend class Sampler;
+	friend class SamplerAllocator;
 
 public:
-	VkSampler GetSampler(const VkSamplerCreateInfo& _createInfo);
-	VkSampler GetSampler(
-		VkFilter filter,
-		VkSamplerAddressMode addressMode,
-		VkSamplerMipmapMode mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-		float minLod = 0.0f,
-		float maxLod = VK_LOD_CLAMP_NONE,
-		float mipLodBias = 0.0f,
-		bool anistrophyEnable = false,
-		float maxAnistrophy = 1.0f);
-	void ReturnSampler(VkSampler& _sampler);
+	SamplerCreateInfo();
+
+	auto Reset()->SamplerCreateInfo&;
+
+	auto SetVkSamplerCreateInfo(const VkSamplerCreateInfo& inCreateInfo)->SamplerCreateInfo&;
+
+	auto SetFilter(VkFilter inMinFilter, VkFilter inMagFilter)->SamplerCreateInfo&;
+
+	auto SetAddressMode(VkSamplerAddressMode inAddressMode)->SamplerCreateInfo&;
+
+	auto SetAddressMode(
+		VkSamplerAddressMode inAddressModeU,
+		VkSamplerAddressMode inAddressModeV,
+		VkSamplerAddressMode inAddressModeW)->SamplerCreateInfo&;
+
+	auto SetMipmapMode(VkSamplerMipmapMode inMipmapMode)->SamplerCreateInfo&;
+
+	auto SetLod(float inMinLod, float inMaxLod, float inMipLodBias = 0.0f)->SamplerCreateInfo&;
+
+	auto EnableAnisotropy(float inMaxAnisotropy)->SamplerCreateInfo&;
+
+	auto DisableAnisotropy()->SamplerCreateInfo&;
+
+	auto GetVkSamplerCreateInfo() const->const VkSamplerCreateInfo&;
+};
+
+class Sampler final
+{
+private:
+	VkSampler m_vkSampler = VK_NULL_HANDLE;
+
+public:
+	Sampler() = default;
+	Sampler(const Sampler&) = delete;
+	Sampler& operator=(const Sampler&) = delete;
+	~Sampler();
+
+	auto Create(const SamplerCreateInfo* inCreateInfo)->void;
+
+	auto Destroy()->void;
+
+	auto GetVkSampler() const->VkSampler;
 };

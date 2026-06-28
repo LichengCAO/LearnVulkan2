@@ -37,16 +37,15 @@ public:
 
 	void ResetPools();
 
-	bool Allocate(
+	auto AllocateDescriptorSetWithResult(
 		VkDescriptorSetLayout inLayout,
-		VkDescriptorSet& outDescriptorSet,
 		VkDescriptorPoolCreateFlags inPoolFlags = 0,
-		const void* inNextPtr = nullptr);
+		const void* inNextPtr = nullptr) -> std::pair<VkDescriptorSet, VkResult>;
 
 	auto AllocateDescriptorSet(
 		VkDescriptorSetLayout inLayout,
 		VkDescriptorPoolCreateFlags inPoolFlags = 0,
-		const void* inNextPtr = nullptr) -> std::pair<VkDescriptorSet, VkResult>;
+		const void* inNextPtr = nullptr) -> VkDescriptorSet;
 
 	void Destroy();
 };

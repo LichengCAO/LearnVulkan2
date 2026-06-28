@@ -164,7 +164,7 @@ void RenderPassAllocator::Create(VkDevice inDevice)
 	m_vkDevice = inDevice;
 }
 
-bool RenderPassAllocator::AllocateRenderPass(const VkRenderPassCreateInfo* inCreateInfo, VkRenderPass& outRenderPass)
+auto RenderPassAllocator::AllocateRenderPassWithResult(const VkRenderPassCreateInfo* inCreateInfo) -> std::pair<VkRenderPass, VkResult>
 {
 	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Render pass allocator is not created!");
 	CHECK_TRUE(inCreateInfo != nullptr, "Missing render pass create info!");
@@ -173,16 +173,26 @@ bool RenderPassAllocator::AllocateRenderPass(const VkRenderPassCreateInfo* inCre
 	const auto iter = m_mapHashToVkRenderPass.find(hash);
 	if (iter != m_mapHashToVkRenderPass.end())
 	{
-		outRenderPass = iter->second;
-		return true;
+		return { iter->second, VK_SUCCESS };
 	}
 
 	VkRenderPass renderPass = VK_NULL_HANDLE;
-	VK_CHECK(vkCreateRenderPass(m_vkDevice, inCreateInfo, nullptr, &renderPass));
+	const VkResult result = vkCreateRenderPass(m_vkDevice, inCreateInfo, nullptr, &renderPass);
+	if (result != VK_SUCCESS)
+	{
+		return { VK_NULL_HANDLE, result };
+	}
 
 	m_mapHashToVkRenderPass.emplace(hash, renderPass);
-	outRenderPass = renderPass;
-	return true;
+	return { renderPass, VK_SUCCESS };
+}
+
+auto RenderPassAllocator::AllocateRenderPass(const VkRenderPassCreateInfo* inCreateInfo) -> VkRenderPass
+{
+	auto [renderPass, result] = AllocateRenderPassWithResult(inCreateInfo);
+	VK_CHECK(result, "Failed to allocate render pass!");
+
+	return renderPass;
 }
 
 void RenderPassAllocator::FreeRenderPass(VkRenderPass& inoutRenderPass)

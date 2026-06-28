@@ -280,9 +280,7 @@ void DescriptorSet::Create(const DescriptorSetCreateInfo& inCreateInfo)
 	const DescriptorSetLayout& descriptorSetLayout = *inCreateInfo.m_descriptorSetLayout;
 	const VkDescriptorPoolCreateFlags poolFlags = descriptorSetLayout.GetRequiredPoolCreateFlags();
 
-	CHECK_TRUE(
-		pAllocator->Allocate(descriptorSetLayout.GetVkDescriptorSetLayout(), m_vkDescriptorSet, poolFlags),
-		"Failed to allocate descriptor set!");
+	m_vkDescriptorSet = pAllocator->AllocateDescriptorSet(descriptorSetLayout.GetVkDescriptorSetLayout(), poolFlags);
 	m_bindingLayoutMetadata.clear();
 	m_cachedState.Reset();
 	for (const auto& [bindingId, layoutBinding] : descriptorSetLayout.m_descriptorBindings)
@@ -676,7 +674,7 @@ auto DynamicDescriptorSetAllocator::_AllocateDescriptorSet(const AllocateInfo& i
 	CHECK_TRUE(inAllocateInfo.m_vkDescriptorSetLayout != VK_NULL_HANDLE, "Dynamic descriptor allocator requires a descriptor set layout!");
 	CHECK_TRUE(m_uptrDescriptorSetAllocator != nullptr, "Dynamic descriptor allocator must be created before allocation!");
 
-	auto [descriptorSet, allocResult] = m_uptrDescriptorSetAllocator->AllocateDescriptorSet(inAllocateInfo.m_vkDescriptorSetLayout);
+	auto [descriptorSet, allocResult] = m_uptrDescriptorSetAllocator->AllocateDescriptorSetWithResult(inAllocateInfo.m_vkDescriptorSetLayout);
 
 	VK_CHECK(allocResult, "Failed to allocate dynamic descriptor set!");
 	_WriteDescriptorSet(descriptorSet, inAllocateInfo);

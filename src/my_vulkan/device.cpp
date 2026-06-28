@@ -10,6 +10,8 @@
 #include "framebuffer_allocator.h"
 #include "render_pass_allocator.h"
 #include "pipeline_layout_allocator.h"
+#include "pipeline_allocator.h"
+#include "allocator/sampler_allocator.h"
 #include <iomanip>
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
@@ -657,6 +659,54 @@ void MyDevice::_DestroyPipelineLayoutAllocator()
 	}
 }
 
+void MyDevice::_CreatePipelineAllocators()
+{
+	m_uptrGraphicsPipelineAllocator = std::make_unique<GraphicsPipelineAllocator>();
+	m_uptrGraphicsPipelineAllocator->Create(vkDevice);
+
+	m_uptrComputePipelineAllocator = std::make_unique<ComputePipelineAllocator>();
+	m_uptrComputePipelineAllocator->Create(vkDevice);
+
+	m_uptrRayTracingPipelineAllocator = std::make_unique<RayTracingPipelineAllocator>();
+	m_uptrRayTracingPipelineAllocator->Create(vkDevice);
+}
+
+void MyDevice::_DestroyPipelineAllocators()
+{
+	if (m_uptrRayTracingPipelineAllocator != nullptr)
+	{
+		m_uptrRayTracingPipelineAllocator->Destroy();
+		m_uptrRayTracingPipelineAllocator.reset();
+	}
+
+	if (m_uptrComputePipelineAllocator != nullptr)
+	{
+		m_uptrComputePipelineAllocator->Destroy();
+		m_uptrComputePipelineAllocator.reset();
+	}
+
+	if (m_uptrGraphicsPipelineAllocator != nullptr)
+	{
+		m_uptrGraphicsPipelineAllocator->Destroy();
+		m_uptrGraphicsPipelineAllocator.reset();
+	}
+}
+
+void MyDevice::_CreateSamplerAllocator()
+{
+	m_uptrSamplerAllocator = std::make_unique<SamplerAllocator>();
+	m_uptrSamplerAllocator->Create();
+}
+
+void MyDevice::_DestroySamplerAllocator()
+{
+	if (m_uptrSamplerAllocator != nullptr)
+	{
+		m_uptrSamplerAllocator->Destroy();
+		m_uptrSamplerAllocator.reset();
+	}
+}
+
 void MyDevice::Create()
 {
 	_InitVolk();
@@ -666,8 +716,10 @@ void MyDevice::Create()
 	_SelectPhysicalDevice();
 	_CreateLogicalDevice();
 	_CreateMemoryAllocator();
+	_CreateSamplerAllocator();
 	_CreateRenderPassAllocator();
 	_CreatePipelineLayoutAllocator();
+	_CreatePipelineAllocators();
 	_CreateFramebufferAllocator();
 	_CreateSwapchain();
 	_CreateDescriptorSetAllocator();
@@ -679,8 +731,10 @@ void MyDevice::Destroy()
 	_DestroyDescriptorSetAllocator();
 	_DestroySwapchain();
 	_DestroyFramebufferAllocator();
+	_DestroyPipelineAllocators();
 	_DestroyPipelineLayoutAllocator();
 	_DestroyRenderPassAllocator();
+	_DestroySamplerAllocator();
 	_DestroyMemoryAllocator();
 	vkb::destroy_device(m_device);
 	vkb::destroy_surface(m_instance, vkSurface);
@@ -724,9 +778,9 @@ DescriptorSetAllocator* MyDevice::GetDescriptorSetAllocator()
 	return descriptorAllocator.get();
 }
 
-SamplerPool* MyDevice::GetSamplerPool()
+auto MyDevice::GetSamplerAllocator()->SamplerAllocator*
 {
-	return samplerPool.get();
+	return m_uptrSamplerAllocator.get();
 }
 
 VkFence MyDevice::CreateVkFence(
@@ -1033,7 +1087,15 @@ VkPipeline MyDevice::CreateGraphicsPipeline(const VkGraphicsPipelineCreateInfo& 
 {
 	VkPipeline result = VK_NULL_HANDLE;
 
-	VK_CHECK(vkCreateGraphicsPipelines(vkDevice, inCache, 1, &inCreateInfo, pAllocator, &result), "Failed to create graphics pipeline!");
+	if (pAllocator == nullptr)
+	{
+		CHECK_TRUE(m_uptrGraphicsPipelineAllocator != nullptr, "Graphics pipeline allocator is not created!");
+		result = m_uptrGraphicsPipelineAllocator->AllocateGraphicsPipeline(&inCreateInfo, inCache);
+	}
+	else
+	{
+		VK_CHECK(vkCreateGraphicsPipelines(vkDevice, inCache, 1, &inCreateInfo, pAllocator, &result), "Failed to create graphics pipeline!");
+	}
 
     return result;
 }
@@ -1042,7 +1104,15 @@ VkPipeline MyDevice::CreateComputePipeline(const VkComputePipelineCreateInfo& in
 {
 	VkPipeline result = VK_NULL_HANDLE;
 
-	VK_CHECK(vkCreateComputePipelines(vkDevice, inCache, 1, &inCreateInfo, pAllocator, &result), "Failed to create compute pipeline!");
+	if (pAllocator == nullptr)
+	{
+		CHECK_TRUE(m_uptrComputePipelineAllocator != nullptr, "Compute pipeline allocator is not created!");
+		result = m_uptrComputePipelineAllocator->AllocateComputePipeline(&inCreateInfo, inCache);
+	}
+	else
+	{
+		VK_CHECK(vkCreateComputePipelines(vkDevice, inCache, 1, &inCreateInfo, pAllocator, &result), "Failed to create compute pipeline!");
+	}
 
 	return result;
 }
@@ -1051,15 +1121,45 @@ VkPipeline MyDevice::CreateRayTracingPipeline(const VkRayTracingPipelineCreateIn
 {
 	VkPipeline result = VK_NULL_HANDLE;
 
-	VK_CHECK(
-		vkCreateRayTracingPipelinesKHR(vkDevice, inDeferredOperation, inCache, 1, &inCreateInfo, pAllocator, &result), 
-		"Failed to create ray tracing pipeline!");
+	if (pAllocator == nullptr)
+	{
+		CHECK_TRUE(m_uptrRayTracingPipelineAllocator != nullptr, "Ray tracing pipeline allocator is not created!");
+		result = m_uptrRayTracingPipelineAllocator->AllocateRayTracingPipeline(&inCreateInfo, inCache, inDeferredOperation);
+	}
+	else
+	{
+		VK_CHECK(
+			vkCreateRayTracingPipelinesKHR(vkDevice, inDeferredOperation, inCache, 1, &inCreateInfo, pAllocator, &result),
+			"Failed to create ray tracing pipeline!");
+	}
 
 	return result;
 }
 
 void MyDevice::DestroyPipeline(VkPipeline inPipeline, const VkAllocationCallbacks* pAllocator)
 {
+	if (inPipeline == VK_NULL_HANDLE)
+	{
+		return;
+	}
+
+	if (pAllocator == nullptr)
+	{
+		VkPipeline pipelineToFree = inPipeline;
+		if (m_uptrGraphicsPipelineAllocator != nullptr && m_uptrGraphicsPipelineAllocator->FreeGraphicsPipeline(pipelineToFree))
+		{
+			return;
+		}
+		if (m_uptrComputePipelineAllocator != nullptr && m_uptrComputePipelineAllocator->FreeComputePipeline(pipelineToFree))
+		{
+			return;
+		}
+		if (m_uptrRayTracingPipelineAllocator != nullptr && m_uptrRayTracingPipelineAllocator->FreeRayTracingPipeline(pipelineToFree))
+		{
+			return;
+		}
+	}
+
 	vkDestroyPipeline(vkDevice, inPipeline, pAllocator);
 }
 
@@ -1086,10 +1186,9 @@ VkPipelineLayout MyDevice::CreatePipelineLayout(
 	if (pAllocator == nullptr)
 	{
 		CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr, "Pipeline layout allocator is not created!");
-		CHECK_TRUE(
-			m_uptrPipelineLayoutAllocator->AllocatePipelineLayout(&inCreateInfo, result),
-			"Failed to allocate pipeline layout!");
-		outProcessResult = VK_SUCCESS;
+		auto [pipelineLayout, allocateResult] = m_uptrPipelineLayoutAllocator->AllocatePipelineLayoutWithResult(&inCreateInfo);
+		result = pipelineLayout;
+		outProcessResult = allocateResult;
 	}
 	else
 	{
@@ -1229,7 +1328,7 @@ VkRenderPass MyDevice::CreateRenderPass(const VkRenderPassCreateInfo& inCreateIn
 	if (pAllocator == nullptr)
 	{
 		CHECK_TRUE(m_uptrRenderPassAllocator != nullptr, "Render pass allocator is not created!");
-		CHECK_TRUE(m_uptrRenderPassAllocator->AllocateRenderPass(&inCreateInfo, result), "Failed to allocate render pass!");
+		result = m_uptrRenderPassAllocator->AllocateRenderPass(&inCreateInfo);
 	}
 	else
 	{
@@ -1264,7 +1363,7 @@ VkFramebuffer MyDevice::CreateFramebuffer(const VkFramebufferCreateInfo& inCreat
 	if (pAllocator == nullptr)
 	{
 		CHECK_TRUE(m_uptrFramebufferAllocator != nullptr, "Framebuffer allocator is not created!");
-		CHECK_TRUE(m_uptrFramebufferAllocator->AllocateFramebuffer(&inCreateInfo, result), "Failed to allocate framebuffer!");
+		result = m_uptrFramebufferAllocator->AllocateFramebuffer(&inCreateInfo);
 	}
 	else
 	{

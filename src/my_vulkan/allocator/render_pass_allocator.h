@@ -14,7 +14,8 @@ public:
 	virtual ~RenderPassAllocator();
 
 	void Create(VkDevice inDevice);
-	bool AllocateRenderPass(const VkRenderPassCreateInfo* inCreateInfo, VkRenderPass& outRenderPass);
+	auto AllocateRenderPassWithResult(const VkRenderPassCreateInfo* inCreateInfo) -> std::pair<VkRenderPass, VkResult>;
+	auto AllocateRenderPass(const VkRenderPassCreateInfo* inCreateInfo) -> VkRenderPass;
 	void FreeRenderPass(VkRenderPass& inoutRenderPass);
 	void Destroy();
 };

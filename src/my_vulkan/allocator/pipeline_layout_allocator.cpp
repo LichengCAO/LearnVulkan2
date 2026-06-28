@@ -66,9 +66,8 @@ void PipelineLayoutAllocator::Create(VkDevice inDevice)
 	m_vkDevice = inDevice;
 }
 
-bool PipelineLayoutAllocator::AllocatePipelineLayout(
-	const VkPipelineLayoutCreateInfo* inCreateInfo,
-	VkPipelineLayout& outPipelineLayout)
+auto PipelineLayoutAllocator::AllocatePipelineLayoutWithResult(
+	const VkPipelineLayoutCreateInfo* inCreateInfo) -> std::pair<VkPipelineLayout, VkResult>
 {
 	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Pipeline layout allocator is not created!");
 	CHECK_TRUE(inCreateInfo != nullptr, "Missing pipeline layout create info!");
@@ -77,16 +76,26 @@ bool PipelineLayoutAllocator::AllocatePipelineLayout(
 	const auto iter = m_mapHashToVkPipelineLayout.find(hash);
 	if (iter != m_mapHashToVkPipelineLayout.end())
 	{
-		outPipelineLayout = iter->second;
-		return true;
+		return { iter->second, VK_SUCCESS };
 	}
 
 	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-	VK_CHECK(vkCreatePipelineLayout(m_vkDevice, inCreateInfo, nullptr, &pipelineLayout));
+	const VkResult result = vkCreatePipelineLayout(m_vkDevice, inCreateInfo, nullptr, &pipelineLayout);
+	if (result != VK_SUCCESS)
+	{
+		return { VK_NULL_HANDLE, result };
+	}
 
 	m_mapHashToVkPipelineLayout.emplace(hash, pipelineLayout);
-	outPipelineLayout = pipelineLayout;
-	return true;
+	return { pipelineLayout, VK_SUCCESS };
+}
+
+auto PipelineLayoutAllocator::AllocatePipelineLayout(const VkPipelineLayoutCreateInfo* inCreateInfo) -> VkPipelineLayout
+{
+	auto [pipelineLayout, result] = AllocatePipelineLayoutWithResult(inCreateInfo);
+	VK_CHECK(result, "Failed to allocate pipeline layout!");
+
+	return pipelineLayout;
 }
 
 void PipelineLayoutAllocator::FreePipelineLayout(VkPipelineLayout& inoutPipelineLayout)

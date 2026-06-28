@@ -76,6 +76,77 @@ public:
 	SwapchainImageCreateInfo& SetUp(VkImage inSwapchain, VkImageUsageFlags inUsage, VkFormat inFormat);
 };
 
+class ImageViewInfo final
+{
+private:
+	friend class ImageView;
+	friend class Image;
+
+	uint32_t m_baseMipLevel = 0;
+	uint32_t m_levelCount = VK_REMAINING_MIP_LEVELS;
+	uint32_t m_baseArrayLayer = 0;
+	uint32_t m_layerCount = VK_REMAINING_ARRAY_LAYERS;
+
+public:
+	void Reset()
+	{
+		*this = ImageViewInfo{};
+	}
+
+	// Optional, default: 0, VK_REMAINING_MIP_LEVELS
+	void CustomizeMipLevels(uint32_t inBaseLevel, uint32_t levelCount = VK_REMAINING_MIP_LEVELS)
+	{
+		m_baseMipLevel = inBaseLevel;
+		m_levelCount = levelCount;
+	}
+
+	// Optional, default: 0, VK_REMAINING_ARRAY_LAYERS
+	void CustomizeArrayLayers(uint32_t inBaseLayer, uint32_t layerCount = VK_REMAINING_ARRAY_LAYERS)
+	{
+		m_baseArrayLayer = inBaseLayer;
+		m_layerCount = layerCount;
+	}
+};
+
+class ImageView
+{
+public:
+	struct Information
+	{
+		uint32_t width;
+		uint32_t height;
+		uint32_t depth;
+		uint32_t baseMipLevel = 0;
+		uint32_t levelCount = VK_REMAINING_MIP_LEVELS;
+		uint32_t baseArrayLayer = 0;
+		uint32_t layerCount = VK_REMAINING_ARRAY_LAYERS;
+		VkFormat format = VK_FORMAT_UNDEFINED;
+		VkImageAspectFlags aspectMask;
+		VkImageViewType type;
+		VkImage vkImage = VK_NULL_HANDLE;
+	};
+
+private:
+	Information m_viewInformation{};
+	VkImageView m_vkImageView = VK_NULL_HANDLE;
+
+private:
+	void Create(const Image* inImage, const ImageViewInfo* inCreateInfo);
+
+	void Destroy();
+
+public:
+	~ImageView();
+
+	const Information& GetImageViewInformation() const;
+
+	VkImageSubresourceRange GetImageSubresourceRange() const;
+
+	VkImageView GetVkImageView() const;
+
+	friend class Image;
+};
+
 class Image
 {
 public:
@@ -98,6 +169,7 @@ public:
 private:
 	Information m_imageInformation{};
 	VkImage m_vkImage = VK_NULL_HANDLE;
+	std::vector<std::unique_ptr<ImageView>> m_uptrImageViews;
 
 private:
 	void _AllocateMemory();
@@ -105,6 +177,10 @@ private:
 	void _FreeMemory();
 
 	MemoryAllocator* _GetMemoryAllocator() const;
+
+	ImageView* _FindView(const ImageViewInfo& inCreateInfo) const;
+
+	void _DestroyViews();
 
 public:
 	~Image();
@@ -115,83 +191,13 @@ public:
 
 	void Destroy();
 
+	const ImageView* View();
+
+	const ImageView* View(const ImageViewInfo& inCreateInfo);
+
 	const Image::Information& GetImageInformation() const;
 
 	VkExtent3D GetImageSize() const;
 
 	VkImage GetVkImage() const;
-};
-
-class ImageView
-{
-public:
-	struct Information
-	{
-		uint32_t width;
-		uint32_t height;
-		uint32_t depth;
-		uint32_t baseMipLevel = 0;
-		uint32_t levelCount = VK_REMAINING_MIP_LEVELS;
-		uint32_t baseArrayLayer = 0;
-		uint32_t layerCount = VK_REMAINING_ARRAY_LAYERS;
-		VkFormat format = VK_FORMAT_UNDEFINED;
-		VkImageAspectFlags aspectMask;
-		VkImageViewType type;
-		VkImage vkImage = VK_NULL_HANDLE;
-	};
-
-	class CreateInfo final
-	{
-	private:
-		friend class ImageView;
-
-		const Image* m_pImage = nullptr;
-		uint32_t m_baseMipLevel = 0;
-		uint32_t m_levelCount = VK_REMAINING_MIP_LEVELS;
-		uint32_t m_baseArrayLayer = 0;
-		uint32_t m_layerCount = VK_REMAINING_ARRAY_LAYERS;
-
-	public:
-		void Reset()
-		{
-			*this = ImageView::CreateInfo{};
-		}
-
-		// Mandatory
-		void SetImage(const Image* pImage)
-		{
-			m_pImage = pImage;
-		}
-
-		// Optional, default: 0, VK_REMAINING_MIP_LEVELS
-		void CustomizeMipLevels(uint32_t inBaseLevel, uint32_t levelCount = VK_REMAINING_MIP_LEVELS)
-		{
-			m_baseMipLevel = inBaseLevel;
-			m_levelCount = levelCount;
-		}
-
-		// Optional, default: 0, VK_REMAINING_ARRAY_LAYERS
-		void CustomizeArrayLayers(uint32_t inBaseLayer, uint32_t layerCount = VK_REMAINING_ARRAY_LAYERS)
-		{
-			m_baseArrayLayer = inBaseLayer;
-			m_layerCount = layerCount;
-		}
-	};
-
-private:
-	Information m_viewInformation{};
-	VkImageView m_vkImageView = VK_NULL_HANDLE;
-
-public:
-	~ImageView();
-
-	void Create(const CreateInfo* inCreateInfo);
-
-	void Destroy();
-
-	const Information& GetImageViewInformation() const;
-
-	VkImageSubresourceRange GetImageSubresourceRange() const;
-
-	VkImageView GetVkImageView() const;
 };

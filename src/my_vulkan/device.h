@@ -10,6 +10,10 @@ class DescriptorSetAllocator;
 class FramebufferAllocator;
 class RenderPassAllocator;
 class PipelineLayoutAllocator;
+class GraphicsPipelineAllocator;
+class ComputePipelineAllocator;
+class RayTracingPipelineAllocator;
+class SamplerAllocator;
 
 struct UserInput
 {
@@ -72,7 +76,10 @@ private:
 	std::unique_ptr<FramebufferAllocator> m_uptrFramebufferAllocator;
 	std::unique_ptr<RenderPassAllocator> m_uptrRenderPassAllocator;
 	std::unique_ptr<PipelineLayoutAllocator> m_uptrPipelineLayoutAllocator;
-	std::unique_ptr<SamplerPool>  samplerPool;
+	std::unique_ptr<GraphicsPipelineAllocator> m_uptrGraphicsPipelineAllocator;
+	std::unique_ptr<ComputePipelineAllocator> m_uptrComputePipelineAllocator;
+	std::unique_ptr<RayTracingPipelineAllocator> m_uptrRayTracingPipelineAllocator;
+	std::unique_ptr<SamplerAllocator> m_uptrSamplerAllocator;
 	std::unordered_map<VkCommandPool, uint32_t> m_mapPoolToQueueFamily;
 
 private:
@@ -101,10 +108,14 @@ private:
 	void _DestroyRenderPassAllocator();
 	void _CreatePipelineLayoutAllocator();
 	void _DestroyPipelineLayoutAllocator();
+	void _CreatePipelineAllocators();
+	void _DestroyPipelineAllocators();
 	void _CreateSwapchain();
 	void _DestroySwapchain();
 	void _CreateMemoryAllocator();
 	void _DestroyMemoryAllocator();
+	void _CreateSamplerAllocator();
+	void _DestroySamplerAllocator();
 
 	// Add required extensions to the device, before select physical device
 	void _AddBaseExtensionsAndFeatures(vkb::PhysicalDeviceSelector& _selector) const;
@@ -167,7 +178,7 @@ public:
 
 	DescriptorSetAllocator* GetDescriptorSetAllocator();
 
-	SamplerPool* GetSamplerPool();
+	auto GetSamplerAllocator()->SamplerAllocator*;
 
 	// Get queue family index by the function,
 	// https://github.com/KhronosGroup/Vulkan-Guide/blob/main/chapters/queues.adoc

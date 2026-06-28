@@ -308,6 +308,95 @@ namespace
 
 		return static_cast<uint64_t>(result);
 	}
+
+	uint64_t HashComputePipelineCreateInfo(const VkComputePipelineCreateInfo& createInfo)
+	{
+		size_t result = 0;
+
+		HashEnum(result, createInfo.sType);
+		HashPNext(result, createInfo.pNext, "compute pipeline create info");
+		hash_combine(result, createInfo.flags);
+		HashShaderStageCreateInfo(result, createInfo.stage);
+		hash_combine(result, createInfo.layout);
+		hash_combine(result, createInfo.basePipelineHandle);
+		hash_combine(result, createInfo.basePipelineIndex);
+
+		return static_cast<uint64_t>(result);
+	}
+
+	void HashRayTracingShaderGroupCreateInfo(size_t& seed, const VkRayTracingShaderGroupCreateInfoKHR& group)
+	{
+		HashEnum(seed, group.sType);
+		HashPNext(seed, group.pNext, "ray tracing shader group create info");
+		HashEnum(seed, group.type);
+		hash_combine(seed, group.generalShader);
+		hash_combine(seed, group.closestHitShader);
+		hash_combine(seed, group.anyHitShader);
+		hash_combine(seed, group.intersectionShader);
+		CHECK_TRUE(group.pShaderGroupCaptureReplayHandle == nullptr, "Unsupported ray tracing shader group capture replay handle!");
+	}
+
+	void HashPipelineLibraryCreateInfo(size_t& seed, const VkPipelineLibraryCreateInfoKHR* libraryInfo)
+	{
+		hash_combine(seed, libraryInfo != nullptr);
+		if (libraryInfo == nullptr)
+		{
+			return;
+		}
+
+		HashEnum(seed, libraryInfo->sType);
+		HashPNext(seed, libraryInfo->pNext, "pipeline library create info");
+		hash_combine(seed, libraryInfo->libraryCount);
+		for (uint32_t i = 0; i < libraryInfo->libraryCount; i++)
+		{
+			hash_combine(seed, libraryInfo->pLibraries[i]);
+		}
+	}
+
+	void HashRayTracingPipelineInterfaceCreateInfo(size_t& seed, const VkRayTracingPipelineInterfaceCreateInfoKHR* interfaceInfo)
+	{
+		hash_combine(seed, interfaceInfo != nullptr);
+		if (interfaceInfo == nullptr)
+		{
+			return;
+		}
+
+		HashEnum(seed, interfaceInfo->sType);
+		HashPNext(seed, interfaceInfo->pNext, "ray tracing pipeline interface create info");
+		hash_combine(seed, interfaceInfo->maxPipelineRayPayloadSize);
+		hash_combine(seed, interfaceInfo->maxPipelineRayHitAttributeSize);
+	}
+
+	uint64_t HashRayTracingPipelineCreateInfo(const VkRayTracingPipelineCreateInfoKHR& createInfo)
+	{
+		size_t result = 0;
+
+		HashEnum(result, createInfo.sType);
+		HashPNext(result, createInfo.pNext, "ray tracing pipeline create info");
+		hash_combine(result, createInfo.flags);
+
+		hash_combine(result, createInfo.stageCount);
+		for (uint32_t i = 0; i < createInfo.stageCount; i++)
+		{
+			HashShaderStageCreateInfo(result, createInfo.pStages[i]);
+		}
+
+		hash_combine(result, createInfo.groupCount);
+		for (uint32_t i = 0; i < createInfo.groupCount; i++)
+		{
+			HashRayTracingShaderGroupCreateInfo(result, createInfo.pGroups[i]);
+		}
+
+		hash_combine(result, createInfo.maxPipelineRayRecursionDepth);
+		HashPipelineLibraryCreateInfo(result, createInfo.pLibraryInfo);
+		HashRayTracingPipelineInterfaceCreateInfo(result, createInfo.pLibraryInterface);
+		HashDynamicStateCreateInfo(result, createInfo.pDynamicState);
+		hash_combine(result, createInfo.layout);
+		hash_combine(result, createInfo.basePipelineHandle);
+		hash_combine(result, createInfo.basePipelineIndex);
+
+		return static_cast<uint64_t>(result);
+	}
 }
 
 GraphicsPipelineAllocator::~GraphicsPipelineAllocator()
@@ -323,10 +412,9 @@ void GraphicsPipelineAllocator::Create(VkDevice inDevice)
 	m_vkDevice = inDevice;
 }
 
-bool GraphicsPipelineAllocator::AllocateGraphicsPipeline(
+auto GraphicsPipelineAllocator::AllocateGraphicsPipelineWithResult(
 	const VkGraphicsPipelineCreateInfo* inCreateInfo,
-	VkPipelineCache inCache,
-	VkPipeline& outPipeline)
+	VkPipelineCache inCache) -> std::pair<VkPipeline, VkResult>
 {
 	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Graphics pipeline allocator is not created!");
 	CHECK_TRUE(inCreateInfo != nullptr, "Missing graphics pipeline create info!");
@@ -335,24 +423,250 @@ bool GraphicsPipelineAllocator::AllocateGraphicsPipeline(
 	const auto iter = m_mapHashToVkPipeline.find(hash);
 	if (iter != m_mapHashToVkPipeline.end())
 	{
-		outPipeline = iter->second;
-		return true;
+		return { iter->second, VK_SUCCESS };
 	}
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
-	VK_CHECK(vkCreateGraphicsPipelines(m_vkDevice, inCache, 1, inCreateInfo, nullptr, &pipeline));
+	const VkResult result = vkCreateGraphicsPipelines(m_vkDevice, inCache, 1, inCreateInfo, nullptr, &pipeline);
+	if (result != VK_SUCCESS)
+	{
+		return { VK_NULL_HANDLE, result };
+	}
 
 	m_mapHashToVkPipeline.emplace(hash, pipeline);
-	outPipeline = pipeline;
+	return { pipeline, VK_SUCCESS };
+}
+
+auto GraphicsPipelineAllocator::AllocateGraphicsPipeline(
+	const VkGraphicsPipelineCreateInfo* inCreateInfo,
+	VkPipelineCache inCache) -> VkPipeline
+{
+	auto [pipeline, result] = AllocateGraphicsPipelineWithResult(inCreateInfo, inCache);
+	VK_CHECK(result, "Failed to allocate graphics pipeline!");
+
+	return pipeline;
+}
+
+bool GraphicsPipelineAllocator::FreeGraphicsPipeline(VkPipeline& inoutPipeline)
+{
+	if (!HasGraphicsPipeline(inoutPipeline))
+	{
+		return false;
+	}
+
+	inoutPipeline = VK_NULL_HANDLE;
 	return true;
 }
 
-void GraphicsPipelineAllocator::FreeGraphicsPipeline(VkPipeline& inoutPipeline)
+bool GraphicsPipelineAllocator::HasGraphicsPipeline(VkPipeline inPipeline) const
 {
-	inoutPipeline = VK_NULL_HANDLE;
+	if (inPipeline == VK_NULL_HANDLE)
+	{
+		return false;
+	}
+
+	for (const auto& [hash, pipeline] : m_mapHashToVkPipeline)
+	{
+		if (pipeline == inPipeline)
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 void GraphicsPipelineAllocator::Destroy()
+{
+	if (m_vkDevice != VK_NULL_HANDLE)
+	{
+		for (auto& [hash, pipeline] : m_mapHashToVkPipeline)
+		{
+			if (pipeline != VK_NULL_HANDLE)
+			{
+				vkDestroyPipeline(m_vkDevice, pipeline, nullptr);
+			}
+		}
+	}
+
+	m_mapHashToVkPipeline.clear();
+	m_vkDevice = VK_NULL_HANDLE;
+}
+
+ComputePipelineAllocator::~ComputePipelineAllocator()
+{
+	Destroy();
+}
+
+void ComputePipelineAllocator::Create(VkDevice inDevice)
+{
+	CHECK_TRUE(inDevice != VK_NULL_HANDLE, "Invalid compute pipeline allocator device!");
+	CHECK_TRUE(m_vkDevice == VK_NULL_HANDLE || m_vkDevice == inDevice, "Compute pipeline allocator already uses another device!");
+
+	m_vkDevice = inDevice;
+}
+
+auto ComputePipelineAllocator::AllocateComputePipelineWithResult(
+	const VkComputePipelineCreateInfo* inCreateInfo,
+	VkPipelineCache inCache) -> std::pair<VkPipeline, VkResult>
+{
+	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Compute pipeline allocator is not created!");
+	CHECK_TRUE(inCreateInfo != nullptr, "Missing compute pipeline create info!");
+
+	const uint64_t hash = HashComputePipelineCreateInfo(*inCreateInfo);
+	const auto iter = m_mapHashToVkPipeline.find(hash);
+	if (iter != m_mapHashToVkPipeline.end())
+	{
+		return { iter->second, VK_SUCCESS };
+	}
+
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	const VkResult result = vkCreateComputePipelines(m_vkDevice, inCache, 1, inCreateInfo, nullptr, &pipeline);
+	if (result != VK_SUCCESS)
+	{
+		return { VK_NULL_HANDLE, result };
+	}
+
+	m_mapHashToVkPipeline.emplace(hash, pipeline);
+	return { pipeline, VK_SUCCESS };
+}
+
+auto ComputePipelineAllocator::AllocateComputePipeline(
+	const VkComputePipelineCreateInfo* inCreateInfo,
+	VkPipelineCache inCache) -> VkPipeline
+{
+	auto [pipeline, result] = AllocateComputePipelineWithResult(inCreateInfo, inCache);
+	VK_CHECK(result, "Failed to allocate compute pipeline!");
+
+	return pipeline;
+}
+
+bool ComputePipelineAllocator::FreeComputePipeline(VkPipeline& inoutPipeline)
+{
+	if (!HasComputePipeline(inoutPipeline))
+	{
+		return false;
+	}
+
+	inoutPipeline = VK_NULL_HANDLE;
+	return true;
+}
+
+bool ComputePipelineAllocator::HasComputePipeline(VkPipeline inPipeline) const
+{
+	if (inPipeline == VK_NULL_HANDLE)
+	{
+		return false;
+	}
+
+	for (const auto& [hash, pipeline] : m_mapHashToVkPipeline)
+	{
+		if (pipeline == inPipeline)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void ComputePipelineAllocator::Destroy()
+{
+	if (m_vkDevice != VK_NULL_HANDLE)
+	{
+		for (auto& [hash, pipeline] : m_mapHashToVkPipeline)
+		{
+			if (pipeline != VK_NULL_HANDLE)
+			{
+				vkDestroyPipeline(m_vkDevice, pipeline, nullptr);
+			}
+		}
+	}
+
+	m_mapHashToVkPipeline.clear();
+	m_vkDevice = VK_NULL_HANDLE;
+}
+
+RayTracingPipelineAllocator::~RayTracingPipelineAllocator()
+{
+	Destroy();
+}
+
+void RayTracingPipelineAllocator::Create(VkDevice inDevice)
+{
+	CHECK_TRUE(inDevice != VK_NULL_HANDLE, "Invalid ray tracing pipeline allocator device!");
+	CHECK_TRUE(m_vkDevice == VK_NULL_HANDLE || m_vkDevice == inDevice, "Ray tracing pipeline allocator already uses another device!");
+
+	m_vkDevice = inDevice;
+}
+
+auto RayTracingPipelineAllocator::AllocateRayTracingPipelineWithResult(
+	const VkRayTracingPipelineCreateInfoKHR* inCreateInfo,
+	VkPipelineCache inCache,
+	VkDeferredOperationKHR inDeferredOperation) -> std::pair<VkPipeline, VkResult>
+{
+	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Ray tracing pipeline allocator is not created!");
+	CHECK_TRUE(inCreateInfo != nullptr, "Missing ray tracing pipeline create info!");
+
+	const uint64_t hash = HashRayTracingPipelineCreateInfo(*inCreateInfo);
+	const auto iter = m_mapHashToVkPipeline.find(hash);
+	if (iter != m_mapHashToVkPipeline.end())
+	{
+		return { iter->second, VK_SUCCESS };
+	}
+
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	const VkResult result = vkCreateRayTracingPipelinesKHR(m_vkDevice, inDeferredOperation, inCache, 1, inCreateInfo, nullptr, &pipeline);
+	if (result != VK_SUCCESS)
+	{
+		return { VK_NULL_HANDLE, result };
+	}
+
+	m_mapHashToVkPipeline.emplace(hash, pipeline);
+	return { pipeline, VK_SUCCESS };
+}
+
+auto RayTracingPipelineAllocator::AllocateRayTracingPipeline(
+	const VkRayTracingPipelineCreateInfoKHR* inCreateInfo,
+	VkPipelineCache inCache,
+	VkDeferredOperationKHR inDeferredOperation) -> VkPipeline
+{
+	auto [pipeline, result] = AllocateRayTracingPipelineWithResult(inCreateInfo, inCache, inDeferredOperation);
+	VK_CHECK(result, "Failed to allocate ray tracing pipeline!");
+
+	return pipeline;
+}
+
+bool RayTracingPipelineAllocator::FreeRayTracingPipeline(VkPipeline& inoutPipeline)
+{
+	if (!HasRayTracingPipeline(inoutPipeline))
+	{
+		return false;
+	}
+
+	inoutPipeline = VK_NULL_HANDLE;
+	return true;
+}
+
+bool RayTracingPipelineAllocator::HasRayTracingPipeline(VkPipeline inPipeline) const
+{
+	if (inPipeline == VK_NULL_HANDLE)
+	{
+		return false;
+	}
+
+	for (const auto& [hash, pipeline] : m_mapHashToVkPipeline)
+	{
+		if (pipeline == inPipeline)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void RayTracingPipelineAllocator::Destroy()
 {
 	if (m_vkDevice != VK_NULL_HANDLE)
 	{

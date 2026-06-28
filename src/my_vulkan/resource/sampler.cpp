@@ -1,101 +1,138 @@
 #include "sampler.h"
 #include "device.h"
-VkSampler SamplerPool::_GetSampler(const SamplerInfo _info)
-{
-	SamplerInfo key = _info;
-	key.info.pNext = nullptr;
-	auto it = m_mapInfoToIndex.find(key);
-	uint32_t idx = 0;
-	if ( it == m_mapInfoToIndex.end())
-	{
-		// need new entry
-		if (m_currentId == ~0)
-		{
-			idx = static_cast<uint32_t>(m_vecSamplerEntries.size());
-			m_vecSamplerEntries.push_back(SamplerEntry{});
-		}
-		else
-		{
-			idx = m_currentId;
-			CHECK_TRUE(m_vecSamplerEntries[m_currentId].vkSampler == VK_NULL_HANDLE, "Entry still holds a sampler!");			
-		}
-		VkSampler* pSampler = &m_vecSamplerEntries[idx].vkSampler;
-		
-		VK_CHECK(vkCreateSampler(MyDevice::GetInstance().vkDevice, &_info.info, nullptr, pSampler), "Failed to create sampler!");
-		m_vecSamplerEntries[idx].info = key;
+#include "allocator/sampler_allocator.h"
 
-		m_mapSamplerToIndex.insert({ *pSampler, idx });
-		m_mapInfoToIndex.insert({ key, idx });
-		
-		m_currentId = m_vecSamplerEntries[idx].nextId;
-	}
-	else
+namespace
+{
+	auto _NormalizeSamplerCreateInfo(const VkSamplerCreateInfo& inCreateInfo)->VkSamplerCreateInfo
 	{
-		idx = it->second;
+		VkSamplerCreateInfo result = inCreateInfo;
+
+		result.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+		result.pNext = nullptr;
+
+		return result;
 	}
-	
-	m_vecSamplerEntries[idx].refCount++;
-	return m_vecSamplerEntries[idx].vkSampler;
 }
 
-VkSampler SamplerPool::GetSampler(const VkSamplerCreateInfo& _createInfo)
+SamplerCreateInfo::SamplerCreateInfo()
 {
-	SamplerInfo info;
-	info.info = _createInfo;
-	return _GetSampler(info);
+	Reset();
 }
 
-VkSampler SamplerPool::GetSampler(
-	VkFilter filter, 
-	VkSamplerAddressMode addressMode, 
-	VkSamplerMipmapMode mipmapMode, 
-	float minLod, 
-	float maxLod, 
-	float mipLodBias, 
-	bool anistrophyEnable, 
-	float maxAnistrophy)
+auto SamplerCreateInfo::Reset()->SamplerCreateInfo&
 {
-	VkSamplerCreateInfo createInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-	
-	createInfo.addressModeU = addressMode;
-	createInfo.addressModeV = addressMode;
-	createInfo.addressModeW = addressMode;
-	createInfo.magFilter = filter;
-	createInfo.minFilter = filter;
-	createInfo.mipmapMode = mipmapMode;
-	createInfo.minLod = minLod;
-	createInfo.maxLod = maxLod;
-	createInfo.mipLodBias = mipLodBias;
-	createInfo.anisotropyEnable = anistrophyEnable ? VK_TRUE : VK_FALSE;
-	createInfo.maxAnisotropy = maxAnistrophy;
-	createInfo.compareEnable = VK_FALSE;
-	createInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-	createInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+	m_createInfo = VkSamplerCreateInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+	m_createInfo.magFilter = VK_FILTER_LINEAR;
+	m_createInfo.minFilter = VK_FILTER_LINEAR;
+	m_createInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	m_createInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	m_createInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	m_createInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	m_createInfo.mipLodBias = 0.0f;
+	m_createInfo.anisotropyEnable = VK_FALSE;
+	m_createInfo.maxAnisotropy = 1.0f;
+	m_createInfo.compareEnable = VK_FALSE;
+	m_createInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+	m_createInfo.minLod = 0.0f;
+	m_createInfo.maxLod = VK_LOD_CLAMP_NONE;
+	m_createInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+	m_createInfo.unnormalizedCoordinates = VK_FALSE;
 
-	return GetSampler(createInfo);
+	return *this;
 }
 
-void SamplerPool::ReturnSampler(VkSampler& _sampler)
+auto SamplerCreateInfo::SetVkSamplerCreateInfo(const VkSamplerCreateInfo& inCreateInfo)->SamplerCreateInfo&
 {
-	auto it = m_mapSamplerToIndex.find(_sampler);
-	CHECK_TRUE(it != m_mapSamplerToIndex.end(), "Sampler pool doesn't have this sampler!");
-	uint32_t idx = it->second;
-	SamplerEntry& entry = m_vecSamplerEntries[idx];
+	m_createInfo = _NormalizeSamplerCreateInfo(inCreateInfo);
 
-	CHECK_TRUE(entry.vkSampler == _sampler, "Wrong sampler!");
-	CHECK_TRUE(entry.refCount > 0, "Wrong reference count!");
+	return *this;
+}
 
-	entry.refCount--;
+auto SamplerCreateInfo::SetFilter(VkFilter inMinFilter, VkFilter inMagFilter)->SamplerCreateInfo&
+{
+	m_createInfo.minFilter = inMinFilter;
+	m_createInfo.magFilter = inMagFilter;
 
-	if (entry.refCount == 0)
+	return *this;
+}
+
+auto SamplerCreateInfo::SetAddressMode(VkSamplerAddressMode inAddressMode)->SamplerCreateInfo&
+{
+	return SetAddressMode(inAddressMode, inAddressMode, inAddressMode);
+}
+
+auto SamplerCreateInfo::SetAddressMode(
+	VkSamplerAddressMode inAddressModeU,
+	VkSamplerAddressMode inAddressModeV,
+	VkSamplerAddressMode inAddressModeW)->SamplerCreateInfo&
+{
+	m_createInfo.addressModeU = inAddressModeU;
+	m_createInfo.addressModeV = inAddressModeV;
+	m_createInfo.addressModeW = inAddressModeW;
+
+	return *this;
+}
+
+auto SamplerCreateInfo::SetMipmapMode(VkSamplerMipmapMode inMipmapMode)->SamplerCreateInfo&
+{
+	m_createInfo.mipmapMode = inMipmapMode;
+
+	return *this;
+}
+
+auto SamplerCreateInfo::SetLod(float inMinLod, float inMaxLod, float inMipLodBias)->SamplerCreateInfo&
+{
+	m_createInfo.minLod = inMinLod;
+	m_createInfo.maxLod = inMaxLod;
+	m_createInfo.mipLodBias = inMipLodBias;
+
+	return *this;
+}
+
+auto SamplerCreateInfo::EnableAnisotropy(float inMaxAnisotropy)->SamplerCreateInfo&
+{
+	m_createInfo.anisotropyEnable = VK_TRUE;
+	m_createInfo.maxAnisotropy = inMaxAnisotropy;
+
+	return *this;
+}
+
+auto SamplerCreateInfo::DisableAnisotropy()->SamplerCreateInfo&
+{
+	m_createInfo.anisotropyEnable = VK_FALSE;
+	m_createInfo.maxAnisotropy = 1.0f;
+
+	return *this;
+}
+
+auto SamplerCreateInfo::GetVkSamplerCreateInfo() const->const VkSamplerCreateInfo&
+{
+	return m_createInfo;
+}
+
+Sampler::~Sampler()
+{
+	assert(m_vkSampler == VK_NULL_HANDLE);
+}
+
+auto Sampler::Create(const SamplerCreateInfo* inCreateInfo)->void
+{
+	CHECK_TRUE(inCreateInfo != nullptr, "No sampler create info!");
+	CHECK_TRUE(m_vkSampler == VK_NULL_HANDLE, "Sampler already created!");
+
+	m_vkSampler = MyDevice::GetInstance().GetSamplerAllocator()->AllocateSampler(inCreateInfo);
+}
+
+auto Sampler::Destroy()->void
+{
+	if (m_vkSampler != VK_NULL_HANDLE)
 	{
-		m_mapSamplerToIndex.erase(entry.vkSampler);
-		m_mapInfoToIndex.erase(entry.info);
-		vkDestroySampler(MyDevice::GetInstance().vkDevice, entry.vkSampler, nullptr);
-		entry.vkSampler = VK_NULL_HANDLE;
-		uint32_t newEmptyEntry = idx;
-		entry.nextId = m_currentId;
-		m_currentId = newEmptyEntry;
+		MyDevice::GetInstance().GetSamplerAllocator()->FreeSampler(m_vkSampler);
 	}
-	_sampler = VK_NULL_HANDLE;
+}
+
+auto Sampler::GetVkSampler() const->VkSampler
+{
+	return m_vkSampler;
 }

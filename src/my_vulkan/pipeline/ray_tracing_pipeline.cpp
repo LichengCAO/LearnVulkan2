@@ -423,7 +423,7 @@ void RayTracingPipeline::Builder::InitRayTracingPipeline(RayTracingPipeline* pPi
 	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 	pipelineInfo.basePipelineIndex = -1;
 
-	pipelineToInit = device.CreateRayTracingPipeline(pipelineInfo);
+	pipelineToInit = device.CreateRayTracingPipeline(pipelineInfo, m_vkPipelineCache);
 
 	// Fetch shader group handles and cache them in RayTracingShaderGroupSet.
 	device.GetPhysicalDeviceRayTracingProperties(rayTracingProperties);

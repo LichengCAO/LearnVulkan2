@@ -9,6 +9,7 @@
 
 Image::~Image()
 {
+	assert(m_uptrImageViews.empty());
 	assert(m_vkImage == VK_NULL_HANDLE);
 }
 
@@ -77,6 +78,8 @@ void Image::Create(const SwapchainImageCreateInfo* inCreateInfo)
 
 void Image::Destroy()
 {
+	_DestroyViews();
+
 	if (m_imageInformation.isSwapchainImage)
 	{
 		if (m_vkImage != VK_NULL_HANDLE)
@@ -131,6 +134,73 @@ VkImage Image::GetVkImage() const
 	return m_vkImage;
 }
 
+ImageView* Image::_FindView(const ImageViewInfo& inCreateInfo) const
+{
+	CHECK_TRUE(m_vkImage != VK_NULL_HANDLE, "Image must be created before requesting an image view!");
+	CHECK_TRUE(inCreateInfo.m_baseMipLevel < m_imageInformation.mipLevels, "Base mip level out of range!");
+	CHECK_TRUE(inCreateInfo.m_baseArrayLayer < m_imageInformation.arrayLayers, "Base array layer out of range!");
+
+	const uint32_t resolvedLevelCount = (inCreateInfo.m_levelCount == VK_REMAINING_MIP_LEVELS)
+		? (m_imageInformation.mipLevels - inCreateInfo.m_baseMipLevel)
+		: inCreateInfo.m_levelCount;
+	const uint32_t resolvedLayerCount = (inCreateInfo.m_layerCount == VK_REMAINING_ARRAY_LAYERS)
+		? (m_imageInformation.arrayLayers - inCreateInfo.m_baseArrayLayer)
+		: inCreateInfo.m_layerCount;
+
+	CHECK_TRUE(resolvedLevelCount > 0, "Image view level count must be greater than 0!");
+	CHECK_TRUE(resolvedLayerCount > 0, "Image view layer count must be greater than 0!");
+	CHECK_TRUE((inCreateInfo.m_baseMipLevel + resolvedLevelCount) <= m_imageInformation.mipLevels, "Mip range out of range!");
+	CHECK_TRUE((inCreateInfo.m_baseArrayLayer + resolvedLayerCount) <= m_imageInformation.arrayLayers, "Array layer range out of range!");
+
+	for (const auto& uptrView : m_uptrImageViews)
+	{
+		const auto& viewInfo = uptrView->GetImageViewInformation();
+		if (viewInfo.baseMipLevel == inCreateInfo.m_baseMipLevel
+			&& viewInfo.levelCount == resolvedLevelCount
+			&& viewInfo.baseArrayLayer == inCreateInfo.m_baseArrayLayer
+			&& viewInfo.layerCount == resolvedLayerCount)
+		{
+			return uptrView.get();
+		}
+	}
+
+	return nullptr;
+}
+
+void Image::_DestroyViews()
+{
+	for (auto& uptrView : m_uptrImageViews)
+	{
+		if (uptrView != nullptr)
+		{
+			uptrView->Destroy();
+		}
+	}
+	m_uptrImageViews.clear();
+}
+
+const ImageView* Image::View()
+{
+	ImageViewInfo createInfo{};
+
+	return View(createInfo);
+}
+
+const ImageView* Image::View(const ImageViewInfo& inCreateInfo)
+{
+	if (ImageView* existingView = _FindView(inCreateInfo))
+	{
+		return existingView;
+	}
+
+	auto uptrView = std::make_unique<ImageView>();
+	uptrView->Create(this, &inCreateInfo);
+	ImageView* result = uptrView.get();
+	m_uptrImageViews.push_back(std::move(uptrView));
+
+	return result;
+}
+
 ImageView::~ImageView()
 {
 	assert(m_vkImageView == VK_NULL_HANDLE);
@@ -158,15 +228,16 @@ VkImageAspectFlags _GetDefaultAspectMask(VkFormat format)
 }
 }
 
-void ImageView::Create(const CreateInfo* inCreateInfo)
+void ImageView::Create(const Image* inImage, const ImageViewInfo* inCreateInfo)
 {
 	CHECK_TRUE(inCreateInfo != nullptr, "No image view create info!");
-	CHECK_TRUE(inCreateInfo->m_pImage != nullptr, "No image!");
+	CHECK_TRUE(inImage != nullptr, "No image!");
+	CHECK_TRUE(m_vkImageView == VK_NULL_HANDLE, "Image view already created!");
 
 	auto& infoToFill = m_viewInformation;
 	auto& device = MyDevice::GetInstance();
 	VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-	const auto& imageInfo = inCreateInfo->m_pImage->GetImageInformation();
+	const auto& imageInfo = inImage->GetImageInformation();
 	CHECK_TRUE(inCreateInfo->m_baseMipLevel < imageInfo.mipLevels, "Base mip level out of range!");
 	CHECK_TRUE(inCreateInfo->m_baseArrayLayer < imageInfo.arrayLayers, "Base array layer out of range!");
 	const uint32_t resolvedLevelCount = (inCreateInfo->m_levelCount == VK_REMAINING_MIP_LEVELS)
@@ -190,7 +261,7 @@ void ImageView::Create(const CreateInfo* inCreateInfo)
 	infoToFill.layerCount = resolvedLayerCount;
 	infoToFill.format = imageInfo.format;
 	infoToFill.aspectMask = aspectMask;
-	infoToFill.vkImage = inCreateInfo->m_pImage->GetVkImage();
+	infoToFill.vkImage = inImage->GetVkImage();
 
 	switch (imageInfo.imageType)
 	{

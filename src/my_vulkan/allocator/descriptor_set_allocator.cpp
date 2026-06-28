@@ -64,73 +64,7 @@ void DescriptorSetAllocator::ResetPools()
 	m_candidatePool.clear();
 }
 
-bool DescriptorSetAllocator::Allocate(
-	VkDescriptorSetLayout inLayout,
-	VkDescriptorSet& outDescriptorSet,
-	VkDescriptorPoolCreateFlags inPoolFlags,
-	const void* inNextPtr)
-{
-	auto& device = MyDevice::GetInstance();
-	VkDescriptorSetAllocateInfo allocInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-	VkDescriptorPool candidatePool = VK_NULL_HANDLE;
-	VkResult allocResult;
-	bool needReallocate = false;
-
-	if (m_candidatePool.find(inPoolFlags) == m_candidatePool.end()
-		|| m_candidatePool[inPoolFlags] == VK_NULL_HANDLE)
-	{
-		candidatePool = _GrabPool(inPoolFlags);
-		m_candidatePool[inPoolFlags] = candidatePool;
-		m_usedPools[inPoolFlags].push_back(candidatePool);
-	}
-	else
-	{
-		candidatePool = m_candidatePool[inPoolFlags];
-	}
-
-	allocInfo.pNext = nullptr;
-	allocInfo.pSetLayouts = &inLayout;
-	allocInfo.descriptorPool = candidatePool;
-	allocInfo.descriptorSetCount = 1;
-
-	outDescriptorSet = device.AllocateDescriptorSet(
-		inLayout,
-		candidatePool,
-		allocResult);
-
-	switch (allocResult)
-	{
-	case VK_SUCCESS:
-		return true;
-	case VK_ERROR_FRAGMENTED_POOL:
-	case VK_ERROR_OUT_OF_POOL_MEMORY:
-		needReallocate = true;
-		break;
-	default:
-		return false;
-	}
-
-	if (needReallocate)
-	{
-		candidatePool = _GrabPool(inPoolFlags);
-		m_candidatePool[inPoolFlags] = candidatePool;
-		m_usedPools[inPoolFlags].push_back(candidatePool);
-
-		outDescriptorSet = device.AllocateDescriptorSet(
-			inLayout,
-			candidatePool,
-			allocResult);
-
-		if (allocResult == VK_SUCCESS)
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-auto DescriptorSetAllocator::AllocateDescriptorSet(
+auto DescriptorSetAllocator::AllocateDescriptorSetWithResult(
 	VkDescriptorSetLayout inLayout,
 	VkDescriptorPoolCreateFlags inPoolFlags,
 	const void* inNextPtr) -> std::pair<VkDescriptorSet, VkResult>
@@ -172,6 +106,17 @@ auto DescriptorSetAllocator::AllocateDescriptorSet(
 	}
 
 	return { descriptorSet, allocResult };
+}
+
+auto DescriptorSetAllocator::AllocateDescriptorSet(
+	VkDescriptorSetLayout inLayout,
+	VkDescriptorPoolCreateFlags inPoolFlags,
+	const void* inNextPtr) -> VkDescriptorSet
+{
+	auto [descriptorSet, result] = AllocateDescriptorSetWithResult(inLayout, inPoolFlags, inNextPtr);
+	VK_CHECK(result, "Failed to allocate descriptor set!");
+
+	return descriptorSet;
 }
 
 void DescriptorSetAllocator::Create()
