@@ -23,6 +23,7 @@ namespace
 
 Buffer::~Buffer()
 {
+	assert(m_uptrBufferViews.empty());
 	assert(m_vkBuffer == VK_NULL_HANDLE);
 	assert(m_mappedMemory == nullptr);
 }
@@ -48,6 +49,8 @@ void Buffer::Create(const BufferCreateInfo* inCreateInfo)
 
 void Buffer::Destroy()
 {
+	_DestroyViews();
+
 	if (m_vkBuffer != VK_NULL_HANDLE)
 	{
 		_FreeMemory();
@@ -135,6 +138,7 @@ Buffer::Buffer(Buffer&& _toMove)
 	m_vkBuffer = _toMove.m_vkBuffer;
 	m_mappedMemory = _toMove.m_mappedMemory;
 	m_bufferInformation = _toMove.m_bufferInformation;
+	m_uptrBufferViews = std::move(_toMove.m_uptrBufferViews);
 	_toMove.m_vkBuffer = VK_NULL_HANDLE;
 	_toMove.m_mappedMemory = nullptr;
 }
@@ -258,50 +262,21 @@ BufferCreateInfo& BufferCreateInfo::CustomizeAlignment(VkDeviceSize inAlignment)
 	return *this;
 }
 
-void BufferView::Initializer::InitBufferView(BufferView* outViewPtr) const
+auto BufferViewInfo::Reset()->BufferViewInfo&
 {
-	auto& device = MyDevice::GetInstance();
-	VkBufferViewCreateInfo createInfo{ VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO };
-
-	createInfo.buffer = m_buffer;
-	createInfo.format = m_format;
-	createInfo.offset = m_offset;
-	createInfo.range = m_range;
-
-	outViewPtr->m_format = m_format;
-	outViewPtr->m_vkBufferView = device.CreateBufferView(createInfo);
-}
-
-BufferView::Initializer& BufferView::Initializer::Reset()
-{
-	*this = BufferView::Initializer{};
+	*this = BufferViewInfo{};
 
 	return *this;
 }
 
-BufferView::Initializer& BufferView::Initializer::SetFormat(VkFormat inFormat)
+auto BufferViewInfo::SetFormat(VkFormat inFormat)->BufferViewInfo&
 {
 	m_format = inFormat;
-	return *this;
-}
-
-BufferView::Initializer& BufferView::Initializer::SetBuffer(const Buffer* inBufferPtr)
-{
-	auto& bufferInfo = inBufferPtr->GetBufferInformation();
-
-	CHECK_TRUE(
-		CONTAIN_BITS(bufferInfo.usage, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) || 
-		CONTAIN_BITS(bufferInfo.usage, VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT), 
-		"This buffer cannot have buffer views!");
-
-	m_buffer = inBufferPtr->GetVkBuffer();
-	m_offset = 0;
-	m_range = bufferInfo.size;
 
 	return *this;
 }
 
-BufferView::Initializer& BufferView::Initializer::CustomizeBufferRange(VkDeviceSize inOffset, VkDeviceSize inRange)
+auto BufferViewInfo::CustomizeBufferRange(VkDeviceSize inOffset, VkDeviceSize inRange)->BufferViewInfo&
 {
 	m_offset = inOffset;
 	m_range = inRange;
@@ -309,18 +284,107 @@ BufferView::Initializer& BufferView::Initializer::CustomizeBufferRange(VkDeviceS
 	return *this;
 }
 
+BufferView* Buffer::_FindView(const BufferViewInfo& inCreateInfo) const
+{
+	CHECK_TRUE(m_vkBuffer != VK_NULL_HANDLE, "Buffer must be created before requesting a buffer view!");
+	CHECK_TRUE(inCreateInfo.m_format != VK_FORMAT_UNDEFINED, "Buffer view format must be set!");
+	CHECK_TRUE(inCreateInfo.m_offset < m_bufferInformation.size, "Buffer view offset out of range!");
+
+	const VkDeviceSize resolvedRange = (inCreateInfo.m_range == VK_WHOLE_SIZE)
+		? (m_bufferInformation.size - inCreateInfo.m_offset)
+		: inCreateInfo.m_range;
+
+	CHECK_TRUE(resolvedRange > 0, "Buffer view range must be greater than 0!");
+	CHECK_TRUE((inCreateInfo.m_offset + resolvedRange) <= m_bufferInformation.size, "Buffer view range out of range!");
+	CHECK_TRUE(
+		CONTAIN_BITS(m_bufferInformation.usage, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) ||
+		CONTAIN_BITS(m_bufferInformation.usage, VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT),
+		"This buffer cannot have buffer views!");
+
+	for (const auto& uptrView : m_uptrBufferViews)
+	{
+		const auto& viewInfo = uptrView->GetBufferViewInformation();
+		if (viewInfo.format == inCreateInfo.m_format
+			&& viewInfo.offset == inCreateInfo.m_offset
+			&& viewInfo.range == resolvedRange)
+		{
+			return uptrView.get();
+		}
+	}
+
+	return nullptr;
+}
+
+void Buffer::_DestroyViews()
+{
+	for (auto& uptrView : m_uptrBufferViews)
+	{
+		if (uptrView != nullptr)
+		{
+			uptrView->Destroy();
+		}
+	}
+	m_uptrBufferViews.clear();
+}
+
+auto Buffer::View(const BufferViewInfo& inCreateInfo)->const BufferView*
+{
+	if (BufferView* existingView = _FindView(inCreateInfo))
+	{
+		return existingView;
+	}
+
+	auto uptrView = std::make_unique<BufferView>();
+	uptrView->Create(this, &inCreateInfo);
+	BufferView* result = uptrView.get();
+	m_uptrBufferViews.push_back(std::move(uptrView));
+
+	return result;
+}
+
 BufferView::~BufferView()
 {
-	CHECK_TRUE(m_vkBufferView == VK_NULL_HANDLE);
+	assert(m_vkBufferView == VK_NULL_HANDLE);
 }
 
-void BufferView::Create(const IBufferViewInitializer* inInitPtr)
+auto BufferView::Create(const Buffer* inBuffer, const BufferViewInfo* inCreateInfo)->void
 {
+	CHECK_TRUE(inCreateInfo != nullptr, "No buffer view create info!");
+	CHECK_TRUE(inBuffer != nullptr, "No buffer!");
 	CHECK_TRUE(m_vkBufferView == VK_NULL_HANDLE, "VkBufferView is already created!");
-	inInitPtr->InitBufferView(this);
+
+	const auto& bufferInfo = inBuffer->GetBufferInformation();
+	CHECK_TRUE(inCreateInfo->m_offset < bufferInfo.size, "Buffer view offset out of range!");
+
+	const VkDeviceSize resolvedRange = (inCreateInfo->m_range == VK_WHOLE_SIZE)
+		? (bufferInfo.size - inCreateInfo->m_offset)
+		: inCreateInfo->m_range;
+
+	CHECK_TRUE(inCreateInfo->m_format != VK_FORMAT_UNDEFINED, "Buffer view format must be set!");
+	CHECK_TRUE(resolvedRange > 0, "Buffer view range must be greater than 0!");
+	CHECK_TRUE((inCreateInfo->m_offset + resolvedRange) <= bufferInfo.size, "Buffer view range out of range!");
+	CHECK_TRUE(
+		CONTAIN_BITS(bufferInfo.usage, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) ||
+		CONTAIN_BITS(bufferInfo.usage, VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT),
+		"This buffer cannot have buffer views!");
+
+	auto& device = MyDevice::GetInstance();
+	VkBufferViewCreateInfo createInfo{ VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO };
+
+	m_viewInformation.vkBuffer = inBuffer->GetVkBuffer();
+	m_viewInformation.format = inCreateInfo->m_format;
+	m_viewInformation.offset = inCreateInfo->m_offset;
+	m_viewInformation.range = resolvedRange;
+
+	createInfo.buffer = m_viewInformation.vkBuffer;
+	createInfo.format = m_viewInformation.format;
+	createInfo.offset = m_viewInformation.offset;
+	createInfo.range = m_viewInformation.range;
+
+	m_vkBufferView = device.CreateBufferView(createInfo);
 }
 
-void BufferView::Destroy()
+auto BufferView::Destroy()->void
 {
 	if (m_vkBufferView != VK_NULL_HANDLE)
 	{
@@ -329,5 +393,15 @@ void BufferView::Destroy()
 		device.DestroyBufferView(m_vkBufferView);
 		m_vkBufferView = VK_NULL_HANDLE;
 	}
-	m_format = VK_FORMAT_UNDEFINED;
+	m_viewInformation = BufferView::Information{};
+}
+
+auto BufferView::GetBufferViewInformation() const->const Information&
+{
+	return m_viewInformation;
+}
+
+auto BufferView::GetVkBufferView() const->VkBufferView
+{
+	return m_vkBufferView;
 }

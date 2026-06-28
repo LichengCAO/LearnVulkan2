@@ -14,26 +14,26 @@ private:
 public:
 	SamplerCreateInfo();
 
-	auto Reset()->SamplerCreateInfo&;
+	auto CustomizeFilter(VkFilter inMinFilter, VkFilter inMagFilter)->SamplerCreateInfo&;
 
-	auto SetVkSamplerCreateInfo(const VkSamplerCreateInfo& inCreateInfo)->SamplerCreateInfo&;
+	auto CustomizeAddressMode(VkSamplerAddressMode inAddressMode)->SamplerCreateInfo&;
 
-	auto SetFilter(VkFilter inMinFilter, VkFilter inMagFilter)->SamplerCreateInfo&;
-
-	auto SetAddressMode(VkSamplerAddressMode inAddressMode)->SamplerCreateInfo&;
-
-	auto SetAddressMode(
+	auto CustomizeAddressMode(
 		VkSamplerAddressMode inAddressModeU,
 		VkSamplerAddressMode inAddressModeV,
 		VkSamplerAddressMode inAddressModeW)->SamplerCreateInfo&;
 
-	auto SetMipmapMode(VkSamplerMipmapMode inMipmapMode)->SamplerCreateInfo&;
+	auto CustomizeMipmapMode(VkSamplerMipmapMode inMipmapMode)->SamplerCreateInfo&;
 
-	auto SetLod(float inMinLod, float inMaxLod, float inMipLodBias = 0.0f)->SamplerCreateInfo&;
+	auto CustomizeLod(float inMinLod, float inMaxLod, float inMipLodBias = 0.0f)->SamplerCreateInfo&;
 
-	auto EnableAnisotropy(float inMaxAnisotropy)->SamplerCreateInfo&;
+	auto CustomizeAnisotropy(float inMaxAnisotropy)->SamplerCreateInfo&;
 
-	auto DisableAnisotropy()->SamplerCreateInfo&;
+	auto CustomizeCompare(VkCompareOp inCompareOp)->SamplerCreateInfo&;
+
+	auto CustomizeBorderColor(VkBorderColor inBorderColor)->SamplerCreateInfo&;
+
+	auto CustomizeUnnormalizedCoordinates()->SamplerCreateInfo&;
 
 	auto GetVkSamplerCreateInfo() const->const VkSamplerCreateInfo&;
 };

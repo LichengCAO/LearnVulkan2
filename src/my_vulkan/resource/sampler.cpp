@@ -2,25 +2,7 @@
 #include "device.h"
 #include "allocator/sampler_allocator.h"
 
-namespace
-{
-	auto _NormalizeSamplerCreateInfo(const VkSamplerCreateInfo& inCreateInfo)->VkSamplerCreateInfo
-	{
-		VkSamplerCreateInfo result = inCreateInfo;
-
-		result.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-		result.pNext = nullptr;
-
-		return result;
-	}
-}
-
 SamplerCreateInfo::SamplerCreateInfo()
-{
-	Reset();
-}
-
-auto SamplerCreateInfo::Reset()->SamplerCreateInfo&
 {
 	m_createInfo = VkSamplerCreateInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
 	m_createInfo.magFilter = VK_FILTER_LINEAR;
@@ -38,18 +20,9 @@ auto SamplerCreateInfo::Reset()->SamplerCreateInfo&
 	m_createInfo.maxLod = VK_LOD_CLAMP_NONE;
 	m_createInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
 	m_createInfo.unnormalizedCoordinates = VK_FALSE;
-
-	return *this;
 }
 
-auto SamplerCreateInfo::SetVkSamplerCreateInfo(const VkSamplerCreateInfo& inCreateInfo)->SamplerCreateInfo&
-{
-	m_createInfo = _NormalizeSamplerCreateInfo(inCreateInfo);
-
-	return *this;
-}
-
-auto SamplerCreateInfo::SetFilter(VkFilter inMinFilter, VkFilter inMagFilter)->SamplerCreateInfo&
+auto SamplerCreateInfo::CustomizeFilter(VkFilter inMinFilter, VkFilter inMagFilter)->SamplerCreateInfo&
 {
 	m_createInfo.minFilter = inMinFilter;
 	m_createInfo.magFilter = inMagFilter;
@@ -57,12 +30,12 @@ auto SamplerCreateInfo::SetFilter(VkFilter inMinFilter, VkFilter inMagFilter)->S
 	return *this;
 }
 
-auto SamplerCreateInfo::SetAddressMode(VkSamplerAddressMode inAddressMode)->SamplerCreateInfo&
+auto SamplerCreateInfo::CustomizeAddressMode(VkSamplerAddressMode inAddressMode)->SamplerCreateInfo&
 {
-	return SetAddressMode(inAddressMode, inAddressMode, inAddressMode);
+	return CustomizeAddressMode(inAddressMode, inAddressMode, inAddressMode);
 }
 
-auto SamplerCreateInfo::SetAddressMode(
+auto SamplerCreateInfo::CustomizeAddressMode(
 	VkSamplerAddressMode inAddressModeU,
 	VkSamplerAddressMode inAddressModeV,
 	VkSamplerAddressMode inAddressModeW)->SamplerCreateInfo&
@@ -74,14 +47,14 @@ auto SamplerCreateInfo::SetAddressMode(
 	return *this;
 }
 
-auto SamplerCreateInfo::SetMipmapMode(VkSamplerMipmapMode inMipmapMode)->SamplerCreateInfo&
+auto SamplerCreateInfo::CustomizeMipmapMode(VkSamplerMipmapMode inMipmapMode)->SamplerCreateInfo&
 {
 	m_createInfo.mipmapMode = inMipmapMode;
 
 	return *this;
 }
 
-auto SamplerCreateInfo::SetLod(float inMinLod, float inMaxLod, float inMipLodBias)->SamplerCreateInfo&
+auto SamplerCreateInfo::CustomizeLod(float inMinLod, float inMaxLod, float inMipLodBias)->SamplerCreateInfo&
 {
 	m_createInfo.minLod = inMinLod;
 	m_createInfo.maxLod = inMaxLod;
@@ -90,7 +63,7 @@ auto SamplerCreateInfo::SetLod(float inMinLod, float inMaxLod, float inMipLodBia
 	return *this;
 }
 
-auto SamplerCreateInfo::EnableAnisotropy(float inMaxAnisotropy)->SamplerCreateInfo&
+auto SamplerCreateInfo::CustomizeAnisotropy(float inMaxAnisotropy)->SamplerCreateInfo&
 {
 	m_createInfo.anisotropyEnable = VK_TRUE;
 	m_createInfo.maxAnisotropy = inMaxAnisotropy;
@@ -98,10 +71,24 @@ auto SamplerCreateInfo::EnableAnisotropy(float inMaxAnisotropy)->SamplerCreateIn
 	return *this;
 }
 
-auto SamplerCreateInfo::DisableAnisotropy()->SamplerCreateInfo&
+auto SamplerCreateInfo::CustomizeCompare(VkCompareOp inCompareOp)->SamplerCreateInfo&
 {
-	m_createInfo.anisotropyEnable = VK_FALSE;
-	m_createInfo.maxAnisotropy = 1.0f;
+	m_createInfo.compareEnable = VK_TRUE;
+	m_createInfo.compareOp = inCompareOp;
+
+	return *this;
+}
+
+auto SamplerCreateInfo::CustomizeBorderColor(VkBorderColor inBorderColor)->SamplerCreateInfo&
+{
+	m_createInfo.borderColor = inBorderColor;
+
+	return *this;
+}
+
+auto SamplerCreateInfo::CustomizeUnnormalizedCoordinates()->SamplerCreateInfo&
+{
+	m_createInfo.unnormalizedCoordinates = VK_TRUE;
 
 	return *this;
 }

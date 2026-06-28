@@ -12,6 +12,7 @@
 #include "pipeline_layout_allocator.h"
 #include "pipeline_allocator.h"
 #include "allocator/sampler_allocator.h"
+#include "command/command_queue.h"
 #include <iomanip>
 #define VOLK_IMPLEMENTATION
 #include <volk.h>

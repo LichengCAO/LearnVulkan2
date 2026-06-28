@@ -7,10 +7,48 @@ class BufferView;
 class CommandBuffer;
 class MemoryAllocator;
 
-class IBufferViewInitializer
+class BufferViewInfo final
+{
+private:
+	friend class Buffer;
+	friend class BufferView;
+
+	VkFormat m_format = VK_FORMAT_UNDEFINED;
+	VkDeviceSize m_offset = 0;
+	VkDeviceSize m_range = VK_WHOLE_SIZE;
+
+public:
+	auto Reset()->BufferViewInfo&;
+	auto SetFormat(VkFormat inFormat)->BufferViewInfo&;
+	auto CustomizeBufferRange(VkDeviceSize inOffset, VkDeviceSize inRange = VK_WHOLE_SIZE)->BufferViewInfo&;
+};
+
+class BufferView final
 {
 public:
-	virtual void InitBufferView(BufferView* outViewPtr) const = 0;
+	struct Information
+	{
+		VkBuffer vkBuffer = VK_NULL_HANDLE;
+		VkFormat format = VK_FORMAT_UNDEFINED;
+		VkDeviceSize offset = 0;
+		VkDeviceSize range = VK_WHOLE_SIZE;
+	};
+
+private:
+	Information m_viewInformation{};
+	VkBufferView m_vkBufferView = VK_NULL_HANDLE;
+
+private:
+	auto Create(const Buffer* inBuffer, const BufferViewInfo* inCreateInfo)->void;
+	auto Destroy()->void;
+
+public:
+	~BufferView();
+
+	auto GetBufferViewInformation() const->const Information&;
+	auto GetVkBufferView() const->VkBufferView;
+
+	friend class Buffer;
 };
 
 class BufferCreateInfo final
@@ -60,6 +98,7 @@ private:
 	Information m_bufferInformation{};
 	void* m_mappedMemory = nullptr; // we store this value, since mapping is not free
 	VkBuffer m_vkBuffer = VK_NULL_HANDLE;
+	std::vector<std::unique_ptr<BufferView>> m_uptrBufferViews;
 
 private:
 	MemoryAllocator* _GetMemoryAllocator() const;
@@ -77,6 +116,10 @@ private:
 	
 	// Create a staging buffer to copy from host and then copy from staging buffer
 	void _CopyFromHostWithStaggingBuffer(const void* src, size_t bufferOffest, size_t size);
+
+	BufferView* _FindView(const BufferViewInfo& inCreateInfo) const;
+
+	void _DestroyViews();
 
 public:
 	Buffer();
@@ -104,6 +147,8 @@ public:
 	// Fill buffer with input data by graphics queue, wait till finish
 	void Fill(uint32_t inData);
 
+	auto View(const BufferViewInfo& inCreateInfo)->const BufferView*;
+
 	// Get buffer information
 	const Buffer::Information& GetBufferInformation() const;
 	
@@ -115,47 +160,4 @@ public:
 
 	// Get device handle of this buffer
 	VkBuffer GetVkBuffer() const;
-};
-
-class BufferView // use for texel buffer
-{
-	//Resource Type :
-	//
-	//Storage Texel Buffer : Operates on buffer resources; ideal for 1D data that can benefit from format interpretation(e.g., integer or floating - point conversion).
-	//Storage Image : Operates on image resources; enables multi - dimensional access and supports a broader set of operations specific to images.
-	//Shader Access :
-	//
-	//Storage Texel Buffer : Accessed in shaders using imageLoadand imageStore functions with buffer access semantics.
-	//Storage Image : Fully supports imageLoad, imageStore, and atomic operations, providing more flexibility for image - oriented tasks.
-	//Setup Complexity :
-	//
-	//Storage Texel Buffer : Generally simpler to set up and use due to buffer - based nature.
-	//Storage Image : Involves more setup(memory layout transitions, view configurations) but offers richer functionality for image processing.
-private:
-	VkBufferView m_vkBufferView = VK_NULL_HANDLE;
-	VkFormat m_format = VK_FORMAT_UNDEFINED;
-
-public:
-	class Initializer : public IBufferViewInitializer
-	{
-	private:
-		VkFormat m_format = VK_FORMAT_UNDEFINED;
-		VkBuffer m_buffer = VK_NULL_HANDLE;
-		VkDeviceSize m_offset;
-		VkDeviceSize m_range;
-
-	public:
-		virtual void InitBufferView(BufferView* outViewPtr) const override;
-		BufferView::Initializer& Reset();
-		BufferView::Initializer& SetFormat(VkFormat inFormat);
-		BufferView::Initializer& SetBuffer(const Buffer* inBufferPtr);
-		BufferView::Initializer& CustomizeBufferRange(VkDeviceSize inOffset, VkDeviceSize inRange);
-	};
-
-public:
-	~BufferView();
-	
-	void Create(const IBufferViewInitializer* inInitPtr);
-	
-	void Destroy();
 };
