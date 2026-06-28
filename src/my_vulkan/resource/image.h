@@ -12,11 +12,68 @@ class MemoryAllocator;
 //	vkCmdWaitEvents VkCmdPipelineBarrier
 // https://gpuopen.com/download/Vulkanised2019_06_optimising_aaa_vulkan_title_on_desktop.pdf
 
-class IImageInitializer
+class ImageCreateInfo final
 {
+private:
+	VkImageUsageFlags m_usage = 0;
+	VkImageType m_type = VK_IMAGE_TYPE_2D;
+	std::optional<uint32_t> m_optWidth;							// optional, if unset image will be swapchain size
+	std::optional<uint32_t> m_optHeight;						// optional, don't set it if image isn't 2D
+	std::optional<uint32_t> m_optDepth;							// optional, don't set it if image isn't 3D
+	std::optional<uint32_t> m_optMipLevels;						// optional, default value: 1
+	std::optional<uint32_t> m_optArrayLayers;					// optional, default value: 1
+	std::optional<VkFormat> m_optFormat;						// optional, default value: VK_FORMAT_R32G32B32A32_SFLOAT;
+	std::optional<VkImageTiling> m_optTiling;					// optional, default value: VK_IMAGE_TILING_OPTIMAL;
+	std::optional<VkMemoryPropertyFlags> m_optMemoryProperty;	// optional, default value: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+	std::optional<VkSampleCountFlagBits> m_optSampleCount;		// optional, default value: VK_SAMPLE_COUNT_1_BIT;
+
+	friend class Image;
+
 public:
-	virtual ~IImageInitializer() {};
-	virtual void InitImage(Image* outImagePtr) const = 0;
+	ImageCreateInfo& Reset();
+
+	// Set usage of image, mandatory
+	ImageCreateInfo& SetUsage(VkImageUsageFlags usage);
+
+	// Optional, default: swapchain image size 2D image
+	ImageCreateInfo& CustomizeSize1D(uint32_t width);
+
+	// Optional, default: swapchain image size 2D image
+	ImageCreateInfo& CustomizeSize2D(uint32_t width, uint32_t height);
+
+	// Optional, default: swapchain image size 2D image
+	ImageCreateInfo& CustomizeSize3D(uint32_t width, uint32_t height, uint32_t depth);
+
+	// Optional, default: 1
+	ImageCreateInfo& CustomizeMipLevels(uint32_t mipLevelCount);
+
+	// Optional, default: 1
+	ImageCreateInfo& CustomizeArrayLayers(uint32_t layerCount);
+
+	// Optional, default: VK_FORMAT_R32G32B32A32_SFLOAT
+	ImageCreateInfo& CustomizeFormat(VkFormat format);
+
+	// Optional, default: VK_IMAGE_TILING_OPTIMAL
+	ImageCreateInfo& CustomizeImageTiling(VkImageTiling tiling);
+
+	// Optional, default: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+	ImageCreateInfo& CustomizeMemoryProperty(VkMemoryPropertyFlags memoryProperty);
+
+	// Optional, default: VK_SAMPLE_COUNT_1_BIT
+	ImageCreateInfo& CustomizeSampleCount(VkSampleCountFlagBits sampleCount);
+};
+
+class SwapchainImageCreateInfo final
+{
+private:
+	VkImage m_vkHandle = VK_NULL_HANDLE;
+	VkImageUsageFlags m_usage = 0;
+	VkFormat m_format = VK_FORMAT_UNDEFINED;
+
+	friend class Image;
+
+public:
+	SwapchainImageCreateInfo& SetUp(VkImage inSwapchain, VkImageUsageFlags inUsage, VkFormat inFormat);
 };
 
 class Image
@@ -38,70 +95,6 @@ public:
 		bool isSwapchainImage = false;
 	};
 
-	class Initializer : public IImageInitializer
-	{
-	private:
-		VkImageUsageFlags m_usage = 0;
-		VkImageType m_type = VK_IMAGE_TYPE_2D;
-		std::optional<uint32_t> m_optWidth;							// optional, if unset image will be swapchain size
-		std::optional<uint32_t> m_optHeight;						// optional, don't set it if image isn't 2D
-		std::optional<uint32_t> m_optDepth;							// optional, don't set it if image isn't 3D
-		std::optional<uint32_t> m_optMipLevels;						// optional, default value: 1
-		std::optional<uint32_t> m_optArrayLayers;					// optional, default value: 1
-		std::optional<VkFormat> m_optFormat;						// optional, default value: VK_FORMAT_R32G32B32A32_SFLOAT;
-		std::optional<VkImageTiling> m_optTiling;					// optional, default value: VK_IMAGE_TILING_OPTIMAL;
-		std::optional<VkMemoryPropertyFlags> m_optMemoryProperty;	// optional, default value: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-		std::optional<VkSampleCountFlagBits> m_optSampleCount;		// optional, default value: VK_SAMPLE_COUNT_1_BIT;
-
-	public:
-		virtual void InitImage(Image* outImagePtr) const override;
-
-		Image::Initializer& Reset();
-
-		// Set usage of image, mandatory
-		Image::Initializer& SetUsage(VkImageUsageFlags usage);
-
-		// Optional, default: swapchain image size 2D image
-		Image::Initializer& CustomizeSize1D(uint32_t width);
-
-		// Optional, default: swapchain image size 2D image
-		Image::Initializer& CustomizeSize2D(uint32_t width, uint32_t height);
-
-		// Optional, default: swapchain image size 2D image
-		Image::Initializer& CustomizeSize3D(uint32_t width, uint32_t height, uint32_t depth);
-
-		// Optional, default: 1
-		Image::Initializer& CustomizeMipLevels(uint32_t mipLevelCount);
-
-		// Optional, default: 1
-		Image::Initializer& CustomizeArrayLayers(uint32_t layerCount);
-
-		// Optional, default: VK_FORMAT_R32G32B32A32_SFLOAT
-		Image::Initializer& CustomizeFormat(VkFormat format);
-
-		// Optional, default: VK_IMAGE_TILING_OPTIMAL
-		Image::Initializer& CustomizeImageTiling(VkImageTiling tiling);
-
-		// Optional, default: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-		Image::Initializer& CustomizeMemoryProperty(VkMemoryPropertyFlags memoryProperty);
-
-		// Optional, default: VK_SAMPLE_COUNT_1_BIT
-		Image::Initializer& CustomizeSampleCount(VkSampleCountFlagBits sampleCount);
-	};
-
-	class SwapchainImageInit : public IImageInitializer
-	{
-	private:
-		VkImage m_vkHandle = VK_NULL_HANDLE;
-		VkImageUsageFlags m_usage = 0;
-		VkFormat m_format = VK_FORMAT_UNDEFINED;
-
-	public:
-		virtual void InitImage(Image* outImagePtr) const override;
-
-		Image::SwapchainImageInit& SetUp(VkImage inSwapchain, VkImageUsageFlags inUsage, VkFormat inFormat);
-	};
-
 private:
 	Information m_imageInformation{};
 	VkImage m_vkImage = VK_NULL_HANDLE;
@@ -116,7 +109,9 @@ private:
 public:
 	~Image();
 
-	void Create(const IImageInitializer* pInit);
+	void Create(const ImageCreateInfo* inCreateInfo);
+
+	void Create(const SwapchainImageCreateInfo* inCreateInfo);
 
 	void Destroy();
 

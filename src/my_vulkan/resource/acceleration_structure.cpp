@@ -13,15 +13,15 @@ namespace {
 		bool inBuildNotUpdate = true,
 		VkDeviceSize inMaxBudget = 256'000'000)
 	{
-		Buffer::Initializer bufferInit{};
+		BufferCreateInfo bufferCreateInfo{};
 
 		uint32_t	uMinAlignment = 128; /*m_rtASProperties.minAccelerationStructureScratchOffsetAlignment*/
 		VkDeviceSize maxScratchChunk = 0;
 		VkDeviceSize fullScratchSize = 0;
 		uint64_t	uSlotCount = 0;
 
-		bufferInit.SetBufferUsage(VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-		bufferInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		// setup maxScratchChunk, fullScratchSize
 		for (const auto& sizeInfo : inBuildSizesInfos)
@@ -36,20 +36,20 @@ namespace {
 		// Find the scratch buffer size
 		if (fullScratchSize <= inMaxBudget)
 		{
-			bufferInit.SetBufferSize(fullScratchSize);
+			bufferCreateInfo.SetBufferSize(fullScratchSize);
 			uSlotCount = inBuildSizesInfos.size();
 		}
 		else
 		{
 			uint64_t nChunkCount = std::min(inBuildSizesInfos.size(), inMaxBudget / maxScratchChunk);
 
-			bufferInit.SetBufferSize(nChunkCount * maxScratchChunk);
+			bufferCreateInfo.SetBufferSize(nChunkCount * maxScratchChunk);
 			uSlotCount = nChunkCount;
 		}
 
-		bufferInit.CustomizeAlignment(uMinAlignment);
+		bufferCreateInfo.CustomizeAlignment(uMinAlignment);
 
-		outScratchBufferToInit.Create(&bufferInit);
+		outScratchBufferToInit.Create(&bufferCreateInfo);
 
 		// fill slotAddresses
 		outSlotAddresses.clear();
@@ -231,23 +231,23 @@ void BottomLevelAccelStruct::Creator::Create(BottomLevelAccelStruct* inoutAccelS
 
 	if (inoutAccelStruct->m_uptrBuffer == nullptr)
 	{
-		Buffer::Initializer bufferInit{};
+		BufferCreateInfo bufferCreateInfo{};
 
-		bufferInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		bufferInit.SetBufferSize(buildSizesInfo.accelerationStructureSize);
-		bufferInit.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		bufferCreateInfo.SetBufferSize(buildSizesInfo.accelerationStructureSize);
+		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
 		inoutAccelStruct->m_uptrBuffer = std::make_unique<Buffer>();
-		inoutAccelStruct->m_uptrBuffer->Create(&bufferInit);
+		inoutAccelStruct->m_uptrBuffer->Create(&bufferCreateInfo);
 	}
 	else if (inoutAccelStruct->m_uptrBuffer->GetBufferInformation().size < buildSizesInfo.accelerationStructureSize)
 	{
-		Buffer::Initializer bufferInit{};
+		BufferCreateInfo bufferCreateInfo{};
 
-		bufferInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		bufferInit.SetBufferSize(buildSizesInfo.accelerationStructureSize);
-		bufferInit.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		bufferCreateInfo.SetBufferSize(buildSizesInfo.accelerationStructureSize);
+		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
 		inoutAccelStruct->m_uptrBuffer->Destroy();
-		inoutAccelStruct->m_uptrBuffer->Create(&bufferInit);
+		inoutAccelStruct->m_uptrBuffer->Create(&bufferCreateInfo);
 	}
 
 	createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
@@ -467,23 +467,23 @@ void TopLevelAccelStruct::Creator::Create(TopLevelAccelStruct* inoutAccelStruct)
 
 	if (inoutAccelStruct->m_uptrBuffer == nullptr)
 	{
-		Buffer::Initializer bufferInit{};
+		BufferCreateInfo bufferCreateInfo{};
 
-		bufferInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		bufferInit.SetBufferSize(buildSizesInfo.accelerationStructureSize);
-		bufferInit.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		bufferCreateInfo.SetBufferSize(buildSizesInfo.accelerationStructureSize);
+		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
 		inoutAccelStruct->m_uptrBuffer = std::make_unique<Buffer>();
-		inoutAccelStruct->m_uptrBuffer->Create(&bufferInit);
+		inoutAccelStruct->m_uptrBuffer->Create(&bufferCreateInfo);
 	}
 	else if (inoutAccelStruct->m_uptrBuffer->GetBufferInformation().size < buildSizesInfo.accelerationStructureSize)
 	{
-		Buffer::Initializer bufferInit{};
+		BufferCreateInfo bufferCreateInfo{};
 
-		bufferInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		bufferInit.SetBufferSize(buildSizesInfo.accelerationStructureSize);
-		bufferInit.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		bufferCreateInfo.SetBufferSize(buildSizesInfo.accelerationStructureSize);
+		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
 		inoutAccelStruct->m_uptrBuffer->Destroy();
-		inoutAccelStruct->m_uptrBuffer->Create(&bufferInit);
+		inoutAccelStruct->m_uptrBuffer->Create(&bufferCreateInfo);
 	}
 
 	createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;

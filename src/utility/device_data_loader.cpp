@@ -11,7 +11,7 @@ void AsyncDeviceDataLoader::_CopyToStagingBuffer(const void* inSrcData, size_t i
 void AsyncDeviceDataLoader::Create()
 {
 	auto& device = MyDevice::GetInstance();
-	Buffer::Initializer bufferInit{};
+	BufferCreateInfo bufferCreateInfo{};
 	VkCommandPoolCreateInfo cmdPoolCreateInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 
 	m_vkFence = device.CreateVkFence(VK_FENCE_CREATE_SIGNALED_BIT);
@@ -21,10 +21,10 @@ void AsyncDeviceDataLoader::Create()
 	m_vkCommandPool = device.CreateCommandPool(cmdPoolCreateInfo);
 	
 	m_uptrBuffer = std::make_unique<Buffer>();
-	bufferInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-	bufferInit.SetBufferSize(64 * 1024 * 1024);
-	bufferInit.SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-	m_uptrBuffer->Create(bufferInit);
+	bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+	bufferCreateInfo.SetBufferSize(64 * 1024 * 1024);
+	bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+	m_uptrBuffer->Create(&bufferCreateInfo);
 
 	m_uptrCommandBuffer = std::make_unique<CommandBuffer>();
 	m_uptrCommandBuffer->PreSetCommandPool(m_vkCommandPool);

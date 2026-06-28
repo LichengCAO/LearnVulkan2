@@ -27,9 +27,23 @@ Buffer::~Buffer()
 	assert(m_mappedMemory == nullptr);
 }
 
-void Buffer::Create(const IBufferInitializer* inInitializerPtr)
+void Buffer::Create(const BufferCreateInfo* inCreateInfo)
 {
-	inInitializerPtr->InitBuffer(this);
+	CHECK_TRUE(inCreateInfo != nullptr, "No buffer create info!");
+
+	auto& device = MyDevice::GetInstance();
+	auto& bufferToFill = m_bufferInformation;
+	VkBufferCreateInfo bufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	bufferInfo.size = inCreateInfo->m_bufferSize;
+	bufferInfo.usage = inCreateInfo->m_usage;
+	bufferInfo.sharingMode = inCreateInfo->m_sharingMode;
+	bufferToFill.memoryProperty = inCreateInfo->m_memoryProperty;
+	bufferToFill.sharingMode = inCreateInfo->m_sharingMode;
+	bufferToFill.size = inCreateInfo->m_bufferSize;
+	bufferToFill.usage = inCreateInfo->m_usage;
+	bufferToFill.optAlignment = inCreateInfo->m_optAlignment;
+	m_vkBuffer = device.CreateBuffer(bufferInfo);
+	_AllocateMemory();
 }
 
 void Buffer::Destroy()
@@ -99,12 +113,12 @@ void Buffer::_CopyFromHostWithMappedMemory(const void* src, size_t bufferOffest,
 void Buffer::_CopyFromHostWithStaggingBuffer(const void* src, size_t bufferOffest, size_t size)
 {
 	Buffer stagingBuffer{};
-	Buffer::Initializer initializer{};
+	BufferCreateInfo createInfo{};
 
-	initializer.SetBufferSize(size).SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-	initializer.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	createInfo.SetBufferSize(size).SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+	createInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	
-	stagingBuffer.Create(&initializer);
+	stagingBuffer.Create(&createInfo);
 	stagingBuffer.CopyFromHost(src, 0, size);
 	
 	CopyFromBuffer(&stagingBuffer, 0, bufferOffest, size);
@@ -208,54 +222,37 @@ VkBuffer Buffer::GetVkBuffer() const
 	return m_vkBuffer;
 }
 
-void Buffer::Initializer::InitBuffer(Buffer* outBufferPtr) const
+BufferCreateInfo& BufferCreateInfo::Reset()
 {
-	auto& device = MyDevice::GetInstance();
-	auto& bufferToFill = outBufferPtr->m_bufferInformation;
-	VkBufferCreateInfo bufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-	bufferInfo.size = m_bufferSize;
-	bufferInfo.usage = m_usage;
-	bufferInfo.sharingMode = m_sharingMode;
-	bufferToFill.memoryProperty = m_memoryProperty;
-	bufferToFill.sharingMode = m_sharingMode;
-	bufferToFill.size = m_bufferSize;
-	bufferToFill.usage = m_usage;
-	bufferToFill.optAlignment = m_optAlignment;
-	outBufferPtr->m_vkBuffer = device.CreateBuffer(bufferInfo);
-	outBufferPtr->_AllocateMemory();
-}
-
-Buffer::Initializer& Buffer::Initializer::Reset()
-{
-	*this = Buffer::Initializer{};
+	*this = BufferCreateInfo{};
 	return *this;
 }
 
-Buffer::Initializer& Buffer::Initializer::SetBufferSize(VkDeviceSize inSize)
+BufferCreateInfo& BufferCreateInfo::SetBufferSize(VkDeviceSize inSize)
 {
 	m_bufferSize = inSize;
 	return *this;
 }
 
-Buffer::Initializer& Buffer::Initializer::SetBufferUsage(VkBufferUsageFlags inUsage)
+BufferCreateInfo& BufferCreateInfo::SetBufferUsage(VkBufferUsageFlags inUsage)
 {
 	m_usage = inUsage;
 	return *this;
 }
 
-Buffer::Initializer& Buffer::Initializer::CustomizeSharingMode(VkSharingMode inSharingMode)
+BufferCreateInfo& BufferCreateInfo::CustomizeSharingMode(VkSharingMode inSharingMode)
 {
 	m_sharingMode = inSharingMode;
 	return *this;
 }
 
-Buffer::Initializer& Buffer::Initializer::CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperties)
+BufferCreateInfo& BufferCreateInfo::CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperties)
 {
 	m_memoryProperty = inMemoryProperties;
 	return *this;
 }
 
-Buffer::Initializer& Buffer::Initializer::CustomizeAlignment(VkDeviceSize inAlignment)
+BufferCreateInfo& BufferCreateInfo::CustomizeAlignment(VkDeviceSize inAlignment)
 {
 	m_optAlignment = inAlignment;
 	return *this;

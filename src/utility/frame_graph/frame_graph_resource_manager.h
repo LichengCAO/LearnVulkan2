@@ -9,15 +9,15 @@ class FrameGraphResourceManager
 private:
 	struct ResourceProducer
 	{
-		size_t initializerIndex;
+		size_t createInfoIndex;
 		std::vector<uint32_t> referenceCount;
 		std::vector<Image*>  referenceBuffers;
 		std::vector<Buffer*> referenceImages;
 		bool isImage;
 		bool isBuffer;
 	};
-	std::vector<Image::Initializer> m_promisedImageInitializers;
-	std::vector<Buffer::Initializer> m_promisedBufferInitializers;
+	std::vector<ImageCreateInfo> m_promisedImageCreateInfos;
+	std::vector<BufferCreateInfo> m_promisedBufferCreateInfos;
 	std::vector<ResourceProducer> m_resourceProducers;
 
 	void _MapHandleToIndices(

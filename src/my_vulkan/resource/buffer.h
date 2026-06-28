@@ -7,54 +7,46 @@ class BufferView;
 class CommandBuffer;
 class MemoryAllocator;
 
-class IBufferInitializer
-{
-public:
-	virtual void InitBuffer(Buffer* outBufferPtr) const = 0;
-};
-
 class IBufferViewInitializer
 {
 public:
 	virtual void InitBufferView(BufferView* outViewPtr) const = 0;
 };
 
+class BufferCreateInfo final
+{
+private:
+	std::optional<VkDeviceSize> m_optAlignment;
+	VkMemoryPropertyFlags m_memoryProperty = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+	VkSharingMode m_sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	VkDeviceSize m_bufferSize;
+	VkBufferUsageFlags m_usage;
+
+	friend class Buffer;
+
+public:
+	// Reset optional values to default, clear other values to zero
+	BufferCreateInfo& Reset();
+
+	// Set buffer size, mandatory
+	BufferCreateInfo& SetBufferSize(VkDeviceSize inSize);
+
+	// Set buffer usage, mandatory
+	BufferCreateInfo& SetBufferUsage(VkBufferUsageFlags inUsage);
+
+	// Optional, default: VK_SHARING_MODE_EXCLUSIVE
+	BufferCreateInfo& CustomizeSharingMode(VkSharingMode inSharingMode);
+
+	// Optional, default: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+	BufferCreateInfo& CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperties);
+
+	// Optional, for buffers that have alignment requirement
+	BufferCreateInfo& CustomizeAlignment(VkDeviceSize inAlignment);
+};
+
 class Buffer final
 {
 public:
-	class Initializer : public IBufferInitializer
-	{
-	private:
-		std::optional<VkDeviceSize> m_optAlignment;
-		VkMemoryPropertyFlags m_memoryProperty = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-		VkSharingMode m_sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		VkDeviceSize m_bufferSize;
-		VkBufferUsageFlags m_usage;
-
-	public:
-		virtual void InitBuffer(Buffer* outBufferPtr) const override;
-
-		// Reset optional values to default, clear other values to zero
-		Buffer::Initializer& Reset();
-
-		// Set buffer size, mandatory
-		Buffer::Initializer& SetBufferSize(VkDeviceSize inSize);
-
-		// Set buffer usage, mandatory
-		Buffer::Initializer& SetBufferUsage(VkBufferUsageFlags inUsage);
-
-		// Optional, default: VK_SHARING_MODE_EXCLUSIVE
-		Buffer::Initializer& CustomizeSharingMode(VkSharingMode inSharingMode);
-		
-		// Optional, default: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-		Buffer::Initializer& CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperties);
-		
-		// Optional, for buffers that have alignment requirement
-		Buffer::Initializer& CustomizeAlignment(VkDeviceSize inAlignment);
-
-		friend class Buffer;
-	};
-
 	struct Information
 	{
 		VkDeviceSize size;
@@ -95,7 +87,7 @@ public:
 	
 	~Buffer();
 
-	void Create(const IBufferInitializer* inInitializerPtr);
+	void Create(const BufferCreateInfo* inCreateInfo);
 	
 	void Destroy();
 

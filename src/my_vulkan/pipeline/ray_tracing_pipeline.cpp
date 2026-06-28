@@ -362,12 +362,12 @@ void ShaderBindingTable::Descriptor::InitShaderBindingTable(ShaderBindingTable* 
 	CHECK_TRUE(totalSize != 0); // We currently require at least one shader group, can be relaxed if we want to support empty SBT in the future.
 
 	// Allocate device buffer only. Data upload is handled elsewhere.
-	Buffer::Initializer init{};
-	init.CustomizeAlignment(std::max(rtProps.shaderGroupHandleAlignment, rtProps.shaderGroupBaseAlignment));
-	init.SetBufferSize(totalSize);
-	init.SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR);
+	BufferCreateInfo createInfo{};
+	createInfo.CustomizeAlignment(std::max(rtProps.shaderGroupHandleAlignment, rtProps.shaderGroupBaseAlignment));
+	createInfo.SetBufferSize(totalSize);
+	createInfo.SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR);
 	pShaderBindingTable->m_uptrBuffer = std::make_unique<Buffer>();
-	pShaderBindingTable->m_uptrBuffer->Create(&init);
+	pShaderBindingTable->m_uptrBuffer->Create(&createInfo);
 
 	VkDeviceAddress baseAddr = pShaderBindingTable->m_uptrBuffer->GetDeviceAddress();
 	VkDeviceAddress curAddr = baseAddr;

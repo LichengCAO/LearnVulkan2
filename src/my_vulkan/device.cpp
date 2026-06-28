@@ -546,11 +546,11 @@ void MyDevice::_UpdateSwapchainImages()
 	for (size_t i = 0; i < vkImages.size(); ++i)
 	{
 		std::unique_ptr<Image>& uptrImage = m_uptrSwapchainImages[i];
-		Image::SwapchainImageInit swapchainInit{};
+		SwapchainImageCreateInfo swapchainCreateInfo{};
 
 		uptrImage = std::make_unique<Image>();
-		swapchainInit.SetUp(vkImages[i], m_swapchain.image_usage_flags, m_swapchain.image_format);
-		uptrImage->Create(&swapchainInit);
+		swapchainCreateInfo.SetUp(vkImages[i], m_swapchain.image_usage_flags, m_swapchain.image_format);
+		uptrImage->Create(&swapchainCreateInfo);
 	}
 }
 

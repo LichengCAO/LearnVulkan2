@@ -27,7 +27,7 @@ void StagingBufferUploader::Create(
 	CHECK_TRUE(!m_hasPendingUpload);
 
 	auto& device = MyDevice::GetInstance();
-	Buffer::Initializer stagingInit{};
+	BufferCreateInfo stagingCreateInfo{};
 	CommandPool::Initializer poolInit{};
 	CommandBuffer::Initializer cmdInit{};
 
@@ -43,10 +43,10 @@ void StagingBufferUploader::Create(
 	m_uptrCommandBuffer->Create(&cmdInit);
 
 	m_uptrStagingBuffer = std::make_unique<Buffer>();
-	stagingInit.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	stagingInit.SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-	stagingInit.SetBufferSize(m_stagingBufferSize);
-	m_uptrStagingBuffer->Create(&stagingInit);
+	stagingCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	stagingCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+	stagingCreateInfo.SetBufferSize(m_stagingBufferSize);
+	m_uptrStagingBuffer->Create(&stagingCreateInfo);
 
 	m_vkUploadFence = device.CreateVkFence(0);
 }

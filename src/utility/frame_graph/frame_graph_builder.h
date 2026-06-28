@@ -149,7 +149,7 @@ private:
 	{
 		bool external;
 		std::unique_ptr<FrameGraphImageResourceState> initialState;
-		std::unique_ptr<IImageInitializer> initializer;
+		std::unique_ptr<ImageCreateInfo> createInfo;
 
 		//============= instance ==============
 		std::unordered_map<FrameGraphImageHandle, size_t> handleToIndex; // index of 'refCounts' 'states'
@@ -162,7 +162,7 @@ private:
 	{
 		bool external;
 		std::unique_ptr<FrameGraphBufferResourceState> initialState;
-		std::unique_ptr<IBufferInitializer> initializer;
+		std::unique_ptr<BufferCreateInfo> createInfo;
 
 		// ============= instance =============
 		std::unordered_map<FrameGraphBufferHandle, size_t> handleToIndex; // index of 'refCounts' 'states'

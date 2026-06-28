@@ -302,7 +302,7 @@ void FrameGraphBuilder::_GenerateResourceCreationTask(const std::vector<std::set
                             std::unique_ptr<Buffer> newBuffer = std::make_unique<Buffer>();
                             std::set<FrameGraphBufferHandle> handleShareThisResource{};
                             
-                            newBuffer->Create(bufferBlueprint->initializer.get());
+                            newBuffer->Create(bufferBlueprint->createInfo.get());
                             
                             // find out handles that point to the new resource, associate them with it
                             for (auto& p : bufferBlueprint->handleToIndex)
@@ -358,7 +358,7 @@ void FrameGraphBuilder::_GenerateResourceCreationTask(const std::vector<std::set
                         {
                             std::unique_ptr<Image> newImage = std::make_unique<Image>();
 
-                            newImage->Create(imageBlueprint->initializer.get());
+                            newImage->Create(imageBlueprint->createInfo.get());
 
                             // find out handles that point to the new resource, associate them with it
                             for (auto& p : imageBlueprint->handleToIndex)
