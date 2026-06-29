@@ -1,15 +1,16 @@
 #pragma once
 #include <common.h>
 
-class ComputePipeline;
-class RayTracingPipeline;
-class GraphicsPipeline;
+class ComputeShaderProgram;
+class RayTracingShaderProgram;
+class GraphicsShaderProgram;
 class GraphicsProgram;
 
 class ShaderModuleCreateInfo final
 {
 	friend class ShaderModule;
 	friend class GraphicsProgram;
+	friend class GraphicsShaderProgram;
 private:
 	std::string m_spirvFile;
 	std::unordered_map<VkShaderStageFlagBits, std::string> m_entries;

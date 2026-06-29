@@ -1,4 +1,4 @@
-#include "ray_tracing_pipeline.h"
+#include "ray_tracing_shader_program.h"
 #include "buffer.h"
 #include "device.h"
 #include "push_constant_manager.h"
@@ -71,15 +71,15 @@ void RayTracingShaderGroupSet::GetShaderGroupHandlesData(ShaderTableType inShade
 	outStride = m_shaderGroupStride[idx];
 }
 
-RayTracingPipeline::~RayTracingPipeline()
+RayTracingShaderProgram::~RayTracingShaderProgram()
 {
 	assert(m_vkPipeline == VK_NULL_HANDLE);
 	assert(m_vkPipelineLayout == VK_NULL_HANDLE);
 }
 
-void RayTracingPipeline::Create(const IRayTracingPipelineInitializer* pInitializer)
+void RayTracingShaderProgram::Create(const IRayTracingShaderProgramInitializer* pInitializer)
 {
-	pInitializer->InitRayTracingPipeline(this);
+	pInitializer->InitRayTracingShaderProgram(this);
 
 	CHECK_TRUE(m_vkPipeline != VK_NULL_HANDLE);
 	CHECK_TRUE(m_vkPipelineLayout != VK_NULL_HANDLE);
@@ -87,7 +87,7 @@ void RayTracingPipeline::Create(const IRayTracingPipelineInitializer* pInitializ
 	CHECK_TRUE(m_shaderGroupCount != 0);
 }
 
-void RayTracingPipeline::Destroy()
+void RayTracingShaderProgram::Destroy()
 {
 	auto& device = MyDevice::GetInstance();
 	if (m_vkPipeline != VK_NULL_HANDLE)
@@ -99,22 +99,22 @@ void RayTracingPipeline::Destroy()
 	m_uptrPushConstant.reset();
 }
 
-uint32_t RayTracingPipeline::GetShaderGroupCount() const
+uint32_t RayTracingShaderProgram::GetShaderGroupCount() const
 {
 	return m_shaderGroupCount;
 }
 
-VkPipeline RayTracingPipeline::GetVkPipeline() const
+VkPipeline RayTracingShaderProgram::GetVkPipeline() const
 {
 	return m_vkPipeline;
 }
 
-void RayTracingPipeline::_SetShaderGroupHandlesData(ShaderTableType inType, const uint8_t* inData, size_t inSize, size_t inStride)
+void RayTracingShaderProgram::_SetShaderGroupHandlesData(ShaderTableType inType, const uint8_t* inData, size_t inSize, size_t inStride)
 {
 	m_groupSet._SetShaderGroupHandlesData(inType, inData, inSize, inStride);
 }
 
-void RayTracingPipeline::Do(VkCommandBuffer commandBuffer, const PipelineInput& input)
+void RayTracingShaderProgram::Do(VkCommandBuffer commandBuffer, const PipelineInput& input)
 {
 	const auto& pSets = input.vkDescriptorSets;
 	const ShaderBindingTable& inShaderBindingTable = *input.pShaderBindingTable;
@@ -389,7 +389,7 @@ void ShaderBindingTable::Descriptor::InitShaderBindingTable(ShaderBindingTable* 
 	}
 }
 
-void RayTracingPipeline::Builder::InitRayTracingPipeline(RayTracingPipeline* pPipeline) const
+void RayTracingShaderProgram::Builder::InitRayTracingShaderProgram(RayTracingShaderProgram* pPipeline) const
 {
 	auto& device = MyDevice::GetInstance();
 	VkRayTracingPipelineCreateInfoKHR pipelineInfo{ VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR };
@@ -509,21 +509,21 @@ void RayTracingPipeline::Builder::InitRayTracingPipeline(RayTracingPipeline* pPi
 	fillGroupSetData(ShaderTableType::Callable, callableIndices);
 }
 
-RayTracingPipeline::Builder& RayTracingPipeline::Builder::CustomizeMaxRecursionDepth(uint32_t inMaxDepth)
+RayTracingShaderProgram::Builder& RayTracingShaderProgram::Builder::CustomizeMaxRecursionDepth(uint32_t inMaxDepth)
 {
 	m_maxRayRecursionDepth = inMaxDepth;
 
 	return *this;
 }
 
-RayTracingPipeline::Builder& RayTracingPipeline::Builder::CustomizePipelineCache(VkPipelineCache inCache)
+RayTracingShaderProgram::Builder& RayTracingShaderProgram::Builder::CustomizePipelineCache(VkPipelineCache inCache)
 {
 	m_vkPipelineCache = inCache;
 
 	return *this;
 }
 
-RayTracingPipeline::Builder& RayTracingPipeline::Builder::SetPipelineLayout(VkPipelineLayout inPipelineLayout)
+RayTracingShaderProgram::Builder& RayTracingShaderProgram::Builder::SetPipelineLayout(VkPipelineLayout inPipelineLayout)
 {
 	CHECK_TRUE(inPipelineLayout != VK_NULL_HANDLE, "Invalid ray tracing pipeline layout!");
 
@@ -532,7 +532,7 @@ RayTracingPipeline::Builder& RayTracingPipeline::Builder::SetPipelineLayout(VkPi
 	return *this;
 }
 
-RayTracingPipeline::Builder& RayTracingPipeline::Builder::AddPushConstant(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size)
+RayTracingShaderProgram::Builder& RayTracingShaderProgram::Builder::AddPushConstant(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size)
 {
 	VkPushConstantRange pushConstant{};
 
@@ -545,14 +545,14 @@ RayTracingPipeline::Builder& RayTracingPipeline::Builder::AddPushConstant(VkShad
 	return *this;
 }
 
-uint32_t RayTracingPipeline::Builder::AddShader(const VkPipelineShaderStageCreateInfo& shaderInfo)
+uint32_t RayTracingShaderProgram::Builder::AddShader(const VkPipelineShaderStageCreateInfo& shaderInfo)
 {
 	uint32_t uIndex = static_cast<uint32_t>(m_shaderStageInfos.size());
 	m_shaderStageInfos.push_back(shaderInfo);
 	return uIndex;
 }
 
-uint32_t RayTracingPipeline::Builder::AddRayGenerationShaderGroup(uint32_t inRayGenShaderIndex)
+uint32_t RayTracingShaderProgram::Builder::AddRayGenerationShaderGroup(uint32_t inRayGenShaderIndex)
 {
 	VkRayTracingShaderGroupCreateInfoKHR shaderRecord{ VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR };
 	uint32_t uRet = static_cast<uint32_t>(m_shaderRecords.size());
@@ -569,7 +569,7 @@ uint32_t RayTracingPipeline::Builder::AddRayGenerationShaderGroup(uint32_t inRay
 	return uRet;
 }
 
-uint32_t RayTracingPipeline::Builder::AddTriangleHitShaderGroup(uint32_t inClosestHitShaderIndex, uint32_t inAnyHitShaderIndex)
+uint32_t RayTracingShaderProgram::Builder::AddTriangleHitShaderGroup(uint32_t inClosestHitShaderIndex, uint32_t inAnyHitShaderIndex)
 {
 	VkRayTracingShaderGroupCreateInfoKHR shaderRecord{ VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR };
 	uint32_t uRet = static_cast<uint32_t>(m_shaderRecords.size());
@@ -587,7 +587,7 @@ uint32_t RayTracingPipeline::Builder::AddTriangleHitShaderGroup(uint32_t inClose
 	return uRet;
 }
 
-uint32_t RayTracingPipeline::Builder::AddProceduralHitShaderGroup(
+uint32_t RayTracingShaderProgram::Builder::AddProceduralHitShaderGroup(
 	uint32_t inClosestHitShaderIndex, 
 	uint32_t inIntersectionShaderIndex, 
 	uint32_t inAnyHitShaderIndex)
@@ -608,7 +608,7 @@ uint32_t RayTracingPipeline::Builder::AddProceduralHitShaderGroup(
 	return uRet;
 }
 
-uint32_t RayTracingPipeline::Builder::AddMissShaderGroup(uint32_t inMissShaderIndex)
+uint32_t RayTracingShaderProgram::Builder::AddMissShaderGroup(uint32_t inMissShaderIndex)
 {
 	VkRayTracingShaderGroupCreateInfoKHR shaderRecord{ VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR };
 	uint32_t uRet = static_cast<uint32_t>(m_shaderRecords.size());
@@ -626,7 +626,7 @@ uint32_t RayTracingPipeline::Builder::AddMissShaderGroup(uint32_t inMissShaderIn
 	return uRet;
 }
 
-uint32_t RayTracingPipeline::Builder::AddCallableShaderGroup(uint32_t inCallableShaderIndex)
+uint32_t RayTracingShaderProgram::Builder::AddCallableShaderGroup(uint32_t inCallableShaderIndex)
 {
 	VkRayTracingShaderGroupCreateInfoKHR shaderRecord{ VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR };
 	uint32_t uRet = static_cast<uint32_t>(m_shaderRecords.size());

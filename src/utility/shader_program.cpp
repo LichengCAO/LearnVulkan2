@@ -1,4 +1,4 @@
-#include "pipeline_program.h"
+#include "shader_program.h"
 #include "commandbuffer.h"
 #include "my_vulkan/shader.h"
 #include "device.h"
@@ -731,7 +731,7 @@ void GraphicsProgram::_InitPipeline()
 {
 	std::vector<std::unique_ptr<SimpleShader>> shaders;
 
-	m_uptrPipeline = std::make_unique<GraphicsPipeline>();
+	m_uptrPipeline = std::make_unique<GraphicsShaderProgram>();
 	for (const auto& path : m_vecShaderPath)
 	{
 		std::unique_ptr<SimpleShader> shader = std::make_unique<SimpleShader>();
@@ -796,7 +796,7 @@ void GraphicsProgram::PresetRenderPass(const RenderPass* _pRenderPass, uint32_t 
 	bool bPipelineInitialized = (m_uptrPipeline.get() != nullptr);
 
 	CHECK_TRUE(!bPipelineInitialized, "Pipeline already initialized!");
-	m_lateInitialization.push_back([_pRenderPass, _subpass](GraphicsPipeline* _pPipeline)
+	m_lateInitialization.push_back([_pRenderPass, _subpass](GraphicsShaderProgram* _pPipeline)
 		{
 			_pPipeline->BindToSubpass(_pRenderPass, _subpass);
 		}
@@ -858,7 +858,7 @@ void GraphicsProgram::BindVertexBuffer(
 			vertLayout.AddLocation(m_mapVertexFormat[p.first], p.second, p.first);
 		}
 
-		m_lateInitialization.push_back([vertLayout, binding](GraphicsPipeline* _pPipeline)
+		m_lateInitialization.push_back([vertLayout, binding](GraphicsShaderProgram* _pPipeline)
 			{
 				_pPipeline->AddVertexInputLayout(vertLayout.GetVertexInputBindingDescription(binding), vertLayout.GetVertexInputAttributeDescriptions(binding));
 			}
@@ -889,7 +889,7 @@ void GraphicsProgram::Draw(
 	CommandSubmission* _pCmd, 
 	uint32_t _vertexCount)
 {
-	GraphicsPipeline::PipelineInput_Draw input{};
+	GraphicsShaderProgram::PipelineInput_Draw input{};
 	bool bPipelineInitlaized = (m_uptrPipeline.get() != nullptr);
 
 	if (!bPipelineInitlaized)
@@ -912,7 +912,7 @@ void GraphicsProgram::DrawIndexed(
 	CommandSubmission* _pCmd, 
 	uint32_t _indexCount)
 {
-	GraphicsPipeline::PipelineInput_DrawIndexed input{};
+	GraphicsShaderProgram::PipelineInput_DrawIndexed input{};
 	bool bPipelineInitlaized = (m_uptrPipeline.get() != nullptr);
 
 	if (!bPipelineInitlaized)
@@ -941,7 +941,7 @@ void GraphicsProgram::DispatchWorkGroup(
 	uint32_t _groupCountY, 
 	uint32_t _groupCountZ)
 {
-	GraphicsPipeline::PipelineInput_Mesh input{};
+	GraphicsShaderProgram::PipelineInput_Mesh input{};
 	bool bPipelineInitlaized = (m_uptrPipeline.get() != nullptr);
 
 	if (!bPipelineInitlaized)
@@ -983,48 +983,12 @@ void GraphicsProgram::Destroy()
 
 void ComputeProgram::_InitPipeline()
 {
-	std::vector<std::unique_ptr<SimpleShader>> shaders;
+	CHECK_TRUE(m_vecShaderPath.size() == 1, "ComputeProgram expects exactly one compute shader SPIR-V file.");
 
-	m_uptrPipeline = std::make_unique<ComputePipeline>();
-	for (const auto& path : m_vecShaderPath)
-	{
-		std::unique_ptr<SimpleShader> shader = std::make_unique<SimpleShader>();
-		shader->SetSPVFile(path);
-		shader->Create();
-		m_uptrPipeline->AddShader(shader->GetShaderStageInfo());
-		shaders.push_back(std::move(shader));
-	}
-
-	// setup descriptor set layouts
-	{
-		std::vector<VkDescriptorSetLayout> vkLayouts{};
-		m_uptrDescriptorSetManager->GetDescriptorSetLayouts(vkLayouts);
-
-		for (const auto& layout : vkLayouts)
-		{
-			m_uptrPipeline->AddDescriptorSetLayout(layout);
-		}
-	}
-
-	// add push constants
-	{
-		std::unordered_map<std::string, uint32_t> mapIndex;
-		std::vector<std::pair<VkShaderStageFlags, std::pair<uint32_t, uint32_t>>> pushConstInfo;
-		m_shaderReflector.ReflectPushConst(mapIndex, pushConstInfo);
-
-		for (const auto& info : pushConstInfo)
-		{
-			m_uptrPipeline->AddPushConstant(info.first, info.second.first, info.second.second);
-		}
-	}
-
-	m_uptrPipeline->Create();
-
-	for (auto& shader : shaders)
-	{
-		shader->Destroy();
-	}
-	shaders.clear();
+	ComputeShaderProgramCreateInfo createInfo{};
+	createInfo.SetSpirvFile(m_vecShaderPath.front()).SetEntry("main");
+	m_uptrPipeline = std::make_unique<ComputeShaderProgram>();
+	m_uptrPipeline->Create(&createInfo);
 }
 
 void ComputeProgram::_UninitPipeline()
@@ -1067,7 +1031,6 @@ void ComputeProgram::PushConstant(VkShaderStageFlags _stages, const void* _data)
 
 void ComputeProgram::DispatchWorkGroup(CommandSubmission* _pCmd, uint32_t _groupCountX, uint32_t _groupCountY, uint32_t _groupCountZ)
 {
-	ComputePipeline::PipelineInput input{};
 	bool bPipelineInitlaized = (m_uptrPipeline.get() != nullptr);
 
 	if (!bPipelineInitlaized)
@@ -1075,15 +1038,10 @@ void ComputeProgram::DispatchWorkGroup(CommandSubmission* _pCmd, uint32_t _group
 		_InitPipeline();
 	}
 
-	input.groupCountX = _groupCountX;
-	input.groupCountY = _groupCountY;
-	input.groupCountZ = _groupCountZ;
-	input.pushConstants = m_pushConstants;
-	m_uptrDescriptorSetManager->GetCurrentDescriptorSets(input.vkDescriptorSets, input.optDynamicOffsets);
-
 	m_pushConstants.clear();
 
-	m_uptrPipeline->Do(_pCmd->vkCommandBuffer, input);
+	vkCmdBindPipeline(_pCmd->vkCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_uptrPipeline->GetVkPipeline());
+	vkCmdDispatch(_pCmd->vkCommandBuffer, _groupCountX, _groupCountY, _groupCountZ);
 }
 
 void ComputeProgram::Destroy()
@@ -1102,7 +1060,7 @@ void RayTracingProgram::_InitPipeline()
 {
 	std::vector<std::unique_ptr<SimpleShader>> shaders;
 
-	m_uptrPipeline = std::make_unique<RayTracingPipeline>();
+	m_uptrPipeline = std::make_unique<RayTracingShaderProgram>();
 	for (const auto& path : m_vecShaderPath)
 	{
 		std::unique_ptr<SimpleShader> shader = std::make_unique<SimpleShader>();
@@ -1174,7 +1132,7 @@ void RayTracingProgram::PreAddRayGenerationShader(const std::string& _path)
 	index = m_mapShaderToIndex[_path];
 
 	m_lateInitialization.push_back(
-		[index](RayTracingPipeline* _pipeline)
+		[index](RayTracingShaderProgram* _pipeline)
 		{
 			_pipeline->SetRayGenerationShaderRecord(index);
 		}
@@ -1206,7 +1164,7 @@ void RayTracingProgram::PreAddTriangleHitShaders(const std::string& _closestHit,
 	}
 
 	m_lateInitialization.push_back(
-		[closestHit, anyHit](RayTracingPipeline* _pipeline)
+		[closestHit, anyHit](RayTracingShaderProgram* _pipeline)
 		{
 			_pipeline->AddTriangleHitShaderRecord(closestHit, anyHit);
 		}
@@ -1244,7 +1202,7 @@ void RayTracingProgram::PreAddProceduralHitShaders(const std::string& _closestHi
 	}
 
 	m_lateInitialization.push_back(
-		[closestHit, intersection, anyHit](RayTracingPipeline* _pipeline)
+		[closestHit, intersection, anyHit](RayTracingShaderProgram* _pipeline)
 		{
 			_pipeline->AddProceduralHitShaderRecord(closestHit, intersection, anyHit);
 		}
@@ -1263,7 +1221,7 @@ void RayTracingProgram::PreAddMissShader(const std::string& _miss)
 	miss = m_mapShaderToIndex[_miss];
 
 	m_lateInitialization.push_back(
-		[miss](RayTracingPipeline* _pipeline)
+		[miss](RayTracingShaderProgram* _pipeline)
 		{
 			_pipeline->AddMissShaderRecord(miss);
 		}
@@ -1273,7 +1231,7 @@ void RayTracingProgram::PreAddMissShader(const std::string& _miss)
 void RayTracingProgram::PresetMaxRecursion(uint32_t _maxRecur)
 {
 	m_lateInitialization.push_back(
-		[_maxRecur](RayTracingPipeline* _pipeline)
+		[_maxRecur](RayTracingShaderProgram* _pipeline)
 		{
 			_pipeline->SetMaxRecursion(_maxRecur);
 		}
@@ -1307,7 +1265,7 @@ void RayTracingProgram::PushConstant(VkShaderStageFlags _stages, const void* _da
 
 void RayTracingProgram::TraceRay(CommandSubmission* _pCmd, uint32_t _uWidth, uint32_t _uHeight)
 {
-	RayTracingPipeline::PipelineInput input{};
+	RayTracingShaderProgram::PipelineInput input{};
 	if (m_uptrPipeline.get() == nullptr)
 	{
 		_InitPipeline();

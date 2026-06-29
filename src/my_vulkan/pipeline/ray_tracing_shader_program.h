@@ -2,18 +2,18 @@
 #include "common.h"
 
 class Buffer;
-class RayTracingPipeline;
+class RayTracingShaderProgram;
 class PushConstantManager;
-class RayTracingPipeline;
+class RayTracingShaderProgram;
 class ShaderBindingTable;
 class CommandBuffer;
 
 using ShaderGroupIndex = uint32_t;
 
-class IRayTracingPipelineInitializer
+class IRayTracingShaderProgramInitializer
 {
 public:
-	virtual void InitRayTracingPipeline(RayTracingPipeline* pPipeline) const = 0;
+	virtual void InitRayTracingShaderProgram(RayTracingShaderProgram* pPipeline) const = 0;
 };
 
 class IShaderBindingTableInitializer
@@ -37,7 +37,7 @@ private:
 	std::vector<std::vector<uint8_t>> m_shaderGroupData; // Each inner vector corresponds to a shader group type (raygen, miss, hit, callable) and contains the group data for that type
 	std::vector<size_t> m_shaderGroupStride;
 	void _SetShaderGroupHandlesData(ShaderTableType inShaderTableType, const uint8_t* inData, size_t inSize, size_t inStride);
-	friend class RayTracingPipeline;
+	friend class RayTracingShaderProgram;
 
 public:
 	RayTracingShaderGroupSet();
@@ -96,7 +96,7 @@ public:
 	void Destroy();
 };
 
-class RayTracingPipeline
+class RayTracingShaderProgram
 {
 public:
 	using ShaderIndex = uint32_t;
@@ -114,7 +114,7 @@ public:
 		uint32_t uDepth = 1u;
 	};
 
-	class Builder : public IRayTracingPipelineInitializer
+	class Builder : public IRayTracingShaderProgramInitializer
 	{
 	private:
 		std::vector<VkPipelineShaderStageCreateInfo> m_shaderStageInfos;
@@ -125,17 +125,17 @@ public:
 		VkPipelineLayout m_vkPipelineLayout = VK_NULL_HANDLE;
 
 	public:
-		virtual void InitRayTracingPipeline(RayTracingPipeline* pPipeline) const override;
+		virtual void InitRayTracingShaderProgram(RayTracingShaderProgram* pPipeline) const override;
 
 		// Optional, default: 1
-		RayTracingPipeline::Builder& CustomizeMaxRecursionDepth(uint32_t inMaxDepth);
+		RayTracingShaderProgram::Builder& CustomizeMaxRecursionDepth(uint32_t inMaxDepth);
 
 		// Optional, default: VK_NULL_HANDLE
-		RayTracingPipeline::Builder& CustomizePipelineCache(VkPipelineCache inCache);
+		RayTracingShaderProgram::Builder& CustomizePipelineCache(VkPipelineCache inCache);
 
-		RayTracingPipeline::Builder& SetPipelineLayout(VkPipelineLayout inPipelineLayout);
+		RayTracingShaderProgram::Builder& SetPipelineLayout(VkPipelineLayout inPipelineLayout);
 
-		RayTracingPipeline::Builder& AddPushConstant(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size);
+		RayTracingShaderProgram::Builder& AddPushConstant(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size);
 
 		// Add shader to pipeline, return shader index for shader group build
 		auto AddShader(const VkPipelineShaderStageCreateInfo& shaderInfo)->ShaderIndex;
@@ -175,9 +175,9 @@ private:
 	void _SetShaderGroupHandlesData(ShaderTableType inType, const uint8_t* inData, size_t inSize, size_t inStride);
 
 public:
-	~RayTracingPipeline();
+	~RayTracingShaderProgram();
 
-	void Create(const IRayTracingPipelineInitializer* pInitializer);
+	void Create(const IRayTracingShaderProgramInitializer* pInitializer);
 
 	void Destroy();
 

@@ -37,5 +37,7 @@ public:
 
 	void Create(const ShaderModuleCreateInfo& inCreateInfo);
 
+	auto GetShaderStageInfo(VkShaderStageFlagBits inStage) const->VkPipelineShaderStageCreateInfo;
+
 	void Destroy();
 };

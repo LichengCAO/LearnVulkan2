@@ -150,6 +150,11 @@ auto ShaderModule::_GetVkPipelineShaderStageCreateInfo(VkShaderStageFlagBits inS
 	return shaderStageInfo;
 }
 
+auto ShaderModule::GetShaderStageInfo(VkShaderStageFlagBits inStage) const -> VkPipelineShaderStageCreateInfo
+{
+	return _GetVkPipelineShaderStageCreateInfo(inStage);
+}
+
 void ShaderModule::Destroy()
 {
 	m_spirvFile.clear();

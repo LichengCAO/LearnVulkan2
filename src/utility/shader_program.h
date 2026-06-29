@@ -1,7 +1,9 @@
 #pragma once
 #include "shader_reflect.h"
 #include "pipeline_io.h"
-#include "pipeline.h"
+#include "my_vulkan/pipeline/compute_shader_program.h"
+#include "my_vulkan/pipeline/graphics_shader_program.h"
+#include "my_vulkan/pipeline/ray_tracing_shader_program.h"
 #include <functional>
 #include "render_object/camera.h"
 
@@ -196,7 +198,7 @@ public:
 //{
 //private:
 //	std::unique_ptr<DescriptorSetManager> m_uptrDescriptorSetManager;
-//	std::unique_ptr<GraphicsPipeline> m_uptrPipeline;
+//	std::unique_ptr<GraphicsShaderProgram> m_uptrPipeline;
 //	std::vector<std::string> m_vecShaderPath;
 //	ShaderReflector	m_shaderReflector;
 //
@@ -207,7 +209,7 @@ public:
 //	std::vector<std::pair<VkShaderStageFlags, const void*>> m_pushConstants;
 //	
 //	// for vertex inputs
-//	std::vector<std::function<void(GraphicsPipeline*)>> m_lateInitialization;
+//	std::vector<std::function<void(GraphicsShaderProgram*)>> m_lateInitialization;
 //	std::unordered_map<uint32_t, VkFormat>				m_mapVertexFormat;
 //
 //	// binded framebuffer
@@ -266,7 +268,7 @@ class ComputeProgram
 {
 private:
 	std::unique_ptr<DescriptorSetManager> m_uptrDescriptorSetManager;
-	std::unique_ptr<ComputePipeline> m_uptrPipeline;
+	std::unique_ptr<ComputeShaderProgram> m_uptrPipeline;
 	std::vector<std::string> m_vecShaderPath;
 	ShaderReflector	m_shaderReflector;
 	std::vector<std::pair<VkShaderStageFlags, const void*>> m_pushConstants;
@@ -299,11 +301,11 @@ class RayTracingProgram
 private:
 	ShaderReflector	m_shaderReflector;
 	std::unique_ptr<DescriptorSetManager> m_uptrDescriptorSetManager;
-	std::unique_ptr<RayTracingPipeline> m_uptrPipeline;
+	std::unique_ptr<RayTracingShaderProgram> m_uptrPipeline;
 	std::vector<std::string> m_vecShaderPath;
 	std::vector<std::pair<VkShaderStageFlags, const void*>> m_pushConstants;
 	std::unordered_map<std::string, uint32_t> m_mapShaderToIndex;
-	std::vector<std::function<void(RayTracingPipeline*)>> m_lateInitialization;
+	std::vector<std::function<void(RayTracingShaderProgram*)>> m_lateInitialization;
 
 private:
 	void _InitPipeline();
