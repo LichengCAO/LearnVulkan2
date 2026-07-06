@@ -29,7 +29,7 @@ private:
 	std::unique_ptr<ShaderModule> m_uptrShaderModule;
 	std::vector<std::unique_ptr<DescriptorSetLayout>> m_descriptorSetLayouts;
 	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> m_nameToSetBinding;
-	PipelineLayout m_pipelineLayout;
+	std::unique_ptr<PipelineLayout> m_pipelineLayout;
 	VkPipeline m_vkPipeline = VK_NULL_HANDLE;
 
 private:

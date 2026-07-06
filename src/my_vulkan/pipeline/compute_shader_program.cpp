@@ -33,7 +33,7 @@ ComputeShaderProgramCreateInfo& ComputeShaderProgramCreateInfo::CustomizePipelin
 ComputeShaderProgram::~ComputeShaderProgram()
 {
 	assert(m_vkPipeline == VK_NULL_HANDLE);
-	assert(m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE);
+	assert(m_pipelineLayout == nullptr);
 	assert(m_uptrShaderModule == nullptr);
 	assert(m_descriptorSetLayouts.empty());
 }
@@ -43,6 +43,7 @@ void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo* inCreate
 	CHECK_TRUE(inCreateInfo != nullptr, "No compute shader program create info!");
 	CHECK_TRUE(!inCreateInfo->m_spirvFile.empty(), "Compute shader SPIR-V file is unset!");
 	CHECK_TRUE(m_vkPipeline == VK_NULL_HANDLE, "Compute shader program already created!");
+	CHECK_TRUE(m_pipelineLayout == nullptr, "Compute shader program already created!");
 
 	ShaderReflector reflector{};
 	std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>> descriptorSetData;
@@ -80,7 +81,8 @@ void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo* inCreate
 	reflector.Destroy();
 
 	CHECK_TRUE(m_vkPipeline != VK_NULL_HANDLE);
-	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() != VK_NULL_HANDLE);
+	CHECK_TRUE(m_pipelineLayout != nullptr);
+	CHECK_TRUE(m_pipelineLayout->GetVkPipelineLayout() != VK_NULL_HANDLE);
 	CHECK_TRUE(m_uptrPushConstant != nullptr);
 }
 
@@ -139,7 +141,8 @@ void ComputeShaderProgram::_CreatePipelineLayout(const std::vector<VkPushConstan
 			pushConstantRange.size);
 	}
 
-	m_pipelineLayout.Create(&pipelineLayoutCreateInfo);
+	m_pipelineLayout = std::make_unique<PipelineLayout>();
+	m_pipelineLayout->Create(&pipelineLayoutCreateInfo);
 }
 
 void ComputeShaderProgram::_CreateVkPipeline(
@@ -148,7 +151,8 @@ void ComputeShaderProgram::_CreateVkPipeline(
 {
 	VkComputePipelineCreateInfo pipelineInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
 	pipelineInfo.stage = inShaderStageInfo;
-	pipelineInfo.layout = m_pipelineLayout.GetVkPipelineLayout();
+	CHECK_TRUE(m_pipelineLayout != nullptr, "Compute shader program needs a pipeline layout!");
+	pipelineInfo.layout = m_pipelineLayout->GetVkPipelineLayout();
 	m_vkPipeline = MyDevice::GetInstance().CreateComputePipeline(pipelineInfo, inPipelineCache);
 }
 
@@ -177,7 +181,11 @@ void ComputeShaderProgram::Destroy()
 		m_uptrShaderModule->Destroy();
 		m_uptrShaderModule.reset();
 	}
-	m_pipelineLayout.Destroy();
+	if (m_pipelineLayout != nullptr)
+	{
+		m_pipelineLayout->Destroy();
+		m_pipelineLayout.reset();
+	}
 	for (auto& descriptorSetLayout : m_descriptorSetLayouts)
 	{
 		descriptorSetLayout->Destroy();

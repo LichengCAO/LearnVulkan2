@@ -38,6 +38,7 @@ public:
 	void Create(const ShaderModuleCreateInfo& inCreateInfo);
 
 	auto GetShaderStageInfo(VkShaderStageFlagBits inStage) const->VkPipelineShaderStageCreateInfo;
+	auto GetAllShaderStageInfos() const->std::vector<VkPipelineShaderStageCreateInfo>;
 
 	void Destroy();
 };

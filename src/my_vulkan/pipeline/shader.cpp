@@ -155,6 +155,19 @@ auto ShaderModule::GetShaderStageInfo(VkShaderStageFlagBits inStage) const -> Vk
 	return _GetVkPipelineShaderStageCreateInfo(inStage);
 }
 
+auto ShaderModule::GetAllShaderStageInfos() const -> std::vector<VkPipelineShaderStageCreateInfo>
+{
+	std::vector<VkPipelineShaderStageCreateInfo> result;
+	result.reserve(m_entries.size());
+
+	for (const auto& [stage, entry] : m_entries)
+	{
+		result.push_back(_GetVkPipelineShaderStageCreateInfo(stage));
+	}
+
+	return result;
+}
+
 void ShaderModule::Destroy()
 {
 	m_spirvFile.clear();
