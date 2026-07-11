@@ -134,7 +134,98 @@ CommandQueue::CommandQueue()
 	m_uptrFenceAllocator->Create();
 }
 
-CommandQueue::~CommandQueue() = default;
+CommandQueue::~CommandQueue()
+{
+	_Deinit();
+}
+
+auto CommandQueue::_Init(QueueFamilyType inQueueFamilyType)->void
+{
+	CHECK_TRUE(inQueueFamilyType != QueueFamilyType::UNSET, "Invalid command queue family type!");
+	CHECK_TRUE(m_vkQueue == VK_NULL_HANDLE, "Command queue is already initialized!");
+	CHECK_TRUE(m_queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED, "Command queue family index is already initialized!");
+
+	auto& device = MyDevice::GetInstance();
+	m_vkQueue = device.GetQueueOfType(inQueueFamilyType);
+	m_queueFamilyIndex = device.GetQueueFamilyIndexOfType(inQueueFamilyType);
+	m_queueFamilyType = inQueueFamilyType;
+	CHECK_TRUE(m_vkQueue != VK_NULL_HANDLE, "Invalid command queue!");
+	CHECK_TRUE(m_queueFamilyIndex != VK_QUEUE_FAMILY_IGNORED, "Invalid command queue family index!");
+
+	if (m_uptrFenceAllocator == nullptr)
+	{
+		m_uptrFenceAllocator = std::make_unique<FenceAllocator>();
+	}
+	m_uptrFenceAllocator->Create();
+
+	CommandPoolCreateInfo commandPoolCreateInfo;
+	commandPoolCreateInfo.CustomizeQueueFamilyType(inQueueFamilyType);
+
+	for (auto& frameCommandPools : m_commandPools)
+	{
+		for (auto& commandPool : frameCommandPools)
+		{
+			CHECK_TRUE(commandPool == nullptr, "Command pool is already initialized!");
+			commandPool = std::make_unique<CommandPool>();
+			commandPool->Create(&commandPoolCreateInfo);
+		}
+	}
+
+	m_currentFrameIndex = FRAME_IN_FLIGHT_COUNT - 1;
+}
+
+auto CommandQueue::_Deinit()->void
+{
+	for (uint8_t frameIndex = 0; frameIndex < FRAME_IN_FLIGHT_COUNT; ++frameIndex)
+	{
+		_WaitFrameFences(frameIndex);
+	}
+
+	m_recordedCommandBuffers.clear();
+
+	for (auto& frameCommandPools : m_commandPools)
+	{
+		for (auto& commandPool : frameCommandPools)
+		{
+			if (commandPool != nullptr)
+			{
+				commandPool->Destroy();
+				commandPool.reset();
+			}
+		}
+	}
+
+	if (m_uptrFenceAllocator != nullptr)
+	{
+		m_uptrFenceAllocator->Destroy();
+	}
+
+	m_vkQueue = VK_NULL_HANDLE;
+	m_queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	m_queueFamilyType = QueueFamilyType::UNSET;
+	m_currentFrameIndex = FRAME_IN_FLIGHT_COUNT - 1;
+}
+
+GraphicsQueue::GraphicsQueue() = default;
+
+auto GraphicsQueue::Init()->void
+{
+	_Init(QueueFamilyType::GRAPHICS);
+}
+
+ComputeQueue::ComputeQueue() = default;
+
+auto ComputeQueue::Init()->void
+{
+	_Init(QueueFamilyType::COMPUTE);
+}
+
+TransferQueue::TransferQueue() = default;
+
+auto TransferQueue::Init()->void
+{
+	_Init(QueueFamilyType::TRANSFER);
+}
 
 auto CommandQueue::_GetCommandPool(uint8_t inFrameIndex, uint8_t inThreadIndex) const->CommandPool*
 {

@@ -2,7 +2,7 @@
 #include "common.h"
 #include "pipeline_layout.h"
 #include "shader.h"
-#include "descriptor_set.h"
+#include "resource/descriptor_set.h"
 
 class PushConstantManager;
 

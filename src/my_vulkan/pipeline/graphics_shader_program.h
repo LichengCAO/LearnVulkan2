@@ -2,14 +2,13 @@
 #include "pipeline_common.h"
 #include "pipeline_layout.h"
 #include "shader.h"
-#include "descriptor_set.h"
+#include "resource/descriptor_set.h"
 #include <pipeline_state.h>
 #include <map>
 class RenderPass;
 class Framebuffer;
 class ImageView;
 class GraphicsShaderProgram;
-class GraphicsProgram;
 class PushConstantManager;
 class CommandSubmission;
 class CommandBuffer;
@@ -35,7 +34,6 @@ public:
 
 class GraphicsProgramCreateInfo final
 {
-	friend class GraphicsProgram;
 private:
 	std::set<std::string> m_spirvFiles;
 	std::unordered_map<VkShaderStageFlagBits, std::string> m_mapStageToEntry;

@@ -35,7 +35,7 @@ void StagingBufferUploader::Create(
 
 	m_uptrCommandPool = std::make_unique<CommandPool>();
 	poolInit.CustomizeCommandPoolCreateFlags(VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
-	poolInit.CustomizeQueueFamilyIndex(device.GetQueueFamilyIndexOfType(inQueueType));
+	poolInit.CustomizeQueueFamilyType(inQueueType);
 	m_uptrCommandPool->Create(&poolInit);
 
 	m_uptrCommandBuffer = std::make_unique<CommandBuffer>();

@@ -1,7 +1,6 @@
-#include "queue.h"
+#include "context.h"
 
 #include "buffer.h"
-#include "command_buffer.h"
 #include "image.h"
 #include "vulkan_struct_util.h"
 
@@ -28,6 +27,12 @@ namespace
 	{
 		return inLeftBegin < inRightEnd && inRightBegin < inLeftEnd;
 	}
+}
+
+QueueContext::QueueContext(uint32_t inQueueFamilyIndex)
+	: m_queueFamilyIndex(inQueueFamilyIndex)
+{
+	CHECK_TRUE(m_queueFamilyIndex != VK_QUEUE_FAMILY_IGNORED, "Invalid queue context family index!");
 }
 
 auto QueueContext::ResolveWholeBufferSize(const Resource& inResource) -> VkDeviceSize
@@ -182,24 +187,6 @@ void QueueContext::AppendBarrier(
 	}
 }
 
-void QueueContext::BuildProcess(const BarrierBatch& inBatch, std::function<void(CommandBuffer*)>& outProcess)
-{
-	if (!inBatch.HasBarriers())
-	{
-		outProcess = {};
-		return;
-	}
-
-	outProcess = [bufferBarriers = inBatch.bufferBarriers,
-		imageBarriers = inBatch.imageBarriers,
-		srcStages = inBatch.srcStages,
-		dstStages = inBatch.dstStages](CommandBuffer* inCommandBuffer)
-	{
-		CHECK_TRUE(inCommandBuffer != nullptr);
-		inCommandBuffer->CmdPipelineBarrier(srcStages, dstStages, {}, bufferBarriers, imageBarriers);
-	};
-}
-
 void QueueContext::Resource::SetBufferMemory(
 	const Buffer* inBuffer,
 	VkDeviceSize inSize,
@@ -253,30 +240,27 @@ void QueueContext::Resource::SetImageMemoryConcise(const Image* inImage, VkImage
 
 void QueueContext::PushResources(const ResourceReleased* inResources, size_t inCount)
 {
-	CHECK_TRUE(m_queue != nullptr);
 	CHECK_TRUE(inCount == 0 || inResources != nullptr);
 
 	for (size_t i = 0; i < inCount; ++i)
 	{
 		Resource resource = inResources[i];
-		resource.PresetQueueFamily(m_queue->GetQueueFamilyIndex());
+		resource.PresetQueueFamily(m_queueFamilyIndex);
 		UpsertResource(resource);
 	}
 }
 
-void QueueContext::PullResources(
+auto QueueContext::PullResources(
 	const ResourceAcquired* inResources,
-	size_t inCount,
-	std::function<void(CommandBuffer*)>& outSyncProcess)
+	size_t inCount) -> BarrierBatch
 {
-	CHECK_TRUE(m_queue != nullptr);
 	CHECK_TRUE(inCount == 0 || inResources != nullptr);
 
 	BarrierBatch batch;
 	for (size_t i = 0; i < inCount; ++i)
 	{
 		Resource resource = inResources[i];
-		resource.PresetQueueFamily(m_queue->GetQueueFamilyIndex());
+		resource.PresetQueueFamily(m_queueFamilyIndex);
 
 		size_t stateIndex = FindResourceIndex(m_resources, resource);
 		CHECK_TRUE(stateIndex < m_resources.size(), "QueueContext::PullResources requires a previously pushed resource state.");
@@ -295,36 +279,30 @@ void QueueContext::PullResources(
 		m_resources[stateIndex] = resource;
 	}
 
-	BuildProcess(batch, outSyncProcess);
+	return batch;
 }
 
-void QueueContext::GrabResourcesFromOther(
+auto QueueContext::GrabResourcesFromOther(
 	QueueContext* inSourceContext,
 	const ResourceAcquired* inResources,
-	size_t inCount,
-	std::function<void(CommandBuffer*)>& outReleaseProcess,
-	std::function<void(CommandBuffer*)>& outAcquireProcess)
+	size_t inCount) -> QueueTransferBarrierBatches
 {
-	CHECK_TRUE(m_queue != nullptr);
 	CHECK_TRUE(inSourceContext != nullptr);
-	CHECK_TRUE(inSourceContext->m_queue != nullptr);
 	CHECK_TRUE(inCount == 0 || inResources != nullptr);
 
-	if (inSourceContext == this || inSourceContext->m_queue->GetQueueFamilyIndex() == m_queue->GetQueueFamilyIndex())
+	QueueTransferBarrierBatches batches{};
+	if (inSourceContext == this || inSourceContext->m_queueFamilyIndex == m_queueFamilyIndex)
 	{
-		outReleaseProcess = {};
-		PullResources(inResources, inCount, outAcquireProcess);
-		return;
+		batches.acquire = PullResources(inResources, inCount);
+		return batches;
 	}
 
-	BarrierBatch releaseBatch;
-	BarrierBatch acquireBatch;
 	std::vector<size_t> sourceIndicesToErase;
 
 	for (size_t i = 0; i < inCount; ++i)
 	{
 		Resource destinationResource = inResources[i];
-		destinationResource.PresetQueueFamily(m_queue->GetQueueFamilyIndex());
+		destinationResource.PresetQueueFamily(m_queueFamilyIndex);
 
 		size_t sourceIndex = FindResourceIndex(inSourceContext->m_resources, destinationResource);
 		CHECK_TRUE(sourceIndex < inSourceContext->m_resources.size(), "QueueContext::GrabResourcesFromOther requires the source context to own the resource.");
@@ -332,7 +310,7 @@ void QueueContext::GrabResourcesFromOther(
 		const Resource& sourceResource = inSourceContext->m_resources[sourceIndex];
 
 		AppendBarrier(
-			releaseBatch,
+			batches.release,
 			sourceResource,
 			destinationResource,
 			sourceResource.m_queueFamily,
@@ -343,7 +321,7 @@ void QueueContext::GrabResourcesFromOther(
 			0);
 
 		AppendBarrier(
-			acquireBatch,
+			batches.acquire,
 			sourceResource,
 			destinationResource,
 			sourceResource.m_queueFamily,
@@ -363,6 +341,5 @@ void QueueContext::GrabResourcesFromOther(
 		inSourceContext->m_resources.erase(inSourceContext->m_resources.begin() + static_cast<std::ptrdiff_t>(index));
 	}
 
-	BuildProcess(releaseBatch, outReleaseProcess);
-	BuildProcess(acquireBatch, outAcquireProcess);
+	return batches;
 }

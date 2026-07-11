@@ -1,55 +1,34 @@
 #pragma once
 
 #include "common.h"
-#include "common_enums.h"
 #include <variant>
 
-class MyDevice;
 class Buffer;
 class Image;
-class CommandBuffer;
-class Fence;
-class Semaphore;
-class Queue
-{
-private:
-	VkQueue m_vkQueue = VK_NULL_HANDLE;
-	uint32_t m_queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	QueueFamilyType m_queueFamilyType = QueueFamilyType::UNSET;
-
-private:
-	Queue() = default;
-
-	void Create(VkQueue inVkQueue, uint32_t inFamilyIndex, QueueFamilyType inFamilyType)
-	{
-		m_vkQueue = inVkQueue;
-		m_queueFamilyIndex = inFamilyIndex;
-		m_queueFamilyType = inFamilyType;
-	}
-
-public:
-	class SubmitInfo
-	{
-	public:
-		void AddSemaphoreToWait(Semaphore* inSemaphore, VkPipelineStageFlags inWaitStage);
-		void AddCommandBufferToSubmit(CommandBuffer* inCmd);
-		void AddSemaphoreToSignal(Semaphore* inSemaphore);
-	};
-
-public:
-	auto GetQueueFamilyIndex()const->uint32_t { return m_queueFamilyIndex; };
-	
-	auto GetQueueFamilyType()const->QueueFamilyType { return m_queueFamilyType; };
-
-	auto GetVkQueue() const->VkQueue { return m_vkQueue; };
-
-	void Submit(const Queue::SubmitInfo* inSubmitInfos, size_t inCount, std::optional<Fence*> inFence = {});
-
-	friend class MyDevice;
-};
 
 class QueueContext final
 {
+public:
+	struct BarrierBatch
+	{
+		std::vector<VkBufferMemoryBarrier> bufferBarriers;
+		std::vector<VkImageMemoryBarrier> imageBarriers;
+		VkPipelineStageFlags srcStages = 0;
+		VkPipelineStageFlags dstStages = 0;
+		VkDependencyFlags flags = 0;
+
+		auto HasBarriers() const -> bool
+		{
+			return !bufferBarriers.empty() || !imageBarriers.empty();
+		}
+	};
+
+	struct QueueTransferBarrierBatches
+	{
+		BarrierBatch release;
+		BarrierBatch acquire;
+	};
+
 private:
 	enum class ResourceType
 	{
@@ -104,19 +83,6 @@ private:
 		void PresetQueueFamily(uint32_t inQueueFamily) { m_queueFamily = inQueueFamily; };
 	};
 
-	struct BarrierBatch
-	{
-		std::vector<VkBufferMemoryBarrier> bufferBarriers;
-		std::vector<VkImageMemoryBarrier> imageBarriers;
-		VkPipelineStageFlags srcStages = 0;
-		VkPipelineStageFlags dstStages = 0;
-
-		auto HasBarriers() const -> bool
-		{
-			return !bufferBarriers.empty() || !imageBarriers.empty();
-		}
-	};
-
 public:
 	class ResourceReleased : public Resource
 	{
@@ -131,7 +97,7 @@ public:
 	};
 
 private:
-	const Queue* m_queue;
+	uint32_t m_queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	std::vector<Resource> m_resources;
 
 private:
@@ -150,19 +116,16 @@ private:
 		VkAccessFlags inDestinationAccess,
 		VkPipelineStageFlags inSourceStage,
 		VkPipelineStageFlags inDestinationStage);
-	static void BuildProcess(const BarrierBatch& inBatch, std::function<void(CommandBuffer*)>& outProcess);
 
 public:
-	QueueContext(const Queue* inQueue) : m_queue(inQueue) {};
+	explicit QueueContext(uint32_t inQueueFamilyIndex);
 
 	void PushResources(const ResourceReleased* inResources, size_t inCount);
 
-	void PullResources(const ResourceAcquired* inResources, size_t inCount, std::function<void(CommandBuffer*)>& outSyncProcess);
+	auto PullResources(const ResourceAcquired* inResources, size_t inCount) -> BarrierBatch;
 
-	void GrabResourcesFromOther(
+	auto GrabResourcesFromOther(
 		QueueContext* inSourceContext,
-		const ResourceAcquired* inResources, 
-		size_t inCount, 
-		std::function<void(CommandBuffer*)>& outReleaseProcess, 
-		std::function<void(CommandBuffer*)>& outAcquireProcess);
+		const ResourceAcquired* inResources,
+		size_t inCount) -> QueueTransferBarrierBatches;
 };

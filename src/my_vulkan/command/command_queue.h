@@ -30,6 +30,7 @@ protected:
 protected:
 	VkQueue m_vkQueue = VK_NULL_HANDLE;
 	uint32_t m_queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	QueueFamilyType m_queueFamilyType = QueueFamilyType::UNSET;
 	uint8_t m_currentFrameIndex = FRAME_IN_FLIGHT_COUNT - 1;
 	std::array<std::array<std::unique_ptr<CommandPool>, THREAD_COUNT>, FRAME_IN_FLIGHT_COUNT> m_commandPools;
 	std::array<std::vector<VkFence>, FRAME_IN_FLIGHT_COUNT> m_frameFences;
@@ -38,40 +39,47 @@ protected:
 
 protected:
 	auto _GetCommandPool(uint8_t inFrameIndex, uint8_t inThreadIndex) const->CommandPool*;
+	auto _Init(QueueFamilyType inQueueFamilyType)->void;
+	auto _Deinit()->void;
 	auto _WaitFrameFences(uint8_t inFrameIndex)->void;
 	auto _ResetFrameCommandPools(uint8_t inFrameIndex)->void;
 	auto _RecordCommandBuffer(CommandBuffer* inCommandBuffers, size_t inCount)->void;
 
-public:
+protected:
 	CommandQueue();
+
+public:
 	CommandQueue(const CommandQueue&) = delete;
 	CommandQueue& operator=(const CommandQueue&) = delete;
 	virtual ~CommandQueue();
 
-	virtual auto Destroy()->void;
 	virtual auto StartFrame()->void;
 	virtual auto Enqueue(CommandBuffer* inCommandBuffers, size_t inCount)->CommandQueue&;
 	virtual auto Submit(SyncInfo inSyncInfo)->void;
 	virtual auto WaitTillDone()->void;
+
+	auto GetVkQueue() const->VkQueue { return m_vkQueue; };
+	auto GetQueueFamilyIndex() const->uint32_t { return m_queueFamilyIndex; };
+	auto GetQueueFamilyType() const->QueueFamilyType { return m_queueFamilyType; };
 };
 
 class GraphicsQueue final : public CommandQueue
 {
 public:
-	GraphicsQueue();
-	auto Create()->void;
+	explicit GraphicsQueue();
+	auto Init()->void;
 };
 
 class ComputeQueue final : public CommandQueue
 {
 public:
-	ComputeQueue();
-	auto Create()->void;
+	explicit ComputeQueue();
+	auto Init()->void;
 };
 
 class TransferQueue final : public CommandQueue
 {
 public:
-	TransferQueue();
-	auto Create()->void;
+	explicit TransferQueue();
+	auto Init()->void;
 };

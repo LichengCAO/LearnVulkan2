@@ -11,7 +11,6 @@ public:
 	Command& operator=(const Command&) = delete;
 	virtual ~Command() = default;
 
-	auto AppendTo(CommandBuffer* inoutCommandBuffer)->void;
 	virtual auto Record(VkCommandBuffer inVkCommandBuffer) const->void = 0;
 };
 

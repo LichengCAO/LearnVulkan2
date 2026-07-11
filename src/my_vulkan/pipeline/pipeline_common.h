@@ -4,12 +4,10 @@
 class ComputeShaderProgram;
 class RayTracingShaderProgram;
 class GraphicsShaderProgram;
-class GraphicsProgram;
 
 class ShaderModuleCreateInfo final
 {
 	friend class ShaderModule;
-	friend class GraphicsProgram;
 	friend class GraphicsShaderProgram;
 private:
 	std::string m_spirvFile;

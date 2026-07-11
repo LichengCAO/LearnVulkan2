@@ -23,3 +23,31 @@ auto EndRenderPassCommand::Record(VkCommandBuffer inVkCommandBuffer) const->void
 
 	vkCmdEndRenderPass(inVkCommandBuffer);
 }
+
+auto PipelineBarrierCommand::Record(VkCommandBuffer inVkCommandBuffer) const->void
+{
+	CHECK_TRUE(inVkCommandBuffer != VK_NULL_HANDLE, "Invalid command buffer!");
+
+	const bool hasMemoryBarriers = !m_parameters.memoryBarriers.empty();
+	const bool hasBufferBarriers = !m_parameters.bufferBarriers.empty();
+	const bool hasImageBarriers = !m_parameters.imageBarriers.empty();
+	if (!hasMemoryBarriers && !hasBufferBarriers && !hasImageBarriers)
+	{
+		return;
+	}
+
+	CHECK_TRUE(m_parameters.srcStageMask != 0, "Invalid source pipeline stage mask!");
+	CHECK_TRUE(m_parameters.dstStageMask != 0, "Invalid destination pipeline stage mask!");
+
+	vkCmdPipelineBarrier(
+		inVkCommandBuffer,
+		m_parameters.srcStageMask,
+		m_parameters.dstStageMask,
+		m_parameters.flags,
+		static_cast<uint32_t>(m_parameters.memoryBarriers.size()),
+		m_parameters.memoryBarriers.empty() ? nullptr : m_parameters.memoryBarriers.data(),
+		static_cast<uint32_t>(m_parameters.bufferBarriers.size()),
+		m_parameters.bufferBarriers.empty() ? nullptr : m_parameters.bufferBarriers.data(),
+		static_cast<uint32_t>(m_parameters.imageBarriers.size()),
+		m_parameters.imageBarriers.empty() ? nullptr : m_parameters.imageBarriers.data());
+}

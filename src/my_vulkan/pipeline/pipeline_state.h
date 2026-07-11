@@ -1,7 +1,7 @@
 #pragma once
 #include <common.h>
 #include <variant>
-#include "descriptor_set.h"
+#include "resource/descriptor_set.h"
 #include "vulkan_common_types.h"
 
 class Buffer;

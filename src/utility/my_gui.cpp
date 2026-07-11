@@ -32,7 +32,7 @@ void MyGUI::Create()
 	init_info.PhysicalDevice = myDevice.vkPhysicalDevice;
 	init_info.Device = myDevice.vkDevice;
 	init_info.QueueFamily = myDevice.queueFamilyIndices.graphicsAndComputeFamily.value();
-	init_info.Queue = myDevice.GetQueue(myDevice.queueFamilyIndices.graphicsAndComputeFamily.value());
+	init_info.Queue = myDevice.GetQueueByQueueFamilyIndex(myDevice.queueFamilyIndices.graphicsAndComputeFamily.value());
 	init_info.DescriptorPoolSize = 1000;
 	init_info.RenderPass = m_vkRenderPass;
 	init_info.MinImageCount = 2;

@@ -708,6 +708,25 @@ void MyDevice::_DestroySamplerAllocator()
 	}
 }
 
+void MyDevice::_CreateCommandQueues()
+{
+	m_uptrGraphicsCommandQueue = std::make_unique<GraphicsQueue>();
+	m_uptrGraphicsCommandQueue->Init();
+
+	m_uptrComputeCommandQueue = std::make_unique<ComputeQueue>();
+	m_uptrComputeCommandQueue->Init();
+
+	m_uptrTransferCommandQueue = std::make_unique<TransferQueue>();
+	m_uptrTransferCommandQueue->Init();
+}
+
+void MyDevice::_DestroyCommandQueues()
+{
+	m_uptrTransferCommandQueue.reset();
+	m_uptrComputeCommandQueue.reset();
+	m_uptrGraphicsCommandQueue.reset();
+}
+
 void MyDevice::Create()
 {
 	_InitVolk();
@@ -716,6 +735,7 @@ void MyDevice::Create()
 	_CreateSurface();
 	_SelectPhysicalDevice();
 	_CreateLogicalDevice();
+	_CreateCommandQueues();
 	_CreateMemoryAllocator();
 	_CreateSamplerAllocator();
 	_CreateRenderPassAllocator();
@@ -729,6 +749,7 @@ void MyDevice::Create()
 
 void MyDevice::Destroy()
 {
+	_DestroyCommandQueues();
 	_DestroyDescriptorSetAllocator();
 	_DestroySwapchain();
 	_DestroyFramebufferAllocator();
@@ -782,6 +803,21 @@ DescriptorSetAllocator* MyDevice::GetDescriptorSetAllocator()
 auto MyDevice::GetSamplerAllocator()->SamplerAllocator*
 {
 	return m_uptrSamplerAllocator.get();
+}
+
+auto MyDevice::GetGraphicsCommandQueue()->GraphicsQueue*
+{
+	return m_uptrGraphicsCommandQueue.get();
+}
+
+auto MyDevice::GetComputeCommandQueue()->ComputeQueue*
+{
+	return m_uptrComputeCommandQueue.get();
+}
+
+auto MyDevice::GetTransferCommandQueue()->TransferQueue*
+{
+	return m_uptrTransferCommandQueue.get();
 }
 
 VkFence MyDevice::CreateVkFence(

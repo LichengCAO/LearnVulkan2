@@ -1,5 +1,5 @@
 #pragma once
-#include "../descriptor_set.h"
+#include "../resource/descriptor_set.h"
 
 class DescriptorSetAllocator final
 {
