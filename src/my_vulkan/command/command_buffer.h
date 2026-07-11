@@ -1,36 +1,36 @@
 #pragma once
 #include "command.h"
+#include "common.h"
+#include <variant>
 
 class CommandBuffer final
 {
 public:
-	enum class ScopeType
+	struct PrimaryScope final
 	{
-		PRIMARY,
-		RENDER_PASS,
-		SECONDARY,
+		std::vector<const Command*> commands;
 	};
 
-	struct Scope final
+	struct SubpassScope final
 	{
-		ScopeType type = ScopeType::PRIMARY;
+		std::vector<const Command*> commands;
+	};
+
+	struct RenderPassScope final
+	{
 		VkRenderPass renderPass = VK_NULL_HANDLE;
-		const Command* enterCommand = nullptr;
-		const Command* leaveCommand = nullptr;
+		VkFramebuffer framebuffer = VK_NULL_HANDLE;
+		VkRect2D renderArea{};
+		std::vector<VkClearValue> clearValues;
+		VkSubpassContents contents = VK_SUBPASS_CONTENTS_INLINE;
+		const void* next = nullptr;
+		std::vector<SubpassScope> subpassScopes;
 	};
 
-private:
-	std::vector<const Command*> m_commands;
-	uint32_t m_commandCount = 0;
-	Scope m_scope;
+	using Scope = std::variant<PrimaryScope, RenderPassScope>;
 
 private:
-	auto _SetScope(const Scope& inScope)->void;
-	auto _ClearScope()->void;
-	auto _AppendCommandList(CommandBuffer&& inCommandBuffer)->void;
-	auto _AppendPrimaryScope(CommandBuffer&& inCommandBuffer)->void;
-	auto _AppendRenderPassScope(CommandBuffer&& inCommandBuffer, const Scope& inScope)->void;
-	auto _AppendSecondaryScope(CommandBuffer&& inCommandBuffer, const Scope& inScope)->void;
+	std::vector<Scope> m_scopes;
 
 public:
 	CommandBuffer() = default;
@@ -40,11 +40,8 @@ public:
 	CommandBuffer& operator=(CommandBuffer&&) noexcept = default;
 	~CommandBuffer() = default;
 
-	auto RecordCommand(const Command* inCommand)->CommandBuffer&;
-	auto AppendScope(CommandBuffer inCommandBuffer, const Scope& inScope)->CommandBuffer&;
-	auto GetCommandCount() const->uint32_t { return m_commandCount; };
-	auto GetScope() const->const Scope& { return m_scope; };
-	auto GetScopeType() const->ScopeType { return m_scope.type; };
+	auto AppendCommands(const PrimaryScope* inPrimaryScope)->CommandBuffer&;
+	auto AppendRenderPass(const RenderPassScope* inRenderPassScope)->CommandBuffer&;
 
 	friend class CommandQueue;
 };

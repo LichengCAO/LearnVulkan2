@@ -1,89 +1,77 @@
 #pragma once
 #include "command_buffer.h"
 #include "command_pool.h"
-
+#include "common_enums.h"
+class FenceAllocator;
 class MyDevice;
 
 class CommandQueue
 {
 public:
-	enum class QueueType
+	class SyncInfo
 	{
-		GRAPHICS,
-		COMPUTE,
-		TRANSFER,
-	};
+	private:
+		std::vector<VkSemaphore> m_waitSemaphores;
+		std::vector<VkPipelineStageFlags> m_waitStages;
+		std::vector<VkSemaphore> m_signalSemaphores;
 
-	class SyncObject
-	{
 	public:
-		virtual ~SyncObject() = default;
+		auto AddWaitSemaphore(VkSemaphore inSemaphore, VkPipelineStageFlags inStage)->SyncInfo&;
+		auto AddSemaphoreToSignal(VkSemaphore inSemaphore)->SyncInfo&;
 
 	private:
-		virtual auto _GetWaitSemaphores() const->const std::vector<VkSemaphore>& = 0;
-		virtual auto _GetWaitStages() const->const std::vector<VkPipelineStageFlags>& = 0;
-		virtual auto _GetSignalSemaphores() const->const std::vector<VkSemaphore>& = 0;
-		virtual auto _GetFence() const->VkFence = 0;
-
 		friend class CommandQueue;
 	};
 
-private:
-	QueueType m_queueType = QueueType::GRAPHICS;
-	MyDevice* m_device = nullptr;
+protected:
+	static constexpr uint8_t THREAD_COUNT = 4;
+	static constexpr uint8_t FRAME_IN_FLIGHT_COUNT = 3;
+
+protected:
 	VkQueue m_vkQueue = VK_NULL_HANDLE;
 	uint32_t m_queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	uint32_t m_threadCount = 1;
-	uint32_t m_frameInFlightCount = 1;
-	uint32_t m_currentFrameIndex = 0;
-	std::vector<std::unique_ptr<CommandPool>> m_commandPools;
-	std::vector<std::vector<VkFence>> m_frameFences;
-	std::vector<const CommandBuffer*> m_pendingCommandBuffers;
+	uint8_t m_currentFrameIndex = FRAME_IN_FLIGHT_COUNT - 1;
+	std::array<std::array<std::unique_ptr<CommandPool>, THREAD_COUNT>, FRAME_IN_FLIGHT_COUNT> m_commandPools;
+	std::array<std::vector<VkFence>, FRAME_IN_FLIGHT_COUNT> m_frameFences;
 	std::vector<VkCommandBuffer> m_recordedCommandBuffers;
+	std::unique_ptr<FenceAllocator> m_uptrFenceAllocator;
 
-private:
-	auto _GetCommandPoolIndex(uint32_t inFrameIndex, uint32_t inThreadIndex) const->uint32_t;
-	auto _GetCommandPool(uint32_t inFrameIndex, uint32_t inThreadIndex) const->CommandPool*;
-	auto _WaitFrameFences(uint32_t inFrameIndex)->void;
-	auto _ResetFrameCommandPools(uint32_t inFrameIndex)->void;
-	auto _RecordPendingCommandBuffers()->void;
-	auto _RecordCommandBuffer(const CommandBuffer* inCommandBuffer, VkCommandBuffer inVkCommandBuffer)->void;
-	auto _TrackFence(VkFence inFence)->void;
+protected:
+	auto _GetCommandPool(uint8_t inFrameIndex, uint8_t inThreadIndex) const->CommandPool*;
+	auto _WaitFrameFences(uint8_t inFrameIndex)->void;
+	auto _ResetFrameCommandPools(uint8_t inFrameIndex)->void;
+	auto _RecordCommandBuffer(CommandBuffer* inCommandBuffers, size_t inCount)->void;
 
 public:
-	CommandQueue() = default;
-	explicit CommandQueue(QueueType inQueueType);
+	CommandQueue();
 	CommandQueue(const CommandQueue&) = delete;
 	CommandQueue& operator=(const CommandQueue&) = delete;
 	virtual ~CommandQueue();
 
-	auto Create(
-		MyDevice* inDevice,
-		VkQueue inVkQueue,
-		uint32_t inQueueFamilyIndex,
-		uint32_t inThreadCount,
-		uint32_t inFrameInFlightCount)->void;
-	auto Destroy()->void;
-
-	auto StartFrame(uint32_t inFrameIndex)->void;
-	auto Enqueue(const CommandBuffer* const* inCommandBuffers, size_t inCount)->CommandQueue&;
-	auto Submit(const SyncObject* inSyncObject)->void;
+	virtual auto Destroy()->void;
+	virtual auto StartFrame()->void;
+	virtual auto Enqueue(CommandBuffer* inCommandBuffers, size_t inCount)->CommandQueue&;
+	virtual auto Submit(SyncInfo inSyncInfo)->void;
+	virtual auto WaitTillDone()->void;
 };
 
-class GraphicsCommandQueue final : public CommandQueue
+class GraphicsQueue final : public CommandQueue
 {
 public:
-	GraphicsCommandQueue();
+	GraphicsQueue();
+	auto Create()->void;
 };
 
-class ComputeCommandQueue final : public CommandQueue
+class ComputeQueue final : public CommandQueue
 {
 public:
-	ComputeCommandQueue();
+	ComputeQueue();
+	auto Create()->void;
 };
 
-class TransferCommandQueue final : public CommandQueue
+class TransferQueue final : public CommandQueue
 {
 public:
-	TransferCommandQueue();
+	TransferQueue();
+	auto Create()->void;
 };
