@@ -1,6 +1,6 @@
 #include "buffer.h"
 #include "device.h"
-#include "commandbuffer.h"
+#include "command_buffer.h"
 #include "memory_allocator.h"
 #include "utils.h"
 
@@ -159,34 +159,52 @@ void Buffer::CopyFromHost(const void* src, size_t bufferOffset, size_t size)
 
 void Buffer::CopyFromBuffer(const Buffer* pOtherBuffer, size_t srcOffset, size_t dstOffset, size_t size)
 {
-	CommandPool tmpPool{};
-	CommandPool::Initializer poolInit{};
-	CommandBuffer tmpCmdBuffer{};
+	CHECK_TRUE(pOtherBuffer != nullptr);
 
-	poolInit.CustomizeCommandPoolCreateFlags(VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
-	tmpPool.Create(&poolInit);
-	tmpPool.AllocateCommandBuffer(&tmpCmdBuffer);
-	tmpCmdBuffer.BeginCommands(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	CopyFromBuffer(pOtherBuffer, srcOffset, dstOffset, size, &tmpCmdBuffer);
-	tmpCmdBuffer.EndCommands();
-	_SubmitToGraphicsQueueAndWait(tmpCmdBuffer.GetVkCommandBuffer());
-	tmpPool.Destroy();
+	auto& device = MyDevice::GetInstance();
+	VkCommandPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+	poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+	poolInfo.queueFamilyIndex = device.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
+
+	VkCommandPool tmpPool = device.CreateCommandPool(poolInfo);
+	VkCommandBuffer tmpCmdBuffer = device.AllocateCommandBuffer(tmpPool);
+
+	VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	VK_CHECK(vkBeginCommandBuffer(tmpCmdBuffer, &beginInfo), "Failed to begin buffer copy command!");
+
+	VkBufferCopy copyRegion{};
+	copyRegion.srcOffset = srcOffset;
+	copyRegion.dstOffset = dstOffset;
+	copyRegion.size = size;
+	vkCmdCopyBuffer(tmpCmdBuffer, pOtherBuffer->GetVkBuffer(), m_vkBuffer, 1, &copyRegion);
+
+	VK_CHECK(vkEndCommandBuffer(tmpCmdBuffer), "Failed to end buffer copy command!");
+	_SubmitToGraphicsQueueAndWait(tmpCmdBuffer);
+
+	device.FreeCommandBuffer(tmpPool, tmpCmdBuffer);
+	device.DestroyCommandPool(tmpPool);
 }
 
 void Buffer::Fill(uint32_t inData)
 {
-	CommandPool tmpPool{};
-	CommandPool::Initializer poolInit{};
-	CommandBuffer cmd{};
+	auto& device = MyDevice::GetInstance();
+	VkCommandPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+	poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+	poolInfo.queueFamilyIndex = device.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
 
-	poolInit.CustomizeCommandPoolCreateFlags(VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
-	tmpPool.Create(&poolInit);
-	tmpPool.AllocateCommandBuffer(&cmd);	
-	cmd.BeginCommands(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	cmd.CmdFillBuffer(m_vkBuffer, 0, m_bufferInformation.size, inData);
-	cmd.EndCommands();
-	_SubmitToGraphicsQueueAndWait(cmd.GetVkCommandBuffer());
-	tmpPool.Destroy();
+	VkCommandPool tmpPool = device.CreateCommandPool(poolInfo);
+	VkCommandBuffer tmpCmdBuffer = device.AllocateCommandBuffer(tmpPool);
+
+	VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	VK_CHECK(vkBeginCommandBuffer(tmpCmdBuffer, &beginInfo), "Failed to begin buffer fill command!");
+	vkCmdFillBuffer(tmpCmdBuffer, m_vkBuffer, 0, m_bufferInformation.size, inData);
+	VK_CHECK(vkEndCommandBuffer(tmpCmdBuffer), "Failed to end buffer fill command!");
+	_SubmitToGraphicsQueueAndWait(tmpCmdBuffer);
+
+	device.FreeCommandBuffer(tmpPool, tmpCmdBuffer);
+	device.DestroyCommandPool(tmpPool);
 }
 
 const Buffer::Information& Buffer::GetBufferInformation() const

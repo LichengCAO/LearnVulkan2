@@ -34,11 +34,12 @@ void MyGUI::Create()
 	init_info.QueueFamily = myDevice.queueFamilyIndices.graphicsAndComputeFamily.value();
 	init_info.Queue = myDevice.GetQueueByQueueFamilyIndex(myDevice.queueFamilyIndices.graphicsAndComputeFamily.value());
 	init_info.DescriptorPoolSize = 1000;
-	init_info.RenderPass = m_vkRenderPass;
+	init_info.PipelineInfoMain.RenderPass = m_vkRenderPass;
+	init_info.PipelineInfoMain.Subpass = 0;
+	init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 	init_info.MinImageCount = 2;
 	init_info.ImageCount = 3;
 	init_info.Allocator = nullptr;
-	init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 	ImGui_ImplVulkan_Init(&init_info);
 }
 

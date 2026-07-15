@@ -9,6 +9,7 @@ class Image;
 class Buffer;
 class CommandBuffer;
 class FrameGraphBuilder;
+class FrameGraphBlueprint;
 
 class FrameGraph
 {

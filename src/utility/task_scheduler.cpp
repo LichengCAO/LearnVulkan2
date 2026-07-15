@@ -24,13 +24,13 @@ namespace
 	const T* _UnpackImpl(const T* inPtr)
 	{
 		const T* piUnpacked{ inPtr };
-		IImplement* piImpl{ dynamic_cast<IImplement*>(piUnpacked) };
+		const IImplement* piImpl{ dynamic_cast<const IImplement*>(piUnpacked) };
 
 		// see if this has implement behind?
 		while (piImpl != nullptr)
 		{
 			piUnpacked = static_cast<const T*>(piImpl->GetRealImplement());
-			piImpl = dynamic_cast<IImplement*>(piUnpacked);
+			piImpl = dynamic_cast<const IImplement*>(piUnpacked);
 		}
 
 		return piUnpacked;
@@ -154,6 +154,11 @@ void* MySinglThreadTask::GetRealImplement()
 	return m_uptrImpl.get();
 }
 
+const void* MySinglThreadTask::GetRealImplement() const
+{
+	return m_uptrImpl.get();
+}
+
 MyMultiThreadTask::MyMultiThreadTask(std::function<void(uint32_t, uint32_t, uint32_t)> inFunction, uint32_t inSubTaskCount)
 	:m_uptrImpl(std::make_unique<MyMultiThreadTaskImpl>(inFunction, inSubTaskCount))
 {
@@ -174,6 +179,11 @@ void* MyMultiThreadTask::GetRealImplement()
 	return m_uptrImpl.get();
 }
 
+const void* MyMultiThreadTask::GetRealImplement() const
+{
+	return m_uptrImpl.get();
+}
+
 MyTaskScheduler::MyTaskScheduler()
 	:m_uptrImpl(std::make_unique<MyTaskSchedulerImpl>())
 {
@@ -183,7 +193,7 @@ MyTaskScheduler& MyTaskScheduler::GetInstance()
 {
 	if (g_uptrInstance == nullptr)
 	{
-		g_uptrInstance = std::make_unique<MyTaskScheduler>();
+		g_uptrInstance.reset(new MyTaskScheduler());
 	}
 
 	return *g_uptrInstance;

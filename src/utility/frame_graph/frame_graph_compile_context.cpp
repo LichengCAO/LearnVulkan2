@@ -1,11 +1,52 @@
 #include "frame_graph_compile_context.h"
-#include "vulkan_struct_util.h"
 #include "device.h"
 
 #define REF_COUNT_SEG_TREE(intervalType) frame_graph_util::SegmentTree<RefCount<intervalType>, intervalType>
 
 namespace
 {
+	auto MakeBufferBarrier(
+		VkBuffer inBuffer,
+		VkDeviceSize inOffset,
+		VkDeviceSize inSize,
+		uint32_t inSrcQueueFamily,
+		uint32_t inDstQueueFamily,
+		VkAccessFlags inSrcAccess,
+		VkAccessFlags inDstAccess) -> VkBufferMemoryBarrier
+	{
+		VkBufferMemoryBarrier barrier{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+		barrier.srcAccessMask = inSrcAccess;
+		barrier.dstAccessMask = inDstAccess;
+		barrier.srcQueueFamilyIndex = inSrcQueueFamily;
+		barrier.dstQueueFamilyIndex = inDstQueueFamily;
+		barrier.buffer = inBuffer;
+		barrier.offset = inOffset;
+		barrier.size = inSize;
+		return barrier;
+	}
+
+	auto MakeImageBarrier(
+		VkImage inImage,
+		VkImageLayout inOldLayout,
+		VkImageLayout inNewLayout,
+		const VkImageSubresourceRange& inRange,
+		uint32_t inSrcQueueFamily,
+		uint32_t inDstQueueFamily,
+		VkAccessFlags inSrcAccess,
+		VkAccessFlags inDstAccess) -> VkImageMemoryBarrier
+	{
+		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		barrier.srcAccessMask = inSrcAccess;
+		barrier.dstAccessMask = inDstAccess;
+		barrier.oldLayout = inOldLayout;
+		barrier.newLayout = inNewLayout;
+		barrier.srcQueueFamilyIndex = inSrcQueueFamily;
+		barrier.dstQueueFamilyIndex = inDstQueueFamily;
+		barrier.image = inImage;
+		barrier.subresourceRange = inRange;
+		return barrier;
+	}
+
 	FrameGraphQueueType _GetTypeFromQueueFamilyIndex(uint32_t inQueueFamilyIndex)
 	{
 		auto& device = MyDevice::GetInstance();
@@ -37,7 +78,6 @@ void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 	std::vector<VkImageMemoryBarrier> barriers;
 	std::vector<VkSemaphore> waitSemaphores;
 	std::vector<VkPipelineStageFlags> waitStages;
-	ImageBarrierBuilder barrierBuilder{};
 	VkImage image = VK_NULL_HANDLE; // _GetImageResourceVulkanImage(inHandle); TODO
 
 	currentState.GetSubResourceState(inState.range, origStates);
@@ -48,13 +88,8 @@ void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 			origState.queueFamily != VK_QUEUE_FAMILY_IGNORED && origState.queueFamily != inState.queueFamily;
 		std::vector<VkSemaphore> localWaitSemaphores;
 
-		barrierBuilder.Reset();
-		barrierBuilder.CustomizeArrayLayerRange(origState.range.baseArrayLayer, origState.range.layerCount);
-		barrierBuilder.CustomizeMipLevelRange(origState.range.baseMipLevel, origState.range.levelCount);
 		if (involveQueueTransfer)
 		{
-			barrierBuilder.CustomizeQueueFamilyTransfer(origState.queueFamily, inState.queueFamily);
-			
 			_PullPendingSemaphore(
 				inHandle, 
 				origState.range, 
@@ -71,11 +106,14 @@ void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 				std::make_move_iterator(localStages.begin()),
 				std::make_move_iterator(localStages.end()));
 		}
-		VkImageMemoryBarrier barrier = barrierBuilder.Build(
-			image, 
-			origState.layout, 
-			inState.layout, 
-			origState.access, 
+		VkImageMemoryBarrier barrier = MakeImageBarrier(
+			image,
+			origState.layout,
+			inState.layout,
+			origState.range,
+			involveQueueTransfer ? origState.queueFamily : VK_QUEUE_FAMILY_IGNORED,
+			involveQueueTransfer ? inState.queueFamily : VK_QUEUE_FAMILY_IGNORED,
+			origState.access,
 			inState.access);
 
 		_AddPrologueBarrier(
@@ -97,7 +135,6 @@ void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 	std::vector<VkBufferMemoryBarrier> barriers;
 	std::vector<VkSemaphore> waitSemaphores;
 	VkBuffer buffer = VK_NULL_HANDLE; // _GetImageResourceVulkanImage(inHandle); TODO
-	BufferBarrierBuilder barrierBuilder{};
 
 	currentState.GetSubResourceState(inState.offset, inState.size, origStates);
 	for (size_t i = 0; i < origStates.size(); ++i)
@@ -107,18 +144,22 @@ void FrameGraphCompileContext::RequireSubResourceStateBeforePass(
 			origState.queueFamily != VK_QUEUE_FAMILY_IGNORED && origState.queueFamily != inState.queueFamily;
 		std::vector<VkSemaphore> localWaitSemaphores;
 
-		barrierBuilder.Reset();
-		barrierBuilder.CustomizeOffsetAndSize(origState.offset, origState.size);
 		if (involveQueueTransfer)
 		{
-			barrierBuilder.CustomizeQueueFamilyTransfer(origState.queueFamily, inState.queueFamily);
 			_PullPendingSemaphore(inHandle, origState.offset, origState.size, localWaitSemaphores);
 			waitSemaphores.insert(waitSemaphores.end(), localWaitSemaphores.begin(), localWaitSemaphores.end());
 		}
 
-		VkBufferMemoryBarrier barrier = barrierBuilder.Build(buffer, origState.access, inState.access);
+		VkBufferMemoryBarrier barrier = MakeBufferBarrier(
+			buffer,
+			origState.offset,
+			origState.size,
+			involveQueueTransfer ? origState.queueFamily : VK_QUEUE_FAMILY_IGNORED,
+			involveQueueTransfer ? inState.queueFamily : VK_QUEUE_FAMILY_IGNORED,
+			origState.access,
+			inState.access);
 
-		_AddPrologueBarrier(origState.stage, inState.stage, {}, {barrier}, {});
+		_AddPrologueBarrier(_GetTypeFromQueueFamilyIndex(inState.queueFamily), origState.stage, inState.stage, {}, {barrier}, {});
 	}
 }
 
@@ -144,7 +185,6 @@ void FrameGraphCompileContext::PresageSubResourceStateNextPass(
 {
 	const auto& currentState = _GetResourceState(inHandle);
 	std::vector<FrameGraphImageSubResourceState> currentStates;
-	ImageBarrierBuilder barrierBuilder{};
 	VkImage image = VK_NULL_HANDLE; // TODO: _GetImageResourceVulkanImage(inHandle),
 	currentState.GetSubResourceState(inNewState.range, currentStates);
 
@@ -156,17 +196,17 @@ void FrameGraphCompileContext::PresageSubResourceStateNextPass(
 		
 		if (involveQueueTransfer)
 		{
-			barrierBuilder.Reset();
-			barrierBuilder.CustomizeArrayLayerRange(currState.range.baseArrayLayer, currState.range.layerCount);
-			barrierBuilder.CustomizeMipLevelRange(currState.range.baseMipLevel, currState.range.levelCount);
-			barrierBuilder.CustomizeQueueFamilyTransfer(currState.queueFamily, inNewState.queueFamily);
-			auto imageBarrier = barrierBuilder.Build(
-				image, 
-				currState.layout, 
-				inNewState.layout, 
-				currState.access, 
+			auto imageBarrier = MakeImageBarrier(
+				image,
+				currState.layout,
+				inNewState.layout,
+				currState.range,
+				currState.queueFamily,
+				inNewState.queueFamily,
+				currState.access,
 				inNewState.access);
 			_AddEpilogueBarrier(
+				_GetTypeFromQueueFamilyIndex(currState.queueFamily),
 				currState.stage, 
 				inNewState.stage,
 				{}, 
@@ -182,7 +222,6 @@ void FrameGraphCompileContext::PresageSubResourceStateNextPass(
 {
 	const auto& currentState = _GetResourceState(inHandle);
 	std::vector<FrameGraphBufferSubResourceState> currentStates;
-	BufferBarrierBuilder barrierBuilder{};
 	VkBuffer buffer = VK_NULL_HANDLE; // TODO: _GetImageResourceVulkanImage(inHandle),
 	currentState.GetSubResourceState(inNewState.offset, inNewState.size, currentStates);
 
@@ -194,21 +233,115 @@ void FrameGraphCompileContext::PresageSubResourceStateNextPass(
 
 		if (involveQueueTransfer)
 		{
-			barrierBuilder.Reset();
-			barrierBuilder.CustomizeOffsetAndSize(currState.offset, currState.size);
-			barrierBuilder.CustomizeQueueFamilyTransfer(currState.queueFamily, inNewState.queueFamily);
-			auto imageBarrier = barrierBuilder.Build(
+			auto bufferBarrier = MakeBufferBarrier(
 				buffer,
+				currState.offset,
+				currState.size,
+				currState.queueFamily,
+				inNewState.queueFamily,
 				currState.access,
 				inNewState.access);
 			_AddEpilogueBarrier(
+				_GetTypeFromQueueFamilyIndex(currState.queueFamily),
 				currState.stage,
 				inNewState.stage,
 				{},
-				{ imageBarrier },
+				{ bufferBarrier },
 				{});
 		}
 	}
+}
+
+auto FrameGraphCompileContext::_GetResourceState(const FrameGraphImageHandle& inHandle) -> FrameGraphImageResourceState&
+{
+	auto iter = m_imageResourceHandleToIndex.find(inHandle.handle);
+	CHECK_TRUE(iter != m_imageResourceHandleToIndex.end(), "FrameGraphCompileContext image state was not registered.");
+	return m_imageResourceStates.at(iter->second);
+}
+
+auto FrameGraphCompileContext::_GetResourceState(const FrameGraphBufferHandle& inHandle) -> FrameGraphBufferResourceState&
+{
+	auto iter = m_bufferResourceHandleToIndex.find(inHandle.handle);
+	CHECK_TRUE(iter != m_bufferResourceHandleToIndex.end(), "FrameGraphCompileContext buffer state was not registered.");
+	return m_bufferResourceStates.at(iter->second);
+}
+
+void FrameGraphCompileContext::_PushPendingSemaphore(
+	FrameGraphQueueType inQueueToSignal,
+	const FrameGraphImageHandle& inHandle,
+	const VkImageSubresourceRange& inRange,
+	VkSemaphore inSemaphoreToWait)
+{
+	(void)inQueueToSignal;
+	(void)inHandle;
+	(void)inRange;
+	(void)inSemaphoreToWait;
+}
+
+void FrameGraphCompileContext::_PullPendingSemaphore(
+	const FrameGraphImageHandle& inHandle,
+	const VkImageSubresourceRange& inRange,
+	std::vector<VkSemaphore>& outSemaphoresToWait)
+{
+	(void)inHandle;
+	(void)inRange;
+	outSemaphoresToWait.clear();
+}
+
+void FrameGraphCompileContext::_PullPendingSemaphore(
+	const FrameGraphBufferHandle& inHandle,
+	VkDeviceSize inOffset,
+	VkDeviceSize inSize,
+	std::vector<VkSemaphore>& outSemaphoresToWait)
+{
+	(void)inHandle;
+	(void)inOffset;
+	(void)inSize;
+	outSemaphoresToWait.clear();
+}
+
+void FrameGraphCompileContext::_AddPrologueBarrier(
+	FrameGraphQueueType inQueueToSync,
+	VkPipelineStageFlags inSrcStage,
+	VkPipelineStageFlags inDstStage,
+	const std::vector<VkMemoryBarrier>& inBarriers,
+	const std::vector<VkBufferMemoryBarrier>& inBufferBarriers,
+	const std::vector<VkImageMemoryBarrier>& inImageBarriers)
+{
+	m_prologueLocalSync.push_back(LocalSyncInfo{
+		inQueueToSync,
+		inSrcStage,
+		inDstStage,
+		inBarriers,
+		inBufferBarriers,
+		inImageBarriers
+	});
+}
+
+void FrameGraphCompileContext::_AddEpilogueBarrier(
+	FrameGraphQueueType inQueueToSync,
+	VkPipelineStageFlags inSrcStage,
+	VkPipelineStageFlags inDstStage,
+	const std::vector<VkMemoryBarrier>& inBarriers,
+	const std::vector<VkBufferMemoryBarrier>& inBufferBarriers,
+	const std::vector<VkImageMemoryBarrier>& inImageBarriers)
+{
+	m_epilogueLocalSync.push_back(LocalSyncInfo{
+		inQueueToSync,
+		inSrcStage,
+		inDstStage,
+		inBarriers,
+		inBufferBarriers,
+		inImageBarriers
+	});
+}
+
+void FrameGraphCompileContext::ApplyPrologueSynchronization()
+{
+}
+
+void FrameGraphCompileContext::ApplyEpilogueSynchronization()
+{
 }
 
 void FrameGraphCompileContext::AddSubResourceReference(

@@ -81,20 +81,6 @@ void GraphicsPipelineState::SetScissor(uint32_t inFirstScissor, const VkRect2D* 
 	m_scissors[inFirstScissor] = *inScissors;
 }
 
-void GraphicsPipelineState::SetViewport(uint32_t inFirstViewport, const VulkanViewport* inViewports)
-{
-	CHECK_TRUE(inViewports != nullptr);
-	const VkViewport viewport = ToVkViewport(*inViewports);
-	SetViewport(inFirstViewport, &viewport);
-}
-
-void GraphicsPipelineState::SetScissor(uint32_t inFirstScissor, const VulkanScissorRect* inScissors)
-{
-	CHECK_TRUE(inScissors != nullptr);
-	const VkRect2D scissor = ToVkRect2D(*inScissors);
-	SetScissor(inFirstScissor, &scissor);
-}
-
 void GraphicsPipelineState::ResetGraphicsPipelineState()
 {
 	ResetPipelineState();

@@ -9,11 +9,11 @@ private:
 	VkShaderStageFlags m_usedStages = 0;
 
 private:
-	PushConstantManager();
-
 	static std::vector<VkShaderStageFlagBits> _GetBitsFromStageFlags(VkShaderStageFlags _flags);
 
 public:
+	PushConstantManager();
+
 	// Add a push constant in the input stage, the stage is not allowed to assigned twice
 	void AddConstantRange(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size);
 

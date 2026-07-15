@@ -7,7 +7,7 @@ template <class T>
 inline void hash_combine(size_t& seed, const T& v)
 {
 	std::hash<T> hasher;
-	glm::detail::hash_combine(seed, hasher(v));
+	seed ^= hasher(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
 }
 
 inline const VkWriteDescriptorSetAccelerationStructureKHR* find_descriptor_acceleration_structure_write_info(const void* pNext)

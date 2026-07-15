@@ -39,6 +39,7 @@ class IImplement
 public:
 	virtual ~IImplement() = default;
 	virtual void* GetRealImplement() = 0;
+	virtual const void* GetRealImplement() const = 0;
 };
 
 class MySinglThreadTask final : public ISingleThreadTask, public IImplement
@@ -51,6 +52,7 @@ public:
 	virtual void DependOn(IWaitable* pPrecondition) override;
 	virtual void Execute() override;
 	virtual void* GetRealImplement() override;
+	virtual const void* GetRealImplement() const override;
 };
 
 class MyMultiThreadTask final : public IMultiThreadTask, public IImplement
@@ -63,6 +65,7 @@ public:
 	virtual void DependOn(IWaitable* pPrecondition) override;
 	virtual void ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint32_t inThreadIndex) override;
 	virtual void* GetRealImplement() override;
+	virtual const void* GetRealImplement() const override;
 };
 
 class MyTaskScheduler final : public ITaskScheduler

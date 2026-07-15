@@ -1,6 +1,50 @@
 #include "frame_graph_builder.h"
 #include "frame_graph.h"
-#include "vulkan_struct_util.h"
+
+namespace
+{
+    auto MakeBufferBarrier(
+        VkBuffer inBuffer,
+        VkDeviceSize inOffset,
+        VkDeviceSize inSize,
+        uint32_t inSrcQueueFamily,
+        uint32_t inDstQueueFamily,
+        VkAccessFlags inSrcAccess,
+        VkAccessFlags inDstAccess) -> VkBufferMemoryBarrier
+    {
+        VkBufferMemoryBarrier barrier{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+        barrier.srcAccessMask = inSrcAccess;
+        barrier.dstAccessMask = inDstAccess;
+        barrier.srcQueueFamilyIndex = inSrcQueueFamily;
+        barrier.dstQueueFamilyIndex = inDstQueueFamily;
+        barrier.buffer = inBuffer;
+        barrier.offset = inOffset;
+        barrier.size = inSize;
+        return barrier;
+    }
+
+    auto MakeImageBarrier(
+        VkImage inImage,
+        VkImageLayout inOldLayout,
+        VkImageLayout inNewLayout,
+        const VkImageSubresourceRange& inRange,
+        uint32_t inSrcQueueFamily,
+        uint32_t inDstQueueFamily,
+        VkAccessFlags inSrcAccess,
+        VkAccessFlags inDstAccess) -> VkImageMemoryBarrier
+    {
+        VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        barrier.srcAccessMask = inSrcAccess;
+        barrier.dstAccessMask = inDstAccess;
+        barrier.oldLayout = inOldLayout;
+        barrier.newLayout = inNewLayout;
+        barrier.srcQueueFamilyIndex = inSrcQueueFamily;
+        barrier.dstQueueFamilyIndex = inDstQueueFamily;
+        barrier.image = inImage;
+        barrier.subresourceRange = inRange;
+        return barrier;
+    }
+}
 
 FrameGraphPassBind& FrameGraphPassBind::BindInAttachment(uint32_t inAttachmentIndex, const std::string& inName)
 {
@@ -485,17 +529,15 @@ void FrameGraphBuilder::_GenerateSyncTask(const std::vector<std::set<NodeBluepri
                     for (const auto& curState : curStates)
                     {
                         bool queueTransfer = curState.queueFamily == ~0 ? false : curState.queueFamily != aimState.queueFamily;
-                        BufferBarrierBuilder builder{};
                         BufferMemoryBarrierBlueprint barrierBlueprint{};
-                        
-                        builder.CustomizeOffsetAndSize(curState.offset, curState.size);
-                        if (queueTransfer)
-                        {
-                            builder.CustomizeQueueFamilyTransfer(curState.queueFamily, aimState.queueFamily);
-                        }
-                        barrierBlueprint.barrier = builder.Build(
-                            VK_NULL_HANDLE, 
-                            curState.access, 
+
+                        barrierBlueprint.barrier = MakeBufferBarrier(
+                            VK_NULL_HANDLE,
+                            curState.offset,
+                            curState.size,
+                            queueTransfer ? curState.queueFamily : VK_QUEUE_FAMILY_IGNORED,
+                            queueTransfer ? aimState.queueFamily : VK_QUEUE_FAMILY_IGNORED,
+                            curState.access,
                             aimState.access);
                         barrierBlueprint.resourceHandle = curHandle;
                         barrierBlueprint.srcStage = curState.stage;
@@ -515,21 +557,16 @@ void FrameGraphBuilder::_GenerateSyncTask(const std::vector<std::set<NodeBluepri
                     for (const auto& curState : curStates)
                     {
                         ImageMemoryBarrierBlueprint barrierBlueprint{};
-                        ImageBarrierBuilder builder{};
                         bool queueTransfer = curState.queueFamily == ~0 ? false : curState.queueFamily != aimState.queueFamily;
 
-                        builder.CustomizeImageAspect(curState.range.aspectMask);
-                        builder.CustomizeArrayLayerRange(curState.range.baseArrayLayer, curState.range.layerCount);
-                        builder.CustomizeMipLevelRange(curState.range.baseMipLevel, curState.range.levelCount);
-                        if (queueTransfer)
-                        {
-                            builder.CustomizeQueueFamilyTransfer(curState.queueFamily, aimState.queueFamily);
-                        }
-                        barrierBlueprint.barrier = builder.Build(
-                            VK_NULL_HANDLE, 
-                            curState.layout, 
-                            aimState.layout, 
-                            curState.access, 
+                        barrierBlueprint.barrier = MakeImageBarrier(
+                            VK_NULL_HANDLE,
+                            curState.layout,
+                            aimState.layout,
+                            curState.range,
+                            queueTransfer ? curState.queueFamily : VK_QUEUE_FAMILY_IGNORED,
+                            queueTransfer ? aimState.queueFamily : VK_QUEUE_FAMILY_IGNORED,
+                            curState.access,
                             aimState.access);
                         barrierBlueprint.srcStage = curState.stage;
                         barrierBlueprint.dstStage = aimState.stage;

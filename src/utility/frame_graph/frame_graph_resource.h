@@ -28,8 +28,8 @@ namespace frame_graph_util
 			std::optional<ValueType> value;
 			IntervalType left;	// inclusive
 			IntervalType right; // exclusive
-			Segment* leftChild;
-			Segment* rightChild;
+			Segment* leftChild = nullptr;
+			Segment* rightChild = nullptr;
 		};
 		// Segment tree
 		std::vector<std::unique_ptr<Segment>> m_segments;
@@ -130,27 +130,27 @@ namespace frame_graph_util
 					{
 						ValueType newState = inUpdateValue;
 						m_updateFunction(currentSegment->left, currentSegment->right, newState);
-						currentSegment->state = newState;
+						currentSegment->value = newState;
 						continue;
 					}
 
 					bool needSplit = currentSegment->leftChild == nullptr;
-					bool hasPrevState = currentSegment->state.has_value();
+					bool hasPrevState = currentSegment->value.has_value();
 					if (!needSplit)
 					{
 						if (hasPrevState)
 						{
-							ValueType prevStateLeft = currentSegment->state.value();
-							ValueType prevStateRight = currentSegment->state.value();
+							ValueType prevStateLeft = currentSegment->value.value();
+							ValueType prevStateRight = currentSegment->value.value();
 							
 							// invalidate current state
-							currentSegment->state.reset();
+							currentSegment->value.reset();
 
 							// propagate previous state to children
 							m_updateFunction(currentSegment->leftChild->left, currentSegment->leftChild->right, prevStateLeft);
 							m_updateFunction(currentSegment->rightChild->left, currentSegment->rightChild->right, prevStateRight);
-							currentSegment->leftChild->state = prevStateLeft;
-							currentSegment->rightChild->state = prevStateRight;
+							currentSegment->leftChild->value = prevStateLeft;
+							currentSegment->rightChild->value = prevStateRight;
 						}
 						
 						segmentQueue.push(currentSegment->leftChild);
@@ -186,17 +186,17 @@ namespace frame_graph_util
 					m_segments.push_back(std::move(rightChild));
 					if (hasPrevState)
 					{
-						ValueType prevStateLeft = currentSegment->state.value();
-						ValueType prevStateRight = currentSegment->state.value();
+						ValueType prevStateLeft = currentSegment->value.value();
+						ValueType prevStateRight = currentSegment->value.value();
 
 						// invalidate current state
-						currentSegment->state.reset();
+						currentSegment->value.reset();
 
 						// propagate previous state to children
 						m_updateFunction(currentSegment->leftChild->left, currentSegment->leftChild->right, prevStateLeft);
 						m_updateFunction(currentSegment->rightChild->left, currentSegment->rightChild->right, prevStateRight);
-						currentSegment->leftChild->state = prevStateLeft;
-						currentSegment->rightChild->state = prevStateRight;
+						currentSegment->leftChild->value = prevStateLeft;
+						currentSegment->rightChild->value = prevStateRight;
 					}
 
 					segmentQueue.push(currentSegment->leftChild);
@@ -230,7 +230,7 @@ namespace frame_graph_util
 						continue;
 					}
 
-					bool needCheckChildren = !currentSegment->state.has_value();
+					bool needCheckChildren = !currentSegment->value.has_value();
 					if (needCheckChildren)
 					{
 						if (currentSegment->leftChild != nullptr)
@@ -242,7 +242,7 @@ namespace frame_graph_util
 					}
 					else
 					{
-						ValueType subState = currentSegment->state.value();
+						ValueType subState = currentSegment->value.value();
 						IntervalType leftBound = std::max(subLeft, currentSegment->left);
 						IntervalType rightBound = std::min(subRight, currentSegment->right);
 
@@ -323,7 +323,7 @@ struct FrameGraphImageSubResourceState
 {
 	VkImageSubresourceRange range;
 	VkImageLayout layout;
-	uint32_t queueFamily = ~0;
+	uint32_t queueFamily = ~0u;
 	VkAccessFlags access;
 	VkPipelineStageFlags stage; // last time resource is used
 };
@@ -331,7 +331,7 @@ struct FrameGraphBufferSubResourceState
 {
 	VkDeviceSize offset;
 	VkDeviceSize size;
-	uint32_t queueFamily = ~0;
+	uint32_t queueFamily = ~0u;
 	VkAccessFlags access;
 	VkPipelineStageFlags stage; // last time resource is used
 };

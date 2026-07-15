@@ -10,19 +10,18 @@ namespace
 	}
 }
 
-void FrameGraph::_TopologicalSortFrameGraphNodes(std::vector<std::set<size_t>>& outOrderedNodeIndex)
+void FrameGraph::_TopologicalSortFrameGraphNodes(std::vector<std::set<FrameGraphNode*>>& outOrderedNodeIndex)
 {
 	size_t remainCount = 0;
-	std::unordered_map<const FrameGraphNode*, size_t> nodeInDegree;
-	std::unordered_map<const FrameGraphNode*, size_t> nodeIndex;
-	std::queue<const FrameGraphNode*> zeroInNodes;
+	std::unordered_map<FrameGraphNode*, size_t> nodeInDegree;
+	std::queue<FrameGraphNode*> zeroInNodes;
 
 	for (const auto& uptrNode : m_nodes)
 	{
 		std::set<FrameGraphNode*> preNodes;
 		uptrNode->GetPreGraphNodes(preNodes);
 		nodeInDegree.insert({ uptrNode.get(), preNodes.size() });
-		nodeIndex.insert({ uptrNode.get(), remainCount++ });
+		++remainCount;
 		if (preNodes.size() == 0)
 		{
 			zeroInNodes.push(uptrNode.get());
@@ -37,13 +36,13 @@ void FrameGraph::_TopologicalSortFrameGraphNodes(std::vector<std::set<size_t>>& 
 
 		for (size_t i = 0; i < n; ++i)
 		{
-			const FrameGraphNode* pNode = zeroInNodes.front();
+			FrameGraphNode* pNode = zeroInNodes.front();
 			std::set<FrameGraphNode*> postNodes;
 
 			zeroInNodes.pop();
 			
 			// node with zero in degree should be in front
-			currentLayerNodes.insert(nodeIndex.at(pNode));
+			currentLayerNodes.insert(pNode);
 			pNode->GetPostGraphNodes(postNodes);
 
 			// update post node in degree, if it reaches 0, add it to queue

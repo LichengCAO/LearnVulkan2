@@ -32,18 +32,16 @@ public:
 	GraphicsPipelineStateInfo& SetRenderPassSubpass(const RenderPass* inRenderPassPtr, uint32_t inSubpassIndex = 0);
 };
 
-class GraphicsProgramCreateInfo final
+class GraphicsShaderProgramCreateInfo final
 {
+	friend class GraphicsShaderProgram;
+
 private:
-	std::set<std::string> m_spirvFiles;
-	std::unordered_map<VkShaderStageFlagBits, std::string> m_mapStageToEntry;
-	VkSampleCountFlagBits m_sampleCount = VkSampleCountFlagBits::VK_SAMPLE_COUNT_1_BIT;
-	bool m_depthStencil = false;
+	std::vector<ShaderModuleCreateInfo> m_shaderModuleInfos;
 
 public:
-	void AddShaderModuleInfo(const ShaderModuleCreateInfo& inShaderModule);
-	void AddDepthStencilAttachment() { m_depthStencil = true; };
-	void CustomizeMultiSample(VkSampleCountFlagBits inSample) { m_sampleCount = inSample; };
+	GraphicsShaderProgramCreateInfo& Reset();
+	GraphicsShaderProgramCreateInfo& AddShaderModuleInfo(ShaderModuleCreateInfo inShaderModule);
 };
 
 class GraphicsShaderProgram final

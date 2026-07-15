@@ -7,6 +7,18 @@ set(IMGUI_VULKAN ON)
 set(IMGUI_GLFW ON)
 set(ALLOW_DUPLICATE_CUSTOM_TARGETS TRUE)
 
+if(NOT TARGET Vulkan::Headers)
+    include(FetchContent)
+    FetchContent_Declare(
+        Vulkan-Headers
+        GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers
+        GIT_TAG v1.4.335
+    )
+    FetchContent_MakeAvailable(Vulkan-Headers)
+    FetchContent_GetProperties(Vulkan-Headers SOURCE_DIR VULKAN_HEADERS_SOURCE_DIR)
+    set(VULKAN_HEADERS_INSTALL_DIR "${VULKAN_HEADERS_SOURCE_DIR}" CACHE PATH "Where to get the Vulkan headers" FORCE)
+endif()
+
 set(GLM_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/glm")
 set(GLFW_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/glfw/include")
 set(VMA_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vma")
@@ -113,7 +125,11 @@ add_subdirectory(volk)
 add_subdirectory(vma)
 add_subdirectory(spirv_reflect)
 add_subdirectory(enkiTS)
-target_link_libraries(ExternalLibs INTERFACE ${EXT_LIBS} metis)
+find_library(METIS_LIBRARY metis)
+if(METIS_LIBRARY)
+    list(APPEND EXT_LIBS ${METIS_LIBRARY})
+endif()
+target_link_libraries(ExternalLibs INTERFACE ${EXT_LIBS})
 target_include_directories(ExternalLibs INTERFACE ${INCLUDE_DIRS}) 
 
 set_target_properties(${EXT_LIBS} PROPERTIES FOLDER "ThirdParty")

@@ -2,7 +2,6 @@
 #include <common.h>
 #include <variant>
 #include "resource/descriptor_set.h"
-#include "vulkan_common_types.h"
 
 class Buffer;
 class ImageView;
@@ -92,8 +91,6 @@ private:
 public:
 	void SetViewport(uint32_t inFirstViewport, const VkViewport* inViewports);
 	void SetScissor(uint32_t inFirstScissor, const VkRect2D* inScissors);
-	void SetViewport(uint32_t inFirstViewport, const VulkanViewport* inViewports);
-	void SetScissor(uint32_t inFirstScissor, const VulkanScissorRect* inScissors);
 	void ResetGraphicsPipelineState();
 
 	const std::vector<VkViewport>& GetViewports() const;

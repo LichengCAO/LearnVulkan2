@@ -2,12 +2,61 @@
 
 #include "buffer.h"
 #include "image.h"
-#include "vulkan_struct_util.h"
 
 #include <algorithm>
 
 namespace
 {
+	auto MakeBufferBarrier(
+		VkBuffer inBuffer,
+		VkDeviceSize inOffset,
+		VkDeviceSize inSize,
+		uint32_t inSrcQueueFamily,
+		uint32_t inDstQueueFamily,
+		VkAccessFlags inSrcAccess,
+		VkAccessFlags inDstAccess) -> VkBufferMemoryBarrier
+	{
+		VkBufferMemoryBarrier barrier{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+		barrier.srcAccessMask = inSrcAccess;
+		barrier.dstAccessMask = inDstAccess;
+		barrier.srcQueueFamilyIndex = inSrcQueueFamily;
+		barrier.dstQueueFamilyIndex = inDstQueueFamily;
+		barrier.buffer = inBuffer;
+		barrier.offset = inOffset;
+		barrier.size = inSize;
+		return barrier;
+	}
+
+	auto MakeImageBarrier(
+		VkImage inImage,
+		VkImageLayout inOldLayout,
+		VkImageLayout inNewLayout,
+		VkImageAspectFlags inAspect,
+		uint32_t inBaseMipLevel,
+		uint32_t inMipLevelCount,
+		uint32_t inBaseArrayLayer,
+		uint32_t inArrayLayerCount,
+		uint32_t inSrcQueueFamily,
+		uint32_t inDstQueueFamily,
+		VkAccessFlags inSrcAccess,
+		VkAccessFlags inDstAccess) -> VkImageMemoryBarrier
+	{
+		VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+		barrier.srcAccessMask = inSrcAccess;
+		barrier.dstAccessMask = inDstAccess;
+		barrier.oldLayout = inOldLayout;
+		barrier.newLayout = inNewLayout;
+		barrier.srcQueueFamilyIndex = inSrcQueueFamily;
+		barrier.dstQueueFamilyIndex = inDstQueueFamily;
+		barrier.image = inImage;
+		barrier.subresourceRange.aspectMask = inAspect;
+		barrier.subresourceRange.baseMipLevel = inBaseMipLevel;
+		barrier.subresourceRange.levelCount = inMipLevelCount;
+		barrier.subresourceRange.baseArrayLayer = inBaseArrayLayer;
+		barrier.subresourceRange.layerCount = inArrayLayerCount;
+		return barrier;
+	}
+
 	auto NormalizeSrcStages(VkPipelineStageFlags inStages) -> VkPipelineStageFlags
 	{
 		return inStages == 0 ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : inStages;
@@ -145,18 +194,16 @@ void QueueContext::AppendBarrier(
 	if (std::holds_alternative<BufferState>(inSource.m_state))
 	{
 		const BufferState& dstState = std::get<BufferState>(inDestination.m_state);
-		BufferBarrierBuilder builder;
-		builder.Reset()
-			.CustomizeOffsetAndSize(dstState.offset, ResolveWholeBufferSize(inDestination));
-
-		if (inSourceQueueFamily != inDestinationQueueFamily)
-		{
-			builder.CustomizeQueueFamilyTransfer(inSourceQueueFamily, inDestinationQueueFamily);
-		}
+		const uint32_t srcQueueFamily = inSourceQueueFamily != inDestinationQueueFamily ? inSourceQueueFamily : VK_QUEUE_FAMILY_IGNORED;
+		const uint32_t dstQueueFamily = inSourceQueueFamily != inDestinationQueueFamily ? inDestinationQueueFamily : VK_QUEUE_FAMILY_IGNORED;
 
 		inoutBatch.bufferBarriers.push_back(
-			builder.Build(
+			MakeBufferBarrier(
 				dstState.buffer->GetVkBuffer(),
+				dstState.offset,
+				ResolveWholeBufferSize(inDestination),
+				srcQueueFamily,
+				dstQueueFamily,
 				inSourceAccess,
 				inDestinationAccess));
 		return;
@@ -166,22 +213,21 @@ void QueueContext::AppendBarrier(
 	{
 		const ImageState& srcState = std::get<ImageState>(inSource.m_state);
 		const ImageState& dstState = std::get<ImageState>(inDestination.m_state);
-		ImageBarrierBuilder builder;
-		builder.Reset()
-			.CustomizeImageAspect(dstState.aspect)
-			.CustomizeMipLevelRange(dstState.baseMipLevel, dstState.mipLevelCount)
-			.CustomizeArrayLayerRange(dstState.baseArrayLayer, dstState.arrayLayerCount);
-
-		if (inSourceQueueFamily != inDestinationQueueFamily)
-		{
-			builder.CustomizeQueueFamilyTransfer(inSourceQueueFamily, inDestinationQueueFamily);
-		}
+		const uint32_t srcQueueFamily = inSourceQueueFamily != inDestinationQueueFamily ? inSourceQueueFamily : VK_QUEUE_FAMILY_IGNORED;
+		const uint32_t dstQueueFamily = inSourceQueueFamily != inDestinationQueueFamily ? inDestinationQueueFamily : VK_QUEUE_FAMILY_IGNORED;
 
 		inoutBatch.imageBarriers.push_back(
-			builder.Build(
+			MakeImageBarrier(
 				dstState.image->GetVkImage(),
 				srcState.layout,
 				dstState.layout,
+				dstState.aspect,
+				dstState.baseMipLevel,
+				dstState.mipLevelCount,
+				dstState.baseArrayLayer,
+				dstState.arrayLayerCount,
+				srcQueueFamily,
+				dstQueueFamily,
 				inSourceAccess,
 				inDestinationAccess));
 	}

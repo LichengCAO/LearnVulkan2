@@ -200,10 +200,12 @@ public:
 
 	private:
 		VkDescriptorSetLayout m_vkDescriptorSetLayout = VK_NULL_HANDLE;
+		const DescriptorSetLayout* m_descriptorSetLayout = nullptr;
 		DescriptorSetState m_state{};
 
 	public:
-		void SetLayout(VkDescriptorSetLayout inLayout){ m_vkDescriptorSetLayout = inLayout; }
+		void SetLayout(VkDescriptorSetLayout inLayout){ m_vkDescriptorSetLayout = inLayout; m_descriptorSetLayout = nullptr; }
+		void SetLayout(const DescriptorSetLayout* inLayout);
 		void SetDescriptorSetState(const DescriptorSetState& inState) { m_state = inState; }
 	};
 

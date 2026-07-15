@@ -6,7 +6,7 @@
 
 namespace
 {
-	uint32_t& _GetResourceStateQueueFamilyIndex(FRAME_GRAPH_RESOURCE_STATE& inoutState)
+	uint32_t& _GetResourceStateQueueFamilyIndex(FRAME_GRAPH_SUBRESOURCE_STATE& inoutState)
 	{
 		if (std::holds_alternative<FrameGraphImageSubResourceState>(inoutState))
 		{
@@ -425,7 +425,7 @@ auto FrameGraphNodeInput::GetResourceHandle() const -> const FRAME_GRAPH_RESOURC
 	return pOutput->GetResourceHandle();
 }
 
-auto FrameGraphNodeInput::GetRequiredResourceState() const -> const FRAME_GRAPH_RESOURCE_STATE&
+auto FrameGraphNodeInput::GetRequiredResourceState() const -> const FRAME_GRAPH_SUBRESOURCE_STATE&
 {
 	return m_resourceState;
 }
@@ -455,7 +455,7 @@ auto FrameGraphNodeOutput::GetResourceHandle() const -> const FRAME_GRAPH_RESOUR
 	return m_resourceHandle;
 }
 
-auto FrameGraphNodeOutput::GetProcessedResourceState() const -> const FRAME_GRAPH_RESOURCE_STATE&
+auto FrameGraphNodeOutput::GetProcessedResourceState() const -> const FRAME_GRAPH_SUBRESOURCE_STATE&
 {
 	return m_resourceState;
 }
@@ -524,6 +524,16 @@ void FrameGraphNode::Create(FrameGraphNodeInitializer* inInitializer)
 	CHECK_TRUE(m_graph != nullptr);
 }
 
+FrameGraphQueueType FrameGraphNode::GetQueueType() const
+{
+	return m_queueType;
+}
+
+bool FrameGraphNode::UseExternalCommandPool() const
+{
+	return false;
+}
+
 void FrameGraphNode::AddExtraDependency(FrameGraphNode* inNodeThisDependsOn)
 {
 	m_extraDependencies.insert(inNodeThisDependsOn);
@@ -536,6 +546,22 @@ void FrameGraphNode::GetPreGraphNodes(std::set<FrameGraphNode*>& outFrameGraphNo
 	{
 		outFrameGraphNodes.insert(uptrInput->GetOwner());
 	}
+}
+
+void FrameGraphNode::GetPostGraphNodes(std::set<FrameGraphNode*>& outFrameGraphNodes) const
+{
+	_DoForEachNextInput(
+		[&](FrameGraphNodeInput* inInput)
+		{
+			if (inInput != nullptr && inInput->GetOwner() != nullptr)
+			{
+				outFrameGraphNodes.insert(inInput->GetOwner());
+			}
+		});
+}
+
+void FrameGraphNode::RequireResource()
+{
 }
 
 void FrameGraphNode::RequireInputResourceState() const
@@ -695,9 +721,40 @@ void FrameGraphNode::UpdateResourceReferenceCount() const
 	};
 	_DoForEachNextInput(funcAddReference);
 }
+
+Image* FrameGraphNode::GetImageResource(const AttachmentHandle& inHandle, const FrameGraph* inFrameGraphPtr)
+{
+	(void)inHandle;
+	(void)inFrameGraphPtr;
+	return nullptr;
+}
+
+Buffer* FrameGraphNode::GetBufferResource(const AttachmentHandle& inHandle, const FrameGraph* inFrameGraphPtr)
+{
+	(void)inHandle;
+	(void)inFrameGraphPtr;
+	return nullptr;
+}
+
+void FrameGraphNode::BindProcess(std::function<void(FrameGraph*)> inProcess)
+{
+	(void)inProcess;
+}
+
+void FrameGraphNode::Execute()
+{
+}
+
+void FrameGraphNode::Destroy()
+{
+	m_inputs.clear();
+	m_outputs.clear();
+	m_extraDependencies.clear();
+	m_graph = nullptr;
+}
 #pragma endregion
 
-#undef FRAME_GRAPH_RESOURCE_STATE
+#undef FRAME_GRAPH_SUBRESOURCE_STATE
 #undef FRAME_GRAPH_RESOURCE_HANDLE
 
 FrameGraphPass& FrameGraphPass::AddInAttachment(const FrameGraphImageSubResourceState* inRequireState)

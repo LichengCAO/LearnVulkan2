@@ -9,6 +9,7 @@ class ShaderModuleCreateInfo final
 {
 	friend class ShaderModule;
 	friend class GraphicsShaderProgram;
+	friend class GraphicsShaderProgramCreateInfo;
 private:
 	std::string m_spirvFile;
 	std::unordered_map<VkShaderStageFlagBits, std::string> m_entries;

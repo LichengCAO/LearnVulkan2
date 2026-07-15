@@ -15,6 +15,15 @@ FrameGraphBufferResourceState::FrameGraphBufferResourceState(VkDeviceSize size)
 			});
 }
 
+FrameGraphBufferResourceState::FrameGraphBufferResourceState(const FrameGraphBufferResourceState& inOther)
+	:m_size(inOther.m_size)
+{
+	if (inOther.m_segmentTree)
+	{
+		m_segmentTree = std::make_unique<BUFFER_SEGMENT_TREE>(*inOther.m_segmentTree);
+	}
+}
+
 void FrameGraphBufferResourceState::SetSubResourceState(
 	const FrameGraphBufferSubResourceState& inSubState)
 {
@@ -60,6 +69,17 @@ FrameGraphImageResourceState::FrameGraphImageResourceState(
 			m_splitByMipLevels ? arrayLayers : mipLevels,
 			m_splitByMipLevels ? mipMajorLamda : arrayMajorLamda);
 		m_segmentTrees.push_back(std::move(tree));
+	}
+}
+
+FrameGraphImageResourceState::FrameGraphImageResourceState(const FrameGraphImageResourceState& inOther)
+	:m_mipLevels(inOther.m_mipLevels),
+	m_arrayLayers(inOther.m_arrayLayers),
+	m_splitByMipLevels(inOther.m_splitByMipLevels)
+{
+	for (const auto& tree : inOther.m_segmentTrees)
+	{
+		m_segmentTrees.push_back(std::make_unique<IMAGE_SEGMENT_TREE>(*tree));
 	}
 }
 
@@ -124,10 +144,10 @@ void FrameGraphImageResourceState::GetSubResourceState(
 
 uint32_t FrameGraphImageResourceState::GetMipLevelCount() const
 {
-    return m_arrayLayers;
+    return m_mipLevels;
 }
 
 uint32_t FrameGraphImageResourceState::GetArrayLayerCount() const
 {
-	return m_mipLevels;
+	return m_arrayLayers;
 }

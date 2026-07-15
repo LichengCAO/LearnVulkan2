@@ -7,6 +7,8 @@ class FrameGraph;
 class FrameGraphNode;
 class FrameGraphNodeInput;
 class FrameGraphNodeOutput;
+class Image;
+class Buffer;
 
 #pragma region Initializer
 
@@ -124,12 +126,12 @@ private:
 	std::string m_name;
 	FrameGraphNodeOutput* m_connectedOutput;
 	FrameGraphNodeOutput* m_correlatedOutput; // for resource that also serve as output
-	FRAME_GRAPH_RESOURCE_STATE m_resourceState;
+	FRAME_GRAPH_SUBRESOURCE_STATE m_resourceState;
 
 public:
 	auto GetConnectedOutput() const->FrameGraphNodeOutput*;
 	auto GetResourceHandle() const -> const FRAME_GRAPH_RESOURCE_HANDLE&;
-	auto GetRequiredResourceState() const -> const FRAME_GRAPH_RESOURCE_STATE&;
+	auto GetRequiredResourceState() const -> const FRAME_GRAPH_SUBRESOURCE_STATE&;
 	auto GetOwner() const -> const FrameGraphNode*;
 	auto GetOwner() -> FrameGraphNode*;
 	auto IsMutableReference() const -> bool;
@@ -148,12 +150,12 @@ private:
 	FrameGraphNodeInput* m_correlatedInput; // for output that modifies input
 	std::vector<FrameGraphNodeInput*> m_connectedInputs;
 	FRAME_GRAPH_RESOURCE_HANDLE m_resourceHandle;
-	FRAME_GRAPH_RESOURCE_STATE m_resourceState;
+	FRAME_GRAPH_SUBRESOURCE_STATE m_resourceState;
 
 public:
 	auto GetConnectedInputs() const -> const std::vector<FrameGraphNodeInput*>&;
 	auto GetResourceHandle() const -> const FRAME_GRAPH_RESOURCE_HANDLE&;
-	auto GetProcessedResourceState() const -> const FRAME_GRAPH_RESOURCE_STATE&;
+	auto GetProcessedResourceState() const -> const FRAME_GRAPH_SUBRESOURCE_STATE&;
 	auto GetOwner() const -> const FrameGraphNode*;
 	auto GetOwner() -> FrameGraphNode*;
 	auto IsReference() const -> bool;

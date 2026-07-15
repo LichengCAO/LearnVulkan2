@@ -4,6 +4,9 @@
 #include "image.h"
 #include "buffer.h"
 
+class FrameGraphBufferResourceAllocator;
+class FrameGraphImageResourceAllocator;
+
 class FrameGraphResourceManager
 {
 private:
@@ -11,8 +14,8 @@ private:
 	{
 		size_t createInfoIndex;
 		std::vector<uint32_t> referenceCount;
-		std::vector<Image*>  referenceBuffers;
-		std::vector<Buffer*> referenceImages;
+		std::vector<Image*>  referenceImages;
+		std::vector<Buffer*> referenceBuffers;
 		bool isImage;
 		bool isBuffer;
 	};
@@ -38,10 +41,8 @@ public:
 	void Create(const FrameGraphResourceManager::Initializer* inInitPtr);
 
 	// Preordain functions return a handle that can be used later to map to actual resources
-	FrameGraphImageHandle PromiseImageResource(const FrameGraphBufferResourceAllocator* inAllocatorPtr);
-	FrameGraphBufferHandle PromiseBufferResource(const FrameGraphImageResourceAllocator* inAllocatorPtr);
-
-	void 
+	FrameGraphImageHandle PromiseImageResource(const FrameGraphImageResourceAllocator* inAllocatorPtr);
+	FrameGraphBufferHandle PromiseBufferResource(const FrameGraphBufferResourceAllocator* inAllocatorPtr);
 
 	Image* GetImageResource(const FrameGraphImageHandle& inHandle);
 	Buffer* GetBufferResource(const FrameGraphBufferHandle& inHandle);

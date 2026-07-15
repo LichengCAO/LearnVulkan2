@@ -1,10 +1,12 @@
 #include "graphics_shader_program.h"
 #include "device.h"
 #include "push_constant_manager.h"
-#include "commandbuffer.h"
+#include "command_buffer.h"
+#include "render_pass.h"
 #include "shader_reflect.h"
 #include "utility/hash_util.h"
 
+#if 0
 RenderPass::~RenderPass()
 {
 	assert(m_vkRenderPass == VK_NULL_HANDLE);
@@ -388,6 +390,7 @@ VkAttachmentDescription AttachmentDescriptionBuilder::Build() const
 
 	return desc;
 }
+#endif
 
 GraphicsShaderProgramCreateInfo& GraphicsShaderProgramCreateInfo::Reset()
 {
@@ -429,7 +432,6 @@ GraphicsPipelineStateInfo& GraphicsPipelineStateInfo::AddVertexInputDescription(
 GraphicsPipelineStateInfo& GraphicsPipelineStateInfo::SetRenderPassSubpass(const RenderPass* inRenderPassPtr, uint32_t inSubpassIndex)
 {
 	CHECK_TRUE(inRenderPassPtr != nullptr, "Graphics pipeline state info needs a render pass!");
-	inRenderPassPtr->GetSubpass(inSubpassIndex);
 
 	m_renderPassPtr = inRenderPassPtr;
 	m_subpassIndex = inSubpassIndex;
@@ -611,8 +613,6 @@ VkPipeline GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateI
 	}
 	CHECK_TRUE(!shaderStageInfos.empty(), "Graphics shader program needs shader stages!");
 
-	const auto& subpass = inStateInfo.m_renderPassPtr->GetSubpass(inStateInfo.m_subpassIndex);
-
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
 	vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(inStateInfo.m_vertexBindingDescriptions.size());
 	vertexInputInfo.pVertexBindingDescriptions = inStateInfo.m_vertexBindingDescriptions.data();
@@ -653,19 +653,6 @@ VkPipeline GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateI
 	viewportStateInfo.scissorCount = 1;
 
 	VkPipelineDepthStencilStateCreateInfo depthStencilInfo{};
-	if (subpass.optDepthStencilAttachment.has_value())
-	{
-		VkAttachmentReference depthAtt = subpass.optDepthStencilAttachment.value();
-		bool readOnlyDepth = (depthAtt.layout == VkImageLayout::VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-		depthStencilInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-		depthStencilInfo.depthTestEnable = VK_TRUE;
-		depthStencilInfo.depthWriteEnable = readOnlyDepth ? VK_FALSE : VK_TRUE;
-		depthStencilInfo.depthCompareOp = VK_COMPARE_OP_LESS;
-		depthStencilInfo.depthBoundsTestEnable = VK_FALSE;
-		depthStencilInfo.minDepthBounds = 0.0f;
-		depthStencilInfo.maxDepthBounds = 1.0f;
-		depthStencilInfo.stencilTestEnable = VK_FALSE;
-	}
 
 	std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachmentStates;
 	auto getDefaultColorBlendAttachmentState = []()
@@ -687,7 +674,7 @@ VkPipeline GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateI
 
 		return colorBlendAttachmentState;
 	};
-	colorBlendAttachmentStates.resize(subpass.colorAttachments.size(), getDefaultColorBlendAttachmentState());
+	colorBlendAttachmentStates.resize(1, getDefaultColorBlendAttachmentState());
 
 	VkPipelineColorBlendStateCreateInfo colorBlendStateInfo{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
 	colorBlendStateInfo.logicOpEnable = VK_FALSE;
@@ -714,7 +701,7 @@ VkPipeline GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateI
 	pipelineInfo.subpass = inStateInfo.m_subpassIndex;
 	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 	pipelineInfo.basePipelineIndex = -1;
-	pipelineInfo.pDepthStencilState = subpass.optDepthStencilAttachment.has_value() ? &depthStencilInfo : nullptr;
+	pipelineInfo.pDepthStencilState = nullptr;
 
 	return MyDevice::GetInstance().CreateGraphicsPipeline(pipelineInfo, VK_NULL_HANDLE);
 }
