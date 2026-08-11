@@ -1,99 +1,260 @@
 #pragma once
 #include "common.h"
 
-using RenderGraphBufferHandle = uint32_t;
-using RenderGraphImageHandle = uint32_t;
-using RenderGraphPassHandle = uint32_t;
 class Buffer;
 class Image;
 class CommandBuffer;
 class Command;
-
-enum class RenderGraphPassType
-{
-	COMPUTE,  // Owns compute queue commands
-	GRAPHICS, // Owns graphics queue commands, manages render pass itself  
-	SUBPASS,  // Owns graphics queue commands in a subpass, let graph manage render pass for it
-};
+class RenderGraphInstance;
 
 class RenderGraph
 {
+	friend class RenderGraphInstance;
+
+private:
+	static constexpr uint32_t INVALID_INDEX = ~0u;
+
+	using BufferIndex = uint32_t;
+	using ImageIndex = uint32_t;
+	using PassIndex = uint32_t;
+
+	enum class PassType
+	{
+		COMPUTE,  // Owns compute queue commands
+		GRAPHICS, // Owns graphics queue commands, manages render pass itself
+		SUBPASS,  // Owns graphics queue commands in a subpass, let graph manage render pass for it
+	};
+
+	enum class QueueType
+	{
+		GRAPHICS,
+		COMPUTE,
+	};
+
+	enum class ResourceType
+	{
+		BUFFER,
+		IMAGE,
+	};
+
+	enum class ImageUsageType
+	{
+		SAMPLED,
+		STORAGE,
+		COLOR_ATTACHMENT,
+		DEPTH_ATTACHMENT,
+		INPUT_ATTACHMENT,
+	};
+
+	enum class BufferUsageType
+	{
+		UNIFORM,
+		STORAGE,
+	};
+
+	enum class HazardType
+	{
+		RAW,
+		WAR,
+		WAW,
+	};
+
+	struct ImageUsage
+	{
+		std::string image;
+		ImageUsageType type = ImageUsageType::SAMPLED;
+		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkPipelineStageFlags2 stage = 0;
+		VkAccessFlags2 access = 0;
+		bool reads = false;
+		bool writes = false;
+		VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		VkAttachmentStoreOp storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	};
+
+	struct BufferUsage
+	{
+		std::string buffer;
+		BufferUsageType type = BufferUsageType::UNIFORM;
+		VkPipelineStageFlags2 stage = 0;
+		VkAccessFlags2 access = 0;
+		bool reads = false;
+		bool writes = false;
+	};
+
+	struct BarrierPlan
+	{
+		ResourceType resourceType = ResourceType::IMAGE;
+		ImageIndex image = INVALID_INDEX;
+		BufferIndex buffer = INVALID_INDEX;
+		PassIndex before = INVALID_INDEX;
+		PassIndex after = INVALID_INDEX;
+		HazardType hazard = HazardType::RAW;
+		VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkImageLayout newLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkPipelineStageFlags2 srcStage = 0;
+		VkAccessFlags2 srcAccess = 0;
+		VkPipelineStageFlags2 dstStage = 0;
+		VkAccessFlags2 dstAccess = 0;
+		bool executionOnly = false;
+		bool needsQueueSync = false;
+	};
+
+	struct QueueSyncPlan
+	{
+		PassIndex before = INVALID_INDEX;
+		PassIndex after = INVALID_INDEX;
+		QueueType srcQueue = QueueType::GRAPHICS;
+		QueueType dstQueue = QueueType::GRAPHICS;
+	};
+
+	struct PassRecord
+	{
+		std::string name;
+		PassType type = PassType::GRAPHICS;
+		QueueType queue = QueueType::GRAPHICS;
+		bool useDedicatedRenderPass = false;
+		std::vector<ImageUsage> imageUsages;
+		std::vector<BufferUsage> bufferUsages;
+	};
+
+	struct DependencyEdge
+	{
+		PassIndex before = INVALID_INDEX;
+		PassIndex after = INVALID_INDEX;
+	};
+
 public:
 	class BufferInfo
 	{
+		friend class RenderGraph;
+
+	private:
+		std::string m_name;
+		VkBufferUsageFlags m_usage = 0;
+		bool m_external = false;
+
 	public:
-		void SetSize(VkDeviceSize inSize);
-		void AddUsages(VkBufferUsageFlags inUsage);
+		void AddUsage(VkBufferUsageFlags inUsage);
 		void SetAsExternal();
 	};
 
 	class ImageInfo
 	{
+		friend class RenderGraph;
+
+	private:
+		std::string m_name;
+		VkImageUsageFlags m_usage = 0;
+		bool m_external = false;
+
 	public:
-		void SetFormat(VkFormat inFormat);
-		void CustomizeMipLevel(uint32_t inMipLevelCount);
-		void CustomizeArrayLayer(uint32_t inLayerCount);
-		void CustomizeSize(uint32_t inWidth, std::optional<uint32_t> inHeight = {}, std::optional<uint32_t> inDepth = {});
-		void AddUsages(VkImageUsageFlags inUsage);
+		void AddUsage(VkImageUsageFlags inUsage);
 		void SetAsExternal();
 	};
 
+	class SubpassInfo;
+
 	class PassInfo
 	{
+		friend class RenderGraph;
+		friend class SubpassInfo;
+
+	private:
+		std::vector<ImageUsage> m_imageUsages;
+		std::vector<BufferUsage> m_bufferUsages;
+
 	public:
 		virtual ~PassInfo() = default;
-		virtual auto GetType() const-> RenderGraphPassType = 0;
-		void AddSampledImage(RenderGraphImageHandle inHandle, VkPipelineStageFlags2 inReadStage);
-		void AddStorageImage(RenderGraphImageHandle inHandle, VkPipelineStageFlags2 inWriteStage);
-		void AddDescriptorUniformBuffer(RenderGraphBufferHandle inHandle, VkPipelineStageFlags2 inReadStage);
-		void AddDescriptorStorageBuffer(RenderGraphBufferHandle inHandle, VkPipelineStageFlags2 inWriteStage);
+		void AddSampledImage(const std::string& inName, VkPipelineStageFlags2 inReadStage);
+		void AddStorageImage(const std::string& inName, VkPipelineStageFlags2 inWriteStage);
+		void AddDescriptorUniformBuffer(const std::string& inName, VkPipelineStageFlags2 inReadStage);
+		void AddDescriptorStorageBuffer(const std::string& inName, VkPipelineStageFlags2 inWriteStage);
+
+	private:
+		virtual auto GetType() const-> PassType = 0;
 	};
 
 	class ComputePassInfo final : public PassInfo
 	{
 	public:
 		explicit ComputePassInfo() = default;
-		virtual auto GetType() const-> RenderGraphPassType override { return RenderGraphPassType::COMPUTE; }
+
+	private:
+		virtual auto GetType() const-> PassType override { return PassType::COMPUTE; }
 	};
 
 	class GraphicsPassInfo final : public PassInfo
 	{
 	public:
 		explicit GraphicsPassInfo() = default;
-		virtual auto GetType() const-> RenderGraphPassType override { return RenderGraphPassType::GRAPHICS; }
+
+	private:
+		virtual auto GetType() const-> PassType override { return PassType::GRAPHICS; }
 	};
 
 	class SubpassInfo final : public PassInfo
 	{
+		friend class RenderGraph;
+
+	private:
+		bool m_useDedicatedRenderPass = false;
+
 	public:
 		explicit SubpassInfo() = default;
-		virtual auto GetType() const-> RenderGraphPassType override { return RenderGraphPassType::SUBPASS; }
+
+	private:
+		virtual auto GetType() const-> PassType override { return PassType::SUBPASS; }
+
+	public:
 		void UseDedicateRenderPass();
 		void AddColorAttachment(
-			RenderGraphImageHandle inHandle,
+			const std::string& inName,
 			VkAttachmentLoadOp inLoadOp,
 			VkPipelineStageFlags2 inLoadStage,
 			VkAttachmentStoreOp inStoreOp,
 			VkPipelineStageFlags2 inStoreStage);
 		void AddDepthAttachment(
-			RenderGraphImageHandle inHandle,
+			const std::string& inName,
 			VkAttachmentLoadOp inLoadOp,
 			VkPipelineStageFlags2 inLoadStage,
 			VkAttachmentStoreOp inStoreOp,
 			VkPipelineStageFlags2 inStoreStage);
-		void AddDescriptorInputAttachment(RenderGraphImageHandle inHandle, VkPipelineStageFlags2 inReadStage);
+		void AddDescriptorInputAttachment(const std::string& inName, VkPipelineStageFlags2 inReadStage);
 	};
 
+private:
+	std::vector<BufferInfo> m_buffers;
+	std::vector<ImageInfo> m_images;
+	std::vector<PassRecord> m_passes;
+	std::vector<DependencyEdge> m_extraDependencies;
+	std::unordered_map<std::string, BufferIndex> m_nameToBuffer;
+	std::unordered_map<std::string, ImageIndex> m_nameToImage;
+	std::unordered_map<std::string, PassIndex> m_nameToPass;
+	std::vector<DependencyEdge> m_dependencyEdges;
+	std::vector<PassIndex> m_sortedPasses;
+	std::vector<std::string> m_passesInExecutionOrder;
+	std::vector<std::vector<std::string>> m_passBatches;
+	std::vector<BarrierPlan> m_barrierPlans;
+	std::vector<QueueSyncPlan> m_queueSyncPlans;
+	bool m_built = false;
+
+private:
+	static auto _GetQueueType(PassType inType) -> QueueType;
+	static auto _NeedsMemoryDependency(HazardType inHazard, VkImageLayout inOldLayout, VkImageLayout inNewLayout) -> bool;
+	auto _GetBufferIndex(const std::string& inName) const->BufferIndex;
+	auto _GetImageIndex(const std::string& inName) const->ImageIndex;
+	auto _GetPassIndex(const std::string& inName) const->PassIndex;
+	void _InvalidateBuild();
+
 public:
-	auto RegisterBuffer(const std::string& inName, const RenderGraph::BufferInfo& inBufferInfo) -> RenderGraphBufferHandle;
-	auto GetBufferHandle(const std::string& inName)const -> RenderGraphBufferHandle;
-	auto RegisterImage(const std::string& inName, const RenderGraph::ImageInfo& inImageInfo) -> RenderGraphImageHandle;
-	auto GetImageHandle(const std::string& inName)const -> RenderGraphImageHandle;
-	auto AddPass(const std::string& inName, const RenderGraph::PassInfo& inPassInfo)-> RenderGraphPassHandle;
-	void AddExtraDependency(RenderGraphPassHandle inHappensSooner, RenderGraphPassHandle inHappensLater);
+	void AddBuffer(const std::string& inName, const RenderGraph::BufferInfo& inBufferInfo);
+	void AddImage(const std::string& inName, const RenderGraph::ImageInfo& inImageInfo);
+	void AddPass(const std::string& inName, const RenderGraph::PassInfo& inPassInfo);
+	void AddExtraPassDependency(const std::string& inHappensSooner, const std::string& inHappensLater);
 	void Build();
 	//TODO: Maybe it's unneccessary.
-	//void SetAliasingRule(std::function<bool(RenderGraphImageHandle inOrigin, RenderGraphImageHandle inAliasCandidate)> inImageRule, std::function<bool(RenderGraphBufferHandle inOrigin, RenderGraphBufferHandle inAliasCandidate)> inBufferRule);
+	//void SetAliasingRule(std::function<bool(const std::string& inOrigin, const std::string& inAliasCandidate)> inImageRule, std::function<bool(const std::string& inOrigin, const std::string& inAliasCandidate)> inBufferRule);
 };
 
 class RenderGraphInstance
@@ -122,10 +283,10 @@ public:
 	class ExecutionContext
 	{
 	public:
-		auto ResolveBuffer(RenderGraphBufferHandle inHandle) -> Buffer*;
-		auto ResolveImage(RenderGraphImageHandle inHandle) -> Image*;
-		void FillSubpassCommands(RenderGraphPassHandle inTarget, std::vector<const Command*> inCommands);
-		void RecordCommandBuffer(RenderGraphPassHandle inTarget, std::function<void(CommandBuffer*)> inProcess);
+		auto ResolveBuffer(const std::string& inName) -> Buffer*;
+		auto ResolveImage(const std::string& inName) -> Image*;
+		void FillSubpassCommands(const std::string& inTarget, std::vector<const Command*> inCommands);
+		void RecordCommandBuffer(const std::string& inTarget, std::function<void(CommandBuffer*)> inProcess);
 	};
 
 	class PassInfo
@@ -139,9 +300,9 @@ private:
 
 public:
 	RenderGraphInstance(const RenderGraph& inRenderGraph);
-	void SetUpExternalBuffer(RenderGraphBufferHandle inHandle, const RenderGraphInstance::ExternalBufferInfo& inBufferInfo);
-	void SetUpExternalImage(RenderGraphImageHandle inHandle, const RenderGraphInstance::ExternalImageInfo& inImageInfo);
-	void SetUpPass(RenderGraphPassHandle inHandle, const RenderGraphInstance::PassInfo& inPassInfo);
+	void SetUpExternalBuffer(const std::string& inName, const RenderGraphInstance::ExternalBufferInfo& inBufferInfo);
+	void SetUpExternalImage(const std::string& inName, const RenderGraphInstance::ExternalImageInfo& inImageInfo);
+	void SetUpPass(const std::string& inName, const RenderGraphInstance::PassInfo& inPassInfo);
 	void Compile();
 	void Execute();
 };

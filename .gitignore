@@ -4,3 +4,4 @@
 /bin 
 CMakeSetting.json
 build_codex_check/
+src/build_codex_vs2022/
