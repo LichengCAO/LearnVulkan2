@@ -1,6 +1,6 @@
 #include "render_graph.h"
 
-#include <queue>
+#include <algorithm>
 #include <unordered_set>
 
 namespace
@@ -185,21 +185,6 @@ void RenderGraph::SubpassInfo::AddDepthAttachment(
 	m_imageUsages.push_back(usage);
 }
 
-void RenderGraph::SubpassInfo::AddDescriptorInputAttachment(const std::string& inName, VkPipelineStageFlags2 inReadStage)
-{
-	CHECK_TRUE(!inName.empty(), "Input attachment image name cannot be empty!");
-	CHECK_TRUE(inReadStage != 0, "Input attachment read stage cannot be empty!");
-
-	ImageUsage usage;
-	usage.image = inName;
-	usage.type = ImageUsageType::INPUT_ATTACHMENT;
-	usage.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	usage.stage = inReadStage;
-	usage.access = VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT;
-	usage.reads = true;
-	m_imageUsages.push_back(usage);
-}
-
 auto RenderGraph::_GetBufferIndex(const std::string& inName) const -> BufferIndex
 {
 	CHECK_TRUE(!inName.empty(), "Render graph buffer name cannot be empty!");
@@ -229,6 +214,7 @@ void RenderGraph::_InvalidateBuild()
 	m_built = false;
 	m_dependencyEdges.clear();
 	m_sortedPasses.clear();
+	m_submitBatches.clear();
 	m_passesInExecutionOrder.clear();
 	m_passBatches.clear();
 	m_barrierPlans.clear();
@@ -314,6 +300,7 @@ void RenderGraph::Build()
 {
 	m_dependencyEdges.clear();
 	m_sortedPasses.clear();
+	m_submitBatches.clear();
 	m_passesInExecutionOrder.clear();
 	m_passBatches.clear();
 	m_barrierPlans.clear();
@@ -548,55 +535,389 @@ void RenderGraph::Build()
 		m_queueSyncPlans.push_back(plan);
 	}
 
-	std::vector<uint32_t> indegrees(m_passes.size(), 0);
+	constexpr uint32_t DEFAULT_STAGE_RANK = 100u;
+	auto getStageRank = [](VkPipelineStageFlags2 inStage) -> uint32_t
+	{
+		if (inStage == 0)
+		{
+			return DEFAULT_STAGE_RANK;
+		}
+
+		if (inStage & VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT) return 0u;
+		if (inStage & VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT) return 1u;
+		if (inStage & VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT) return 2u;
+		if (inStage & VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT) return 3u;
+		if (inStage & VK_PIPELINE_STAGE_2_TESSELLATION_CONTROL_SHADER_BIT) return 4u;
+		if (inStage & VK_PIPELINE_STAGE_2_TESSELLATION_EVALUATION_SHADER_BIT) return 5u;
+		if (inStage & VK_PIPELINE_STAGE_2_GEOMETRY_SHADER_BIT) return 6u;
+#ifdef VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT
+		if (inStage & VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT) return 7u;
+#endif
+#ifdef VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT
+		if (inStage & VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT) return 8u;
+#endif
+		if (inStage & VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT) return 9u;
+		if (inStage & VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT) return 10u;
+		if (inStage & VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT) return 11u;
+		if (inStage & VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT) return 12u;
+		if (inStage & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) return 13u;
+		if (inStage & VK_PIPELINE_STAGE_2_COPY_BIT) return 14u;
+		if (inStage & VK_PIPELINE_STAGE_2_RESOLVE_BIT) return 15u;
+		if (inStage & VK_PIPELINE_STAGE_2_BLIT_BIT) return 16u;
+		if (inStage & VK_PIPELINE_STAGE_2_CLEAR_BIT) return 17u;
+		if (inStage & VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT) return 18u;
+		if (inStage & VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT) return 19u;
+		if (inStage & VK_PIPELINE_STAGE_2_HOST_BIT) return 20u;
+		if (inStage & VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT) return 3u;
+		if (inStage & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) return 0u;
+		return DEFAULT_STAGE_RANK;
+	};
+
+	auto getPassStageRank = [&](PassIndex inPassIndex) -> uint32_t
+	{
+		const PassRecord& pass = m_passes[inPassIndex];
+		uint32_t rank = DEFAULT_STAGE_RANK;
+
+		for (const ImageUsage& usage : pass.imageUsages)
+		{
+			rank = std::min(rank, getStageRank(usage.stage));
+		}
+		for (const BufferUsage& usage : pass.bufferUsages)
+		{
+			rank = std::min(rank, getStageRank(usage.stage));
+		}
+
+		if (rank == DEFAULT_STAGE_RANK)
+		{
+			rank = pass.type == PassType::COMPUTE ? getStageRank(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) : getStageRank(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
+		}
+
+		return rank;
+	};
+
+	auto isBatchableSubpass = [&](PassIndex inPassIndex) -> bool
+	{
+		const PassRecord& pass = m_passes[inPassIndex];
+		return pass.type == PassType::SUBPASS && !pass.useDedicatedRenderPass;
+	};
+
 	std::vector<std::vector<PassIndex>> adjacency(m_passes.size());
+	std::unordered_set<uint64_t> queueSyncEdgeSet;
 	for (const DependencyEdge& edge : m_dependencyEdges)
 	{
 		adjacency[edge.before].push_back(edge.after);
-		++indegrees[edge.after];
+		if (m_passes[edge.before].queue != m_passes[edge.after].queue)
+		{
+			queueSyncEdgeSet.insert(_MakeEdgeKey(edge.before, edge.after));
+		}
 	}
 
-	std::queue<PassIndex> ready;
+	auto getRenderPassSignature = [&](PassIndex inPassIndex) -> std::string
+	{
+		const PassRecord& pass = m_passes[inPassIndex];
+		if (!isBatchableSubpass(inPassIndex))
+		{
+			return {};
+		}
+
+		std::string signature;
+		for (const ImageUsage& usage : pass.imageUsages)
+		{
+			if (usage.type != ImageUsageType::COLOR_ATTACHMENT &&
+				usage.type != ImageUsageType::DEPTH_ATTACHMENT)
+			{
+				continue;
+			}
+
+			const ImageIndex imageIndex = _GetImageIndex(usage.image);
+			signature += std::to_string(static_cast<uint32_t>(usage.type));
+			signature += ':';
+			signature += std::to_string(imageIndex);
+			signature += ':';
+			signature += std::to_string(static_cast<uint32_t>(usage.layout));
+			signature += ':';
+			signature += std::to_string(static_cast<uint32_t>(usage.loadOp));
+			signature += ':';
+			signature += std::to_string(static_cast<uint32_t>(usage.storeOp));
+			signature += ';';
+		}
+		return signature;
+	};
+
+	struct PassRef
+	{
+		uint32_t indegree = 0;
+		uint32_t sortFactor = 100u;
+		uint32_t downstreamStageRank = 100u;
+		uint32_t downstreamDependCount = 0;
+		std::string renderPassSignature;
+		uint32_t batchAffinity = 1u;
+	};
+
+	std::vector<PassRef> passRefs(m_passes.size());
+	for (const DependencyEdge& edge : m_dependencyEdges)
+	{
+		++passRefs[edge.after].indegree;
+	}
+
 	for (PassIndex index = 0; index < m_passes.size(); ++index)
 	{
-		if (indegrees[index] == 0)
+		PassRef& ref = passRefs[index];
+		ref.renderPassSignature = getRenderPassSignature(index);
+		ref.downstreamDependCount = static_cast<uint32_t>(adjacency[index].size());
+
+		for (PassIndex next : adjacency[index])
 		{
-			ready.push(index);
+			ref.downstreamStageRank = std::min(ref.downstreamStageRank, getPassStageRank(next));
 		}
+		if (ref.downstreamStageRank == DEFAULT_STAGE_RANK)
+		{
+			ref.downstreamStageRank = getPassStageRank(index);
+		}
+		ref.sortFactor = ref.downstreamStageRank;
 	}
 
-	while (!ready.empty())
+	auto sortReady = [&](std::vector<PassIndex>& inReady)
 	{
-		std::vector<PassIndex> batch;
-		std::vector<std::string> batchNames;
-		const size_t batchSize = ready.size();
-		batch.reserve(batchSize);
-		batchNames.reserve(batchSize);
-
-		for (size_t i = 0; i < batchSize; ++i)
+		std::stable_sort(inReady.begin(), inReady.end(), [&](PassIndex inLeft, PassIndex inRight)
 		{
-			const PassIndex index = ready.front();
-			ready.pop();
-			batch.push_back(index);
-			m_sortedPasses.push_back(index);
-			m_passesInExecutionOrder.push_back(m_passes[index].name);
-			batchNames.push_back(m_passes[index].name);
+			const PassRef& left = passRefs[inLeft];
+			const PassRef& right = passRefs[inRight];
+			if (left.sortFactor != right.sortFactor)
+			{
+				return left.sortFactor < right.sortFactor;
+			}
+			if (left.downstreamDependCount != right.downstreamDependCount)
+			{
+				return left.downstreamDependCount > right.downstreamDependCount;
+			}
+			return inLeft < inRight;
+		});
+	};
+
+	auto sortGraphicsReady = [&](std::vector<PassIndex>& inReady, const std::optional<std::string>& inActiveRenderPassSignature)
+	{
+		for (PassIndex index : inReady)
+		{
+			PassRef& ref = passRefs[index];
+			if (isBatchableSubpass(index))
+			{
+				ref.batchAffinity = inActiveRenderPassSignature.has_value() && ref.renderPassSignature == inActiveRenderPassSignature.value() ? 0u : 2u;
+			}
+			else
+			{
+				ref.batchAffinity = 1u;
+			}
 		}
 
-		for (PassIndex index : batch)
+		std::stable_sort(inReady.begin(), inReady.end(), [&](PassIndex inLeft, PassIndex inRight)
+		{
+			const PassRef& left = passRefs[inLeft];
+			const PassRef& right = passRefs[inRight];
+			if (left.batchAffinity != right.batchAffinity)
+			{
+				return left.batchAffinity < right.batchAffinity;
+			}
+			if (left.sortFactor != right.sortFactor)
+			{
+				return left.sortFactor < right.sortFactor;
+			}
+			if (left.downstreamDependCount != right.downstreamDependCount)
+			{
+				return left.downstreamDependCount > right.downstreamDependCount;
+			}
+			return inLeft < inRight;
+		});
+	};
+
+	auto fineSortQueue = [&](const std::vector<PassIndex>& inPasses, QueueType inQueue) -> std::vector<PassIndex>
+	{
+		std::unordered_set<PassIndex> passSet(inPasses.begin(), inPasses.end());
+		std::vector<uint32_t> localIndegrees(m_passes.size(), 0);
+		for (PassIndex index : inPasses)
 		{
 			for (PassIndex next : adjacency[index])
 			{
-				CHECK_TRUE(indegrees[next] > 0, "Invalid render graph dependency indegree!");
-				--indegrees[next];
-				if (indegrees[next] == 0)
+				if (passSet.find(next) != passSet.end())
 				{
-					ready.push(next);
+					++localIndegrees[next];
 				}
 			}
 		}
 
-		m_passBatches.push_back(batchNames);
+		std::vector<PassIndex> ready;
+		for (PassIndex index : inPasses)
+		{
+			if (localIndegrees[index] == 0)
+			{
+				ready.push_back(index);
+			}
+		}
+
+		std::vector<PassIndex> sorted;
+		std::optional<std::string> activeRenderPassSignature;
+		while (!ready.empty())
+		{
+			if (inQueue == QueueType::GRAPHICS)
+			{
+				sortGraphicsReady(ready, activeRenderPassSignature);
+			}
+			else
+			{
+				sortReady(ready);
+			}
+
+			const PassIndex index = ready.front();
+			ready.erase(ready.begin());
+			sorted.push_back(index);
+
+			if (inQueue == QueueType::GRAPHICS && isBatchableSubpass(index))
+			{
+				activeRenderPassSignature = passRefs[index].renderPassSignature;
+			}
+			else
+			{
+				activeRenderPassSignature.reset();
+			}
+
+			for (PassIndex next : adjacency[index])
+			{
+				if (passSet.find(next) == passSet.end())
+				{
+					continue;
+				}
+				CHECK_TRUE(localIndegrees[next] > 0, "Invalid render graph local dependency indegree!");
+				--localIndegrees[next];
+				if (localIndegrees[next] == 0)
+				{
+					ready.push_back(next);
+				}
+			}
+		}
+
+		CHECK_TRUE(sorted.size() == inPasses.size(), "Render graph submit batch has a local dependency cycle!");
+		return sorted;
+	};
+
+	std::vector<PassIndex> ready;
+	for (PassIndex index = 0; index < m_passes.size(); ++index)
+	{
+		if (passRefs[index].indegree == 0)
+		{
+			ready.push_back(index);
+		}
+	}
+
+	std::vector<std::vector<PassIndex>> submitPassBatches;
+	uint32_t scheduledPassCount = 0;
+	while (!ready.empty())
+	{
+		// Build one coarse submit window at a time. Passes that are ready and do not need to wait
+		// on a cross-queue producer from this same window stay in the current window. If a pass is
+		// unlocked by such a producer, it becomes ready for the next window instead, where a queue
+		// semaphore boundary can be inserted between the producer and consumer.
+		std::vector<PassIndex> currentReady = std::move(ready);
+		std::vector<PassIndex> nextSubmitReady;
+		std::vector<PassIndex> submitPasses;
+		std::vector<bool> deferToNextSubmit(m_passes.size(), false);
+
+		while (!currentReady.empty())
+		{
+			sortReady(currentReady);
+			const PassIndex index = currentReady.front();
+			currentReady.erase(currentReady.begin());
+			submitPasses.push_back(index);
+			++scheduledPassCount;
+
+			for (PassIndex next : adjacency[index])
+			{
+				CHECK_TRUE(passRefs[next].indegree > 0, "Invalid render graph dependency indegree!");
+				const bool isQueueSyncEdge = queueSyncEdgeSet.find(_MakeEdgeKey(index, next)) != queueSyncEdgeSet.end();
+				// Defer only consumers of cross-queue producers that were scheduled in this window.
+				// Cross-queue producers themselves should not be held back just because they will
+				// signal another queue later; starting them early preserves async overlap.
+				deferToNextSubmit[next] = deferToNextSubmit[next] || isQueueSyncEdge;
+				--passRefs[next].indegree;
+				if (passRefs[next].indegree == 0)
+				{
+					if (deferToNextSubmit[next])
+					{
+						nextSubmitReady.push_back(next);
+					}
+					else
+					{
+						currentReady.push_back(next);
+					}
+				}
+			}
+		}
+
+		CHECK_TRUE(!submitPasses.empty(), "Render graph submit batch cannot be empty!");
+		submitPassBatches.push_back(std::move(submitPasses));
+		ready = std::move(nextSubmitReady);
+	}
+
+	CHECK_TRUE(scheduledPassCount == m_passes.size(), "Render graph has a dependency cycle!");
+
+	for (const std::vector<PassIndex>& submitPasses : submitPassBatches)
+	{
+		SubmitBatch submitBatch;
+		std::vector<PassIndex> graphicsPasses;
+		std::vector<PassIndex> computePasses;
+		for (PassIndex index : submitPasses)
+		{
+			if (m_passes[index].queue == QueueType::GRAPHICS)
+			{
+				graphicsPasses.push_back(index);
+			}
+			else
+			{
+				computePasses.push_back(index);
+			}
+		}
+
+		submitBatch.graphicsPasses = fineSortQueue(graphicsPasses, QueueType::GRAPHICS);
+		submitBatch.computePasses = fineSortQueue(computePasses, QueueType::COMPUTE);
+
+		std::optional<std::string> activeRenderPassSignature;
+		for (PassIndex index : submitBatch.graphicsPasses)
+		{
+			if (isBatchableSubpass(index))
+			{
+				const std::string& signature = passRefs[index].renderPassSignature;
+				if (!submitBatch.graphicsRenderPassBatches.empty() &&
+					activeRenderPassSignature.has_value() &&
+					signature == activeRenderPassSignature.value())
+				{
+					submitBatch.graphicsRenderPassBatches.back().push_back(index);
+					m_passBatches.back().push_back(m_passes[index].name);
+				}
+				else
+				{
+					submitBatch.graphicsRenderPassBatches.push_back({ index });
+					m_passBatches.push_back({ m_passes[index].name });
+					activeRenderPassSignature = signature;
+				}
+			}
+			else
+			{
+				submitBatch.graphicsRenderPassBatches.push_back({ index });
+				m_passBatches.push_back({ m_passes[index].name });
+				activeRenderPassSignature.reset();
+			}
+
+			m_sortedPasses.push_back(index);
+			m_passesInExecutionOrder.push_back(m_passes[index].name);
+		}
+
+		for (PassIndex index : submitBatch.computePasses)
+		{
+			m_passBatches.push_back({ m_passes[index].name });
+			m_sortedPasses.push_back(index);
+			m_passesInExecutionOrder.push_back(m_passes[index].name);
+		}
+
+		m_submitBatches.push_back(std::move(submitBatch));
 	}
 
 	CHECK_TRUE(m_sortedPasses.size() == m_passes.size(), "Render graph has a dependency cycle!");

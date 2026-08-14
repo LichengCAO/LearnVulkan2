@@ -43,7 +43,6 @@ private:
 		STORAGE,
 		COLOR_ATTACHMENT,
 		DEPTH_ATTACHMENT,
-		INPUT_ATTACHMENT,
 	};
 
 	enum class BufferUsageType
@@ -122,6 +121,13 @@ private:
 	{
 		PassIndex before = INVALID_INDEX;
 		PassIndex after = INVALID_INDEX;
+	};
+
+	struct SubmitBatch
+	{
+		std::vector<PassIndex> graphicsPasses;
+		std::vector<PassIndex> computePasses;
+		std::vector<std::vector<PassIndex>> graphicsRenderPassBatches;
 	};
 
 public:
@@ -220,7 +226,6 @@ public:
 			VkPipelineStageFlags2 inLoadStage,
 			VkAttachmentStoreOp inStoreOp,
 			VkPipelineStageFlags2 inStoreStage);
-		void AddDescriptorInputAttachment(const std::string& inName, VkPipelineStageFlags2 inReadStage);
 	};
 
 private:
@@ -233,6 +238,7 @@ private:
 	std::unordered_map<std::string, PassIndex> m_nameToPass;
 	std::vector<DependencyEdge> m_dependencyEdges;
 	std::vector<PassIndex> m_sortedPasses;
+	std::vector<SubmitBatch> m_submitBatches;
 	std::vector<std::string> m_passesInExecutionOrder;
 	std::vector<std::vector<std::string>> m_passBatches;
 	std::vector<BarrierPlan> m_barrierPlans;

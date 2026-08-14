@@ -54,6 +54,8 @@ endmacro(source_group_by_dir)
 
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 file(GLOB_RECURSE HEADERS "src/*.h" "src/*.hpp")
+list(FILTER SOURCES EXCLUDE REGEX "/build[^/]*/")
+list(FILTER HEADERS EXCLUDE REGEX "/build[^/]*/")
 
 set(ALL_FILES ${HEADERS} ${SOURCES})
 
