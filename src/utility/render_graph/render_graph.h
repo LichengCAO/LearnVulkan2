@@ -1,5 +1,9 @@
 #pragma once
 #include "common.h"
+#include "command_buffer.h"
+#include "my_vulkan/pipeline/render_pass.h"
+
+#include <unordered_set>
 
 class Buffer;
 class Image;
@@ -125,37 +129,113 @@ private:
 
 	struct SubmitBatch
 	{
-		std::vector<PassIndex> graphicsPasses;
+		std::vector<std::vector<PassIndex>> graphicsPasses;
 		std::vector<PassIndex> computePasses;
-		std::vector<std::vector<PassIndex>> graphicsRenderPassBatches;
+	};
+
+	struct BuildContext
+	{
+		struct ImageUsageRef
+		{
+			PassIndex pass = INVALID_INDEX;
+			ImageIndex image = INVALID_INDEX;
+			ImageUsage usage;
+		};
+
+		struct BufferUsageRef
+		{
+			PassIndex pass = INVALID_INDEX;
+			BufferIndex buffer = INVALID_INDEX;
+			BufferUsage usage;
+		};
+
+		struct RenderPassMergeInfo
+		{
+			std::vector<std::string> attachmentTokens;
+			std::vector<ImageIndex> attachmentImages;
+			std::vector<ImageIndex> colorAttachmentImages;
+			std::vector<ImageIndex> depthAttachmentImages;
+			std::vector<ImageIndex> nonAttachmentImages;
+			std::vector<BufferIndex> nonAttachmentBuffers;
+			std::vector<ImageIndex> writtenImages;
+			std::vector<ImageIndex> writtenNonAttachmentImages;
+			std::vector<BufferIndex> writtenBuffers;
+		};
+
+		struct PassBuildRef
+		{
+			uint32_t indegree = 0;
+			uint32_t sortFactor = 100u;
+			uint32_t downstreamStageRank = 100u;
+			uint32_t downstreamDependCount = 0;
+			RenderPassMergeInfo renderPassMergeInfo;
+			uint32_t batchAffinity = 1u;
+		};
+
+		std::unordered_set<uint64_t> edgeSet;
+		std::vector<std::vector<ImageUsageRef>> imageUsageRefs;
+		std::vector<std::vector<BufferUsageRef>> bufferUsageRefs;
+		std::vector<std::vector<PassIndex>> adjacency;
+		std::unordered_set<uint64_t> queueSyncEdgeSet;
+		std::vector<PassBuildRef> passRefs;
+		std::vector<std::vector<PassIndex>> submitPassBatches;
 	};
 
 public:
 	class BufferInfo
 	{
 		friend class RenderGraph;
+		friend class RenderGraphInstance;
 
 	private:
 		std::string m_name;
+		VkDeviceSize m_size = 0;
 		VkBufferUsageFlags m_usage = 0;
+		VkMemoryPropertyFlags m_memoryProperty = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+		VkSharingMode m_sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		std::optional<VkDeviceSize> m_optAlignment;
 		bool m_external = false;
 
 	public:
+		void SetSize(VkDeviceSize inSize);
 		void AddUsage(VkBufferUsageFlags inUsage);
+		void CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperty);
+		void CustomizeSharingMode(VkSharingMode inSharingMode);
+		void CustomizeAlignment(VkDeviceSize inAlignment);
 		void SetAsExternal();
 	};
 
 	class ImageInfo
 	{
 		friend class RenderGraph;
+		friend class RenderGraphInstance;
 
 	private:
 		std::string m_name;
 		VkImageUsageFlags m_usage = 0;
+		VkImageType m_type = VK_IMAGE_TYPE_2D;
+		std::optional<uint32_t> m_optWidth;
+		std::optional<uint32_t> m_optHeight;
+		std::optional<uint32_t> m_optDepth;
+		std::optional<uint32_t> m_optMipLevels;
+		std::optional<uint32_t> m_optArrayLayers;
+		std::optional<VkFormat> m_optFormat;
+		std::optional<VkImageTiling> m_optTiling;
+		std::optional<VkMemoryPropertyFlags> m_optMemoryProperty;
+		std::optional<VkSampleCountFlagBits> m_optSampleCount;
 		bool m_external = false;
 
 	public:
 		void AddUsage(VkImageUsageFlags inUsage);
+		void CustomizeSize1D(uint32_t inWidth);
+		void CustomizeSize2D(uint32_t inWidth, uint32_t inHeight);
+		void CustomizeSize3D(uint32_t inWidth, uint32_t inHeight, uint32_t inDepth);
+		void CustomizeMipLevels(uint32_t inMipLevelCount);
+		void CustomizeArrayLayers(uint32_t inArrayLayerCount);
+		void CustomizeFormat(VkFormat inFormat);
+		void CustomizeImageTiling(VkImageTiling inTiling);
+		void CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperty);
+		void CustomizeSampleCount(VkSampleCountFlagBits inSampleCount);
 		void SetAsExternal();
 	};
 
@@ -237,10 +317,7 @@ private:
 	std::unordered_map<std::string, ImageIndex> m_nameToImage;
 	std::unordered_map<std::string, PassIndex> m_nameToPass;
 	std::vector<DependencyEdge> m_dependencyEdges;
-	std::vector<PassIndex> m_sortedPasses;
 	std::vector<SubmitBatch> m_submitBatches;
-	std::vector<std::string> m_passesInExecutionOrder;
-	std::vector<std::vector<std::string>> m_passBatches;
 	std::vector<BarrierPlan> m_barrierPlans;
 	std::vector<QueueSyncPlan> m_queueSyncPlans;
 	bool m_built = false;
@@ -252,6 +329,9 @@ private:
 	auto _GetImageIndex(const std::string& inName) const->ImageIndex;
 	auto _GetPassIndex(const std::string& inName) const->PassIndex;
 	void _InvalidateBuild();
+	void _ResolveDependency(BuildContext& inContext);
+	void _BuildSyncPlans(BuildContext& inContext);
+	void _BuildScheduleAndBatches(BuildContext& inContext);
 
 public:
 	void AddBuffer(const std::string& inName, const RenderGraph::BufferInfo& inBufferInfo);
@@ -265,29 +345,46 @@ public:
 
 class RenderGraphInstance
 {
+private:
+	using BufferIndex = RenderGraph::BufferIndex;
+	using ImageIndex = RenderGraph::ImageIndex;
+	using PassIndex = RenderGraph::PassIndex;
+
 public:
 	struct ExternalBufferInfo
 	{
 		Buffer* pBuffer{};
-		VkPipelineStageFlags2 enteringStage;
-		VkAccessFlags2 enteringAccess;
-		VkPipelineStageFlags2 leavingStage;
-		VkAccessFlags2 leavingAccess;
+		VkPipelineStageFlags2 enteringStage = 0;
+		VkAccessFlags2 enteringAccess = 0;
+		VkPipelineStageFlags2 leavingStage = 0;
+		VkAccessFlags2 leavingAccess = 0;
 	};
 
 	struct ExternalImageInfo
 	{
 		Image* pImage{};
-		VkImageLayout enteringLayout; 
-		VkPipelineStageFlags2 enteringStage; 
-		VkAccessFlags2 enteringAccess;
-		VkImageLayout leavingLayout;
-		VkPipelineStageFlags2 leavingStage;
-		VkAccessFlags2 leavingAccess;
+		VkImageLayout enteringLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkPipelineStageFlags2 enteringStage = 0;
+		VkAccessFlags2 enteringAccess = 0;
+		VkImageLayout leavingLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkPipelineStageFlags2 leavingStage = 0;
+		VkAccessFlags2 leavingAccess = 0;
 	};
 
 	class ExecutionContext
 	{
+		friend class RenderGraphInstance;
+
+	private:
+		RenderGraphInstance* m_pInstance = nullptr;
+		CommandBuffer* m_pCommandBuffer = nullptr;
+		CommandBuffer::PrimaryScope* m_pPrimaryScope = nullptr;
+		CommandBuffer::RenderPassScope* m_pRenderPassScope = nullptr;
+		std::unordered_map<PassIndex, size_t> m_passToSubpass;
+
+	private:
+		ExecutionContext() = default;
+
 	public:
 		auto ResolveBuffer(const std::string& inName) -> Buffer*;
 		auto ResolveImage(const std::string& inName) -> Image*;
@@ -297,15 +394,70 @@ public:
 
 	class PassInfo
 	{
+		friend class RenderGraphInstance;
+
+	private:
+		std::function<void(RenderGraphInstance::ExecutionContext&)> m_process;
+
 	public:
 		void SetProcess(std::function<void(RenderGraphInstance::ExecutionContext&)> inProcess);
 	};
 
 private:
+	struct TemporaryRenderPass
+	{
+		std::vector<PassIndex> passes;
+		std::unique_ptr<RenderPass> renderPass;
+		std::unique_ptr<Framebuffer> framebuffer;
+		VkRect2D renderArea{};
+	};
+
+	static constexpr uint32_t INVALID_INDEX = RenderGraph::INVALID_INDEX;
+
+	const RenderGraph* m_pRenderGraph = nullptr;
+	std::vector<std::unique_ptr<Buffer>> m_internalBuffers;
+	std::vector<std::unique_ptr<Image>> m_internalImages;
+	std::vector<Buffer*> m_buffers;
+	std::vector<Image*> m_images;
+	std::vector<std::optional<ExternalBufferInfo>> m_externalBufferInfos;
+	std::vector<std::optional<ExternalImageInfo>> m_externalImageInfos;
+	std::unordered_map<std::string, Buffer*> m_nameToBuffer;
+	std::unordered_map<std::string, Image*> m_nameToImage;
+	std::vector<PassInfo> m_passInfos;
+	std::vector<TemporaryRenderPass> m_temporaryRenderPasses;
+	std::vector<std::vector<uint32_t>> m_graphicsBatchToTemporaryRenderPass;
+	std::vector<PassIndex> m_firstBufferUsagePass;
+	std::vector<PassIndex> m_lastBufferUsagePass;
+	std::vector<PassIndex> m_firstImageUsagePass;
+	std::vector<PassIndex> m_lastImageUsagePass;
+	bool m_compiled = false;
+
+private:
+	void _DestroyTemporaryRenderPasses();
+	void _DestroyInternalResources();
 	void _SetUpPhysicalResources();
+	void _ResolveExternalUsageBoundaries();
+	void _CreateTemporaryRenderPasses();
+	auto _GetTemporaryRenderPass(uint32_t inSubmitIndex, uint32_t inGraphicsBatchIndex)->TemporaryRenderPass*;
+	auto _GetBuffer(const std::string& inName) const->Buffer*;
+	auto _GetImage(const std::string& inName) const->Image*;
+	void _AppendPassCommands(PassIndex inPassIndex, CommandBuffer::PrimaryScope& inPrimaryScope);
+	void _AppendRenderPassCommands(const std::vector<PassIndex>& inPasses, const TemporaryRenderPass& inRenderPass, CommandBuffer& inCommandBuffer);
+	void _RecordSubpassCommandBuffer(PassIndex inPassIndex, std::function<void(CommandBuffer*)> inProcess, ExecutionContext& inContext);
+	void _AppendBarriersBeforePasses(
+		const std::vector<PassIndex>& inPasses,
+		bool inIgnoreInternalDependencies,
+		CommandBuffer::PrimaryScope& inPrimaryScope,
+		std::vector<std::unique_ptr<Command>>& inoutOwnedCommands);
+	void _AppendExternalBarriers(
+		const std::vector<PassIndex>& inPasses,
+		bool inBeforePasses,
+		CommandBuffer::PrimaryScope& inPrimaryScope,
+		std::vector<std::unique_ptr<Command>>& inoutOwnedCommands);
 
 public:
 	RenderGraphInstance(const RenderGraph& inRenderGraph);
+	~RenderGraphInstance();
 	void SetUpExternalBuffer(const std::string& inName, const RenderGraphInstance::ExternalBufferInfo& inBufferInfo);
 	void SetUpExternalImage(const std::string& inName, const RenderGraphInstance::ExternalImageInfo& inImageInfo);
 	void SetUpPass(const std::string& inName, const RenderGraphInstance::PassInfo& inPassInfo);

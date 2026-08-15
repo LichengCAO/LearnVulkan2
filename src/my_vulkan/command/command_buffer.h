@@ -5,6 +5,8 @@
 
 class CommandBuffer final
 {
+	friend class RenderGraphInstance;
+
 public:
 	struct PrimaryScope final
 	{
