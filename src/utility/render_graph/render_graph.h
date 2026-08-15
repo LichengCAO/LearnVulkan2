@@ -10,10 +10,12 @@ class Image;
 class CommandBuffer;
 class Command;
 class RenderGraphInstance;
+struct RenderGraphTestProbe;
 
 class RenderGraph
 {
 	friend class RenderGraphInstance;
+	friend struct RenderGraphTestProbe;
 
 private:
 	static constexpr uint32_t INVALID_INDEX = ~0u;
@@ -85,22 +87,34 @@ private:
 		bool writes = false;
 	};
 
+	struct ImageUsageState
+	{
+		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		VkPipelineStageFlags2 stage = 0;
+		VkAccessFlags2 access = 0;
+		bool reads = false;
+		bool writes = false;
+	};
+
+	struct BufferUsageState
+	{
+		VkPipelineStageFlags2 stage = 0;
+		VkAccessFlags2 access = 0;
+		bool reads = false;
+		bool writes = false;
+	};
+
 	struct BarrierPlan
 	{
 		ResourceType resourceType = ResourceType::IMAGE;
 		ImageIndex image = INVALID_INDEX;
+		ImageIndex sourceImage = INVALID_INDEX;
 		BufferIndex buffer = INVALID_INDEX;
+		BufferIndex sourceBuffer = INVALID_INDEX;
 		PassIndex before = INVALID_INDEX;
 		PassIndex after = INVALID_INDEX;
-		HazardType hazard = HazardType::RAW;
-		VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		VkImageLayout newLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		VkPipelineStageFlags2 srcStage = 0;
-		VkAccessFlags2 srcAccess = 0;
-		VkPipelineStageFlags2 dstStage = 0;
-		VkAccessFlags2 dstAccess = 0;
-		bool executionOnly = false;
-		bool needsQueueSync = false;
+		// External barriers use INVALID_INDEX on before/after to mark entering/leaving graph boundaries.
+		bool external = false;
 	};
 
 	struct QueueSyncPlan
@@ -129,8 +143,21 @@ private:
 
 	struct SubmitBatch
 	{
-		std::vector<std::vector<PassIndex>> graphicsPasses;
-		std::vector<PassIndex> computePasses;
+		struct PassGroupPlan
+		{
+			QueueType queue = QueueType::GRAPHICS;
+			std::vector<PassIndex> passes;
+			bool managedRenderPass = false;
+			std::vector<BarrierPlan> prologueBarriers;
+			std::vector<BarrierPlan> epilogueBarriers;
+			std::vector<BarrierPlan> queueReleaseBarriers;
+			std::vector<BarrierPlan> subpassDependencies;
+			std::vector<QueueSyncPlan> queueSignalPlans;
+			std::vector<QueueSyncPlan> queueWaitPlans;
+		};
+
+		std::vector<PassGroupPlan> graphicsGroups;
+		std::vector<PassGroupPlan> computeGroups;
 	};
 
 	struct BuildContext
@@ -173,6 +200,9 @@ private:
 		};
 
 		std::unordered_set<uint64_t> edgeSet;
+		std::vector<DependencyEdge> dependencyEdges;
+		std::vector<QueueSyncPlan> queueSyncPlans;
+		std::vector<bool> activePasses;
 		std::vector<std::vector<ImageUsageRef>> imageUsageRefs;
 		std::vector<std::vector<BufferUsageRef>> bufferUsageRefs;
 		std::vector<std::vector<PassIndex>> adjacency;
@@ -316,28 +346,35 @@ private:
 	std::unordered_map<std::string, BufferIndex> m_nameToBuffer;
 	std::unordered_map<std::string, ImageIndex> m_nameToImage;
 	std::unordered_map<std::string, PassIndex> m_nameToPass;
-	std::vector<DependencyEdge> m_dependencyEdges;
 	std::vector<SubmitBatch> m_submitBatches;
-	std::vector<BarrierPlan> m_barrierPlans;
-	std::vector<QueueSyncPlan> m_queueSyncPlans;
+	std::vector<bool> m_activePasses;
+	std::vector<BufferIndex> m_bufferAliasRoots;
+	std::vector<ImageIndex> m_imageAliasRoots;
+	bool m_enableResourceAliasing = true;
 	bool m_built = false;
 
 private:
 	static auto _GetQueueType(PassType inType) -> QueueType;
 	static auto _NeedsMemoryDependency(HazardType inHazard, VkImageLayout inOldLayout, VkImageLayout inNewLayout) -> bool;
+	auto _GetImageUsageState(PassIndex inPassIndex, ImageIndex inImageIndex) const->ImageUsageState;
+	auto _GetBufferUsageState(PassIndex inPassIndex, BufferIndex inBufferIndex) const->BufferUsageState;
 	auto _GetBufferIndex(const std::string& inName) const->BufferIndex;
 	auto _GetImageIndex(const std::string& inName) const->ImageIndex;
 	auto _GetPassIndex(const std::string& inName) const->PassIndex;
 	void _InvalidateBuild();
+	void _LinkPasses(BuildContext& inContext);
 	void _ResolveDependency(BuildContext& inContext);
-	void _BuildSyncPlans(BuildContext& inContext);
+	void _CullPasses(BuildContext& inContext);
 	void _BuildScheduleAndBatches(BuildContext& inContext);
+	void _BuildResourceAliases(BuildContext& inContext);
+	void _BuildScheduledResourceBarriers(BuildContext& inContext);
 
 public:
 	void AddBuffer(const std::string& inName, const RenderGraph::BufferInfo& inBufferInfo);
 	void AddImage(const std::string& inName, const RenderGraph::ImageInfo& inImageInfo);
 	void AddPass(const std::string& inName, const RenderGraph::PassInfo& inPassInfo);
 	void AddExtraPassDependency(const std::string& inHappensSooner, const std::string& inHappensLater);
+	void EnableResourceAliasing(bool inEnable);
 	void Build();
 	//TODO: Maybe it's unneccessary.
 	//void SetAliasingRule(std::function<bool(const std::string& inOrigin, const std::string& inAliasCandidate)> inImageRule, std::function<bool(const std::string& inOrigin, const std::string& inAliasCandidate)> inBufferRule);
@@ -345,6 +382,8 @@ public:
 
 class RenderGraphInstance
 {
+	friend struct RenderGraphTestProbe;
+
 private:
 	using BufferIndex = RenderGraph::BufferIndex;
 	using ImageIndex = RenderGraph::ImageIndex;
@@ -404,6 +443,8 @@ public:
 	};
 
 private:
+	static constexpr uint32_t INVALID_INDEX = RenderGraph::INVALID_INDEX;
+
 	struct TemporaryRenderPass
 	{
 		std::vector<PassIndex> passes;
@@ -412,7 +453,53 @@ private:
 		VkRect2D renderArea{};
 	};
 
-	static constexpr uint32_t INVALID_INDEX = RenderGraph::INVALID_INDEX;
+	struct CompiledPassGroup
+	{
+		RenderGraph::QueueType queue = RenderGraph::QueueType::GRAPHICS;
+		std::vector<PassIndex> passes;
+		uint32_t temporaryRenderPass = INVALID_INDEX;
+		std::vector<std::unique_ptr<Command>> prologueCommands;
+		std::vector<std::unique_ptr<Command>> epilogueCommands;
+		std::vector<std::unique_ptr<Command>> queueReleaseCommands;
+	};
+
+	struct CompiledQueueWait
+	{
+		uint32_t syncEdge = INVALID_INDEX;
+		VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	};
+
+	struct CompiledQueueSyncEdge
+	{
+		uint32_t srcSubmit = INVALID_INDEX;
+		uint32_t dstSubmit = INVALID_INDEX;
+		RenderGraph::QueueType srcQueue = RenderGraph::QueueType::GRAPHICS;
+		RenderGraph::QueueType dstQueue = RenderGraph::QueueType::GRAPHICS;
+		VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	};
+
+	struct CompiledSubmitBatch
+	{
+		std::vector<CompiledPassGroup> graphicsGroups;
+		std::vector<CompiledPassGroup> computeGroups;
+		std::vector<uint32_t> graphicsSignalSyncs;
+		std::vector<uint32_t> computeSignalSyncs;
+		std::vector<CompiledQueueWait> graphicsWaitSyncs;
+		std::vector<CompiledQueueWait> computeWaitSyncs;
+	};
+
+	struct CompiledGraphPlan
+	{
+		std::vector<CompiledSubmitBatch> submitBatches;
+		std::vector<CompiledQueueSyncEdge> queueSyncEdges;
+	};
+
+	enum class BarrierCommandMode
+	{
+		NORMAL,
+		QUEUE_RELEASE,
+		QUEUE_ACQUIRE,
+	};
 
 	const RenderGraph* m_pRenderGraph = nullptr;
 	std::vector<std::unique_ptr<Buffer>> m_internalBuffers;
@@ -426,34 +513,28 @@ private:
 	std::vector<PassInfo> m_passInfos;
 	std::vector<TemporaryRenderPass> m_temporaryRenderPasses;
 	std::vector<std::vector<uint32_t>> m_graphicsBatchToTemporaryRenderPass;
-	std::vector<PassIndex> m_firstBufferUsagePass;
-	std::vector<PassIndex> m_lastBufferUsagePass;
-	std::vector<PassIndex> m_firstImageUsagePass;
-	std::vector<PassIndex> m_lastImageUsagePass;
+	CompiledGraphPlan m_compiledPlan;
+	std::vector<VkSemaphore> m_freeSemaphores;
+	std::vector<VkSemaphore> m_executeSemaphores;
 	bool m_compiled = false;
 
 private:
 	void _DestroyTemporaryRenderPasses();
 	void _DestroyInternalResources();
 	void _SetUpPhysicalResources();
-	void _ResolveExternalUsageBoundaries();
 	void _CreateTemporaryRenderPasses();
+	void _BuildCompiledGraphPlan();
 	auto _GetTemporaryRenderPass(uint32_t inSubmitIndex, uint32_t inGraphicsBatchIndex)->TemporaryRenderPass*;
 	auto _GetBuffer(const std::string& inName) const->Buffer*;
 	auto _GetImage(const std::string& inName) const->Image*;
 	void _AppendPassCommands(PassIndex inPassIndex, CommandBuffer::PrimaryScope& inPrimaryScope);
 	void _AppendRenderPassCommands(const std::vector<PassIndex>& inPasses, const TemporaryRenderPass& inRenderPass, CommandBuffer& inCommandBuffer);
 	void _RecordSubpassCommandBuffer(PassIndex inPassIndex, std::function<void(CommandBuffer*)> inProcess, ExecutionContext& inContext);
-	void _AppendBarriersBeforePasses(
-		const std::vector<PassIndex>& inPasses,
-		bool inIgnoreInternalDependencies,
-		CommandBuffer::PrimaryScope& inPrimaryScope,
-		std::vector<std::unique_ptr<Command>>& inoutOwnedCommands);
-	void _AppendExternalBarriers(
-		const std::vector<PassIndex>& inPasses,
-		bool inBeforePasses,
-		CommandBuffer::PrimaryScope& inPrimaryScope,
-		std::vector<std::unique_ptr<Command>>& inoutOwnedCommands);
+	auto _AcquireSemaphore()->VkSemaphore;
+	void _RecycleExecuteSemaphores();
+	auto _CreateBarrierCommand(
+		const std::vector<RenderGraph::BarrierPlan>& inBarrierPlans,
+		BarrierCommandMode inMode = BarrierCommandMode::NORMAL)->std::unique_ptr<Command>;
 
 public:
 	RenderGraphInstance(const RenderGraph& inRenderGraph);
