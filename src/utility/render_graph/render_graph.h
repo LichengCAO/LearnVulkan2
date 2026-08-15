@@ -131,6 +131,7 @@ private:
 		PassType type = PassType::GRAPHICS;
 		QueueType queue = QueueType::GRAPHICS;
 		bool useDedicatedRenderPass = false;
+		bool neverCull = false;
 		std::vector<ImageUsage> imageUsages;
 		std::vector<BufferUsage> bufferUsages;
 	};
@@ -279,9 +280,11 @@ public:
 	private:
 		std::vector<ImageUsage> m_imageUsages;
 		std::vector<BufferUsage> m_bufferUsages;
+		bool m_neverCull = false;
 
 	public:
 		virtual ~PassInfo() = default;
+		void SetNeverCull(bool inNeverCull = true);
 		void AddSampledImage(const std::string& inName, VkPipelineStageFlags2 inReadStage);
 		void AddStorageImage(const std::string& inName, VkPipelineStageFlags2 inWriteStage);
 		void AddDescriptorUniformBuffer(const std::string& inName, VkPipelineStageFlags2 inReadStage);

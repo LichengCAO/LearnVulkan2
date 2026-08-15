@@ -308,6 +308,11 @@ void RenderGraph::ImageInfo::SetAsExternal()
 	m_external = true;
 }
 
+void RenderGraph::PassInfo::SetNeverCull(bool inNeverCull)
+{
+	m_neverCull = inNeverCull;
+}
+
 void RenderGraph::PassInfo::AddSampledImage(const std::string& inName, VkPipelineStageFlags2 inReadStage)
 {
 	CHECK_TRUE(!inName.empty(), "Sampled image name cannot be empty!");
@@ -505,6 +510,7 @@ void RenderGraph::AddPass(const std::string& inName, const RenderGraph::PassInfo
 	record.name = inName;
 	record.type = inPassInfo.GetType();
 	record.queue = _GetQueueType(record.type);
+	record.neverCull = inPassInfo.m_neverCull;
 	record.imageUsages = inPassInfo.m_imageUsages;
 	record.bufferUsages = inPassInfo.m_bufferUsages;
 
@@ -806,6 +812,14 @@ void RenderGraph::_CullPasses(BuildContext& inContext)
 		for (const BuildContext::ImageUsageRef& ref : inContext.imageUsageRefs[imageIndex])
 		{
 			funcMarkActive(ref.pass);
+		}
+	}
+
+	for (PassIndex passIndex = 0; passIndex < m_passes.size(); ++passIndex)
+	{
+		if (m_passes[passIndex].neverCull)
+		{
+			funcMarkActive(passIndex);
 		}
 	}
 

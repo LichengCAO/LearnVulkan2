@@ -407,6 +407,27 @@ namespace
 		CHECK_TRUE(names.front() == "output", "The unused pass should be culled!");
 	}
 
+	void TestNeverCullPassWithoutExternalUsageIsScheduled()
+	{
+		RenderGraph graph;
+
+		RenderGraph::BufferInfo scratch;
+		scratch.SetSize(256);
+		scratch.AddUsage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		graph.AddBuffer("scratch", scratch);
+
+		RenderGraph::ComputePassInfo sideEffectPass;
+		sideEffectPass.SetNeverCull();
+		sideEffectPass.AddDescriptorStorageBuffer("scratch", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		graph.AddPass("side_effect", sideEffectPass);
+
+		graph.Build();
+
+		const std::vector<std::string> names = RenderGraphTestProbe::GetScheduledPassNames(graph);
+		CHECK_TRUE(names.size() == 1, "Never-cull pass should be scheduled without external resource usage!");
+		CHECK_TRUE(names.front() == "side_effect", "Never-cull pass should be the scheduled pass!");
+	}
+
 	void TestCullKeepsExternalUsageDependencies()
 	{
 		RenderGraph graph;
@@ -698,6 +719,7 @@ int main()
 		TestScheduledResourceBarriersAssignCrossQueuePlansDirectly();
 		TestCrossQueueWriteAfterWriteBuildsSync();
 		TestPassWithoutExternalUsageIsCulled();
+		TestNeverCullPassWithoutExternalUsageIsScheduled();
 		TestCullKeepsExternalUsageDependencies();
 		TestNonOverlappingInternalBuffersAliasByDefault();
 		TestOverlappingInternalBuffersDoNotAlias();
