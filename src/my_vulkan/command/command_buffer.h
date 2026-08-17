@@ -1,6 +1,6 @@
 #pragma once
-#include "command.h"
 #include "common.h"
+#include "command.h"
 #include <variant>
 
 class CommandBuffer final

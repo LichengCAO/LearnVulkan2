@@ -9,11 +9,89 @@
 #include <algorithm>
 #include <unordered_set>
 
+RenderGraph::ImageSubresourceRange::ImageSubresourceRange(uint32_t inMipLevel, uint32_t inArrayLayer)
+{
+	baseMipLevel = inMipLevel;
+	levelCount = 1;
+	baseArrayLayer = inArrayLayer;
+	layerCount = 1;
+}
+
+auto RenderGraph::ImageSubresourceRange::operator==(const ImageSubresourceRange& inOther) const -> bool
+{
+	return baseMipLevel == inOther.baseMipLevel &&
+		levelCount == inOther.levelCount &&
+		baseArrayLayer == inOther.baseArrayLayer &&
+		layerCount == inOther.layerCount;
+}
+
+auto RenderGraph::ImageSubresourceRange::Overlap(const ImageSubresourceRange& inOther) const -> bool
+{
+	const uint32_t mipEnd = baseMipLevel + levelCount;
+	const uint32_t otherMipEnd = inOther.baseMipLevel + inOther.levelCount;
+	const uint32_t layerEnd = baseArrayLayer + layerCount;
+	const uint32_t otherLayerEnd = inOther.baseArrayLayer + inOther.layerCount;
+	return baseMipLevel < otherMipEnd &&
+		inOther.baseMipLevel < mipEnd &&
+		baseArrayLayer < otherLayerEnd &&
+		inOther.baseArrayLayer < layerEnd;
+}
+
+auto RenderGraph::ImageSubresourceRange::Intersect(const ImageSubresourceRange& inOther) const -> ImageSubresourceRange
+{
+	CHECK_TRUE(Overlap(inOther), "Cannot intersect non-overlapping image subresource ranges!");
+
+	ImageSubresourceRange result;
+	result.baseMipLevel = std::max(baseMipLevel, inOther.baseMipLevel);
+	const uint32_t mipEnd = std::min(
+		baseMipLevel + levelCount,
+		inOther.baseMipLevel + inOther.levelCount);
+	result.levelCount = mipEnd - result.baseMipLevel;
+	result.baseArrayLayer = std::max(baseArrayLayer, inOther.baseArrayLayer);
+	const uint32_t layerEnd = std::min(
+		baseArrayLayer + layerCount,
+		inOther.baseArrayLayer + inOther.layerCount);
+	result.layerCount = layerEnd - result.baseArrayLayer;
+	return result;
+}
+
 namespace
 {
 	auto _MakeEdgeKey(uint32_t inBefore, uint32_t inAfter)->uint64_t
 	{
 		return (static_cast<uint64_t>(inBefore) << 32u) | static_cast<uint64_t>(inAfter);
+	}
+
+	template <typename FunctionType>
+	void _ForEachImageSubresource(
+		const RenderGraph::ImageSubresourceRange& inRange,
+		FunctionType inFunction)
+	{
+		for (uint32_t layer = inRange.baseArrayLayer; layer < inRange.baseArrayLayer + inRange.layerCount; ++layer)
+		{
+			for (uint32_t mip = inRange.baseMipLevel; mip < inRange.baseMipLevel + inRange.levelCount; ++mip)
+			{
+				inFunction(mip, layer);
+			}
+		}
+	}
+
+	auto _GetImageSubresourceIndex(uint32_t inMipLevel, uint32_t inArrayLayer, uint32_t inMipLevelCount)->uint32_t
+	{
+		return inArrayLayer * inMipLevelCount + inMipLevel;
+	}
+
+	auto _MakeImageViewInfo(const RenderGraph::ImageSubresourceRange& inRange)->ImageViewInfo
+	{
+		ImageViewInfo viewInfo;
+		viewInfo.CustomizeMipLevels(inRange.baseMipLevel, inRange.levelCount);
+		viewInfo.CustomizeArrayLayers(inRange.baseArrayLayer, inRange.layerCount);
+		return viewInfo;
+	}
+
+	auto _MipExtent(uint32_t inExtent, uint32_t inMipLevel)->uint32_t
+	{
+		return std::max(1u, inExtent >> inMipLevel);
 	}
 
 	auto _ToStageFlags(VkPipelineStageFlags2 inStage)->VkPipelineStageFlags
@@ -131,16 +209,67 @@ auto RenderGraph::_GetQueueType(PassType inType) -> QueueType
 	}
 }
 
-auto RenderGraph::_GetImageUsageState(PassIndex inPassIndex, ImageIndex inImageIndex) const -> ImageUsageState
+auto RenderGraph::_GetImageSubresourceRange(ImageIndex inImageIndex) const -> ImageSubresourceRange
+{
+	CHECK_TRUE(inImageIndex < m_images.size(), "Invalid render graph image index!");
+
+	const ImageInfo& image = m_images[inImageIndex];
+	ImageSubresourceRange range;
+	range.baseMipLevel = 0;
+	range.levelCount = image.m_optMipLevels.value_or(1);
+	range.baseArrayLayer = 0;
+	range.layerCount = image.m_optArrayLayers.value_or(1);
+	return range;
+}
+
+auto RenderGraph::_NormalizeImageSubresourceRange(
+	ImageIndex inImageIndex,
+	const ImageSubresourceRange& inRange) const -> ImageSubresourceRange
+{
+	const ImageSubresourceRange wholeRange = _GetImageSubresourceRange(inImageIndex);
+
+	ImageSubresourceRange result = inRange;
+	if (result.levelCount == 0)
+	{
+		result.levelCount = wholeRange.levelCount - result.baseMipLevel;
+	}
+	if (result.layerCount == 0)
+	{
+		result.layerCount = wholeRange.layerCount - result.baseArrayLayer;
+	}
+
+	CHECK_TRUE(result.levelCount > 0, "Render graph image subresource range mip count must be greater than 0!");
+	CHECK_TRUE(result.layerCount > 0, "Render graph image subresource range layer count must be greater than 0!");
+	CHECK_TRUE(
+		result.baseMipLevel < wholeRange.levelCount &&
+		result.baseMipLevel + result.levelCount <= wholeRange.levelCount,
+		"Render graph image subresource mip range is out of bounds!");
+	CHECK_TRUE(
+		result.baseArrayLayer < wholeRange.layerCount &&
+		result.baseArrayLayer + result.layerCount <= wholeRange.layerCount,
+		"Render graph image subresource array layer range is out of bounds!");
+	return result;
+}
+
+auto RenderGraph::_GetImageUsageState(
+	PassIndex inPassIndex,
+	ImageIndex inImageIndex,
+	const ImageSubresourceRange& inSubresourceRange) const -> ImageUsageState
 {
 	CHECK_TRUE(inPassIndex < m_passes.size(), "Invalid render graph image usage pass index!");
 
 	ImageUsageState state;
 	bool found = false;
+	const ImageSubresourceRange normalizedRange = _NormalizeImageSubresourceRange(inImageIndex, inSubresourceRange);
 	const PassRecord& pass = m_passes[inPassIndex];
 	for (const ImageUsage& usage : pass.imageUsages)
 	{
 		if (_GetImageIndex(usage.image) != inImageIndex)
+		{
+			continue;
+		}
+		const ImageSubresourceRange usageRange = _NormalizeImageSubresourceRange(inImageIndex, usage.subresourceRange);
+		if (!usageRange.Overlap(normalizedRange))
 		{
 			continue;
 		}
@@ -313,13 +442,17 @@ void RenderGraph::PassInfo::SetNeverCull(bool inNeverCull)
 	m_neverCull = inNeverCull;
 }
 
-void RenderGraph::PassInfo::AddSampledImage(const std::string& inName, VkPipelineStageFlags2 inReadStage)
+void RenderGraph::PassInfo::AddSampledImage(
+	const std::string& inName,
+	VkPipelineStageFlags2 inReadStage,
+	const ImageSubresourceRange& inRange)
 {
 	CHECK_TRUE(!inName.empty(), "Sampled image name cannot be empty!");
 	CHECK_TRUE(inReadStage != 0, "Sampled image read stage cannot be empty!");
 
 	ImageUsage usage;
 	usage.image = inName;
+	usage.subresourceRange = inRange;
 	usage.type = ImageUsageType::SAMPLED;
 	usage.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	usage.stage = inReadStage;
@@ -328,13 +461,17 @@ void RenderGraph::PassInfo::AddSampledImage(const std::string& inName, VkPipelin
 	m_imageUsages.push_back(usage);
 }
 
-void RenderGraph::PassInfo::AddStorageImage(const std::string& inName, VkPipelineStageFlags2 inWriteStage)
+void RenderGraph::PassInfo::AddStorageImage(
+	const std::string& inName,
+	VkPipelineStageFlags2 inWriteStage,
+	const ImageSubresourceRange& inRange)
 {
 	CHECK_TRUE(!inName.empty(), "Storage image name cannot be empty!");
 	CHECK_TRUE(inWriteStage != 0, "Storage image stage cannot be empty!");
 
 	ImageUsage usage;
 	usage.image = inName;
+	usage.subresourceRange = inRange;
 	usage.type = ImageUsageType::STORAGE;
 	usage.layout = VK_IMAGE_LAYOUT_GENERAL;
 	usage.stage = inWriteStage;
@@ -383,7 +520,8 @@ void RenderGraph::SubpassInfo::AddColorAttachment(
 	VkAttachmentLoadOp inLoadOp,
 	VkPipelineStageFlags2 inLoadStage,
 	VkAttachmentStoreOp inStoreOp,
-	VkPipelineStageFlags2 inStoreStage)
+	VkPipelineStageFlags2 inStoreStage,
+	const ImageSubresourceRange& inRange)
 {
 	CHECK_TRUE(!inName.empty(), "Color attachment image name cannot be empty!");
 	CHECK_TRUE(inStoreStage != 0, "Color attachment store stage cannot be empty!");
@@ -394,6 +532,7 @@ void RenderGraph::SubpassInfo::AddColorAttachment(
 
 	ImageUsage usage;
 	usage.image = inName;
+	usage.subresourceRange = inRange;
 	usage.type = ImageUsageType::COLOR_ATTACHMENT;
 	usage.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	usage.stage = inLoadStage | inStoreStage;
@@ -414,7 +553,8 @@ void RenderGraph::SubpassInfo::AddDepthAttachment(
 	VkAttachmentLoadOp inLoadOp,
 	VkPipelineStageFlags2 inLoadStage,
 	VkAttachmentStoreOp inStoreOp,
-	VkPipelineStageFlags2 inStoreStage)
+	VkPipelineStageFlags2 inStoreStage,
+	const ImageSubresourceRange& inRange)
 {
 	CHECK_TRUE(!inName.empty(), "Depth attachment image name cannot be empty!");
 	CHECK_TRUE(inStoreStage != 0, "Depth attachment store stage cannot be empty!");
@@ -425,6 +565,7 @@ void RenderGraph::SubpassInfo::AddDepthAttachment(
 
 	ImageUsage usage;
 	usage.image = inName;
+	usage.subresourceRange = inRange;
 	usage.type = ImageUsageType::DEPTH_ATTACHMENT;
 	usage.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	usage.stage = inLoadStage | inStoreStage;
@@ -521,9 +662,10 @@ void RenderGraph::AddPass(const std::string& inName, const RenderGraph::PassInfo
 		record.useDedicatedRenderPass = subpassInfo->m_useDedicatedRenderPass;
 	}
 
-	for (const ImageUsage& usage : record.imageUsages)
+	for (ImageUsage& usage : record.imageUsages)
 	{
-		_GetImageIndex(usage.image);
+		const ImageIndex imageIndex = _GetImageIndex(usage.image);
+		usage.subresourceRange = _NormalizeImageSubresourceRange(imageIndex, usage.subresourceRange);
 	}
 	for (const BufferUsage& usage : record.bufferUsages)
 	{
@@ -603,76 +745,87 @@ void RenderGraph::_LinkPasses(BuildContext& inContext)
 	{
 		const bool hasExternalInitialState = m_images[imageIndex].m_external;
 		const auto& refs = inContext.imageUsageRefs[imageIndex];
-		std::optional<BuildContext::ImageUsageRef> lastWriter;
-		std::vector<BuildContext::ImageUsageRef> pendingReaders;
-		std::optional<BuildContext::ImageUsageRef> firstWriter;
 		const auto funcIsAttachmentUsage = [](const ImageUsage& inUsage)->bool
 		{
 			return inUsage.type == ImageUsageType::COLOR_ATTACHMENT ||
 				inUsage.type == ImageUsageType::DEPTH_ATTACHMENT;
 		};
 
-		for (const BuildContext::ImageUsageRef& ref : refs)
+		const ImageSubresourceRange imageRange = _GetImageSubresourceRange(imageIndex);
+		_ForEachImageSubresource(imageRange, [&](uint32_t inMipLevel, uint32_t inArrayLayer)
 		{
-			if (ref.usage.writes)
+			const ImageSubresourceRange subresourceRange(inMipLevel, inArrayLayer);
+			std::optional<BuildContext::ImageUsageRef> lastWriter;
+			std::vector<BuildContext::ImageUsageRef> pendingReaders;
+			std::optional<BuildContext::ImageUsageRef> firstWriter;
+
+			for (const BuildContext::ImageUsageRef& ref : refs)
 			{
-				firstWriter = ref;
-				break;
+				if (ref.usage.writes && ref.usage.subresourceRange.Overlap(subresourceRange))
+				{
+					firstWriter = ref;
+					break;
+				}
 			}
-		}
 
-		for (const BuildContext::ImageUsageRef& ref : refs)
-		{
-			if (ref.usage.reads)
+			for (const BuildContext::ImageUsageRef& ref : refs)
 			{
-				if (!lastWriter.has_value() && !hasExternalInitialState)
+				if (!ref.usage.subresourceRange.Overlap(subresourceRange))
 				{
-					if (!funcIsAttachmentUsage(ref.usage) && !ref.usage.writes && !firstWriter.has_value())
-					{
-						CHECK_TRUE(false, "Internal render graph image cannot be read before it is written!");
-					}
-					CHECK_TRUE(
-						ref.usage.loadOp != VK_ATTACHMENT_LOAD_OP_LOAD,
-						"Internal render graph attachment cannot use LOAD before it is written!");
+					continue;
 				}
 
-				if (lastWriter.has_value() && lastWriter->pass != ref.pass)
+				if (ref.usage.reads)
 				{
-					funcAddEdge(lastWriter->pass, ref.pass);
+					if (!lastWriter.has_value() && !hasExternalInitialState)
+					{
+						if (!funcIsAttachmentUsage(ref.usage) && !ref.usage.writes && !firstWriter.has_value())
+						{
+							CHECK_TRUE(false, "Internal render graph image cannot be read before it is written!");
+						}
+						CHECK_TRUE(
+							ref.usage.loadOp != VK_ATTACHMENT_LOAD_OP_LOAD,
+							"Internal render graph attachment cannot use LOAD before it is written!");
+					}
+
+					if (lastWriter.has_value() && lastWriter->pass != ref.pass)
+					{
+						funcAddEdge(lastWriter->pass, ref.pass);
+					}
+					else if (!hasExternalInitialState && firstWriter.has_value() && firstWriter->pass != ref.pass)
+					{
+						funcAddEdge(firstWriter->pass, ref.pass);
+					}
+					else if (hasExternalInitialState)
+					{
+						pendingReaders.push_back(ref);
+					}
 				}
-				else if (!hasExternalInitialState && firstWriter.has_value() && firstWriter->pass != ref.pass)
+
+				if (ref.usage.writes)
 				{
-					funcAddEdge(firstWriter->pass, ref.pass);
+					if (lastWriter.has_value() && !ref.usage.reads && lastWriter->pass != ref.pass)
+					{
+						funcAddEdge(lastWriter->pass, ref.pass);
+					}
+
+					for (const BuildContext::ImageUsageRef& reader : pendingReaders)
+					{
+						if (reader.pass != ref.pass)
+						{
+							funcAddEdge(reader.pass, ref.pass);
+						}
+					}
+
+					pendingReaders.clear();
+					lastWriter = ref;
 				}
-				else if (hasExternalInitialState)
+				else if (ref.usage.reads && lastWriter.has_value())
 				{
 					pendingReaders.push_back(ref);
 				}
 			}
-
-			if (ref.usage.writes)
-			{
-				if (lastWriter.has_value() && !ref.usage.reads && lastWriter->pass != ref.pass)
-				{
-					funcAddEdge(lastWriter->pass, ref.pass);
-				}
-
-				for (const BuildContext::ImageUsageRef& reader : pendingReaders)
-				{
-					if (reader.pass != ref.pass)
-					{
-						funcAddEdge(reader.pass, ref.pass);
-					}
-				}
-
-				pendingReaders.clear();
-				lastWriter = ref;
-			}
-			else if (ref.usage.reads && lastWriter.has_value())
-			{
-				pendingReaders.push_back(ref);
-			}
-		}
+		});
 	}
 
 	for (BufferIndex bufferIndex = 0; bufferIndex < inContext.bufferUsageRefs.size(); ++bufferIndex)
@@ -1765,6 +1918,7 @@ void RenderGraph::_BuildScheduledResourceBarriers(BuildContext& inContext)
 		BarrierPlan plan;
 		plan.resourceType = ResourceType::IMAGE;
 		plan.image = inFirstUse.image;
+		plan.subresourceRange = inFirstUse.usage.subresourceRange;
 		plan.after = inFirstUse.pass;
 		funcEmitBarrier(plan);
 	};
@@ -1775,6 +1929,7 @@ void RenderGraph::_BuildScheduledResourceBarriers(BuildContext& inContext)
 		plan.resourceType = ResourceType::IMAGE;
 		plan.image = inAfter.image;
 		plan.sourceImage = inBefore.image;
+		plan.subresourceRange = inBefore.usage.subresourceRange.Intersect(inAfter.usage.subresourceRange);
 		plan.before = inBefore.pass;
 		plan.after = inAfter.pass;
 		funcEmitBarrier(plan);
@@ -1797,35 +1952,52 @@ void RenderGraph::_BuildScheduledResourceBarriers(BuildContext& inContext)
 			inUsage.type == ImageUsageType::DEPTH_ATTACHMENT;
 	};
 
-	std::vector<ImageLogicalInfo> imageLogicalInfos(m_images.size());
+	std::vector<std::vector<ImageLogicalInfo>> imageLogicalInfos(m_images.size());
 	std::vector<BufferLogicalInfo> bufferLogicalInfos(m_buffers.size());
 
 	for (ImageIndex imageIndex = 0; imageIndex < inContext.imageUsageRefs.size(); ++imageIndex)
 	{
-		ImageLogicalInfo& info = imageLogicalInfos[imageIndex];
-		uint32_t firstOrder = INVALID_INDEX;
-		uint32_t lastOrder = 0;
-		uint32_t firstWriterOrder = INVALID_INDEX;
-		for (const BuildContext::ImageUsageRef& ref : inContext.imageUsageRefs[imageIndex])
+		const ImageSubresourceRange imageRange = _GetImageSubresourceRange(imageIndex);
+		const uint32_t subresourceCount = imageRange.levelCount * imageRange.layerCount;
+		imageLogicalInfos[imageIndex].resize(subresourceCount);
+
+		_ForEachImageSubresource(imageRange, [&](uint32_t inMipLevel, uint32_t inArrayLayer)
 		{
-			const uint32_t order = passToGroup[ref.pass].passOrder;
-			CHECK_TRUE(order != INVALID_INDEX, "Render graph image usage pass is not scheduled!");
-			if (order < firstOrder)
+			const uint32_t subresourceIndex = _GetImageSubresourceIndex(inMipLevel, inArrayLayer, imageRange.levelCount);
+			ImageLogicalInfo& info = imageLogicalInfos[imageIndex][subresourceIndex];
+			const ImageSubresourceRange subresourceRange(inMipLevel, inArrayLayer);
+			uint32_t firstOrder = INVALID_INDEX;
+			uint32_t lastOrder = 0;
+			uint32_t firstWriterOrder = INVALID_INDEX;
+
+			for (const BuildContext::ImageUsageRef& ref : inContext.imageUsageRefs[imageIndex])
 			{
-				info.firstUse = ref.pass;
-				firstOrder = order;
+				if (!ref.usage.subresourceRange.Overlap(subresourceRange))
+				{
+					continue;
+				}
+
+				const uint32_t order = passToGroup[ref.pass].passOrder;
+				CHECK_TRUE(order != INVALID_INDEX, "Render graph image usage pass is not scheduled!");
+				if (order < firstOrder)
+				{
+					info.firstUse = ref.pass;
+					firstOrder = order;
+				}
+				if (order >= lastOrder)
+				{
+					info.lastUse = ref.pass;
+					lastOrder = order;
+				}
+				if (ref.usage.writes && order < firstWriterOrder)
+				{
+					ImageUsage usage = ref.usage;
+					usage.subresourceRange = subresourceRange;
+					info.firstWriter = BuildContext::ImageUsageRef{ ref.pass, ref.image, usage };
+					firstWriterOrder = order;
+				}
 			}
-			if (order >= lastOrder)
-			{
-				info.lastUse = ref.pass;
-				lastOrder = order;
-			}
-			if (ref.usage.writes && order < firstWriterOrder)
-			{
-				info.firstWriter = ref;
-				firstWriterOrder = order;
-			}
-		}
+		});
 	}
 
 	for (BufferIndex bufferIndex = 0; bufferIndex < inContext.bufferUsageRefs.size(); ++bufferIndex)
@@ -1856,8 +2028,14 @@ void RenderGraph::_BuildScheduledResourceBarriers(BuildContext& inContext)
 		}
 	}
 
-	std::vector<ImageState> imageStates(m_images.size());
+	std::vector<std::vector<ImageState>> imageStates(m_images.size());
 	std::vector<BufferState> bufferStates(m_buffers.size());
+
+	for (ImageIndex imageIndex = 0; imageIndex < m_images.size(); ++imageIndex)
+	{
+		const ImageSubresourceRange imageRange = _GetImageSubresourceRange(imageIndex);
+		imageStates[imageIndex].resize(imageRange.levelCount * imageRange.layerCount);
+	}
 
 	auto funcVisitPass = [&](PassIndex inPassIndex)
 	{
@@ -1870,77 +2048,90 @@ void RenderGraph::_BuildScheduledResourceBarriers(BuildContext& inContext)
 			const ImageIndex aliasIndex = m_imageAliasRoots[imageIndex];
 			CHECK_TRUE(aliasIndex < imageStates.size(), "Invalid render graph image alias root!");
 			CHECK_TRUE(imageIndex < imageStates.size(), "Invalid render graph image index!");
-			ImageState& state = imageStates[aliasIndex];
-			const ImageLogicalInfo& info = imageLogicalInfos[imageIndex];
-			const BuildContext::ImageUsageRef ref{ inPassIndex, imageIndex, usage };
 			const bool hasExternalInitialState = m_images[imageIndex].m_external;
+			const ImageSubresourceRange imageRange = _GetImageSubresourceRange(imageIndex);
 
-			if (ref.pass == info.firstUse && hasExternalInitialState)
+			_ForEachImageSubresource(usage.subresourceRange, [&](uint32_t inMipLevel, uint32_t inArrayLayer)
 			{
-				BarrierPlan plan;
-				plan.resourceType = ResourceType::IMAGE;
-				plan.image = imageIndex;
-				plan.after = ref.pass;
-				plan.external = true;
-				passToGroup[ref.pass].group->prologueBarriers.push_back(plan);
-			}
+				const uint32_t subresourceIndex = _GetImageSubresourceIndex(inMipLevel, inArrayLayer, imageRange.levelCount);
+				CHECK_TRUE(subresourceIndex < imageStates[aliasIndex].size(), "Render graph image subresource state is missing!");
+				CHECK_TRUE(subresourceIndex < imageLogicalInfos[imageIndex].size(), "Render graph image subresource logical info is missing!");
 
-			if (!state.lastWriter.has_value() &&
-				!hasExternalInitialState &&
-				ref.usage.writes &&
-				!funcIsAttachmentUsage(ref.usage))
-			{
-				funcEmitInitialImageBarrier(ref);
-			}
+				ImageState& state = imageStates[aliasIndex][subresourceIndex];
+				const ImageLogicalInfo& info = imageLogicalInfos[imageIndex][subresourceIndex];
+				ImageUsage cellUsage = usage;
+				cellUsage.subresourceRange = ImageSubresourceRange(inMipLevel, inArrayLayer);
+				const BuildContext::ImageUsageRef ref{ inPassIndex, imageIndex, cellUsage };
 
-			if (ref.usage.reads)
-			{
-				if (state.lastWriter.has_value() && state.lastWriter->pass != ref.pass)
+				if (ref.pass == info.firstUse && hasExternalInitialState)
 				{
-					funcEmitImageBarrier(state.lastWriter.value(), ref);
-				}
-				else if (!hasExternalInitialState && info.firstWriter.has_value() && info.firstWriter->pass != ref.pass)
-				{
-					funcEmitImageBarrier(info.firstWriter.value(), ref);
-				}
-				else if (hasExternalInitialState)
-				{
-					state.pendingReaders.push_back(ref);
-				}
-			}
-
-			if (ref.usage.writes)
-			{
-				if (state.lastWriter.has_value() && !ref.usage.reads && state.lastWriter->pass != ref.pass)
-				{
-					funcEmitImageBarrier(state.lastWriter.value(), ref);
+					BarrierPlan plan;
+					plan.resourceType = ResourceType::IMAGE;
+					plan.image = imageIndex;
+					plan.subresourceRange = ref.usage.subresourceRange;
+					plan.after = ref.pass;
+					plan.external = true;
+					passToGroup[ref.pass].group->prologueBarriers.push_back(plan);
 				}
 
-				for (const BuildContext::ImageUsageRef& reader : state.pendingReaders)
+				if (!state.lastWriter.has_value() &&
+					!hasExternalInitialState &&
+					ref.usage.writes &&
+					!funcIsAttachmentUsage(ref.usage))
 				{
-					if (reader.pass != ref.pass)
+					funcEmitInitialImageBarrier(ref);
+				}
+
+				if (ref.usage.reads)
+				{
+					if (state.lastWriter.has_value() && state.lastWriter->pass != ref.pass)
 					{
-						funcEmitImageBarrier(reader, ref);
+						funcEmitImageBarrier(state.lastWriter.value(), ref);
+					}
+					else if (!hasExternalInitialState && info.firstWriter.has_value() && info.firstWriter->pass != ref.pass)
+					{
+						funcEmitImageBarrier(info.firstWriter.value(), ref);
+					}
+					else if (hasExternalInitialState)
+					{
+						state.pendingReaders.push_back(ref);
 					}
 				}
 
-				state.pendingReaders.clear();
-				state.lastWriter = ref;
-			}
-			else if (ref.usage.reads && state.lastWriter.has_value())
-			{
-				state.pendingReaders.push_back(ref);
-			}
+				if (ref.usage.writes)
+				{
+					if (state.lastWriter.has_value() && !ref.usage.reads && state.lastWriter->pass != ref.pass)
+					{
+						funcEmitImageBarrier(state.lastWriter.value(), ref);
+					}
 
-			if (ref.pass == info.lastUse && m_images[imageIndex].m_external)
-			{
-				BarrierPlan plan;
-				plan.resourceType = ResourceType::IMAGE;
-				plan.image = imageIndex;
-				plan.before = ref.pass;
-				plan.external = true;
-				passToGroup[ref.pass].group->epilogueBarriers.push_back(plan);
-			}
+					for (const BuildContext::ImageUsageRef& reader : state.pendingReaders)
+					{
+						if (reader.pass != ref.pass)
+						{
+							funcEmitImageBarrier(reader, ref);
+						}
+					}
+
+					state.pendingReaders.clear();
+					state.lastWriter = ref;
+				}
+				else if (ref.usage.reads && state.lastWriter.has_value())
+				{
+					state.pendingReaders.push_back(ref);
+				}
+
+				if (ref.pass == info.lastUse && m_images[imageIndex].m_external)
+				{
+					BarrierPlan plan;
+					plan.resourceType = ResourceType::IMAGE;
+					plan.image = imageIndex;
+					plan.subresourceRange = ref.usage.subresourceRange;
+					plan.before = ref.pass;
+					plan.external = true;
+					passToGroup[ref.pass].group->epilogueBarriers.push_back(plan);
+				}
+			});
 		}
 
 		for (const BufferUsage& usage : pass.bufferUsages)
@@ -2440,8 +2631,13 @@ void RenderGraphInstance::_CreateTemporaryRenderPasses()
 				continue;
 			}
 
-			std::vector<ImageIndex> attachmentImages;
-			std::unordered_map<ImageIndex, uint32_t> imageToAttachment;
+			struct AttachmentUse
+			{
+				ImageIndex image = INVALID_INDEX;
+				RenderGraph::ImageSubresourceRange subresourceRange;
+			};
+
+			std::vector<AttachmentUse> attachmentImages;
 			std::vector<std::vector<std::pair<uint32_t, VkImageLayout>>> colorReferences;
 			std::vector<std::optional<std::pair<uint32_t, VkImageLayout>>> depthReferences;
 
@@ -2470,7 +2666,8 @@ void RenderGraphInstance::_CreateTemporaryRenderPasses()
 				if (dependency.resourceType == RenderGraph::ResourceType::IMAGE)
 				{
 					const ImageIndex sourceImage = dependency.sourceImage == INVALID_INDEX ? dependency.image : dependency.sourceImage;
-					const RenderGraph::ImageUsageState state = m_pRenderGraph->_GetImageUsageState(dependency.before, sourceImage);
+					const RenderGraph::ImageUsageState state =
+						m_pRenderGraph->_GetImageUsageState(dependency.before, sourceImage, dependency.subresourceRange);
 					subpassAvailableStages[beforeIter->second] |= state.stage;
 					subpassAvailableAccesses[beforeIter->second] |= state.access;
 				}
@@ -2484,18 +2681,21 @@ void RenderGraphInstance::_CreateTemporaryRenderPasses()
 				dependenciesBySubpass[afterIter->second].push_back(dependency);
 			}
 
-			auto funcGetAttachmentIndex = [&](ImageIndex inImageIndex)->uint32_t
+			auto funcGetAttachmentIndex =
+				[&](ImageIndex inImageIndex, const RenderGraph::ImageSubresourceRange& inSubresourceRange)->uint32_t
 			{
-				const auto iter = imageToAttachment.find(inImageIndex);
-				if (iter != imageToAttachment.end())
+				for (uint32_t index = 0; index < attachmentImages.size(); ++index)
 				{
-					return iter->second;
+					const AttachmentUse& attachment = attachmentImages[index];
+					if (attachment.image == inImageIndex && attachment.subresourceRange == inSubresourceRange)
+					{
+						return index;
+					}
 				}
 
 				CHECK_TRUE(inImageIndex < m_images.size() && m_images[inImageIndex] != nullptr, "Render graph attachment image is not available!");
 				const uint32_t attachmentIndex = static_cast<uint32_t>(attachmentImages.size());
-				attachmentImages.push_back(inImageIndex);
-				imageToAttachment.emplace(inImageIndex, attachmentIndex);
+				attachmentImages.push_back(AttachmentUse{ inImageIndex, inSubresourceRange });
 				return attachmentIndex;
 			};
 
@@ -2513,7 +2713,7 @@ void RenderGraphInstance::_CreateTemporaryRenderPasses()
 					}
 
 					const ImageIndex imageIndex = m_pRenderGraph->_GetImageIndex(usage.image);
-					const uint32_t attachmentIndex = funcGetAttachmentIndex(imageIndex);
+					const uint32_t attachmentIndex = funcGetAttachmentIndex(imageIndex, usage.subresourceRange);
 					if (usage.type == RenderGraph::ImageUsageType::DEPTH_ATTACHMENT)
 					{
 						CHECK_TRUE(
@@ -2534,7 +2734,8 @@ void RenderGraphInstance::_CreateTemporaryRenderPasses()
 			attachmentNames.reserve(attachmentImages.size());
 			for (uint32_t attachmentIndex = 0; attachmentIndex < attachmentImages.size(); ++attachmentIndex)
 			{
-				const ImageIndex imageIndex = attachmentImages[attachmentIndex];
+				const ImageIndex imageIndex = attachmentImages[attachmentIndex].image;
+				const RenderGraph::ImageSubresourceRange attachmentRange = attachmentImages[attachmentIndex].subresourceRange;
 				Image* image = m_images[imageIndex];
 				CHECK_TRUE(image != nullptr, "Render graph attachment image is not available!");
 				const Image::Information& imageInfo = image->GetImageInformation();
@@ -2548,7 +2749,9 @@ void RenderGraphInstance::_CreateTemporaryRenderPasses()
 
 				for (const RenderGraph::BarrierPlan& plan : group.prologueBarriers)
 				{
-					if (plan.resourceType != RenderGraph::ResourceType::IMAGE || plan.image != imageIndex)
+					if (plan.resourceType != RenderGraph::ResourceType::IMAGE ||
+						plan.image != imageIndex ||
+						!plan.subresourceRange.Overlap(attachmentRange))
 					{
 						continue;
 					}
@@ -2563,7 +2766,8 @@ void RenderGraphInstance::_CreateTemporaryRenderPasses()
 					{
 						if ((usage.type != RenderGraph::ImageUsageType::COLOR_ATTACHMENT &&
 							usage.type != RenderGraph::ImageUsageType::DEPTH_ATTACHMENT) ||
-							m_pRenderGraph->_GetImageIndex(usage.image) != imageIndex)
+							m_pRenderGraph->_GetImageIndex(usage.image) != imageIndex ||
+							!usage.subresourceRange.Overlap(attachmentRange))
 						{
 							continue;
 						}
@@ -2623,7 +2827,8 @@ void RenderGraphInstance::_CreateTemporaryRenderPasses()
 					VkAccessFlags2 dstAccess = 0;
 					if (dependency.resourceType == RenderGraph::ResourceType::IMAGE)
 					{
-						const RenderGraph::ImageUsageState state = m_pRenderGraph->_GetImageUsageState(dependency.after, dependency.image);
+						const RenderGraph::ImageUsageState state =
+							m_pRenderGraph->_GetImageUsageState(dependency.after, dependency.image, dependency.subresourceRange);
 						dstStage = state.stage;
 						dstAccess = state.access;
 					}
@@ -2659,16 +2864,21 @@ void RenderGraphInstance::_CreateTemporaryRenderPasses()
 			temporaryRenderPass.renderPass = std::make_unique<RenderPass>();
 			temporaryRenderPass.renderPass->Create(&renderPassInfo);
 
-			Image* firstAttachment = m_images[attachmentImages.front()];
+			Image* firstAttachment = m_images[attachmentImages.front().image];
 			const VkExtent3D extent = firstAttachment->GetImageSize();
+			const RenderGraph::ImageSubresourceRange firstRange = attachmentImages.front().subresourceRange;
 			temporaryRenderPass.renderArea.offset = { 0, 0 };
-			temporaryRenderPass.renderArea.extent = { extent.width, extent.height };
+			temporaryRenderPass.renderArea.extent = {
+				_MipExtent(extent.width, firstRange.baseMipLevel),
+				_MipExtent(extent.height, firstRange.baseMipLevel)
+			};
 
-			for (ImageIndex imageIndex : attachmentImages)
+			for (const AttachmentUse& attachment : attachmentImages)
 			{
-				const VkExtent3D attachmentExtent = m_images[imageIndex]->GetImageSize();
+				const VkExtent3D attachmentExtent = m_images[attachment.image]->GetImageSize();
 				CHECK_TRUE(
-					attachmentExtent.width == extent.width && attachmentExtent.height == extent.height,
+					_MipExtent(attachmentExtent.width, attachment.subresourceRange.baseMipLevel) == temporaryRenderPass.renderArea.extent.width &&
+					_MipExtent(attachmentExtent.height, attachment.subresourceRange.baseMipLevel) == temporaryRenderPass.renderArea.extent.height,
 					"Render graph framebuffer attachments must have identical 2D size!");
 			}
 
@@ -2676,9 +2886,10 @@ void RenderGraphInstance::_CreateTemporaryRenderPasses()
 			framebufferInfo.SetRenderPass(temporaryRenderPass.renderPass.get());
 			for (uint32_t attachmentIndex = 0; attachmentIndex < attachmentImages.size(); ++attachmentIndex)
 			{
+				const AttachmentUse& attachment = attachmentImages[attachmentIndex];
 				framebufferInfo.SetImageView(
 					attachmentNames[attachmentIndex],
-					m_images[attachmentImages[attachmentIndex]]->View());
+					m_images[attachment.image]->View(_MakeImageViewInfo(attachment.subresourceRange)));
 			}
 			temporaryRenderPass.framebuffer = std::make_unique<Framebuffer>();
 			temporaryRenderPass.framebuffer->Create(&framebufferInfo);
@@ -2757,7 +2968,8 @@ void RenderGraphInstance::_BuildCompiledGraphPlan()
 
 			if (barrier.resourceType == RenderGraph::ResourceType::IMAGE)
 			{
-				waitStage |= _ToStageFlags(m_pRenderGraph->_GetImageUsageState(barrier.after, barrier.image).stage);
+				waitStage |= _ToStageFlags(
+					m_pRenderGraph->_GetImageUsageState(barrier.after, barrier.image, barrier.subresourceRange).stage);
 			}
 			else
 			{
@@ -3055,7 +3267,8 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 			CHECK_TRUE(imageIndex < m_images.size() && m_images[imageIndex] != nullptr, "External render graph image is not available!");
 
 			const ExternalImageInfo& externalInfo = m_externalImageInfos[imageIndex].value();
-			const RenderGraph::ImageUsageState graphState = m_pRenderGraph->_GetImageUsageState(boundaryPass, imageIndex);
+			const RenderGraph::ImageUsageState graphState =
+				m_pRenderGraph->_GetImageUsageState(boundaryPass, imageIndex, plan.subresourceRange);
 
 			VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
 			barrier.srcAccessMask = _ToAccessFlags(entering ? externalInfo.enteringAccess : graphState.access);
@@ -3065,7 +3278,10 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			barrier.image = m_images[imageIndex]->GetVkImage();
-			barrier.subresourceRange = m_images[imageIndex]->View()->GetImageSubresourceRange();
+			const RenderGraph::ImageSubresourceRange barrierRange =
+				m_pRenderGraph->_NormalizeImageSubresourceRange(imageIndex, plan.subresourceRange);
+			const ImageView* view = m_images[imageIndex]->View(_MakeImageViewInfo(barrierRange));
+			barrier.subresourceRange = view->GetImageSubresourceRange();
 			parameters.srcStageMask |= _ToStageFlags(entering ? externalInfo.enteringStage : graphState.stage);
 			parameters.dstStageMask |= _ToStageFlags(entering ? graphState.stage : externalInfo.leavingStage);
 			parameters.imageBarriers.push_back(barrier);
@@ -3075,7 +3291,9 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 		if (plan.resourceType == RenderGraph::ResourceType::IMAGE)
 		{
 			CHECK_TRUE(plan.image < m_images.size() && m_images[plan.image] != nullptr, "Render graph barrier image is not available!");
-			const ImageView* view = m_images[plan.image]->View();
+			const RenderGraph::ImageSubresourceRange barrierRange =
+				m_pRenderGraph->_NormalizeImageSubresourceRange(plan.image, plan.subresourceRange);
+			const ImageView* view = m_images[plan.image]->View(_MakeImageViewInfo(barrierRange));
 			const Image::Information& imageInfo = m_images[plan.image]->GetImageInformation();
 
 			RenderGraph::ImageUsageState srcState;
@@ -3083,7 +3301,7 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 			if (plan.before == INVALID_INDEX)
 			{
 				CHECK_TRUE(plan.after != INVALID_INDEX, "Render graph initial image barrier target pass is invalid!");
-				dstState = m_pRenderGraph->_GetImageUsageState(plan.after, plan.image);
+				dstState = m_pRenderGraph->_GetImageUsageState(plan.after, plan.image, plan.subresourceRange);
 				srcState.layout = VK_IMAGE_LAYOUT_UNDEFINED;
 				srcState.stage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
 			}
@@ -3091,8 +3309,8 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 			{
 				CHECK_TRUE(plan.after != INVALID_INDEX, "Render graph image barrier target pass is invalid!");
 				const ImageIndex sourceImage = plan.sourceImage == INVALID_INDEX ? plan.image : plan.sourceImage;
-				srcState = m_pRenderGraph->_GetImageUsageState(plan.before, sourceImage);
-				dstState = m_pRenderGraph->_GetImageUsageState(plan.after, plan.image);
+				srcState = m_pRenderGraph->_GetImageUsageState(plan.before, sourceImage, plan.subresourceRange);
+				dstState = m_pRenderGraph->_GetImageUsageState(plan.after, plan.image, plan.subresourceRange);
 			}
 
 			RenderGraph::HazardType hazard = RenderGraph::HazardType::WAR;

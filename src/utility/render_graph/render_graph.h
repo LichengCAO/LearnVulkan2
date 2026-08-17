@@ -17,6 +17,22 @@ class RenderGraph
 	friend class RenderGraphInstance;
 	friend struct RenderGraphTestProbe;
 
+public:
+	struct ImageSubresourceRange
+	{
+		ImageSubresourceRange() = default;
+		ImageSubresourceRange(uint32_t inMipLevel, uint32_t inArrayLayer);
+
+		auto operator==(const ImageSubresourceRange& inOther) const->bool;
+		auto Overlap(const ImageSubresourceRange& inOther) const->bool;
+		auto Intersect(const ImageSubresourceRange& inOther) const->ImageSubresourceRange;
+
+		uint32_t baseMipLevel = 0;
+		uint32_t levelCount = 0;
+		uint32_t baseArrayLayer = 0;
+		uint32_t layerCount = 0;
+	};
+
 private:
 	static constexpr uint32_t INVALID_INDEX = ~0u;
 
@@ -67,6 +83,7 @@ private:
 	struct ImageUsage
 	{
 		std::string image;
+		ImageSubresourceRange subresourceRange;
 		ImageUsageType type = ImageUsageType::SAMPLED;
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		VkPipelineStageFlags2 stage = 0;
@@ -111,6 +128,7 @@ private:
 		ImageIndex sourceImage = INVALID_INDEX;
 		BufferIndex buffer = INVALID_INDEX;
 		BufferIndex sourceBuffer = INVALID_INDEX;
+		ImageSubresourceRange subresourceRange;
 		PassIndex before = INVALID_INDEX;
 		PassIndex after = INVALID_INDEX;
 		// External barriers use INVALID_INDEX on before/after to mark entering/leaving graph boundaries.
@@ -285,8 +303,14 @@ public:
 	public:
 		virtual ~PassInfo() = default;
 		void SetNeverCull(bool inNeverCull = true);
-		void AddSampledImage(const std::string& inName, VkPipelineStageFlags2 inReadStage);
-		void AddStorageImage(const std::string& inName, VkPipelineStageFlags2 inWriteStage);
+		void AddSampledImage(
+			const std::string& inName,
+			VkPipelineStageFlags2 inReadStage,
+			const ImageSubresourceRange& inRange = {});
+		void AddStorageImage(
+			const std::string& inName,
+			VkPipelineStageFlags2 inWriteStage,
+			const ImageSubresourceRange& inRange = {});
 		void AddDescriptorUniformBuffer(const std::string& inName, VkPipelineStageFlags2 inReadStage);
 		void AddDescriptorStorageBuffer(const std::string& inName, VkPipelineStageFlags2 inWriteStage);
 
@@ -332,13 +356,15 @@ public:
 			VkAttachmentLoadOp inLoadOp,
 			VkPipelineStageFlags2 inLoadStage,
 			VkAttachmentStoreOp inStoreOp,
-			VkPipelineStageFlags2 inStoreStage);
+			VkPipelineStageFlags2 inStoreStage,
+			const ImageSubresourceRange& inRange = {});
 		void AddDepthAttachment(
 			const std::string& inName,
 			VkAttachmentLoadOp inLoadOp,
 			VkPipelineStageFlags2 inLoadStage,
 			VkAttachmentStoreOp inStoreOp,
-			VkPipelineStageFlags2 inStoreStage);
+			VkPipelineStageFlags2 inStoreStage,
+			const ImageSubresourceRange& inRange = {});
 	};
 
 private:
@@ -359,7 +385,12 @@ private:
 private:
 	static auto _GetQueueType(PassType inType) -> QueueType;
 	static auto _NeedsMemoryDependency(HazardType inHazard, VkImageLayout inOldLayout, VkImageLayout inNewLayout) -> bool;
-	auto _GetImageUsageState(PassIndex inPassIndex, ImageIndex inImageIndex) const->ImageUsageState;
+	auto _GetImageSubresourceRange(ImageIndex inImageIndex) const->ImageSubresourceRange;
+	auto _NormalizeImageSubresourceRange(ImageIndex inImageIndex, const ImageSubresourceRange& inRange) const->ImageSubresourceRange;
+	auto _GetImageUsageState(
+		PassIndex inPassIndex,
+		ImageIndex inImageIndex,
+		const ImageSubresourceRange& inSubresourceRange) const->ImageUsageState;
 	auto _GetBufferUsageState(PassIndex inPassIndex, BufferIndex inBufferIndex) const->BufferUsageState;
 	auto _GetBufferIndex(const std::string& inName) const->BufferIndex;
 	auto _GetImageIndex(const std::string& inName) const->ImageIndex;

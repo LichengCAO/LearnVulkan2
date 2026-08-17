@@ -23,8 +23,10 @@ private:
 	{
 		std::string srcSubpassName;
 		bool isExternal = false;
+		bool isSelf = false;
 		VkPipelineStageFlags dstStage = 0;
 		VkAccessFlags dstAccess = 0;
+		VkDependencyFlags dependencyFlags = 0;
 	};
 
 	std::vector<AttachmentReference> m_colorAttachments;
@@ -33,7 +35,8 @@ private:
 	std::vector<Dependency> m_dependencies;
 	VkPipelineStageFlags m_availableStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 	VkAccessFlags m_availableAccess = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	VkDependencyFlags m_dependencyFlags = 0;
+	// VkDependencyFlags m_dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+	// Dependency flags belong to individual VkSubpassDependency edges, not to the whole subpass.
 
 public:
 	void AddDepthStencilAttachment(
@@ -56,14 +59,34 @@ public:
 	// Adds a dependency from inSrcSubpass to this subpass.
 	// inStage/inAccess describe where data must be visible for this subpass.
 	// Use CustomizeAvailableState on the source subpass to describe where the data is produced.
+	// VK_DEPENDENCY_BY_REGION_BIT makes framebuffer-space dependencies local to overlapping framebuffer regions, which can benefit tile-based GPUs.
 	void AddDependencyOnSubpass(
 		std::string_view inSrcSubpassName,
 		VkPipelineStageFlags inStage,
-		VkAccessFlags inAccess);
+		VkAccessFlags inAccess,
+		VkDependencyFlags inDependencyFlags = VK_DEPENDENCY_BY_REGION_BIT);
 	void AddExternalDependency(
 		VkPipelineStageFlags inStage,
-		VkAccessFlags inAccess);
-	void AllowLocalPipelineBarrier();
+		VkAccessFlags inAccess,
+		VkDependencyFlags inDependencyFlags = 0);
+	// Adds a self-dependency that permits vkCmdPipelineBarrier inside this subpass.
+	// Any in-render-pass pipeline barrier must use stage/access scopes covered by this self-dependency.
+	// The same stage/access masks are used for both source and destination scopes.
+	// The default self-dependency is BY_REGION because framebuffer-space barriers inside a render pass must be framebuffer-local.
+	void AllowLocalPipelineBarrier(
+		VkPipelineStageFlags inStage =
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+			VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+			VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		VkAccessFlags inAccess =
+			VK_ACCESS_INPUT_ATTACHMENT_READ_BIT |
+			VK_ACCESS_SHADER_READ_BIT |
+			VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+		VkDependencyFlags inDependencyFlags = 0);
 };
 
 class AttachmentDescription final

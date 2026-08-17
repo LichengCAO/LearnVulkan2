@@ -144,6 +144,42 @@ struct RenderGraphTestProbe
 		}
 		return count;
 	}
+
+	static auto FindFirstImagePrologueBarrierRange(
+		const RenderGraph& inGraph,
+		const std::string& inName) -> std::optional<RenderGraph::ImageSubresourceRange>
+	{
+		const RenderGraph::ImageIndex imageIndex = inGraph._GetImageIndex(inName);
+		for (const RenderGraph::SubmitBatch& submitBatch : inGraph.m_submitBatches)
+		{
+			auto funcFindInGroups = [&](const std::vector<RenderGraph::SubmitBatch::PassGroupPlan>& inGroups) -> std::optional<RenderGraph::ImageSubresourceRange>
+			{
+				for (const RenderGraph::SubmitBatch::PassGroupPlan& group : inGroups)
+				{
+					for (const RenderGraph::BarrierPlan& plan : group.prologueBarriers)
+					{
+						if (plan.resourceType == RenderGraph::ResourceType::IMAGE && plan.image == imageIndex)
+						{
+							return plan.subresourceRange;
+						}
+					}
+				}
+
+				return std::nullopt;
+			};
+
+			if (std::optional<RenderGraph::ImageSubresourceRange> range = funcFindInGroups(submitBatch.graphicsGroups))
+			{
+				return range;
+			}
+			if (std::optional<RenderGraph::ImageSubresourceRange> range = funcFindInGroups(submitBatch.computeGroups))
+			{
+				return range;
+			}
+		}
+
+		return std::nullopt;
+	}
 };
 
 namespace
@@ -224,6 +260,112 @@ namespace
 		graph.AddPass("write", writePass);
 
 		graph.Build();
+	}
+
+	void TestImageSubresourceBarrierUsesMipRange()
+	{
+		RenderGraph graph;
+
+		RenderGraph::ImageInfo image;
+		image.AddUsage(VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		image.CustomizeMipLevels(2);
+		graph.AddImage("image", image);
+
+		RenderGraph::ComputePassInfo writePass;
+		RenderGraph::ImageSubresourceRange mip0(0, 0);
+		writePass.AddStorageImage("image", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, mip0);
+		graph.AddPass("write", writePass);
+
+		RenderGraph::ComputePassInfo readPass;
+		readPass.AddSampledImage("image", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, mip0);
+		readPass.SetNeverCull();
+		graph.AddPass("read", readPass);
+
+		graph.Build();
+
+		const std::optional<RenderGraph::ImageSubresourceRange> range =
+			RenderGraphTestProbe::FindFirstImagePrologueBarrierRange(graph, "image");
+		CHECK_TRUE(range.has_value(), "Expected an image prologue barrier!");
+		CHECK_TRUE(range->baseMipLevel == 0, "Barrier should target mip 0!");
+		CHECK_TRUE(range->levelCount == 1, "Barrier should target one mip!");
+		CHECK_TRUE(range->baseArrayLayer == 0, "Barrier should target layer 0!");
+		CHECK_TRUE(range->layerCount == 1, "Barrier should target one layer!");
+	}
+
+	void TestInternalImageReadFromUntouchedMipStillFails()
+	{
+		RenderGraph graph;
+
+		RenderGraph::ImageInfo image;
+		image.AddUsage(VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		image.CustomizeMipLevels(2);
+		graph.AddImage("image", image);
+
+		RenderGraph::ComputePassInfo writePass;
+		RenderGraph::ImageSubresourceRange mip0(0, 0);
+		writePass.AddStorageImage("image", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, mip0);
+		graph.AddPass("write", writePass);
+
+		RenderGraph::ComputePassInfo readPass;
+		RenderGraph::ImageSubresourceRange mip1(1, 0);
+		readPass.AddSampledImage("image", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, mip1);
+		graph.AddPass("read", readPass);
+
+		ExpectThrows(
+			[&graph]()
+			{
+				graph.Build();
+			},
+			"Internal render graph image cannot be read before it is written");
+	}
+
+	void TestImageSubresourceCrossQueueSyncDependsOnMipOverlap()
+	{
+		RenderGraph graph;
+
+		RenderGraph::ImageInfo image;
+		image.AddUsage(VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		image.CustomizeMipLevels(2);
+		image.SetAsExternal();
+		graph.AddImage("image", image);
+
+		RenderGraph::GraphicsPassInfo writePass;
+		RenderGraph::ImageSubresourceRange mip0(0, 0);
+		writePass.AddStorageImage("image", VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, mip0);
+		graph.AddPass("graphics_write", writePass);
+
+		RenderGraph::ComputePassInfo readPass;
+		RenderGraph::ImageSubresourceRange mip1(1, 0);
+		readPass.AddSampledImage("image", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, mip1);
+		graph.AddPass("compute_read", readPass);
+
+		CHECK_TRUE(
+			RenderGraphTestProbe::CountQueueSyncPlansAfterLinkCullAndResolve(graph) == 0,
+			"Different mips should not create a queue sync plan!");
+	}
+
+	void TestImageSubresourceCrossQueueSyncForSameMip()
+	{
+		RenderGraph graph;
+
+		RenderGraph::ImageInfo image;
+		image.AddUsage(VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		image.CustomizeMipLevels(2);
+		image.SetAsExternal();
+		graph.AddImage("image", image);
+
+		RenderGraph::GraphicsPassInfo writePass;
+		RenderGraph::ImageSubresourceRange mip0(0, 0);
+		writePass.AddStorageImage("image", VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, mip0);
+		graph.AddPass("graphics_write", writePass);
+
+		RenderGraph::ComputePassInfo readPass;
+		readPass.AddSampledImage("image", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, mip0);
+		graph.AddPass("compute_read", readPass);
+
+		CHECK_TRUE(
+			RenderGraphTestProbe::CountQueueSyncPlansAfterLinkCullAndResolve(graph) == 1,
+			"Same mip should create one queue sync plan!");
 	}
 
 	void TestGraphicsToComputeImageDependencyBuildsCrossQueueSync()
@@ -713,6 +855,10 @@ int main()
 		TestInternalSampledImageRequiresWriter();
 		TestInternalAttachmentLoadRequiresWriter();
 		TestInternalStorageImageCanBeFirstWriter();
+		TestImageSubresourceBarrierUsesMipRange();
+		TestInternalImageReadFromUntouchedMipStillFails();
+		TestImageSubresourceCrossQueueSyncDependsOnMipOverlap();
+		TestImageSubresourceCrossQueueSyncForSameMip();
 		TestGraphicsToComputeImageDependencyBuildsCrossQueueSync();
 		TestResolveAndCullBuildActiveQueueSyncPlans();
 		TestComputeToGraphicsBufferDependencyBuildsCrossQueueSync();

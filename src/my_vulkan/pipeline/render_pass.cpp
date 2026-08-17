@@ -151,7 +151,8 @@ void SubpassDescription::CustomizeAvailableState(
 void SubpassDescription::AddDependencyOnSubpass(
 	std::string_view inSrcSubpassName,
 	VkPipelineStageFlags inStage,
-	VkAccessFlags inAccess)
+	VkAccessFlags inAccess,
+	VkDependencyFlags inDependencyFlags)
 {
 	CHECK_TRUE(!inSrcSubpassName.empty(), "Dependency source subpass name cannot be empty!");
 	CHECK_TRUE(inStage != 0, "Dependency destination stage cannot be empty!");
@@ -159,28 +160,45 @@ void SubpassDescription::AddDependencyOnSubpass(
 	m_dependencies.push_back(Dependency{
 		std::string(inSrcSubpassName),
 		false,
+		false,
 		inStage,
-		inAccess
+		inAccess,
+		inDependencyFlags
 	});
 }
 
 void SubpassDescription::AddExternalDependency(
 	VkPipelineStageFlags inStage,
-	VkAccessFlags inAccess)
+	VkAccessFlags inAccess,
+	VkDependencyFlags inDependencyFlags)
 {
 	CHECK_TRUE(inStage != 0, "Dependency destination stage cannot be empty!");
 
 	m_dependencies.push_back(Dependency{
 		{},
 		true,
+		false,
 		inStage,
-		inAccess
+		inAccess,
+		inDependencyFlags
 	});
 }
 
-void SubpassDescription::AllowLocalPipelineBarrier()
+void SubpassDescription::AllowLocalPipelineBarrier(
+	VkPipelineStageFlags inStage,
+	VkAccessFlags inAccess,
+	VkDependencyFlags inDependencyFlags)
 {
-	m_dependencyFlags |= VK_DEPENDENCY_BY_REGION_BIT;
+	CHECK_TRUE(inStage != 0, "Local pipeline barrier stage cannot be empty!");
+
+	m_dependencies.push_back(Dependency{
+		{},
+		false,
+		true,
+		inStage,
+		inAccess,
+		inDependencyFlags
+	});
 }
 
 void RenderPassCreateInfo::AddSubpass(std::string_view inName, const SubpassDescription& inSubpass)
@@ -317,21 +335,32 @@ void RenderPass::Create(const RenderPassCreateInfo* inCreateInfo)
 		for (const auto& dependency : subpass.m_dependencies)
 		{
 			const bool isExternalDependency = dependency.isExternal;
-			const uint32_t srcSubpass = isExternalDependency
-				? VK_SUBPASS_EXTERNAL
-				: inCreateInfo->GetSubpassIndex(dependency.srcSubpassName);
-			const auto& sourceSubpass = isExternalDependency
+			const bool isSelfDependency = dependency.isSelf;
+			uint32_t srcSubpass = VK_SUBPASS_EXTERNAL;
+			if (isSelfDependency)
+			{
+				srcSubpass = dstSubpass;
+			}
+			else if (!isExternalDependency)
+			{
+				srcSubpass = inCreateInfo->GetSubpassIndex(dependency.srcSubpassName);
+			}
+			const auto& sourceSubpass = (isExternalDependency || isSelfDependency)
 				? subpass
 				: inCreateInfo->m_subpasses[srcSubpass];
 
 			VkSubpassDependency vkDependency{};
 			vkDependency.srcSubpass = srcSubpass;
 			vkDependency.dstSubpass = dstSubpass;
-			vkDependency.srcStageMask = isExternalDependency ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : sourceSubpass.m_availableStage;
-			vkDependency.srcAccessMask = isExternalDependency ? 0 : sourceSubpass.m_availableAccess;
+			vkDependency.srcStageMask = isSelfDependency
+				? dependency.dstStage
+				: isExternalDependency ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : sourceSubpass.m_availableStage;
+			vkDependency.srcAccessMask = isSelfDependency
+				? dependency.dstAccess
+				: isExternalDependency ? 0 : sourceSubpass.m_availableAccess;
 			vkDependency.dstStageMask = dependency.dstStage;
 			vkDependency.dstAccessMask = dependency.dstAccess;
-			vkDependency.dependencyFlags = subpass.m_dependencyFlags;
+			vkDependency.dependencyFlags = dependency.dependencyFlags;
 			dependencies.push_back(vkDependency);
 		}
 	}
