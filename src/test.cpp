@@ -7,8 +7,9 @@ struct RenderGraphTestProbe
 	{
 		std::vector<std::string> names;
 
-		for (const RenderGraph::SubmitBatch& submitBatch : inGraph.m_submitBatches)
+		for (uint32_t submitIndex = 0; submitIndex < inGraph.m_buildResult.GetSubmitBatchCount(); ++submitIndex)
 		{
+			const RenderGraph::SubmitBatch& submitBatch = inGraph.m_buildResult.GetSubmitBatch(submitIndex);
 			auto funcCollectGroupNames = [&](const std::vector<RenderGraph::SubmitBatch::PassGroupPlan>& inGroups)
 			{
 				for (const RenderGraph::SubmitBatch::PassGroupPlan& group : inGroups)
@@ -44,10 +45,11 @@ struct RenderGraphTestProbe
 	static auto SummarizeCrossQueueBuild(const RenderGraph& inGraph) -> CrossQueueBuildSummary
 	{
 		CrossQueueBuildSummary summary;
-		summary.submitBatchCount = static_cast<uint32_t>(inGraph.m_submitBatches.size());
+		summary.submitBatchCount = static_cast<uint32_t>(inGraph.m_buildResult.GetSubmitBatchCount());
 
-		for (const RenderGraph::SubmitBatch& submitBatch : inGraph.m_submitBatches)
+		for (uint32_t submitIndex = 0; submitIndex < inGraph.m_buildResult.GetSubmitBatchCount(); ++submitIndex)
 		{
+			const RenderGraph::SubmitBatch& submitBatch = inGraph.m_buildResult.GetSubmitBatch(submitIndex);
 			for (const RenderGraph::SubmitBatch::PassGroupPlan& group : submitBatch.graphicsGroups)
 			{
 				summary.graphicsReleaseBarrierCount += static_cast<uint32_t>(group.queueReleaseBarriers.size());
@@ -98,31 +100,32 @@ struct RenderGraphTestProbe
 		inGraph._LinkPasses(context);
 		inGraph._CullPasses(context);
 		inGraph._ResolveDependency(context);
-		inGraph._BuildScheduleAndBatches(context);
-		inGraph._BuildResourceAliases(context);
-		inGraph._BuildScheduledResourceBarriers(context);
+		RenderGraph::BuildResult result;
+		inGraph._BuildScheduleAndBatches(context, result);
+		inGraph._BuildResourceAliases(context, result);
+		inGraph._BuildScheduledResourceBarriers(context, result);
+		inGraph.m_buildResult = std::move(result);
 		return SummarizeCrossQueueBuild(inGraph);
 	}
 
 	static auto GetBufferAliasRoot(const RenderGraph& inGraph, const std::string& inName) -> RenderGraph::BufferIndex
 	{
 		const RenderGraph::BufferIndex index = inGraph._GetBufferIndex(inName);
-		CHECK_TRUE(index < inGraph.m_bufferAliasRoots.size(), "Render graph buffer alias root is missing!");
-		return inGraph.m_bufferAliasRoots[index];
+		return inGraph.m_buildResult.GetBufferAliasRoot(index);
 	}
 
 	static auto GetImageAliasRoot(const RenderGraph& inGraph, const std::string& inName) -> RenderGraph::ImageIndex
 	{
 		const RenderGraph::ImageIndex index = inGraph._GetImageIndex(inName);
-		CHECK_TRUE(index < inGraph.m_imageAliasRoots.size(), "Render graph image alias root is missing!");
-		return inGraph.m_imageAliasRoots[index];
+		return inGraph.m_buildResult.GetImageAliasRoot(index);
 	}
 
 	static auto CountAliasedBufferTransitions(const RenderGraph& inGraph) -> uint32_t
 	{
 		uint32_t count = 0;
-		for (const RenderGraph::SubmitBatch& submitBatch : inGraph.m_submitBatches)
+		for (uint32_t submitIndex = 0; submitIndex < inGraph.m_buildResult.GetSubmitBatchCount(); ++submitIndex)
 		{
+			const RenderGraph::SubmitBatch& submitBatch = inGraph.m_buildResult.GetSubmitBatch(submitIndex);
 			auto funcCountGroup = [&](const std::vector<RenderGraph::SubmitBatch::PassGroupPlan>& inGroups)
 			{
 				for (const RenderGraph::SubmitBatch::PassGroupPlan& group : inGroups)
@@ -150,8 +153,9 @@ struct RenderGraphTestProbe
 		const std::string& inName) -> std::optional<RenderGraph::ImageSubresourceRange>
 	{
 		const RenderGraph::ImageIndex imageIndex = inGraph._GetImageIndex(inName);
-		for (const RenderGraph::SubmitBatch& submitBatch : inGraph.m_submitBatches)
+		for (uint32_t submitIndex = 0; submitIndex < inGraph.m_buildResult.GetSubmitBatchCount(); ++submitIndex)
 		{
+			const RenderGraph::SubmitBatch& submitBatch = inGraph.m_buildResult.GetSubmitBatch(submitIndex);
 			auto funcFindInGroups = [&](const std::vector<RenderGraph::SubmitBatch::PassGroupPlan>& inGroups) -> std::optional<RenderGraph::ImageSubresourceRange>
 			{
 				for (const RenderGraph::SubmitBatch::PassGroupPlan& group : inGroups)

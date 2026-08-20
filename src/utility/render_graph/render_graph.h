@@ -59,18 +59,14 @@ private:
 		IMAGE,
 	};
 
-	enum class ImageUsageType
+	enum class ResourceUsageType
 	{
-		SAMPLED,
-		STORAGE,
+		SAMPLED_IMAGE,
+		STORAGE_IMAGE,
 		COLOR_ATTACHMENT,
 		DEPTH_ATTACHMENT,
-	};
-
-	enum class BufferUsageType
-	{
-		UNIFORM,
-		STORAGE,
+		UNIFORM_BUFFER,
+		STORAGE_BUFFER,
 	};
 
 	enum class HazardType
@@ -83,8 +79,9 @@ private:
 	struct ImageUsage
 	{
 		std::string image;
+		ImageIndex imageIndex = INVALID_INDEX;
 		ImageSubresourceRange subresourceRange;
-		ImageUsageType type = ImageUsageType::SAMPLED;
+		ResourceUsageType type = ResourceUsageType::SAMPLED_IMAGE;
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		VkPipelineStageFlags2 stage = 0;
 		VkAccessFlags2 access = 0;
@@ -97,24 +94,16 @@ private:
 	struct BufferUsage
 	{
 		std::string buffer;
-		BufferUsageType type = BufferUsageType::UNIFORM;
+		BufferIndex bufferIndex = INVALID_INDEX;
 		VkPipelineStageFlags2 stage = 0;
 		VkAccessFlags2 access = 0;
 		bool reads = false;
 		bool writes = false;
 	};
 
-	struct ImageUsageState
+	struct AccessState
 	{
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-		VkPipelineStageFlags2 stage = 0;
-		VkAccessFlags2 access = 0;
-		bool reads = false;
-		bool writes = false;
-	};
-
-	struct BufferUsageState
-	{
 		VkPipelineStageFlags2 stage = 0;
 		VkAccessFlags2 access = 0;
 		bool reads = false;
@@ -150,8 +139,10 @@ private:
 		QueueType queue = QueueType::GRAPHICS;
 		bool useDedicatedRenderPass = false;
 		bool neverCull = false;
+		bool active = false;
 		std::vector<ImageUsage> imageUsages;
 		std::vector<BufferUsage> bufferUsages;
+		std::vector<PassIndex> adjacency;
 	};
 
 	struct DependencyEdge
@@ -177,6 +168,56 @@ private:
 
 		std::vector<PassGroupPlan> graphicsGroups;
 		std::vector<PassGroupPlan> computeGroups;
+
+		template <typename FunctionType>
+		void ForEachGroup(FunctionType&& inFunction)
+		{
+			for (PassGroupPlan& group : graphicsGroups)
+			{
+				inFunction(group);
+			}
+			for (PassGroupPlan& group : computeGroups)
+			{
+				inFunction(group);
+			}
+		}
+
+		template <typename FunctionType>
+		void ForEachGroup(FunctionType&& inFunction) const
+		{
+			for (const PassGroupPlan& group : graphicsGroups)
+			{
+				inFunction(group);
+			}
+			for (const PassGroupPlan& group : computeGroups)
+			{
+				inFunction(group);
+			}
+		}
+	};
+
+	class BuildResult
+	{
+		friend class RenderGraph;
+
+	private:
+		std::vector<PassRecord> passes;
+		std::vector<SubmitBatch> submitBatches;
+		std::vector<BufferIndex> bufferAliasRoots;
+		std::vector<ImageIndex> imageAliasRoots;
+
+	public:
+		auto GetPassCount() const->size_t;
+		auto GetPass(PassIndex inPassIndex) const->const PassRecord&;
+		auto GetSubmitBatchCount() const->size_t;
+		auto GetSubmitBatch(uint32_t inSubmitIndex) const->const SubmitBatch&;
+		auto GetBufferAliasRoot(BufferIndex inBufferIndex) const->BufferIndex;
+		auto GetImageAliasRoot(ImageIndex inImageIndex) const->ImageIndex;
+		auto GetImageAccessState(
+			PassIndex inPassIndex,
+			ImageIndex inImageIndex,
+			const ImageSubresourceRange& inSubresourceRange) const->AccessState;
+		auto GetBufferAccessState(PassIndex inPassIndex, BufferIndex inBufferIndex) const->AccessState;
 	};
 
 	struct BuildContext
@@ -184,54 +225,58 @@ private:
 		struct ImageUsageRef
 		{
 			PassIndex pass = INVALID_INDEX;
-			ImageIndex image = INVALID_INDEX;
-			ImageUsage usage;
+			ImageSubresourceRange subresourceRange;
+			ResourceUsageType type = ResourceUsageType::SAMPLED_IMAGE;
+			bool reads = false;
+			bool writes = false;
+			VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+
+			ImageUsageRef() = default;
+			ImageUsageRef(PassIndex inPass, const ImageUsage& inUsage)
+				: pass(inPass),
+				subresourceRange(inUsage.subresourceRange),
+				type(inUsage.type),
+				reads(inUsage.reads),
+				writes(inUsage.writes),
+				loadOp(inUsage.loadOp)
+			{
+			}
 		};
 
 		struct BufferUsageRef
 		{
 			PassIndex pass = INVALID_INDEX;
-			BufferIndex buffer = INVALID_INDEX;
-			BufferUsage usage;
+			bool reads = false;
+			bool writes = false;
+
+			BufferUsageRef() = default;
+			BufferUsageRef(PassIndex inPass, const BufferUsage& inUsage)
+				: pass(inPass),
+				reads(inUsage.reads),
+				writes(inUsage.writes)
+			{
+			}
 		};
 
-		struct RenderPassMergeInfo
+		struct ImageRecord
 		{
-			std::vector<std::string> attachmentTokens;
-			std::vector<ImageIndex> attachmentImages;
-			std::vector<ImageIndex> colorAttachmentImages;
-			std::vector<ImageIndex> depthAttachmentImages;
-			std::vector<ImageIndex> nonAttachmentImages;
-			std::vector<BufferIndex> nonAttachmentBuffers;
-			std::vector<ImageIndex> writtenImages;
-			std::vector<ImageIndex> writtenNonAttachmentImages;
-			std::vector<BufferIndex> writtenBuffers;
+			std::vector<ImageUsageRef> usages;
 		};
 
-		struct PassBuildRef
+		struct BufferRecord
 		{
-			uint32_t indegree = 0;
-			uint32_t sortFactor = 100u;
-			uint32_t downstreamStageRank = 100u;
-			uint32_t downstreamDependCount = 0;
-			RenderPassMergeInfo renderPassMergeInfo;
-			uint32_t batchAffinity = 1u;
+			std::vector<BufferUsageRef> usages;
 		};
 
-		std::unordered_set<uint64_t> edgeSet;
-		std::vector<DependencyEdge> dependencyEdges;
+		std::vector<PassRecord> passes;
 		std::vector<QueueSyncPlan> queueSyncPlans;
-		std::vector<bool> activePasses;
-		std::vector<std::vector<ImageUsageRef>> imageUsageRefs;
-		std::vector<std::vector<BufferUsageRef>> bufferUsageRefs;
-		std::vector<std::vector<PassIndex>> adjacency;
-		std::unordered_set<uint64_t> queueSyncEdgeSet;
-		std::vector<PassBuildRef> passRefs;
-		std::vector<std::vector<PassIndex>> submitPassBatches;
+		std::vector<ImageRecord> images;
+		std::vector<BufferRecord> buffers;
+
 	};
 
 public:
-	class BufferInfo
+	class BufferInfo final
 	{
 		friend class RenderGraph;
 		friend class RenderGraphInstance;
@@ -245,16 +290,40 @@ public:
 		std::optional<VkDeviceSize> m_optAlignment;
 		bool m_external = false;
 
+		auto IsAliasCompatible(const BufferInfo& inOther) const->bool;
+
 	public:
-		void SetSize(VkDeviceSize inSize);
-		void AddUsage(VkBufferUsageFlags inUsage);
-		void CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperty);
-		void CustomizeSharingMode(VkSharingMode inSharingMode);
-		void CustomizeAlignment(VkDeviceSize inAlignment);
-		void SetAsExternal();
+		void SetSize(VkDeviceSize inSize)
+		{
+			CHECK_TRUE(inSize > 0, "Render graph buffer size must be greater than 0!");
+			m_size = inSize;
+		};
+		void AddUsage(VkBufferUsageFlags inUsage)
+		{
+			CHECK_TRUE(inUsage != 0, "Render graph buffer usage cannot be empty!");
+			m_usage |= inUsage;
+		};
+		void CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperty)
+		{
+			CHECK_TRUE(inMemoryProperty != 0, "Render graph buffer memory property cannot be empty!");
+			m_memoryProperty = inMemoryProperty;
+		};
+		void CustomizeSharingMode(VkSharingMode inSharingMode)
+		{
+			m_sharingMode = inSharingMode;
+		};
+		void CustomizeAlignment(VkDeviceSize inAlignment)
+		{
+			CHECK_TRUE(inAlignment > 0, "Render graph buffer alignment must be greater than 0!");
+			m_optAlignment = inAlignment;
+		};
+		void SetAsExternal()
+		{
+			m_external = true;
+		};
 	};
 
-	class ImageInfo
+	class ImageInfo final
 	{
 		friend class RenderGraph;
 		friend class RenderGraphInstance;
@@ -266,26 +335,80 @@ public:
 		std::optional<uint32_t> m_optWidth;
 		std::optional<uint32_t> m_optHeight;
 		std::optional<uint32_t> m_optDepth;
-		std::optional<uint32_t> m_optMipLevels;
-		std::optional<uint32_t> m_optArrayLayers;
+		uint32_t m_mipLevels = 1;
+		uint32_t m_arrayLayers = 1;
 		std::optional<VkFormat> m_optFormat;
 		std::optional<VkImageTiling> m_optTiling;
 		std::optional<VkMemoryPropertyFlags> m_optMemoryProperty;
 		std::optional<VkSampleCountFlagBits> m_optSampleCount;
 		bool m_external = false;
 
+		auto GetWholeSubresourceRange() const->ImageSubresourceRange;
+		auto NormalizeSubresourceRange(const ImageSubresourceRange& inRange) const->ImageSubresourceRange;
+		auto IsAliasCompatible(const ImageInfo& inOther) const->bool;
+
 	public:
-		void AddUsage(VkImageUsageFlags inUsage);
-		void CustomizeSize1D(uint32_t inWidth);
-		void CustomizeSize2D(uint32_t inWidth, uint32_t inHeight);
-		void CustomizeSize3D(uint32_t inWidth, uint32_t inHeight, uint32_t inDepth);
-		void CustomizeMipLevels(uint32_t inMipLevelCount);
-		void CustomizeArrayLayers(uint32_t inArrayLayerCount);
-		void CustomizeFormat(VkFormat inFormat);
-		void CustomizeImageTiling(VkImageTiling inTiling);
-		void CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperty);
-		void CustomizeSampleCount(VkSampleCountFlagBits inSampleCount);
-		void SetAsExternal();
+		void AddUsage(VkImageUsageFlags inUsage)
+		{
+			CHECK_TRUE(inUsage != 0, "Render graph image usage cannot be empty!");
+			m_usage |= inUsage;
+		};
+		void CustomizeSize1D(uint32_t inWidth)
+		{
+			CHECK_TRUE(inWidth > 0, "Render graph image width must be greater than 0!");
+			m_type = VK_IMAGE_TYPE_1D;
+			m_optWidth = inWidth;
+			m_optHeight.reset();
+			m_optDepth.reset();
+		};
+		void CustomizeSize2D(uint32_t inWidth, uint32_t inHeight)
+		{
+			CHECK_TRUE(inWidth > 0 && inHeight > 0, "Render graph image size must be greater than 0!");
+			m_type = VK_IMAGE_TYPE_2D;
+			m_optWidth = inWidth;
+			m_optHeight = inHeight;
+			m_optDepth.reset();
+		};
+		void CustomizeSize3D(uint32_t inWidth, uint32_t inHeight, uint32_t inDepth)
+		{
+			CHECK_TRUE(inWidth > 0 && inHeight > 0 && inDepth > 0, "Render graph image size must be greater than 0!");
+			m_type = VK_IMAGE_TYPE_3D;
+			m_optWidth = inWidth;
+			m_optHeight = inHeight;
+			m_optDepth = inDepth;
+		};
+		void CustomizeMipLevels(uint32_t inMipLevelCount)
+		{
+			CHECK_TRUE(inMipLevelCount > 0, "Render graph image mip level count must be greater than 0!");
+			m_mipLevels = inMipLevelCount;
+		};
+		void CustomizeArrayLayers(uint32_t inArrayLayerCount)
+		{
+			CHECK_TRUE(inArrayLayerCount > 0, "Render graph image array layer count must be greater than 0!");
+			m_arrayLayers = inArrayLayerCount;
+		};
+		void CustomizeFormat(VkFormat inFormat)
+		{
+			CHECK_TRUE(inFormat != VK_FORMAT_UNDEFINED, "Render graph image format cannot be undefined!");
+			m_optFormat = inFormat;
+		};
+		void CustomizeImageTiling(VkImageTiling inTiling)
+		{
+			m_optTiling = inTiling;
+		};
+		void CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperty)
+		{
+			CHECK_TRUE(inMemoryProperty != 0, "Render graph image memory property cannot be empty!");
+			m_optMemoryProperty = inMemoryProperty;
+		};
+		void CustomizeSampleCount(VkSampleCountFlagBits inSampleCount)
+		{
+			m_optSampleCount = inSampleCount;
+		};
+		void SetAsExternal()
+		{
+			m_external = true;
+		};
 	};
 
 	class SubpassInfo;
@@ -375,33 +498,23 @@ private:
 	std::unordered_map<std::string, BufferIndex> m_nameToBuffer;
 	std::unordered_map<std::string, ImageIndex> m_nameToImage;
 	std::unordered_map<std::string, PassIndex> m_nameToPass;
-	std::vector<SubmitBatch> m_submitBatches;
-	std::vector<bool> m_activePasses;
-	std::vector<BufferIndex> m_bufferAliasRoots;
-	std::vector<ImageIndex> m_imageAliasRoots;
+	BuildResult m_buildResult;
 	bool m_enableResourceAliasing = true;
 	bool m_built = false;
 
 private:
 	static auto _GetQueueType(PassType inType) -> QueueType;
 	static auto _NeedsMemoryDependency(HazardType inHazard, VkImageLayout inOldLayout, VkImageLayout inNewLayout) -> bool;
-	auto _GetImageSubresourceRange(ImageIndex inImageIndex) const->ImageSubresourceRange;
-	auto _NormalizeImageSubresourceRange(ImageIndex inImageIndex, const ImageSubresourceRange& inRange) const->ImageSubresourceRange;
-	auto _GetImageUsageState(
-		PassIndex inPassIndex,
-		ImageIndex inImageIndex,
-		const ImageSubresourceRange& inSubresourceRange) const->ImageUsageState;
-	auto _GetBufferUsageState(PassIndex inPassIndex, BufferIndex inBufferIndex) const->BufferUsageState;
 	auto _GetBufferIndex(const std::string& inName) const->BufferIndex;
 	auto _GetImageIndex(const std::string& inName) const->ImageIndex;
 	auto _GetPassIndex(const std::string& inName) const->PassIndex;
 	void _InvalidateBuild();
-	void _LinkPasses(BuildContext& inContext);
-	void _ResolveDependency(BuildContext& inContext);
-	void _CullPasses(BuildContext& inContext);
-	void _BuildScheduleAndBatches(BuildContext& inContext);
-	void _BuildResourceAliases(BuildContext& inContext);
-	void _BuildScheduledResourceBarriers(BuildContext& inContext);
+	void _LinkPasses(BuildContext& inContext) const;
+	void _ResolveDependency(BuildContext& inContext) const;
+	void _CullPasses(BuildContext& inContext) const;
+	void _BuildScheduleAndBatches(BuildContext& inContext, BuildResult& inoutResult) const;
+	void _BuildResourceAliases(BuildContext& inContext, BuildResult& inoutResult) const;
+	void _BuildScheduledResourceBarriers(BuildContext& inContext, BuildResult& inoutResult) const;
 
 public:
 	void AddBuffer(const std::string& inName, const RenderGraph::BufferInfo& inBufferInfo);
@@ -410,8 +523,6 @@ public:
 	void AddExtraPassDependency(const std::string& inHappensSooner, const std::string& inHappensLater);
 	void EnableResourceAliasing(bool inEnable);
 	void Build();
-	//TODO: Maybe it's unneccessary.
-	//void SetAliasingRule(std::function<bool(const std::string& inOrigin, const std::string& inAliasCandidate)> inImageRule, std::function<bool(const std::string& inOrigin, const std::string& inAliasCandidate)> inBufferRule);
 };
 
 class RenderGraphInstance
