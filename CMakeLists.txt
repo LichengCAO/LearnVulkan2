@@ -63,6 +63,27 @@ source_group_by_dir(ALL_FILES)
 
 add_executable(${CMAKE_PROJECT_NAME} ${ALL_FILES})
 
+find_path(SHADERC_INCLUDE_DIR
+    NAMES shaderc/shaderc.hpp
+    HINTS "$ENV{VK_SDK_PATH}/Include" "$ENV{VULKAN_SDK}/include")
+find_library(SHADERC_SHARED_LIBRARY
+    NAMES shaderc_shared
+    HINTS "$ENV{VK_SDK_PATH}/Lib" "$ENV{VULKAN_SDK}/lib")
+find_library(SHADERC_COMBINED_LIBRARY
+    NAMES shaderc_combined
+    HINTS "$ENV{VK_SDK_PATH}/Lib" "$ENV{VULKAN_SDK}/lib")
+if(SHADERC_SHARED_LIBRARY)
+    set(SHADERC_LIBRARY "${SHADERC_SHARED_LIBRARY}")
+    find_file(SHADERC_RUNTIME_LIBRARY
+        NAMES shaderc_shared.dll shaderc_sharedd.dll
+        HINTS "$ENV{VK_SDK_PATH}/Bin" "$ENV{VULKAN_SDK}/bin")
+elseif(SHADERC_COMBINED_LIBRARY)
+    set(SHADERC_LIBRARY "${SHADERC_COMBINED_LIBRARY}")
+endif()
+if(NOT SHADERC_INCLUDE_DIR OR NOT SHADERC_LIBRARY)
+    message(FATAL_ERROR "shaderc was not found. Set SHADERC_INCLUDE_DIR and SHADERC_LIBRARY or configure VK_SDK_PATH.")
+endif()
+
 # Set the startup project for Visual Studio
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${CMAKE_PROJECT_NAME})
 
@@ -70,7 +91,15 @@ add_subdirectory(external)
 add_subdirectory(res)
 set_target_properties(ExternalLibs PROPERTIES FOLDER "ThirdParty")
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "./src/")
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${SHADERC_INCLUDE_DIR}")
 target_link_libraries(${CMAKE_PROJECT_NAME} PUBLIC ExternalLibs)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE "${SHADERC_LIBRARY}")
+if(SHADERC_RUNTIME_LIBRARY)
+    add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${SHADERC_RUNTIME_LIBRARY}"
+            "$<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>")
+endif()
 macro(include_directories_by_dir source_files)
     if(MSVC)
         set(sgbd_cur_dir ${CMAKE_CURRENT_SOURCE_DIR})
