@@ -14,6 +14,7 @@ class GraphicsPipelineAllocator;
 class ComputePipelineAllocator;
 class RayTracingPipelineAllocator;
 class SamplerAllocator;
+class SemaphoreAllocator;
 class GraphicsQueue;
 class ComputeQueue;
 class TransferQueue;
@@ -83,6 +84,7 @@ private:
 	std::unique_ptr<ComputePipelineAllocator> m_uptrComputePipelineAllocator;
 	std::unique_ptr<RayTracingPipelineAllocator> m_uptrRayTracingPipelineAllocator;
 	std::unique_ptr<SamplerAllocator> m_uptrSamplerAllocator;
+	std::unique_ptr<SemaphoreAllocator> m_uptrSemaphoreAllocator;
 	std::unique_ptr<GraphicsQueue> m_uptrGraphicsCommandQueue;
 	std::unique_ptr<ComputeQueue> m_uptrComputeCommandQueue;
 	std::unique_ptr<TransferQueue> m_uptrTransferCommandQueue;
@@ -122,6 +124,8 @@ private:
 	void _DestroyMemoryAllocator();
 	void _CreateSamplerAllocator();
 	void _DestroySamplerAllocator();
+	void _CreateSemaphoreAllocator();
+	void _DestroySemaphoreAllocator();
 	void _CreateCommandQueues();
 	void _DestroyCommandQueues();
 
@@ -187,6 +191,7 @@ public:
 	DescriptorSetAllocator* GetDescriptorSetAllocator();
 
 	auto GetSamplerAllocator()->SamplerAllocator*;
+	auto GetSemaphoreAllocator()->SemaphoreAllocator*;
 
 	auto GetGraphicsCommandQueue()->GraphicsQueue*;
 	auto GetComputeCommandQueue()->ComputeQueue*;
