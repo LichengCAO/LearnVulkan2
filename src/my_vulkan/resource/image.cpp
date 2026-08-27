@@ -9,8 +9,7 @@
 
 Image::~Image()
 {
-	assert(m_uptrImageViews.empty());
-	assert(m_vkImage == VK_NULL_HANDLE);
+	Destroy();
 }
 
 void Image::Create(const ImageCreateInfo* inCreateInfo)

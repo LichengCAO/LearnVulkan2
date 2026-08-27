@@ -1,6 +1,7 @@
 #pragma once
 #include "common.h"
 #include "buffer.h"
+#include "../ref_counted.h"
 
 class TopLevelAccelStruct;
 class BottomLevelAccelStruct;
@@ -23,9 +24,11 @@ struct VkAccelStructBuildInfo
 /// Encapsulates Vulkan BLAS creation, management, and update logic
 /// Complies with Vulkan spec requirements (all geometries in a BLAS must share the same type)
 /// </summary>
-class BottomLevelAccelStruct final
+class BottomLevelAccelStruct final : public RefCounted
 {
 public:
+    virtual ~BottomLevelAccelStruct();
+
     /// <summary>
     /// Describes a single geometry element (triangles/AABBs) for BLAS construction
     /// Maps to Vulkan's VkAccelerationStructureGeometryKHR with simplified, type-safe fields
@@ -310,9 +313,11 @@ public:
 /// Encapsulates Vulkan TLAS creation, management, and update logic
 /// References BLAS instances to form a complete ray tracing scene hierarchy
 /// </summary>
-class TopLevelAccelStruct final
+class TopLevelAccelStruct final : public RefCounted
 {
 public:
+    virtual ~TopLevelAccelStruct();
+
     /// <summary>
     /// Describes a single BLAS instance in the TLAS
     /// Maps to Vulkan's VkAccelerationStructureInstanceKHR with simplified, type-safe fields

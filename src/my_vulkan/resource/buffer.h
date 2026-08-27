@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include "../ref_counted.h"
 
 // ref: https://stackoverflow.com/questions/73512602/using-vulkan-memory-allocator-with-volk
 class Buffer;
@@ -82,7 +83,7 @@ public:
 	BufferCreateInfo& CustomizeAlignment(VkDeviceSize inAlignment);
 };
 
-class Buffer final
+class Buffer final : public RefCounted
 {
 public:
 	struct Information
@@ -128,7 +129,7 @@ public:
 	
 	Buffer(Buffer& _toCopy) = delete;
 	
-	~Buffer();
+	virtual ~Buffer();
 
 	void Create(const BufferCreateInfo* inCreateInfo);
 	

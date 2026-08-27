@@ -23,9 +23,7 @@ namespace
 
 Buffer::~Buffer()
 {
-	assert(m_uptrBufferViews.empty());
-	assert(m_vkBuffer == VK_NULL_HANDLE);
-	assert(m_mappedMemory == nullptr);
+	Destroy();
 }
 
 void Buffer::Create(const BufferCreateInfo* inCreateInfo)

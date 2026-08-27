@@ -318,6 +318,11 @@ void BottomLevelAccelStruct::BuildHelper::GetUpdateInfo(
 	buildGeomInfo.pGeometries = outBuildInfo.geometries.data();
 }
 
+BottomLevelAccelStruct::~BottomLevelAccelStruct()
+{
+	Destroy();
+}
+
 void BottomLevelAccelStruct::Create(const BottomLevelAccelStruct::Creator* inInitializer)
 {
 	Destroy();
@@ -351,6 +356,11 @@ void BottomLevelAccelStruct::Destroy()
 #pragma endregion
 
 #pragma region TLAS
+
+TopLevelAccelStruct::~TopLevelAccelStruct()
+{
+	Destroy();
+}
 
 void TopLevelAccelStruct::Create(const TopLevelAccelStruct::Creator* inInitializer)
 {

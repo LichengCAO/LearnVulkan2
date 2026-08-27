@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include "../ref_counted.h"
 
 class Buffer;
 class Image;
@@ -147,7 +148,7 @@ public:
 	friend class Image;
 };
 
-class Image
+class Image : public RefCounted
 {
 public:
 	struct Information
@@ -183,7 +184,7 @@ private:
 	void _DestroyViews();
 
 public:
-	~Image();
+	virtual ~Image();
 
 	void Create(const ImageCreateInfo* inCreateInfo);
 
