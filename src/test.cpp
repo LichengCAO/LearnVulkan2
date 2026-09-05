@@ -1,8 +1,137 @@
 #include "common.h"
 #include "utility/render_graph/render_graph.h"
+#include "utility/render_graph/render_graph_instance.h"
 
 struct RenderGraphTestProbe
 {
+	struct GraphicsGroupSummary
+	{
+		std::vector<std::string> passes;
+		bool managedRenderPass = false;
+		uint32_t attachmentCount = 0;
+		uint32_t subpassCount = 0;
+		std::vector<uint32_t> preserveCounts;
+		std::vector<VkAttachmentLoadOp> loadOps;
+		std::vector<VkAttachmentStoreOp> storeOps;
+	};
+
+	static auto GetGraphicsGroups(const RenderGraph& inGraph) -> std::vector<GraphicsGroupSummary>
+	{
+		std::vector<GraphicsGroupSummary> summaries;
+		for (const RenderGraph::SubmitBatch& submitBatch : inGraph.m_buildResult.submitBatches)
+		{
+			for (const RenderGraph::SubmitBatch::PassGroupPlan& group : submitBatch.graphicsGroups)
+			{
+				GraphicsGroupSummary summary;
+				summary.managedRenderPass = group.managedRenderPass;
+				for (RenderGraph::PassIndex passIndex : group.passes)
+				{
+					summary.passes.push_back(inGraph.m_buildResult.GetPass(passIndex).name);
+				}
+				if (group.renderPassPlan.has_value())
+				{
+					summary.attachmentCount = static_cast<uint32_t>(group.renderPassPlan->attachments.size());
+					summary.subpassCount = static_cast<uint32_t>(group.renderPassPlan->subpasses.size());
+					for (const auto& attachment : group.renderPassPlan->attachments)
+					{
+						summary.loadOps.push_back(attachment.loadOp);
+						summary.storeOps.push_back(attachment.storeOp);
+					}
+					for (const auto& subpass : group.renderPassPlan->subpasses)
+					{
+						summary.preserveCounts.push_back(static_cast<uint32_t>(subpass.preserveAttachments.size()));
+					}
+				}
+				summaries.push_back(std::move(summary));
+			}
+		}
+		return summaries;
+	}
+
+	static auto GetBuiltImageUsage(const RenderGraph& inGraph, const std::string& inName) -> VkImageUsageFlags
+	{
+		return inGraph.m_buildResult.GetImageInfo(inGraph.m_buildResult.GetImageIndex(inName)).m_usage;
+	}
+
+	static auto GetManagedSubpassPlan(
+		const RenderGraph& inGraph,
+		const std::string& inPassName) -> RenderGraph::SubmitBatch::ManagedSubpassPlan
+	{
+		const RenderGraph::PassIndex passIndex = inGraph.m_buildResult.GetPassIndex(inPassName);
+		for (const RenderGraph::SubmitBatch& submitBatch : inGraph.m_buildResult.submitBatches)
+		{
+			for (const RenderGraph::SubmitBatch::PassGroupPlan& group : submitBatch.graphicsGroups)
+			{
+				if (!group.renderPassPlan.has_value())
+				{
+					continue;
+				}
+				for (const auto& subpass : group.renderPassPlan->subpasses)
+				{
+					if (subpass.pass == passIndex)
+					{
+						return subpass;
+					}
+				}
+			}
+		}
+		CHECK_TRUE(false, "Managed subpass plan was not found!");
+		return {};
+	}
+
+	static auto OpaqueGraphicsPreservesRenderPassScope() -> bool
+	{
+		RenderGraph graph;
+		RenderGraph::GraphicsPassInfo graphicsPass;
+		graphicsPass.SetNeverCull();
+		graph.AddPass("opaque", graphicsPass);
+		graph.Build();
+
+		RenderGraphInstance instance(graph);
+		RenderGraphInstance::PassInfo passInfo;
+		passInfo.SetProcess([](RenderGraphInstance::ExecutionContext& inContext)
+		{
+			inContext.RecordCommands([](CommandBuffer* inCommandBuffer)
+			{
+				CommandBuffer::RenderPassScope scope;
+				scope.renderPass = (VkRenderPass)1;
+				scope.framebuffer = (VkFramebuffer)1;
+				scope.subpassScopes.resize(1);
+				inCommandBuffer->AppendRenderPass(&scope);
+			});
+		});
+		instance.SetUpPass("opaque", passInfo);
+
+		CommandBuffer commands;
+		instance._AppendPassCommands(graph.m_buildResult.GetPassIndex("opaque"), commands);
+		return commands.m_scopes.size() == 1 &&
+			std::holds_alternative<CommandBuffer::RenderPassScope>(commands.m_scopes.front());
+	}
+
+	static auto ClearOverridesDoNotInvalidateCompileState() -> bool
+	{
+		RenderGraph graph;
+		RenderGraph::ImageInfo image;
+		image.SetAsExternal();
+		graph.AddImage("color", image);
+		RenderGraph::AttachmentInfo attachment;
+		attachment.SetLoadStoreOperations(VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE);
+		RenderGraph::RenderPassInfo renderPass;
+		renderPass.AddColorAttachment(0, "color", attachment);
+		renderPass.SetNeverCull();
+		graph.AddPass("render", renderPass);
+		graph.Build();
+
+		RenderGraphInstance instance(graph);
+		instance.m_compiled = true;
+		VkClearColorValue clear{};
+		clear.float32[0] = 0.25f;
+		instance.SetColorClearValue("render", 0, clear);
+		const bool setPreservedCompile = instance.m_compiled && instance.m_colorClearValueOverrides.size() == 1;
+		instance.ResetClearValue("render", 0);
+		return setPreservedCompile && instance.m_compiled && instance.m_colorClearValueOverrides.empty();
+	}
+
 	static auto GetScheduledPassNames(const RenderGraph& inGraph) -> std::vector<std::string>
 	{
 		std::vector<std::string> names;
@@ -86,7 +215,7 @@ struct RenderGraphTestProbe
 
 	static auto CountQueueSyncPlansAfterLinkCullAndResolve(RenderGraph& inGraph) -> uint32_t
 	{
-		RenderGraph::BuildContext context;
+		RenderGraph::BuildContext context = inGraph._CreateBuildContext();
 		inGraph._LinkPasses(context);
 		inGraph._CullPasses(context);
 		CHECK_TRUE(context.queueSyncPlans.empty(), "Link and cull should not resolve queue sync plans yet!");
@@ -96,63 +225,114 @@ struct RenderGraphTestProbe
 
 	static auto SummarizeScheduledResourceBarriers(RenderGraph& inGraph) -> CrossQueueBuildSummary
 	{
-		RenderGraph::BuildContext context;
+		RenderGraph::BuildContext context = inGraph._CreateBuildContext();
 		inGraph._LinkPasses(context);
 		inGraph._CullPasses(context);
 		inGraph._ResolveDependency(context);
 		RenderGraph::BuildResult result;
 		inGraph._BuildScheduleAndBatches(context, result);
 		inGraph._BuildResourceAliases(context, result);
+		inGraph._MaterializeResourceAliases(context);
 		inGraph._BuildScheduledResourceBarriers(context, result);
+		result.passes = std::move(context.passes);
 		inGraph.m_buildResult = std::move(result);
 		return SummarizeCrossQueueBuild(inGraph);
 	}
 
-	static auto GetBufferAliasRoot(const RenderGraph& inGraph, const std::string& inName) -> RenderGraph::BufferIndex
+	static auto GetBuiltBufferIndex(const RenderGraph& inGraph, const std::string& inName) -> RenderGraph::BufferIndex
 	{
-		const RenderGraph::BufferIndex index = inGraph._GetBufferIndex(inName);
-		return inGraph.m_buildResult.GetBufferAliasRoot(index);
+		return inGraph.m_buildResult.GetBufferIndex(inName);
 	}
 
-	static auto GetImageAliasRoot(const RenderGraph& inGraph, const std::string& inName) -> RenderGraph::ImageIndex
+	static auto GetBuiltImageIndex(const RenderGraph& inGraph, const std::string& inName) -> RenderGraph::ImageIndex
 	{
-		const RenderGraph::ImageIndex index = inGraph._GetImageIndex(inName);
-		return inGraph.m_buildResult.GetImageAliasRoot(index);
+		return inGraph.m_buildResult.GetImageIndex(inName);
 	}
 
-	static auto CountAliasedBufferTransitions(const RenderGraph& inGraph) -> uint32_t
+	static auto GetBuiltBufferCount(const RenderGraph& inGraph) -> size_t
 	{
-		uint32_t count = 0;
-		for (uint32_t submitIndex = 0; submitIndex < inGraph.m_buildResult.GetSubmitBatchCount(); ++submitIndex)
+		return inGraph.m_buildResult.GetBufferCount();
+	}
+
+	static auto GetBuiltImageCount(const RenderGraph& inGraph) -> size_t
+	{
+		return inGraph.m_buildResult.GetImageCount();
+	}
+
+	static auto GetInputBufferUsageIndex(
+		const RenderGraph& inGraph,
+		const std::string& inPassName,
+		const std::string& inBufferName) -> RenderGraph::BufferIndex
+	{
+		const RenderGraph::PassRecord& pass = inGraph.m_passes[inGraph._GetPassIndex(inPassName)];
+		for (const RenderGraph::BufferUsage& usage : pass.bufferUsages)
 		{
-			const RenderGraph::SubmitBatch& submitBatch = inGraph.m_buildResult.GetSubmitBatch(submitIndex);
-			auto funcCountGroup = [&](const std::vector<RenderGraph::SubmitBatch::PassGroupPlan>& inGroups)
+			if (usage.buffer == inBufferName)
 			{
-				for (const RenderGraph::SubmitBatch::PassGroupPlan& group : inGroups)
-				{
-					for (const RenderGraph::BarrierPlan& plan : group.prologueBarriers)
-					{
-						if (plan.resourceType == RenderGraph::ResourceType::BUFFER &&
-							plan.sourceBuffer != RenderGraph::INVALID_INDEX &&
-							plan.sourceBuffer != plan.buffer)
-						{
-							++count;
-						}
-					}
-				}
-			};
-
-			funcCountGroup(submitBatch.graphicsGroups);
-			funcCountGroup(submitBatch.computeGroups);
+				return usage.bufferIndex;
+			}
 		}
-		return count;
+		return RenderGraph::INVALID_INDEX;
+	}
+
+	static auto GetInputImageUsageIndex(
+		const RenderGraph& inGraph,
+		const std::string& inPassName,
+		const std::string& inImageName) -> RenderGraph::ImageIndex
+	{
+		const RenderGraph::PassRecord& pass = inGraph.m_passes[inGraph._GetPassIndex(inPassName)];
+		for (const RenderGraph::ImageUsage& usage : pass.imageUsages)
+		{
+			if (usage.image == inImageName)
+			{
+				return usage.imageIndex;
+			}
+		}
+		return RenderGraph::INVALID_INDEX;
+	}
+
+	static auto GetBuiltBufferUsageIndex(
+		const RenderGraph& inGraph,
+		const std::string& inPassName,
+		const std::string& inBufferName) -> RenderGraph::BufferIndex
+	{
+		const RenderGraph::PassRecord& pass = inGraph.m_buildResult.GetPass(inGraph.m_buildResult.GetPassIndex(inPassName));
+		for (const RenderGraph::BufferUsage& usage : pass.bufferUsages)
+		{
+			if (usage.buffer == inBufferName)
+			{
+				return usage.bufferIndex;
+			}
+		}
+		return RenderGraph::INVALID_INDEX;
+	}
+
+	static auto GetBuiltImageUsageIndex(
+		const RenderGraph& inGraph,
+		const std::string& inPassName,
+		const std::string& inImageName) -> RenderGraph::ImageIndex
+	{
+		const RenderGraph::PassRecord& pass = inGraph.m_buildResult.GetPass(inGraph.m_buildResult.GetPassIndex(inPassName));
+		for (const RenderGraph::ImageUsage& usage : pass.imageUsages)
+		{
+			if (usage.image == inImageName)
+			{
+				return usage.imageIndex;
+			}
+		}
+		return RenderGraph::INVALID_INDEX;
+	}
+
+	static auto GetInputPassAdjacencyCount(const RenderGraph& inGraph, const std::string& inPassName) -> size_t
+	{
+		return inGraph.m_passes[inGraph._GetPassIndex(inPassName)].adjacency.size();
 	}
 
 	static auto FindFirstImagePrologueBarrierRange(
 		const RenderGraph& inGraph,
 		const std::string& inName) -> std::optional<RenderGraph::ImageSubresourceRange>
 	{
-		const RenderGraph::ImageIndex imageIndex = inGraph._GetImageIndex(inName);
+		const RenderGraph::ImageIndex imageIndex = inGraph.m_buildResult.GetImageIndex(inName);
 		for (uint32_t submitIndex = 0; submitIndex < inGraph.m_buildResult.GetSubmitBatchCount(); ++submitIndex)
 		{
 			const RenderGraph::SubmitBatch& submitBatch = inGraph.m_buildResult.GetSubmitBatch(submitIndex);
@@ -235,12 +415,9 @@ namespace
 		graph.AddImage("color", image);
 
 		RenderGraph::SubpassInfo subpass;
-		subpass.AddColorAttachment(
-			"color",
-			VK_ATTACHMENT_LOAD_OP_LOAD,
-			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-			VK_ATTACHMENT_STORE_OP_STORE,
-			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
+		RenderGraph::AttachmentInfo attachment;
+		attachment.SetLoadStoreOperations(VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE);
+		subpass.AddColorAttachment(0, "color", attachment);
 		graph.AddPass("load", subpass);
 
 		ExpectThrows(
@@ -640,12 +817,81 @@ namespace
 		graph.Build();
 
 		CHECK_TRUE(
-			RenderGraphTestProbe::GetBufferAliasRoot(graph, "scratch_a") ==
-			RenderGraphTestProbe::GetBufferAliasRoot(graph, "scratch_b"),
+			RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_a") ==
+			RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_b"),
 			"Non-overlapping compatible internal buffers should alias by default!");
 		CHECK_TRUE(
-			RenderGraphTestProbe::CountAliasedBufferTransitions(graph) > 0,
-			"Aliased buffers should emit a transition from the previous logical resource state!");
+			RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_a") ==
+			RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_b"),
+			"Aliased buffers should resolve to the same compact physical resource!");
+	}
+
+	void TestAliasingMaterializationPreservesLogicalInputs()
+	{
+		RenderGraph graph;
+
+		RenderGraph::BufferInfo scratch;
+		scratch.SetSize(256);
+		scratch.AddUsage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+		graph.AddBuffer("scratch_a", scratch);
+		graph.AddBuffer("scratch_b", scratch);
+
+		RenderGraph::BufferInfo output;
+		output.SetAsExternal();
+		graph.AddBuffer("output", output);
+
+		RenderGraph::ComputePassInfo writeA;
+		writeA.AddDescriptorStorageBuffer("scratch_a", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		graph.AddPass("write_a", writeA);
+
+		RenderGraph::ComputePassInfo readA;
+		readA.AddDescriptorUniformBuffer("scratch_a", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		readA.AddDescriptorStorageBuffer("output", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		graph.AddPass("read_a", readA);
+
+		RenderGraph::ComputePassInfo writeB;
+		writeB.AddDescriptorStorageBuffer("scratch_b", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		graph.AddPass("write_b", writeB);
+
+		RenderGraph::ComputePassInfo readB;
+		readB.AddDescriptorUniformBuffer("scratch_b", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		readB.AddDescriptorStorageBuffer("output", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		graph.AddPass("read_b", readB);
+
+		graph.AddExtraPassDependency("read_a", "write_b");
+		graph.Build();
+
+		const auto physicalScratchA = RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_a");
+		const auto physicalScratchB = RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_b");
+		const auto physicalOutput = RenderGraphTestProbe::GetBuiltBufferIndex(graph, "output");
+
+		CHECK_TRUE(physicalScratchA == physicalScratchB, "Aliased logical buffers must share one physical index!");
+		CHECK_TRUE(physicalScratchA < RenderGraphTestProbe::GetBuiltBufferCount(graph), "Build buffer index is out of bounds!");
+		CHECK_TRUE(physicalOutput < RenderGraphTestProbe::GetBuiltBufferCount(graph), "External build buffer index is out of bounds!");
+		CHECK_TRUE(RenderGraphTestProbe::GetBuiltBufferCount(graph) == 2, "Two logical scratch buffers should compact to one build buffer plus output!");
+
+		CHECK_TRUE(
+			RenderGraphTestProbe::GetInputBufferUsageIndex(graph, "write_a", "scratch_a") == ~0u,
+			"Build must not write resolved indices into the original pass input!");
+		CHECK_TRUE(
+			RenderGraphTestProbe::GetInputBufferUsageIndex(graph, "write_b", "scratch_b") == ~0u,
+			"Build must not write resolved indices into the original pass input!");
+		CHECK_TRUE(
+			RenderGraphTestProbe::GetInputBufferUsageIndex(graph, "read_a", "output") == ~0u,
+			"Build must not write resolved indices into the original pass input!");
+		CHECK_TRUE(
+			RenderGraphTestProbe::GetInputPassAdjacencyCount(graph, "write_a") == 0,
+			"Build must not write dependency edges into the original pass input!");
+
+		CHECK_TRUE(
+			RenderGraphTestProbe::GetBuiltBufferUsageIndex(graph, "write_a", "scratch_a") == physicalScratchA,
+			"Built pass should use the physical buffer index!");
+
+		graph.Build();
+		CHECK_TRUE(
+			RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_a") == physicalScratchA &&
+			RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_b") == physicalScratchB,
+			"Repeated builds should preserve materialized resource mapping!");
 	}
 
 	void TestOverlappingInternalBuffersDoNotAlias()
@@ -679,8 +925,8 @@ namespace
 		graph.Build();
 
 		CHECK_TRUE(
-			RenderGraphTestProbe::GetBufferAliasRoot(graph, "scratch_a") !=
-			RenderGraphTestProbe::GetBufferAliasRoot(graph, "scratch_b"),
+			RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_a") !=
+			RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_b"),
 			"Overlapping internal buffers must not alias!");
 	}
 
@@ -719,8 +965,8 @@ namespace
 		graph.Build();
 
 		CHECK_TRUE(
-			RenderGraphTestProbe::GetBufferAliasRoot(graph, "scratch_compute") !=
-			RenderGraphTestProbe::GetBufferAliasRoot(graph, "scratch_graphics"),
+			RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_compute") !=
+			RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_graphics"),
 			"Internal buffers used by different queues must not alias!");
 	}
 
@@ -761,8 +1007,8 @@ namespace
 		graph.Build();
 
 		CHECK_TRUE(
-			RenderGraphTestProbe::GetBufferAliasRoot(graph, "scratch_a") !=
-			RenderGraphTestProbe::GetBufferAliasRoot(graph, "scratch_b"),
+			RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_a") !=
+			RenderGraphTestProbe::GetBuiltBufferIndex(graph, "scratch_b"),
 			"Disabled resource aliasing should keep internal buffers independent!");
 	}
 
@@ -801,9 +1047,23 @@ namespace
 		graph.Build();
 
 		CHECK_TRUE(
-			RenderGraphTestProbe::GetImageAliasRoot(graph, "scratch_a") ==
-			RenderGraphTestProbe::GetImageAliasRoot(graph, "scratch_b"),
+			RenderGraphTestProbe::GetBuiltImageIndex(graph, "scratch_a") ==
+			RenderGraphTestProbe::GetBuiltImageIndex(graph, "scratch_b"),
 			"Non-overlapping compatible internal images should alias!");
+		CHECK_TRUE(
+			RenderGraphTestProbe::GetBuiltImageIndex(graph, "scratch_a") ==
+			RenderGraphTestProbe::GetBuiltImageIndex(graph, "scratch_b"),
+			"Aliased images should resolve to the same compact physical resource!");
+		CHECK_TRUE(
+			RenderGraphTestProbe::GetBuiltImageCount(graph) == 1,
+			"Two aliased logical images should compact to one physical image!");
+		CHECK_TRUE(
+			RenderGraphTestProbe::GetInputImageUsageIndex(graph, "write_a", "scratch_a") == ~0u,
+			"Build must not write resolved image indices into the original pass input!");
+		CHECK_TRUE(
+			RenderGraphTestProbe::GetBuiltImageUsageIndex(graph, "write_a", "scratch_a") ==
+			RenderGraphTestProbe::GetBuiltImageIndex(graph, "scratch_a"),
+			"Built image pass should use the physical image index!");
 	}
 
 	void TestInternalImagesWithDifferentDescriptorsDoNotAlias()
@@ -846,9 +1106,269 @@ namespace
 		graph.Build();
 
 		CHECK_TRUE(
-			RenderGraphTestProbe::GetImageAliasRoot(graph, "scratch_a") !=
-			RenderGraphTestProbe::GetImageAliasRoot(graph, "scratch_b"),
+			RenderGraphTestProbe::GetBuiltImageIndex(graph, "scratch_a") !=
+			RenderGraphTestProbe::GetBuiltImageIndex(graph, "scratch_b"),
 			"Internal images with different descriptors must not alias!");
+	}
+
+	void TestGraphicsPassIsOpaqueAndPreservesRenderPassScope()
+	{
+		RenderGraph graph;
+		RenderGraph::GraphicsPassInfo pass;
+		pass.SetNeverCull();
+		graph.AddPass("opaque", pass);
+		graph.Build();
+
+		const auto groups = RenderGraphTestProbe::GetGraphicsGroups(graph);
+		CHECK_TRUE(groups.size() == 1, "Opaque graphics pass should create one graphics group!");
+		CHECK_TRUE(!groups.front().managedRenderPass, "GraphicsPassInfo must remain unmanaged!");
+		CHECK_TRUE(RenderGraphTestProbe::OpaqueGraphicsPreservesRenderPassScope(), "Opaque graphics pass must preserve caller render pass scopes!");
+	}
+
+	void TestRenderPassInfoIsAHardGroupBoundary()
+	{
+		RenderGraph graph;
+		RenderGraph::ImageInfo image;
+		image.SetAsExternal();
+		graph.AddImage("color", image);
+
+		RenderGraph::SubpassInfo before;
+		before.AddColorAttachment(0, "color");
+		before.SetNeverCull();
+		graph.AddPass("before", before);
+
+		RenderGraph::RenderPassInfo middle;
+		middle.AddColorAttachment(0, "color");
+		middle.SetNeverCull();
+		graph.AddPass("middle", middle);
+
+		RenderGraph::SubpassInfo after;
+		after.AddColorAttachment(0, "color");
+		after.SetNeverCull();
+		graph.AddPass("after", after);
+		graph.Build();
+
+		const auto groups = RenderGraphTestProbe::GetGraphicsGroups(graph);
+		CHECK_TRUE(groups.size() == 3, "RenderPassInfo must split neighboring SubpassInfo groups!");
+		for (const auto& group : groups)
+		{
+			CHECK_TRUE(group.managedRenderPass, "All attachment passes should be managed!");
+			CHECK_TRUE(group.passes.size() == 1, "RenderPassInfo boundary should keep every group independent!");
+			CHECK_TRUE(group.subpassCount == 1, "Each independent managed group should have one subpass!");
+		}
+	}
+
+	void TestCompatibleSubpassesMergeAndRepeatedClearSplits()
+	{
+		RenderGraph graph;
+		RenderGraph::ImageInfo image;
+		image.SetAsExternal();
+		graph.AddImage("color", image);
+
+		RenderGraph::AttachmentInfo firstAttachment;
+		firstAttachment.SetLoadStoreOperations(VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE);
+		RenderGraph::SubpassInfo first;
+		first.AddColorAttachment(0, "color", firstAttachment);
+		first.SetNeverCull();
+		graph.AddPass("first", first);
+
+		RenderGraph::AttachmentInfo loadAttachment;
+		loadAttachment.SetLoadStoreOperations(VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE);
+		RenderGraph::SubpassInfo second;
+		second.AddColorAttachment(0, "color", loadAttachment);
+		second.SetNeverCull();
+		graph.AddPass("second", second);
+		graph.Build();
+
+		const auto mergedGroups = RenderGraphTestProbe::GetGraphicsGroups(graph);
+		CHECK_TRUE(mergedGroups.size() == 1, "Compatible SubpassInfo passes should merge!");
+		CHECK_TRUE(mergedGroups.front().passes.size() == 2, "Merged render pass should contain two passes!");
+		CHECK_TRUE(mergedGroups.front().subpassCount == 2, "Merged render pass should contain two subpasses!");
+		CHECK_TRUE(mergedGroups.front().loadOps.front() == VK_ATTACHMENT_LOAD_OP_CLEAR, "Merged attachment must use the first subpass loadOp!");
+		CHECK_TRUE(mergedGroups.front().storeOps.front() == VK_ATTACHMENT_STORE_OP_STORE, "Merged attachment must use the last subpass storeOp!");
+
+		RenderGraph clearGraph;
+		clearGraph.AddImage("color", image);
+		RenderGraph::AttachmentInfo clearAttachment;
+		clearAttachment.SetLoadStoreOperations(VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE);
+		RenderGraph::SubpassInfo clearFirst;
+		clearFirst.AddColorAttachment(0, "color", clearAttachment);
+		clearFirst.SetNeverCull();
+		clearGraph.AddPass("clear_first", clearFirst);
+		RenderGraph::SubpassInfo clearSecond;
+		clearSecond.AddColorAttachment(0, "color", clearAttachment);
+		clearSecond.SetNeverCull();
+		clearGraph.AddPass("clear_second", clearSecond);
+		clearGraph.Build();
+		CHECK_TRUE(RenderGraphTestProbe::GetGraphicsGroups(clearGraph).size() == 2, "A later CLEAR of the same attachment must split the render pass!");
+	}
+
+	void TestIncompatibleAttachmentRangesRolesAndResourceAccessSplit()
+	{
+		RenderGraph rangeGraph;
+		RenderGraph::ImageInfo layeredImage;
+		layeredImage.CustomizeArrayLayers(2);
+		layeredImage.SetAsExternal();
+		rangeGraph.AddImage("image", layeredImage);
+		RenderGraph::AttachmentInfo bothLayers;
+		RenderGraph::ImageSubresourceRange bothRange;
+		bothRange.layerCount = 2;
+		bothLayers.SetSubresourceRange(bothRange);
+		RenderGraph::SubpassInfo rangeFirst;
+		rangeFirst.AddColorAttachment(0, "image", bothLayers);
+		rangeFirst.SetNeverCull();
+		rangeGraph.AddPass("first", rangeFirst);
+		RenderGraph::AttachmentInfo secondLayer;
+		secondLayer.SetSubresourceRange(RenderGraph::ImageSubresourceRange(0, 1));
+		RenderGraph::SubpassInfo rangeSecond;
+		rangeSecond.AddColorAttachment(0, "image", secondLayer);
+		rangeSecond.SetNeverCull();
+		rangeGraph.AddPass("second", rangeSecond);
+		rangeGraph.Build();
+		CHECK_TRUE(RenderGraphTestProbe::GetGraphicsGroups(rangeGraph).size() == 2, "Overlapping unequal attachment ranges must split managed groups!");
+
+		RenderGraph roleGraph;
+		RenderGraph::ImageInfo roleImage;
+		roleImage.SetAsExternal();
+		roleGraph.AddImage("image", roleImage);
+		RenderGraph::SubpassInfo colorPass;
+		colorPass.AddColorAttachment(0, "image");
+		colorPass.SetNeverCull();
+		roleGraph.AddPass("color", colorPass);
+		RenderGraph::SubpassInfo depthPass;
+		depthPass.SetDepthStencilAttachment("image");
+		depthPass.SetNeverCull();
+		roleGraph.AddPass("depth", depthPass);
+		roleGraph.Build();
+		CHECK_TRUE(RenderGraphTestProbe::GetGraphicsGroups(roleGraph).size() == 2, "Attachment role conflicts must split managed groups!");
+
+		RenderGraph accessGraph;
+		RenderGraph::ImageInfo attachmentImage;
+		attachmentImage.SetAsExternal();
+		accessGraph.AddImage("attachment", attachmentImage);
+		RenderGraph::ImageInfo sharedImage;
+		sharedImage.SetAsExternal();
+		accessGraph.AddImage("shared", sharedImage);
+		RenderGraph::SubpassInfo readPass;
+		readPass.AddColorAttachment(0, "attachment");
+		readPass.AddSampledImage("shared", VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+		readPass.SetNeverCull();
+		accessGraph.AddPass("read", readPass);
+		RenderGraph::SubpassInfo writePass;
+		writePass.AddColorAttachment(0, "attachment");
+		writePass.AddStorageImage("shared", VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+		writePass.SetNeverCull();
+		accessGraph.AddPass("write", writePass);
+		accessGraph.Build();
+		CHECK_TRUE(RenderGraphTestProbe::GetGraphicsGroups(accessGraph).size() == 2, "Incompatible non-attachment image access must split managed groups!");
+	}
+
+	void TestManagedPlanUsesExactLayersAndPreserveAttachments()
+	{
+		RenderGraph graph;
+		RenderGraph::ImageInfo imageA;
+		imageA.CustomizeArrayLayers(2);
+		graph.AddImage("a", imageA);
+		RenderGraph::ImageInfo imageB;
+		graph.AddImage("b", imageB);
+
+		RenderGraph::AttachmentInfo layer0;
+		layer0.SetSubresourceRange(RenderGraph::ImageSubresourceRange(0, 0));
+		RenderGraph::SubpassInfo first;
+		first.AddColorAttachment(0, "a", layer0);
+		first.SetNeverCull();
+		graph.AddPass("first", first);
+
+		RenderGraph::SubpassInfo middle;
+		middle.AddColorAttachment(0, "b");
+		middle.SetNeverCull();
+		graph.AddPass("middle", middle);
+
+		RenderGraph::AttachmentInfo layer1;
+		layer1.SetSubresourceRange(RenderGraph::ImageSubresourceRange(0, 1));
+		RenderGraph::SubpassInfo last;
+		last.AddColorAttachment(0, "a", layer1);
+		last.SetNeverCull();
+		graph.AddPass("last", last);
+		graph.AddExtraPassDependency("first", "middle");
+		graph.AddExtraPassDependency("middle", "last");
+		graph.Build();
+
+		const auto groups = RenderGraphTestProbe::GetGraphicsGroups(graph);
+		CHECK_TRUE(groups.size() == 1, "Compatible exact layer views should share one render pass!");
+		CHECK_TRUE(groups.front().attachmentCount == 3, "Different layer views must remain distinct attachments!");
+
+		RenderGraph preserveGraph;
+		preserveGraph.AddImage("a", imageB);
+		preserveGraph.AddImage("b", imageB);
+		RenderGraph::SubpassInfo preserveFirst;
+		preserveFirst.AddColorAttachment(0, "a");
+		preserveFirst.SetNeverCull();
+		preserveGraph.AddPass("first", preserveFirst);
+		RenderGraph::SubpassInfo preserveMiddle;
+		preserveMiddle.AddColorAttachment(0, "b");
+		preserveMiddle.SetNeverCull();
+		preserveGraph.AddPass("middle", preserveMiddle);
+		RenderGraph::SubpassInfo preserveLast;
+		preserveLast.AddColorAttachment(0, "a");
+		preserveLast.SetNeverCull();
+		preserveGraph.AddPass("last", preserveLast);
+		preserveGraph.AddExtraPassDependency("first", "middle");
+		preserveGraph.AddExtraPassDependency("middle", "last");
+		preserveGraph.Build();
+
+		const auto preserveGroups = RenderGraphTestProbe::GetGraphicsGroups(preserveGraph);
+		CHECK_TRUE(preserveGroups.size() == 1, "Preserve test subpasses should merge!");
+		CHECK_TRUE(preserveGroups.front().preserveCounts.size() == 3, "Preserve test should have three subpass plans!");
+		CHECK_TRUE(preserveGroups.front().preserveCounts[1] == 1, "Middle subpass must preserve an attachment used again later!");
+	}
+
+	void TestResolvePlanAndInferredImageUsages()
+	{
+		RenderGraph graph;
+		RenderGraph::ImageInfo multisampled;
+		multisampled.CustomizeSampleCount(VK_SAMPLE_COUNT_4_BIT);
+		graph.AddImage("msaa", multisampled);
+		RenderGraph::ImageInfo resolved;
+		resolved.CustomizeSampleCount(VK_SAMPLE_COUNT_1_BIT);
+		graph.AddImage("resolved", resolved);
+
+		RenderGraph::RenderPassInfo pass;
+		pass.AddColorAttachment(2, "msaa");
+		pass.SetResolveAttachment(2, "resolved");
+		pass.SetNeverCull();
+		graph.AddPass("resolve", pass);
+		graph.Build();
+
+		const auto subpass = RenderGraphTestProbe::GetManagedSubpassPlan(graph, "resolve");
+		CHECK_TRUE(subpass.colorAttachments.size() == 3 && subpass.colorAttachments[2] != ~0u, "Color location must be preserved in the managed plan!");
+		CHECK_TRUE(subpass.resolveAttachments.size() == 3 && subpass.resolveAttachments[2] != ~0u, "Resolve location must match its source color location!");
+		CHECK_TRUE((RenderGraphTestProbe::GetBuiltImageUsage(graph, "msaa") & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0, "Color attachment usage should be inferred!");
+		CHECK_TRUE((RenderGraphTestProbe::GetBuiltImageUsage(graph, "resolved") & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0, "Resolve attachment usage should be inferred!");
+	}
+
+	void TestManagedAttachmentDeclarationValidation()
+	{
+		RenderGraph::SubpassInfo duplicateColor;
+		duplicateColor.AddColorAttachment(0, "a");
+		ExpectThrows([&]() { duplicateColor.AddColorAttachment(0, "b"); }, "already used");
+
+		RenderGraph::SubpassInfo duplicateDepth;
+		duplicateDepth.SetDepthStencilAttachment("a");
+		ExpectThrows([&]() { duplicateDepth.SetDepthStencilAttachment("b"); }, "only have one");
+
+		RenderGraph emptyGraph;
+		RenderGraph::RenderPassInfo emptyPass;
+		ExpectThrows([&]() { emptyGraph.AddPass("empty", emptyPass); }, "at least one attachment");
+
+		RenderGraph resolveGraph;
+		RenderGraph::ImageInfo image;
+		resolveGraph.AddImage("resolved", image);
+		RenderGraph::SubpassInfo resolveOnly;
+		resolveOnly.SetResolveAttachment(0, "resolved");
+		ExpectThrows([&]() { resolveGraph.AddPass("resolve", resolveOnly); }, "no color attachment");
+
+		CHECK_TRUE(RenderGraphTestProbe::ClearOverridesDoNotInvalidateCompileState(), "Clear overrides must not require recompilation!");
 	}
 }
 
@@ -872,11 +1392,19 @@ int main()
 		TestNeverCullPassWithoutExternalUsageIsScheduled();
 		TestCullKeepsExternalUsageDependencies();
 		TestNonOverlappingInternalBuffersAliasByDefault();
+		TestAliasingMaterializationPreservesLogicalInputs();
 		TestOverlappingInternalBuffersDoNotAlias();
 		TestCrossQueueInternalBuffersDoNotAlias();
 		TestResourceAliasingCanBeDisabled();
 		TestNonOverlappingInternalImagesAliasWhenDescriptorsMatch();
 		TestInternalImagesWithDifferentDescriptorsDoNotAlias();
+		TestGraphicsPassIsOpaqueAndPreservesRenderPassScope();
+		TestRenderPassInfoIsAHardGroupBoundary();
+		TestCompatibleSubpassesMergeAndRepeatedClearSplits();
+		TestIncompatibleAttachmentRangesRolesAndResourceAccessSplit();
+		TestManagedPlanUsesExactLayersAndPreserveAttachments();
+		TestResolvePlanAndInferredImageUsages();
+		TestManagedAttachmentDeclarationValidation();
 	}
 	catch (const std::exception& e)
 	{

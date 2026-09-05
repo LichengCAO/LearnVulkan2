@@ -32,6 +32,7 @@ private:
 	std::vector<AttachmentReference> m_colorAttachments;
 	std::vector<AttachmentReference> m_resolveAttachments;
 	std::optional<AttachmentReference> m_depthStencilAttachment;
+	std::vector<std::string> m_preserveAttachments;
 	std::vector<Dependency> m_dependencies;
 	VkPipelineStageFlags m_availableStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 	VkAccessFlags m_availableAccess = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -52,6 +53,7 @@ public:
 		uint32_t inOutputSlot,
 		std::string_view inColorAttachmentName,
 		VkImageLayout inColorLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	void AddPreserveAttachment(std::string_view inAttachmentName);
 	void CustomizeAvailableState(
 		VkPipelineStageFlags inStage,
 		VkAccessFlags inAccess);
@@ -86,7 +88,7 @@ public:
 			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
 			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
 			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-		VkDependencyFlags inDependencyFlags = 0);
+		VkDependencyFlags inDependencyFlags = VK_DEPENDENCY_BY_REGION_BIT);
 };
 
 class AttachmentDescription final
@@ -102,6 +104,7 @@ public:
 	AttachmentDescription();
 
 	void CustomizeFormat(VkFormat inFormat, std::variant<std::pair<float, uint32_t>, glm::vec4> inClearValue);
+	void CustomizeFormat(VkFormat inFormat, const VkClearValue& inClearValue);
 	void CustomizeSampleCount(VkSampleCountFlagBits inSampleCount);
 	void CustomizeLoadOperation(VkAttachmentLoadOp inLoadOp);
 	void CustomizeStoreOperation(VkAttachmentStoreOp inStoreOp);

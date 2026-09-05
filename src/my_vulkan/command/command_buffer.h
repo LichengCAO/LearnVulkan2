@@ -6,6 +6,7 @@
 class CommandBuffer final
 {
 	friend class RenderGraphInstance;
+	friend struct RenderGraphTestProbe;
 
 public:
 	struct PrimaryScope final

@@ -33,6 +33,12 @@ public:
 		uint32_t layerCount = 0;
 	};
 
+	// These nested resource descriptors are defined below, after the build-only
+	// structures that store them by value. Keep their forward declarations public
+	// so their access level is consistent with the definitions.
+	class BufferInfo;
+	class ImageInfo;
+
 private:
 	static constexpr uint32_t INVALID_INDEX = ~0u;
 
@@ -43,8 +49,9 @@ private:
 	enum class PassType
 	{
 		COMPUTE,  // Owns compute queue commands
-		GRAPHICS, // Owns graphics queue commands, manages render pass itself
-		SUBPASS,  // Owns graphics queue commands in a subpass, let graph manage render pass for it
+		GRAPHICS, // Owns opaque graphics queue commands and manages any render pass itself
+		RENDER_PASS, // Owns one graph-managed render pass
+		SUBPASS,  // Owns graphics commands in a graph-managed, mergeable subpass
 	};
 
 	enum class QueueType
@@ -64,7 +71,8 @@ private:
 		SAMPLED_IMAGE,
 		STORAGE_IMAGE,
 		COLOR_ATTACHMENT,
-		DEPTH_ATTACHMENT,
+		DEPTH_STENCIL_ATTACHMENT,
+		RESOLVE_ATTACHMENT,
 		UNIFORM_BUFFER,
 		STORAGE_BUFFER,
 	};
@@ -87,8 +95,13 @@ private:
 		VkAccessFlags2 access = 0;
 		bool reads = false;
 		bool writes = false;
+		uint32_t attachmentSlot = INVALID_INDEX;
 		VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		VkAttachmentStoreOp storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		VkAttachmentLoadOp stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		VkAttachmentStoreOp stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		VkClearColorValue clearColor{};
+		VkClearDepthStencilValue clearDepthStencil{ 1.0f, 0 };
 	};
 
 	struct BufferUsage
@@ -114,9 +127,7 @@ private:
 	{
 		ResourceType resourceType = ResourceType::IMAGE;
 		ImageIndex image = INVALID_INDEX;
-		ImageIndex sourceImage = INVALID_INDEX;
 		BufferIndex buffer = INVALID_INDEX;
-		BufferIndex sourceBuffer = INVALID_INDEX;
 		ImageSubresourceRange subresourceRange;
 		PassIndex before = INVALID_INDEX;
 		PassIndex after = INVALID_INDEX;
@@ -137,7 +148,6 @@ private:
 		std::string name;
 		PassType type = PassType::GRAPHICS;
 		QueueType queue = QueueType::GRAPHICS;
-		bool useDedicatedRenderPass = false;
 		bool neverCull = false;
 		bool active = false;
 		std::vector<ImageUsage> imageUsages;
@@ -153,11 +163,42 @@ private:
 
 	struct SubmitBatch
 	{
+		struct ManagedAttachmentPlan
+		{
+			ImageIndex image = INVALID_INDEX;
+			ImageSubresourceRange subresourceRange;
+			ResourceUsageType role = ResourceUsageType::COLOR_ATTACHMENT;
+			VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			VkAttachmentStoreOp storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			VkAttachmentLoadOp stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			VkAttachmentStoreOp stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			VkImageLayout initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			VkImageLayout finalLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			VkClearValue clearValue{};
+		};
+
+		struct ManagedSubpassPlan
+		{
+			PassIndex pass = INVALID_INDEX;
+			std::vector<uint32_t> colorAttachments;
+			std::vector<uint32_t> resolveAttachments;
+			std::optional<uint32_t> depthStencilAttachment;
+			std::vector<uint32_t> preserveAttachments;
+		};
+
+		struct ManagedRenderPassPlan
+		{
+			std::vector<ManagedAttachmentPlan> attachments;
+			std::vector<ManagedSubpassPlan> subpasses;
+			std::vector<BarrierPlan> dependencies;
+		};
+
 		struct PassGroupPlan
 		{
 			QueueType queue = QueueType::GRAPHICS;
 			std::vector<PassIndex> passes;
 			bool managedRenderPass = false;
+			std::optional<ManagedRenderPassPlan> renderPassPlan;
 			std::vector<BarrierPlan> prologueBarriers;
 			std::vector<BarrierPlan> epilogueBarriers;
 			std::vector<BarrierPlan> queueReleaseBarriers;
@@ -199,20 +240,31 @@ private:
 	class BuildResult
 	{
 		friend class RenderGraph;
+		friend struct RenderGraphTestProbe;
 
 	private:
 		std::vector<PassRecord> passes;
 		std::vector<SubmitBatch> submitBatches;
-		std::vector<BufferIndex> bufferAliasRoots;
-		std::vector<ImageIndex> imageAliasRoots;
+		std::vector<BufferInfo> buffers;
+		std::vector<ImageInfo> images;
+		std::unordered_map<std::string, BufferIndex> nameToBuffer;
+		std::unordered_map<std::string, ImageIndex> nameToImage;
+		std::unordered_map<std::string, PassIndex> nameToPass;
+		bool valid = false;
 
 	public:
+		auto IsValid() const->bool;
 		auto GetPassCount() const->size_t;
 		auto GetPass(PassIndex inPassIndex) const->const PassRecord&;
 		auto GetSubmitBatchCount() const->size_t;
 		auto GetSubmitBatch(uint32_t inSubmitIndex) const->const SubmitBatch&;
-		auto GetBufferAliasRoot(BufferIndex inBufferIndex) const->BufferIndex;
-		auto GetImageAliasRoot(ImageIndex inImageIndex) const->ImageIndex;
+		auto GetBufferCount() const->size_t;
+		auto GetImageCount() const->size_t;
+		auto GetBufferInfo(BufferIndex inBufferIndex) const->const BufferInfo&;
+		auto GetImageInfo(ImageIndex inImageIndex) const->const ImageInfo&;
+		auto GetBufferIndex(const std::string& inName) const->BufferIndex;
+		auto GetImageIndex(const std::string& inName) const->ImageIndex;
+		auto GetPassIndex(const std::string& inName) const->PassIndex;
 		auto GetImageAccessState(
 			PassIndex inPassIndex,
 			ImageIndex inImageIndex,
@@ -230,6 +282,7 @@ private:
 			bool reads = false;
 			bool writes = false;
 			VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			VkAttachmentLoadOp stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 
 			ImageUsageRef() = default;
 			ImageUsageRef(PassIndex inPass, const ImageUsage& inUsage)
@@ -238,7 +291,8 @@ private:
 				type(inUsage.type),
 				reads(inUsage.reads),
 				writes(inUsage.writes),
-				loadOp(inUsage.loadOp)
+				loadOp(inUsage.loadOp),
+				stencilLoadOp(inUsage.stencilLoadOp)
 			{
 			}
 		};
@@ -272,10 +326,52 @@ private:
 		std::vector<QueueSyncPlan> queueSyncPlans;
 		std::vector<ImageRecord> images;
 		std::vector<BufferRecord> buffers;
+		std::vector<ImageInfo> imageInfos;
+		std::vector<BufferInfo> bufferInfos;
+		std::unordered_map<std::string, ImageIndex> nameToImage;
+		std::unordered_map<std::string, BufferIndex> nameToBuffer;
+		std::vector<DependencyEdge> extraDependencies;
+		std::vector<ImageIndex> imageAliasRoots;
+		std::vector<BufferIndex> bufferAliasRoots;
+		std::vector<ImageIndex> logicalToPhysicalImages;
+		std::vector<BufferIndex> logicalToPhysicalBuffers;
+		bool enableResourceAliasing = true;
+		bool aliasesMaterialized = false;
 
 	};
 
 public:
+	class AttachmentPassInfo;
+
+	class AttachmentInfo final
+	{
+		friend class AttachmentPassInfo;
+
+	private:
+		ImageSubresourceRange m_subresourceRange;
+		VkAttachmentLoadOp m_loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		VkAttachmentStoreOp m_storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		VkAttachmentLoadOp m_stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		VkAttachmentStoreOp m_stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		VkClearColorValue m_clearColor{};
+		VkClearDepthStencilValue m_clearDepthStencil{ 1.0f, 0 };
+
+	public:
+		void SetSubresourceRange(const ImageSubresourceRange& inRange) { m_subresourceRange = inRange; }
+		void SetLoadStoreOperations(VkAttachmentLoadOp inLoadOp, VkAttachmentStoreOp inStoreOp)
+		{
+			m_loadOp = inLoadOp;
+			m_storeOp = inStoreOp;
+		}
+		void SetStencilLoadStoreOperations(VkAttachmentLoadOp inLoadOp, VkAttachmentStoreOp inStoreOp)
+		{
+			m_stencilLoadOp = inLoadOp;
+			m_stencilStoreOp = inStoreOp;
+		}
+		void SetClearColor(const VkClearColorValue& inClearColor) { m_clearColor = inClearColor; }
+		void SetClearDepthStencil(const VkClearDepthStencilValue& inClearDepthStencil) { m_clearDepthStencil = inClearDepthStencil; }
+	};
+
 	class BufferInfo final
 	{
 		friend class RenderGraph;
@@ -327,6 +423,7 @@ public:
 	{
 		friend class RenderGraph;
 		friend class RenderGraphInstance;
+		friend struct RenderGraphTestProbe;
 
 	private:
 		std::string m_name;
@@ -411,12 +508,10 @@ public:
 		};
 	};
 
-	class SubpassInfo;
-
 	class PassInfo
 	{
 		friend class RenderGraph;
-		friend class SubpassInfo;
+		friend class AttachmentPassInfo;
 
 	private:
 		std::vector<ImageUsage> m_imageUsages;
@@ -459,35 +554,32 @@ public:
 		virtual auto GetType() const-> PassType override { return PassType::GRAPHICS; }
 	};
 
-	class SubpassInfo final : public PassInfo
+	class AttachmentPassInfo : public PassInfo
 	{
-		friend class RenderGraph;
-
-	private:
-		bool m_useDedicatedRenderPass = false;
-
 	public:
-		explicit SubpassInfo() = default;
+		void AddColorAttachment(
+			uint32_t inLocation,
+			const std::string& inName,
+			const AttachmentInfo& inAttachmentInfo = {});
+		void SetDepthStencilAttachment(
+			const std::string& inName,
+			const AttachmentInfo& inAttachmentInfo = {});
+		void SetResolveAttachment(
+			uint32_t inLocation,
+			const std::string& inName,
+			const AttachmentInfo& inAttachmentInfo = {});
+	};
 
+	class RenderPassInfo final : public AttachmentPassInfo
+	{
+	private:
+		virtual auto GetType() const-> PassType override { return PassType::RENDER_PASS; }
+	};
+
+	class SubpassInfo final : public AttachmentPassInfo
+	{
 	private:
 		virtual auto GetType() const-> PassType override { return PassType::SUBPASS; }
-
-	public:
-		void UseDedicateRenderPass();
-		void AddColorAttachment(
-			const std::string& inName,
-			VkAttachmentLoadOp inLoadOp,
-			VkPipelineStageFlags2 inLoadStage,
-			VkAttachmentStoreOp inStoreOp,
-			VkPipelineStageFlags2 inStoreStage,
-			const ImageSubresourceRange& inRange = {});
-		void AddDepthAttachment(
-			const std::string& inName,
-			VkAttachmentLoadOp inLoadOp,
-			VkPipelineStageFlags2 inLoadStage,
-			VkAttachmentStoreOp inStoreOp,
-			VkPipelineStageFlags2 inStoreStage,
-			const ImageSubresourceRange& inRange = {});
 	};
 
 private:
@@ -509,12 +601,15 @@ private:
 	auto _GetImageIndex(const std::string& inName) const->ImageIndex;
 	auto _GetPassIndex(const std::string& inName) const->PassIndex;
 	void _InvalidateBuild();
+	auto _CreateBuildContext() const->BuildContext;
 	void _LinkPasses(BuildContext& inContext) const;
 	void _ResolveDependency(BuildContext& inContext) const;
 	void _CullPasses(BuildContext& inContext) const;
 	void _BuildScheduleAndBatches(BuildContext& inContext, BuildResult& inoutResult) const;
-	void _BuildResourceAliases(BuildContext& inContext, BuildResult& inoutResult) const;
+	void _BuildResourceAliases(BuildContext& inoutContext, const BuildResult& inResult) const;
+	void _MaterializeResourceAliases(BuildContext& inoutContext) const;
 	void _BuildScheduledResourceBarriers(BuildContext& inContext, BuildResult& inoutResult) const;
+	void _BuildManagedRenderPassPlans(const BuildContext& inContext, BuildResult& inoutResult) const;
 
 public:
 	void AddBuffer(const std::string& inName, const RenderGraph::BufferInfo& inBufferInfo);
@@ -522,171 +617,6 @@ public:
 	void AddPass(const std::string& inName, const RenderGraph::PassInfo& inPassInfo);
 	void AddExtraPassDependency(const std::string& inHappensSooner, const std::string& inHappensLater);
 	void EnableResourceAliasing(bool inEnable);
-	void Build();
-};
-
-class RenderGraphInstance
-{
-	friend struct RenderGraphTestProbe;
-
-private:
-	using BufferIndex = RenderGraph::BufferIndex;
-	using ImageIndex = RenderGraph::ImageIndex;
-	using PassIndex = RenderGraph::PassIndex;
-
-public:
-	struct ExternalBufferInfo
-	{
-		Buffer* pBuffer{};
-		VkPipelineStageFlags2 enteringStage = 0;
-		VkAccessFlags2 enteringAccess = 0;
-		VkPipelineStageFlags2 leavingStage = 0;
-		VkAccessFlags2 leavingAccess = 0;
-	};
-
-	struct ExternalImageInfo
-	{
-		Image* pImage{};
-		VkImageLayout enteringLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		VkPipelineStageFlags2 enteringStage = 0;
-		VkAccessFlags2 enteringAccess = 0;
-		VkImageLayout leavingLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		VkPipelineStageFlags2 leavingStage = 0;
-		VkAccessFlags2 leavingAccess = 0;
-	};
-
-	class ExecutionContext
-	{
-		friend class RenderGraphInstance;
-
-	private:
-		RenderGraphInstance* m_pInstance = nullptr;
-		CommandBuffer* m_pCommandBuffer = nullptr;
-		CommandBuffer::PrimaryScope* m_pPrimaryScope = nullptr;
-		CommandBuffer::RenderPassScope* m_pRenderPassScope = nullptr;
-		std::unordered_map<PassIndex, size_t> m_passToSubpass;
-
-	private:
-		ExecutionContext() = default;
-
-	public:
-		auto ResolveBuffer(const std::string& inName) -> Buffer*;
-		auto ResolveImage(const std::string& inName) -> Image*;
-		void FillSubpassCommands(const std::string& inTarget, std::vector<const Command*> inCommands);
-		void RecordCommandBuffer(const std::string& inTarget, std::function<void(CommandBuffer*)> inProcess);
-	};
-
-	class PassInfo
-	{
-		friend class RenderGraphInstance;
-
-	private:
-		std::function<void(RenderGraphInstance::ExecutionContext&)> m_process;
-
-	public:
-		void SetProcess(std::function<void(RenderGraphInstance::ExecutionContext&)> inProcess);
-	};
-
-private:
-	static constexpr uint32_t INVALID_INDEX = RenderGraph::INVALID_INDEX;
-
-	struct TemporaryRenderPass
-	{
-		std::vector<PassIndex> passes;
-		std::unique_ptr<RenderPass> renderPass;
-		std::unique_ptr<Framebuffer> framebuffer;
-		VkRect2D renderArea{};
-	};
-
-	struct CompiledPassGroup
-	{
-		RenderGraph::QueueType queue = RenderGraph::QueueType::GRAPHICS;
-		std::vector<PassIndex> passes;
-		uint32_t temporaryRenderPass = INVALID_INDEX;
-		std::vector<std::unique_ptr<Command>> prologueCommands;
-		std::vector<std::unique_ptr<Command>> epilogueCommands;
-		std::vector<std::unique_ptr<Command>> queueReleaseCommands;
-	};
-
-	struct CompiledQueueWait
-	{
-		uint32_t syncEdge = INVALID_INDEX;
-		VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-	};
-
-	struct CompiledQueueSyncEdge
-	{
-		uint32_t srcSubmit = INVALID_INDEX;
-		uint32_t dstSubmit = INVALID_INDEX;
-		RenderGraph::QueueType srcQueue = RenderGraph::QueueType::GRAPHICS;
-		RenderGraph::QueueType dstQueue = RenderGraph::QueueType::GRAPHICS;
-		VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-	};
-
-	struct CompiledSubmitBatch
-	{
-		std::vector<CompiledPassGroup> graphicsGroups;
-		std::vector<CompiledPassGroup> computeGroups;
-		std::vector<uint32_t> graphicsSignalSyncs;
-		std::vector<uint32_t> computeSignalSyncs;
-		std::vector<CompiledQueueWait> graphicsWaitSyncs;
-		std::vector<CompiledQueueWait> computeWaitSyncs;
-	};
-
-	struct CompiledGraphPlan
-	{
-		std::vector<CompiledSubmitBatch> submitBatches;
-		std::vector<CompiledQueueSyncEdge> queueSyncEdges;
-	};
-
-	enum class BarrierCommandMode
-	{
-		NORMAL,
-		QUEUE_RELEASE,
-		QUEUE_ACQUIRE,
-	};
-
-	const RenderGraph* m_pRenderGraph = nullptr;
-	std::vector<std::unique_ptr<Buffer>> m_internalBuffers;
-	std::vector<std::unique_ptr<Image>> m_internalImages;
-	std::vector<Buffer*> m_buffers;
-	std::vector<Image*> m_images;
-	std::vector<std::optional<ExternalBufferInfo>> m_externalBufferInfos;
-	std::vector<std::optional<ExternalImageInfo>> m_externalImageInfos;
-	std::unordered_map<std::string, Buffer*> m_nameToBuffer;
-	std::unordered_map<std::string, Image*> m_nameToImage;
-	std::vector<PassInfo> m_passInfos;
-	std::vector<TemporaryRenderPass> m_temporaryRenderPasses;
-	std::vector<std::vector<uint32_t>> m_graphicsBatchToTemporaryRenderPass;
-	CompiledGraphPlan m_compiledPlan;
-	std::vector<VkSemaphore> m_freeSemaphores;
-	std::vector<VkSemaphore> m_executeSemaphores;
-	bool m_compiled = false;
-
-private:
-	void _DestroyTemporaryRenderPasses();
-	void _DestroyInternalResources();
-	void _SetUpPhysicalResources();
-	void _CreateTemporaryRenderPasses();
-	void _BuildCompiledGraphPlan();
-	auto _GetTemporaryRenderPass(uint32_t inSubmitIndex, uint32_t inGraphicsBatchIndex)->TemporaryRenderPass*;
-	auto _GetBuffer(const std::string& inName) const->Buffer*;
-	auto _GetImage(const std::string& inName) const->Image*;
-	void _AppendPassCommands(PassIndex inPassIndex, CommandBuffer::PrimaryScope& inPrimaryScope);
-	void _AppendRenderPassCommands(const std::vector<PassIndex>& inPasses, const TemporaryRenderPass& inRenderPass, CommandBuffer& inCommandBuffer);
-	void _RecordSubpassCommandBuffer(PassIndex inPassIndex, std::function<void(CommandBuffer*)> inProcess, ExecutionContext& inContext);
-	auto _AcquireSemaphore()->VkSemaphore;
-	void _RecycleExecuteSemaphores();
-	auto _CreateBarrierCommand(
-		const std::vector<RenderGraph::BarrierPlan>& inBarrierPlans,
-		BarrierCommandMode inMode = BarrierCommandMode::NORMAL)->std::unique_ptr<Command>;
-
-public:
-	RenderGraphInstance(const RenderGraph& inRenderGraph);
-	~RenderGraphInstance();
-	void SetUpExternalBuffer(const std::string& inName, const RenderGraphInstance::ExternalBufferInfo& inBufferInfo);
-	void SetUpExternalImage(const std::string& inName, const RenderGraphInstance::ExternalImageInfo& inImageInfo);
-	void SetUpPass(const std::string& inName, const RenderGraphInstance::PassInfo& inPassInfo);
-	void Compile();
-	void Execute();
+	const BuildResult& Build();
+	const BuildResult& GetBuildResult() const;
 };

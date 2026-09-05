@@ -2,6 +2,8 @@
 #include "device.h"
 #include "resource/image.h"
 
+#include <algorithm>
+
 namespace
 {
 	constexpr VkAttachmentReference kUnusedAttachment{ VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_UNDEFINED };
@@ -55,6 +57,13 @@ void AttachmentDescription::CustomizeFormat(
 		const auto clearDepthStencil = std::get<std::pair<float, uint32_t>>(inClearValue);
 		m_clearValue.depthStencil = { clearDepthStencil.first, clearDepthStencil.second };
 	}
+}
+
+void AttachmentDescription::CustomizeFormat(VkFormat inFormat, const VkClearValue& inClearValue)
+{
+	CHECK_TRUE(inFormat != VK_FORMAT_UNDEFINED, "Attachment format cannot be undefined!");
+	m_description.format = inFormat;
+	m_clearValue = inClearValue;
 }
 
 void AttachmentDescription::CustomizeSampleCount(VkSampleCountFlagBits inSampleCount)
@@ -138,6 +147,15 @@ void SubpassDescription::AddColorAttachment(
 	{
 		m_resolveAttachments.resize(m_colorAttachments.size());
 	}
+}
+
+void SubpassDescription::AddPreserveAttachment(std::string_view inAttachmentName)
+{
+	const std::string name = _CopyName(inAttachmentName, "Preserve attachment name cannot be empty!");
+	CHECK_TRUE(
+		std::find(m_preserveAttachments.begin(), m_preserveAttachments.end(), name) == m_preserveAttachments.end(),
+		"Preserve attachment is already present!");
+	m_preserveAttachments.push_back(name);
 }
 
 void SubpassDescription::CustomizeAvailableState(
@@ -255,6 +273,7 @@ void RenderPass::Create(const RenderPassCreateInfo* inCreateInfo)
 	std::vector<std::vector<VkAttachmentReference>> colorAttachments;
 	std::vector<std::vector<VkAttachmentReference>> resolveAttachments;
 	std::vector<VkAttachmentReference> depthStencilAttachments;
+	std::vector<std::vector<uint32_t>> preserveAttachments;
 	std::vector<VkSubpassDependency> dependencies;
 
 	vkAttachments.reserve(inCreateInfo->m_attachments.size());
@@ -284,6 +303,7 @@ void RenderPass::Create(const RenderPassCreateInfo* inCreateInfo)
 	colorAttachments.reserve(inCreateInfo->m_subpasses.size());
 	resolveAttachments.reserve(inCreateInfo->m_subpasses.size());
 	depthStencilAttachments.reserve(inCreateInfo->m_subpasses.size());
+	preserveAttachments.reserve(inCreateInfo->m_subpasses.size());
 	vkSubpasses.reserve(inCreateInfo->m_subpasses.size());
 
 	for (const auto& subpass : inCreateInfo->m_subpasses)
@@ -314,6 +334,13 @@ void RenderPass::Create(const RenderPassCreateInfo* inCreateInfo)
 				? resolveAttachmentReference(subpass.m_depthStencilAttachment.value())
 				: kUnusedAttachment);
 
+		auto& resolvedPreserveAttachments = preserveAttachments.emplace_back();
+		resolvedPreserveAttachments.reserve(subpass.m_preserveAttachments.size());
+		for (const std::string& attachmentName : subpass.m_preserveAttachments)
+		{
+			resolvedPreserveAttachments.push_back(inCreateInfo->GetAttachmentIndex(attachmentName));
+		}
+
 		VkSubpassDescription vkSubpass{};
 		vkSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 		vkSubpass.colorAttachmentCount = static_cast<uint32_t>(colorAttachments.back().size());
@@ -326,6 +353,8 @@ void RenderPass::Create(const RenderPassCreateInfo* inCreateInfo)
 		{
 			vkSubpass.pDepthStencilAttachment = &depthStencilAttachments.back();
 		}
+		vkSubpass.preserveAttachmentCount = static_cast<uint32_t>(resolvedPreserveAttachments.size());
+		vkSubpass.pPreserveAttachments = resolvedPreserveAttachments.data();
 		vkSubpasses.push_back(vkSubpass);
 	}
 
@@ -408,9 +437,19 @@ void FramebufferCreateInfo::SetImageView(std::string_view inTargetAttachmentName
 	}
 
 	const auto& viewInfo = inViewAttached->GetImageViewInformation();
+	const uint32_t layerCount = viewInfo.layerCount == VK_REMAINING_ARRAY_LAYERS ? 1 : viewInfo.layerCount;
+	const VkExtent2D viewExtent{
+		std::max(1u, viewInfo.width >> viewInfo.baseMipLevel),
+		std::max(1u, viewInfo.height >> viewInfo.baseMipLevel)
+	};
+	if (std::find_if(m_imageViews.begin(), m_imageViews.end(), [](VkImageView inView) { return inView != VK_NULL_HANDLE; }) != m_imageViews.end())
+	{
+		CHECK_TRUE(m_extent.width == viewExtent.width && m_extent.height == viewExtent.height, "Framebuffer image views must have identical extents!");
+		CHECK_TRUE(m_layers == layerCount, "Framebuffer image views must have identical layer counts!");
+	}
 	m_imageViews[attachmentIndex] = inViewAttached->GetVkImageView();
-	m_extent = { viewInfo.width, viewInfo.height };
-	m_layers = viewInfo.layerCount == VK_REMAINING_ARRAY_LAYERS ? 1 : viewInfo.layerCount;
+	m_extent = viewExtent;
+	m_layers = layerCount;
 }
 
 void FramebufferCreateInfo::SetRenderPass(const RenderPass* inRenderPass)
