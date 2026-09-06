@@ -18,6 +18,8 @@ class RenderGraph
 	friend struct RenderGraphTestProbe;
 
 public:
+	static constexpr uint32_t INVALID_INDEX = ~0u;
+
 	struct ImageSubresourceRange
 	{
 		ImageSubresourceRange() = default;
@@ -40,8 +42,6 @@ public:
 	class ImageInfo;
 
 private:
-	static constexpr uint32_t INVALID_INDEX = ~0u;
-
 	using BufferIndex = uint32_t;
 	using ImageIndex = uint32_t;
 	using PassIndex = uint32_t;
@@ -141,6 +141,20 @@ private:
 		PassIndex after = INVALID_INDEX;
 		QueueType srcQueue = QueueType::GRAPHICS;
 		QueueType dstQueue = QueueType::GRAPHICS;
+	};
+
+	struct SubmitBoundary
+	{
+		uint32_t firstGraphicsSubmit = INVALID_INDEX;
+		uint32_t firstComputeSubmit = INVALID_INDEX;
+		uint32_t lastGraphicsSubmit = INVALID_INDEX;
+		uint32_t lastComputeSubmit = INVALID_INDEX;
+
+		auto IsEmpty() const -> bool
+		{
+			return firstGraphicsSubmit == INVALID_INDEX && firstComputeSubmit == INVALID_INDEX &&
+				lastGraphicsSubmit == INVALID_INDEX && lastComputeSubmit == INVALID_INDEX;
+		}
 	};
 
 	struct PassRecord
@@ -245,8 +259,11 @@ private:
 	private:
 		std::vector<PassRecord> passes;
 		std::vector<SubmitBatch> submitBatches;
+		SubmitBoundary graphBoundary;
 		std::vector<BufferInfo> buffers;
 		std::vector<ImageInfo> images;
+		std::vector<SubmitBoundary> bufferBoundaries;
+		std::vector<SubmitBoundary> imageBoundaries;
 		std::unordered_map<std::string, BufferIndex> nameToBuffer;
 		std::unordered_map<std::string, ImageIndex> nameToImage;
 		std::unordered_map<std::string, PassIndex> nameToPass;
@@ -258,6 +275,9 @@ private:
 		auto GetPass(PassIndex inPassIndex) const->const PassRecord&;
 		auto GetSubmitBatchCount() const->size_t;
 		auto GetSubmitBatch(uint32_t inSubmitIndex) const->const SubmitBatch&;
+		auto GetGraphSubmitBoundary() const->const SubmitBoundary& { return graphBoundary; }
+		auto GetBufferSubmitBoundary(BufferIndex inBufferIndex) const->const SubmitBoundary&;
+		auto GetImageSubmitBoundary(ImageIndex inImageIndex) const->const SubmitBoundary&;
 		auto GetBufferCount() const->size_t;
 		auto GetImageCount() const->size_t;
 		auto GetBufferInfo(BufferIndex inBufferIndex) const->const BufferInfo&;
@@ -609,6 +629,7 @@ private:
 	void _BuildResourceAliases(BuildContext& inoutContext, const BuildResult& inResult) const;
 	void _MaterializeResourceAliases(BuildContext& inoutContext) const;
 	void _BuildScheduledResourceBarriers(BuildContext& inContext, BuildResult& inoutResult) const;
+	void _BuildSubmitBoundaries(const BuildContext& inContext, BuildResult& inoutResult) const;
 	void _BuildManagedRenderPassPlans(const BuildContext& inContext, BuildResult& inoutResult) const;
 
 public:

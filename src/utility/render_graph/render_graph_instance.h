@@ -1,5 +1,6 @@
 #pragma once
 #include "render_graph.h"
+#include "my_vulkan/command/semaphore.h"
 
 class GraphicsPipelineStateInfo;
 
@@ -13,6 +14,33 @@ private:
 	using PassIndex = RenderGraph::PassIndex;
 
 public:
+	class QueueSyncInfo final
+	{
+		friend class RenderGraphInstance;
+		friend struct RenderGraphTestProbe;
+
+	private:
+		Semaphore m_graphicsToCompute;
+		Semaphore m_computeToGraphics;
+		mutable bool m_enteringUsed = false;
+		bool m_leavingUsed = false;
+
+	public:
+		const VkSemaphore graphicsToCompute;
+		const VkSemaphore computeToGraphics;
+
+		QueueSyncInfo();
+		QueueSyncInfo(const QueueSyncInfo&) = delete;
+		QueueSyncInfo& operator=(const QueueSyncInfo&) = delete;
+		QueueSyncInfo(QueueSyncInfo&&) = delete;
+		QueueSyncInfo& operator=(QueueSyncInfo&&) = delete;
+
+		auto GetGraphicsToComputeSemaphore() const -> VkSemaphore { return graphicsToCompute; }
+		auto GetComputeToGraphicsSemaphore() const -> VkSemaphore { return computeToGraphics; }
+		auto GetGraphicsToCompute() const -> VkSemaphore { return graphicsToCompute; }
+		auto GetComputeToGraphics() const -> VkSemaphore { return computeToGraphics; }
+	};
+
 	struct ExternalBufferInfo
 	{
 		Buffer* pBuffer{};
@@ -58,15 +86,53 @@ public:
 		void RecordCommandBuffer(const std::string& inTarget, std::function<void(CommandBuffer*)> inProcess);
 	};
 
+	class ExecuteInfo final
+	{
+		friend class RenderGraphInstance;
+		friend struct RenderGraphTestProbe;
+
+	private:
+		struct ResourceQueueSyncInfo
+		{
+			std::string name;
+			const QueueSyncInfo* entering = nullptr;
+			QueueSyncInfo* leaving = nullptr;
+		};
+
+		std::vector<const QueueSyncInfo*> m_enteringQueueSyncInfos;
+		std::vector<QueueSyncInfo*> m_leavingQueueSyncInfos;
+		std::vector<ResourceQueueSyncInfo> m_externalBufferQueueSyncInfos;
+		std::vector<ResourceQueueSyncInfo> m_externalImageQueueSyncInfos;
+
+	public:
+		void AddEnteringQueueSyncInfo(const QueueSyncInfo& inQueueSyncInfo);
+		void AddLeavingQueueSyncInfo(QueueSyncInfo& inQueueSyncInfo);
+		void AddExternalBufferQueueSyncInfo(
+			const std::string& inName,
+			const QueueSyncInfo* inEntering,
+			QueueSyncInfo* inLeaving);
+		void AddExternalImageQueueSyncInfo(
+			const std::string& inName,
+			const QueueSyncInfo* inEntering,
+			QueueSyncInfo* inLeaving);
+	};
+
+	using PassProcess = std::function<void(ExecutionContext&)>;
+
 	class PassInfo
 	{
 		friend class RenderGraphInstance;
+		friend struct RenderGraphTestProbe;
 
 	private:
-		std::function<void(RenderGraphInstance::ExecutionContext&)> m_process;
+		PassProcess m_process;
+		std::unordered_map<uint32_t, VkClearColorValue> m_colorClearValueOverrides;
+		std::optional<VkClearDepthStencilValue> m_depthStencilClearValueOverride;
 
 	public:
-		void SetProcess(std::function<void(RenderGraphInstance::ExecutionContext&)> inProcess);
+		void SetProcess(PassProcess inProcess);
+		void CustomizeColorClearValue(uint32_t inLocation, const VkClearColorValue& inClearValue);
+		void CustomizeDepthStencilClearValue(const VkClearDepthStencilValue& inClearValue);
 	};
 
 private:
@@ -74,7 +140,6 @@ private:
 
 	struct ManagedRenderPass
 	{
-		std::vector<PassIndex> passes;
 		std::vector<RenderGraph::SubmitBatch::ManagedAttachmentPlan> attachmentPlans;
 		std::unique_ptr<RenderPass> renderPass;
 		std::unique_ptr<Framebuffer> framebuffer;
@@ -84,18 +149,11 @@ private:
 
 	struct CompiledPassGroup
 	{
-		RenderGraph::QueueType queue = RenderGraph::QueueType::GRAPHICS;
 		std::vector<PassIndex> passes;
 		uint32_t managedRenderPass = INVALID_INDEX;
 		std::vector<std::unique_ptr<Command>> prologueCommands;
 		std::vector<std::unique_ptr<Command>> epilogueCommands;
 		std::vector<std::unique_ptr<Command>> queueReleaseCommands;
-	};
-
-	struct CompiledQueueWait
-	{
-		uint32_t syncEdge = INVALID_INDEX;
-		VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 	};
 
 	struct CompiledQueueSyncEdge
@@ -104,7 +162,7 @@ private:
 		uint32_t dstSubmit = INVALID_INDEX;
 		RenderGraph::QueueType srcQueue = RenderGraph::QueueType::GRAPHICS;
 		RenderGraph::QueueType dstQueue = RenderGraph::QueueType::GRAPHICS;
-		VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+		VkPipelineStageFlags waitStage = 0;
 	};
 
 	struct CompiledSubmitBatch
@@ -113,8 +171,8 @@ private:
 		std::vector<CompiledPassGroup> computeGroups;
 		std::vector<uint32_t> graphicsSignalSyncs;
 		std::vector<uint32_t> computeSignalSyncs;
-		std::vector<CompiledQueueWait> graphicsWaitSyncs;
-		std::vector<CompiledQueueWait> computeWaitSyncs;
+		std::vector<uint32_t> graphicsWaitSyncs;
+		std::vector<uint32_t> computeWaitSyncs;
 	};
 
 	struct CompiledGraphPlan
@@ -130,7 +188,7 @@ private:
 		QUEUE_ACQUIRE,
 	};
 
-	const RenderGraph::BuildResult* m_pBuildResult = nullptr;
+	RenderGraph::BuildResult m_buildResult;
 	std::vector<std::unique_ptr<Buffer>> m_internalBuffers;
 	std::vector<std::unique_ptr<Image>> m_internalImages;
 	std::vector<Buffer*> m_buffers;
@@ -140,12 +198,13 @@ private:
 	std::vector<PassInfo> m_passInfos;
 	std::vector<ManagedRenderPass> m_managedRenderPasses;
 	std::vector<std::vector<uint32_t>> m_graphicsBatchToManagedRenderPass;
-	std::unordered_map<uint64_t, VkClearColorValue> m_colorClearValueOverrides;
-	std::unordered_map<PassIndex, VkClearDepthStencilValue> m_depthStencilClearValueOverrides;
 	CompiledGraphPlan m_compiledPlan;
 	std::vector<VkSemaphore> m_freeSemaphores;
 	std::vector<VkSemaphore> m_executeSemaphores;
 	bool m_compiled = false;
+	bool m_inFlight = false;
+	bool m_submittedGraphicsCommands = false;
+	bool m_submittedComputeCommands = false;
 
 private:
 	void _DestroyManagedRenderPasses();
@@ -170,11 +229,12 @@ public:
 	~RenderGraphInstance();
 	void SetUpExternalBuffer(const std::string& inName, const RenderGraphInstance::ExternalBufferInfo& inBufferInfo);
 	void SetUpExternalImage(const std::string& inName, const RenderGraphInstance::ExternalImageInfo& inImageInfo);
-	void SetUpPass(const std::string& inName, const RenderGraphInstance::PassInfo& inPassInfo);
-	void SetColorClearValue(const std::string& inPassName, uint32_t inLocation, const VkClearColorValue& inClearValue);
-	void SetDepthStencilClearValue(const std::string& inPassName, const VkClearDepthStencilValue& inClearValue);
-	void ResetClearValue(const std::string& inPassName, uint32_t inLocation);
-	void ResetClearValue(const std::string& inPassName);
+	void SetUpPass(const std::string& inName, const PassInfo& inPassInfo);
 	void Compile();
 	void Execute();
+	void Execute(const ExecuteInfo& inExecuteInfo);
+	void WaitTillDone();
 };
+
+using QueueSyncInfo = RenderGraphInstance::QueueSyncInfo;
+using ExecuteInfo = RenderGraphInstance::ExecuteInfo;

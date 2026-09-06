@@ -22,5 +22,10 @@ public:
 
 	auto Free(VkSemaphore inSemaphore)->void;
 
+	// Destroy an allocated semaphore instead of returning it to the free list.
+	// This is required for an unconsumed, signaled binary semaphore because
+	// binary semaphores cannot be reset by the host.
+	auto Discard(VkSemaphore inSemaphore)->void;
+
 	auto Destroy()->void;
 };

@@ -146,8 +146,8 @@ void RenderGraphInstance::ExecutionContext::ConfigureGraphicsPipelineState(
 	GraphicsPipelineStateInfo& inoutStateInfo) const
 {
 	CHECK_TRUE(m_pInstance != nullptr, "Render graph execution context is not initialized!");
-	CHECK_TRUE(m_currentPass < m_pInstance->m_pBuildResult->GetPassCount(), "No current render graph pass!");
-	const RenderGraph::PassType passType = m_pInstance->m_pBuildResult->GetPass(m_currentPass).type;
+	CHECK_TRUE(m_currentPass < m_pInstance->m_buildResult.GetPassCount(), "No current render graph pass!");
+	const RenderGraph::PassType passType = m_pInstance->m_buildResult.GetPass(m_currentPass).type;
 	CHECK_TRUE(
 		passType == RenderGraph::PassType::RENDER_PASS || passType == RenderGraph::PassType::SUBPASS,
 		"Graphics pipeline state can only be configured by a graph-managed render pass!");
@@ -161,8 +161,8 @@ void RenderGraphInstance::ExecutionContext::RecordCommands(
 {
 	CHECK_TRUE(m_pInstance != nullptr, "Render graph execution context is not initialized!");
 	CHECK_TRUE(inProcess != nullptr, "Render graph pass command recording process is empty!");
-	CHECK_TRUE(m_currentPass < m_pInstance->m_pBuildResult->GetPassCount(), "No current render graph pass!");
-	const RenderGraph::PassType passType = m_pInstance->m_pBuildResult->GetPass(m_currentPass).type;
+	CHECK_TRUE(m_currentPass < m_pInstance->m_buildResult.GetPassCount(), "No current render graph pass!");
+	const RenderGraph::PassType passType = m_pInstance->m_buildResult.GetPass(m_currentPass).type;
 	if (passType == RenderGraph::PassType::RENDER_PASS || passType == RenderGraph::PassType::SUBPASS)
 	{
 		m_pInstance->_RecordSubpassCommandBuffer(m_currentPass, std::move(inProcess), *this);
@@ -180,7 +180,7 @@ void RenderGraphInstance::ExecutionContext::FillSubpassCommands(
 	CHECK_TRUE(m_pInstance != nullptr, "Render graph execution context is not initialized!");
 	CHECK_TRUE(m_pRenderPassScope != nullptr, "FillSubpassCommands can only be used inside a render pass scope!");
 
-	const PassIndex passIndex = m_pInstance->m_pBuildResult->GetPassIndex(inTarget);
+	const PassIndex passIndex = m_pInstance->m_buildResult.GetPassIndex(inTarget);
 	const auto iter = m_passToSubpass.find(passIndex);
 	CHECK_TRUE(iter != m_passToSubpass.end(), "Target pass is not in current render pass scope!");
 	CHECK_TRUE(iter->second < m_pRenderPassScope->subpassScopes.size(), "Invalid target subpass index!");
@@ -196,8 +196,8 @@ void RenderGraphInstance::ExecutionContext::RecordCommandBuffer(
 	CHECK_TRUE(m_pInstance != nullptr, "Render graph execution context is not initialized!");
 	CHECK_TRUE(inProcess != nullptr, "Render graph pass command recording process is empty!");
 
-	const PassIndex passIndex = m_pInstance->m_pBuildResult->GetPassIndex(inTarget);
-	const RenderGraph::PassRecord& pass = m_pInstance->m_pBuildResult->GetPass(passIndex);
+	const PassIndex passIndex = m_pInstance->m_buildResult.GetPassIndex(inTarget);
+	const RenderGraph::PassRecord& pass = m_pInstance->m_buildResult.GetPass(passIndex);
 
 	if (pass.type == RenderGraph::PassType::RENDER_PASS || pass.type == RenderGraph::PassType::SUBPASS)
 	{
@@ -210,27 +210,76 @@ void RenderGraphInstance::ExecutionContext::RecordCommandBuffer(
 	}
 }
 
-void RenderGraphInstance::PassInfo::SetProcess(
-	std::function<void(RenderGraphInstance::ExecutionContext&)> inProcess)
+void RenderGraphInstance::PassInfo::SetProcess(PassProcess inProcess)
 {
 	CHECK_TRUE(inProcess != nullptr, "Render graph pass process cannot be empty!");
 	m_process = std::move(inProcess);
 }
 
-RenderGraphInstance::RenderGraphInstance(const RenderGraph& inRenderGraph)
-	: m_pBuildResult(&inRenderGraph.GetBuildResult())
+void RenderGraphInstance::PassInfo::CustomizeColorClearValue(
+	uint32_t inLocation,
+	const VkClearColorValue& inClearValue)
 {
-	CHECK_TRUE(m_pBuildResult != nullptr && m_pBuildResult->IsValid(), "Render graph must be built before creating an instance!");
+	m_colorClearValueOverrides[inLocation] = inClearValue;
+}
 
-	m_buffers.resize(m_pBuildResult->GetBufferCount(), nullptr);
-	m_images.resize(m_pBuildResult->GetImageCount(), nullptr);
-	m_externalBufferInfos.resize(m_pBuildResult->GetBufferCount());
-	m_externalImageInfos.resize(m_pBuildResult->GetImageCount());
-	m_passInfos.resize(m_pBuildResult->GetPassCount());
+void RenderGraphInstance::PassInfo::CustomizeDepthStencilClearValue(
+	const VkClearDepthStencilValue& inClearValue)
+{
+	m_depthStencilClearValueOverride = inClearValue;
+}
+
+RenderGraphInstance::QueueSyncInfo::QueueSyncInfo()
+	: graphicsToCompute(m_graphicsToCompute.GetVkSemaphore())
+	, computeToGraphics(m_computeToGraphics.GetVkSemaphore())
+{
+}
+
+void RenderGraphInstance::ExecuteInfo::AddEnteringQueueSyncInfo(const QueueSyncInfo& inQueueSyncInfo)
+{
+	m_enteringQueueSyncInfos.push_back(&inQueueSyncInfo);
+}
+
+void RenderGraphInstance::ExecuteInfo::AddLeavingQueueSyncInfo(QueueSyncInfo& inQueueSyncInfo)
+{
+	m_leavingQueueSyncInfos.push_back(&inQueueSyncInfo);
+}
+
+void RenderGraphInstance::ExecuteInfo::AddExternalBufferQueueSyncInfo(
+	const std::string& inName,
+	const QueueSyncInfo* inEntering,
+	QueueSyncInfo* inLeaving)
+{
+	CHECK_TRUE(!inName.empty(), "External buffer queue sync name cannot be empty!");
+	CHECK_TRUE(inEntering != nullptr || inLeaving != nullptr, "External buffer queue sync must have an entering or leaving connection!");
+	m_externalBufferQueueSyncInfos.push_back({ inName, inEntering, inLeaving });
+}
+
+void RenderGraphInstance::ExecuteInfo::AddExternalImageQueueSyncInfo(
+	const std::string& inName,
+	const QueueSyncInfo* inEntering,
+	QueueSyncInfo* inLeaving)
+{
+	CHECK_TRUE(!inName.empty(), "External image queue sync name cannot be empty!");
+	CHECK_TRUE(inEntering != nullptr || inLeaving != nullptr, "External image queue sync must have an entering or leaving connection!");
+	m_externalImageQueueSyncInfos.push_back({ inName, inEntering, inLeaving });
+}
+
+RenderGraphInstance::RenderGraphInstance(const RenderGraph& inRenderGraph)
+	: m_buildResult(inRenderGraph.GetBuildResult())
+{
+	CHECK_TRUE(m_buildResult.IsValid(), "Render graph must be built before creating an instance!");
+
+	m_buffers.resize(m_buildResult.GetBufferCount(), nullptr);
+	m_images.resize(m_buildResult.GetImageCount(), nullptr);
+	m_externalBufferInfos.resize(m_buildResult.GetBufferCount());
+	m_externalImageInfos.resize(m_buildResult.GetImageCount());
+	m_passInfos.resize(m_buildResult.GetPassCount());
 }
 
 RenderGraphInstance::~RenderGraphInstance()
 {
+	WaitTillDone();
 	_DestroyManagedRenderPasses();
 	_DestroyInternalResources();
 
@@ -301,9 +350,8 @@ void RenderGraphInstance::SetUpExternalBuffer(
 	const std::string& inName,
 	const RenderGraphInstance::ExternalBufferInfo& inBufferInfo)
 {
-	CHECK_TRUE(m_pBuildResult != nullptr, "No render graph build result!");
-	const BufferIndex index = m_pBuildResult->GetBufferIndex(inName);
-	CHECK_TRUE(m_pBuildResult->GetBufferInfo(index).m_external, "Render graph buffer is not external!");
+	const BufferIndex index = m_buildResult.GetBufferIndex(inName);
+	CHECK_TRUE(m_buildResult.GetBufferInfo(index).m_external, "Render graph buffer is not external!");
 	CHECK_TRUE(inBufferInfo.pBuffer != nullptr, "External render graph buffer is null!");
 
 	m_externalBufferInfos[index] = inBufferInfo;
@@ -315,9 +363,8 @@ void RenderGraphInstance::SetUpExternalImage(
 	const std::string& inName,
 	const RenderGraphInstance::ExternalImageInfo& inImageInfo)
 {
-	CHECK_TRUE(m_pBuildResult != nullptr, "No render graph build result!");
-	const ImageIndex index = m_pBuildResult->GetImageIndex(inName);
-	CHECK_TRUE(m_pBuildResult->GetImageInfo(index).m_external, "Render graph image is not external!");
+	const ImageIndex index = m_buildResult.GetImageIndex(inName);
+	CHECK_TRUE(m_buildResult.GetImageInfo(index).m_external, "Render graph image is not external!");
 	CHECK_TRUE(inImageInfo.pImage != nullptr, "External render graph image is null!");
 
 	m_externalImageInfos[index] = inImageInfo;
@@ -327,101 +374,70 @@ void RenderGraphInstance::SetUpExternalImage(
 
 void RenderGraphInstance::SetUpPass(
 	const std::string& inName,
-	const RenderGraphInstance::PassInfo& inPassInfo)
+	const PassInfo& inPassInfo)
 {
-	CHECK_TRUE(m_pBuildResult != nullptr, "No render graph build result!");
-	const PassIndex index = m_pBuildResult->GetPassIndex(inName);
+	const PassIndex index = m_buildResult.GetPassIndex(inName);
 	CHECK_TRUE(inPassInfo.m_process != nullptr, "Render graph pass process cannot be empty!");
+
+	const RenderGraph::PassRecord& pass = m_buildResult.GetPass(index);
+	CHECK_TRUE(
+		pass.type == RenderGraph::PassType::RENDER_PASS || pass.type == RenderGraph::PassType::SUBPASS ||
+		(inPassInfo.m_colorClearValueOverrides.empty() && !inPassInfo.m_depthStencilClearValueOverride.has_value()),
+		"Clear values can only be overridden for graph-managed render passes!");
+	for (const auto& clearOverride : inPassInfo.m_colorClearValueOverrides)
+	{
+		const uint32_t location = clearOverride.first;
+		const auto usageIter = std::find_if(pass.imageUsages.begin(), pass.imageUsages.end(),
+			[&](const RenderGraph::ImageUsage& inUsage)
+			{
+				return inUsage.type == RenderGraph::ResourceUsageType::COLOR_ATTACHMENT &&
+					inUsage.attachmentSlot == location;
+			});
+		CHECK_TRUE(usageIter != pass.imageUsages.end(), "Color attachment location does not exist in the pass!");
+		CHECK_TRUE(usageIter->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR, "Only a color attachment with CLEAR loadOp can override its clear value!");
+	}
+	if (inPassInfo.m_depthStencilClearValueOverride.has_value())
+	{
+		const auto usageIter = std::find_if(pass.imageUsages.begin(), pass.imageUsages.end(),
+			[](const RenderGraph::ImageUsage& inUsage)
+			{
+				return inUsage.type == RenderGraph::ResourceUsageType::DEPTH_STENCIL_ATTACHMENT;
+			});
+		CHECK_TRUE(usageIter != pass.imageUsages.end(), "Depth stencil attachment does not exist in the pass!");
+		CHECK_TRUE(
+			usageIter->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR || usageIter->stencilLoadOp == VK_ATTACHMENT_LOAD_OP_CLEAR,
+			"Only a depth stencil attachment with CLEAR loadOp can override its clear value!");
+	}
 
 	m_passInfos[index] = inPassInfo;
 	m_compiled = false;
 }
 
-void RenderGraphInstance::SetColorClearValue(
-	const std::string& inPassName,
-	uint32_t inLocation,
-	const VkClearColorValue& inClearValue)
-{
-	CHECK_TRUE(m_pBuildResult != nullptr, "No render graph build result!");
-	const PassIndex passIndex = m_pBuildResult->GetPassIndex(inPassName);
-	const RenderGraph::PassRecord& pass = m_pBuildResult->GetPass(passIndex);
-	CHECK_TRUE(
-		pass.type == RenderGraph::PassType::RENDER_PASS || pass.type == RenderGraph::PassType::SUBPASS,
-		"Clear values can only be overridden for graph-managed render passes!");
-
-	const auto usageIter = std::find_if(pass.imageUsages.begin(), pass.imageUsages.end(), [&](const RenderGraph::ImageUsage& inUsage)
-	{
-		return inUsage.type == RenderGraph::ResourceUsageType::COLOR_ATTACHMENT &&
-			inUsage.attachmentSlot == inLocation;
-	});
-	CHECK_TRUE(usageIter != pass.imageUsages.end(), "Color attachment location does not exist in the pass!");
-	CHECK_TRUE(usageIter->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR, "Only a color attachment with CLEAR loadOp can override its clear value!");
-	m_colorClearValueOverrides[_MakeEdgeKey(passIndex, inLocation)] = inClearValue;
-}
-
-void RenderGraphInstance::SetDepthStencilClearValue(
-	const std::string& inPassName,
-	const VkClearDepthStencilValue& inClearValue)
-{
-	CHECK_TRUE(m_pBuildResult != nullptr, "No render graph build result!");
-	const PassIndex passIndex = m_pBuildResult->GetPassIndex(inPassName);
-	const RenderGraph::PassRecord& pass = m_pBuildResult->GetPass(passIndex);
-	CHECK_TRUE(
-		pass.type == RenderGraph::PassType::RENDER_PASS || pass.type == RenderGraph::PassType::SUBPASS,
-		"Clear values can only be overridden for graph-managed render passes!");
-
-	const auto usageIter = std::find_if(pass.imageUsages.begin(), pass.imageUsages.end(), [](const RenderGraph::ImageUsage& inUsage)
-	{
-		return inUsage.type == RenderGraph::ResourceUsageType::DEPTH_STENCIL_ATTACHMENT;
-	});
-	CHECK_TRUE(usageIter != pass.imageUsages.end(), "Depth stencil attachment does not exist in the pass!");
-	CHECK_TRUE(
-		usageIter->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR || usageIter->stencilLoadOp == VK_ATTACHMENT_LOAD_OP_CLEAR,
-		"Only a depth stencil attachment with CLEAR loadOp can override its clear value!");
-	m_depthStencilClearValueOverrides[passIndex] = inClearValue;
-}
-
-void RenderGraphInstance::ResetClearValue(const std::string& inPassName, uint32_t inLocation)
-{
-	CHECK_TRUE(m_pBuildResult != nullptr, "No render graph build result!");
-	const PassIndex passIndex = m_pBuildResult->GetPassIndex(inPassName);
-	m_colorClearValueOverrides.erase(_MakeEdgeKey(passIndex, inLocation));
-}
-
-void RenderGraphInstance::ResetClearValue(const std::string& inPassName)
-{
-	CHECK_TRUE(m_pBuildResult != nullptr, "No render graph build result!");
-	const PassIndex passIndex = m_pBuildResult->GetPassIndex(inPassName);
-	m_depthStencilClearValueOverrides.erase(passIndex);
-}
-
 auto RenderGraphInstance::_GetBuffer(const std::string& inName) const -> Buffer*
 {
-	const BufferIndex index = m_pBuildResult->GetBufferIndex(inName);
+	const BufferIndex index = m_buildResult.GetBufferIndex(inName);
 	CHECK_TRUE(index < m_buffers.size() && m_buffers[index] != nullptr, "Render graph buffer is not available!");
 	return m_buffers[index];
 }
 
 auto RenderGraphInstance::_GetImage(const std::string& inName) const -> Image*
 {
-	const ImageIndex index = m_pBuildResult->GetImageIndex(inName);
+	const ImageIndex index = m_buildResult.GetImageIndex(inName);
 	CHECK_TRUE(index < m_images.size() && m_images[index] != nullptr, "Render graph image is not available!");
 	return m_images[index];
 }
 
 void RenderGraphInstance::_SetUpPhysicalResources()
 {
-	CHECK_TRUE(m_pBuildResult != nullptr, "No render graph build result!");
-
 	_DestroyManagedRenderPasses();
 	_DestroyInternalResources();
 
-	m_buffers.assign(m_pBuildResult->GetBufferCount(), nullptr);
-	m_images.assign(m_pBuildResult->GetImageCount(), nullptr);
+	m_buffers.assign(m_buildResult.GetBufferCount(), nullptr);
+	m_images.assign(m_buildResult.GetImageCount(), nullptr);
 
-	for (BufferIndex index = 0; index < m_pBuildResult->GetBufferCount(); ++index)
+	for (BufferIndex index = 0; index < m_buildResult.GetBufferCount(); ++index)
 	{
-		const RenderGraph::BufferInfo& graphBuffer = m_pBuildResult->GetBufferInfo(index);
+		const RenderGraph::BufferInfo& graphBuffer = m_buildResult.GetBufferInfo(index);
 		if (graphBuffer.m_external)
 		{
 			CHECK_TRUE(m_externalBufferInfos[index].has_value(), "External render graph buffer is not set up!");
@@ -450,15 +466,15 @@ void RenderGraphInstance::_SetUpPhysicalResources()
 		m_internalBuffers.push_back(std::move(buffer));
 	}
 
-	for (BufferIndex index = 0; index < m_pBuildResult->GetBufferCount(); ++index)
+	for (BufferIndex index = 0; index < m_buildResult.GetBufferCount(); ++index)
 	{
-		const RenderGraph::BufferInfo& graphBuffer = m_pBuildResult->GetBufferInfo(index);
+		const RenderGraph::BufferInfo& graphBuffer = m_buildResult.GetBufferInfo(index);
 		CHECK_TRUE(m_buffers[index] != nullptr, "Render graph buffer is not available!");
 	}
 
-	for (ImageIndex index = 0; index < m_pBuildResult->GetImageCount(); ++index)
+	for (ImageIndex index = 0; index < m_buildResult.GetImageCount(); ++index)
 	{
-		const RenderGraph::ImageInfo& graphImage = m_pBuildResult->GetImageInfo(index);
+		const RenderGraph::ImageInfo& graphImage = m_buildResult.GetImageInfo(index);
 		if (graphImage.m_external)
 		{
 			CHECK_TRUE(m_externalImageInfos[index].has_value(), "External render graph image is not set up!");
@@ -510,9 +526,9 @@ void RenderGraphInstance::_SetUpPhysicalResources()
 		m_internalImages.push_back(std::move(image));
 	}
 
-	for (ImageIndex index = 0; index < m_pBuildResult->GetImageCount(); ++index)
+	for (ImageIndex index = 0; index < m_buildResult.GetImageCount(); ++index)
 	{
-		const RenderGraph::ImageInfo& graphImage = m_pBuildResult->GetImageInfo(index);
+		const RenderGraph::ImageInfo& graphImage = m_buildResult.GetImageInfo(index);
 		CHECK_TRUE(m_images[index] != nullptr, "Render graph image is not available!");
 		const Image::Information& imageInfo = m_images[index]->GetImageInformation();
 		CHECK_TRUE((imageInfo.usage & graphImage.m_usage) == graphImage.m_usage, "Render graph image is missing required usages!");
@@ -529,14 +545,12 @@ void RenderGraphInstance::_SetUpPhysicalResources()
 
 void RenderGraphInstance::_CreateManagedRenderPasses()
 {
-	CHECK_TRUE(m_pBuildResult != nullptr, "No render graph build result!");
-
 	m_graphicsBatchToManagedRenderPass.clear();
-	m_graphicsBatchToManagedRenderPass.resize(m_pBuildResult->GetSubmitBatchCount());
+	m_graphicsBatchToManagedRenderPass.resize(m_buildResult.GetSubmitBatchCount());
 
-	for (uint32_t submitIndex = 0; submitIndex < m_pBuildResult->GetSubmitBatchCount(); ++submitIndex)
+	for (uint32_t submitIndex = 0; submitIndex < m_buildResult.GetSubmitBatchCount(); ++submitIndex)
 	{
-		const RenderGraph::SubmitBatch& submitBatch = m_pBuildResult->GetSubmitBatch(submitIndex);
+		const RenderGraph::SubmitBatch& submitBatch = m_buildResult.GetSubmitBatch(submitIndex);
 		m_graphicsBatchToManagedRenderPass[submitIndex].assign(submitBatch.graphicsGroups.size(), INVALID_INDEX);
 
 		for (uint32_t batchIndex = 0; batchIndex < submitBatch.graphicsGroups.size(); ++batchIndex)
@@ -624,13 +638,13 @@ void RenderGraphInstance::_CreateManagedRenderPasses()
 				if (dependency.resourceType == RenderGraph::ResourceType::IMAGE)
 				{
 					const RenderGraph::AccessState state =
-						m_pBuildResult->GetImageAccessState(dependency.before, dependency.image, dependency.subresourceRange);
+						m_buildResult.GetImageAccessState(dependency.before, dependency.image, dependency.subresourceRange);
 					subpassAvailableStages[beforeIter->second] |= state.stage;
 					subpassAvailableAccesses[beforeIter->second] |= state.access;
 				}
 				else
 				{
-					const RenderGraph::AccessState state = m_pBuildResult->GetBufferAccessState(dependency.before, dependency.buffer);
+					const RenderGraph::AccessState state = m_buildResult.GetBufferAccessState(dependency.before, dependency.buffer);
 					subpassAvailableStages[beforeIter->second] |= state.stage;
 					subpassAvailableAccesses[beforeIter->second] |= state.access;
 				}
@@ -719,13 +733,13 @@ void RenderGraphInstance::_CreateManagedRenderPasses()
 					if (dependency.resourceType == RenderGraph::ResourceType::IMAGE)
 					{
 						const RenderGraph::AccessState state =
-							m_pBuildResult->GetImageAccessState(dependency.after, dependency.image, dependency.subresourceRange);
+							m_buildResult.GetImageAccessState(dependency.after, dependency.image, dependency.subresourceRange);
 						dstStage = state.stage;
 						dstAccess = state.access;
 					}
 					else
 					{
-						const RenderGraph::AccessState state = m_pBuildResult->GetBufferAccessState(dependency.after, dependency.buffer);
+						const RenderGraph::AccessState state = m_buildResult.GetBufferAccessState(dependency.after, dependency.buffer);
 						dstStage = state.stage;
 						dstAccess = state.access;
 					}
@@ -751,7 +765,6 @@ void RenderGraphInstance::_CreateManagedRenderPasses()
 			}
 
 			ManagedRenderPass managedRenderPass;
-			managedRenderPass.passes = passBatch;
 			managedRenderPass.attachmentPlans = managedPlan.attachments;
 			managedRenderPass.renderPass = std::make_unique<RenderPass>();
 			managedRenderPass.renderPass->Create(&renderPassInfo);
@@ -817,11 +830,9 @@ auto RenderGraphInstance::_GetManagedRenderPass(
 
 void RenderGraphInstance::_BuildCompiledGraphPlan()
 {
-	CHECK_TRUE(m_pBuildResult != nullptr, "No render graph build result!");
-
 	m_compiledPlan.submitBatches.clear();
 	m_compiledPlan.queueSyncEdges.clear();
-	m_compiledPlan.submitBatches.resize(m_pBuildResult->GetSubmitBatchCount());
+	m_compiledPlan.submitBatches.resize(m_buildResult.GetSubmitBatchCount());
 
 	std::unordered_map<uint64_t, uint32_t> queueSyncEdgeToIndex;
 
@@ -864,11 +875,11 @@ void RenderGraphInstance::_BuildCompiledGraphPlan()
 			if (barrier.resourceType == RenderGraph::ResourceType::IMAGE)
 			{
 				waitStage |= _ToStageFlags(
-					m_pBuildResult->GetImageAccessState(barrier.after, barrier.image, barrier.subresourceRange).stage);
+					m_buildResult.GetImageAccessState(barrier.after, barrier.image, barrier.subresourceRange).stage);
 			}
 			else
 			{
-				waitStage |= _ToStageFlags(m_pBuildResult->GetBufferAccessState(barrier.after, barrier.buffer).stage);
+				waitStage |= _ToStageFlags(m_buildResult.GetBufferAccessState(barrier.after, barrier.buffer).stage);
 			}
 		}
 
@@ -889,7 +900,7 @@ void RenderGraphInstance::_BuildCompiledGraphPlan()
 		}
 	};
 
-	auto funcAppendQueueWaits = [&](const RenderGraph::SubmitBatch::PassGroupPlan& inGroup, uint32_t inSubmitIndex, std::vector<CompiledQueueWait>& inoutWaits)
+	auto funcAppendQueueWaits = [&](const RenderGraph::SubmitBatch::PassGroupPlan& inGroup, uint32_t inSubmitIndex, std::vector<uint32_t>& inoutWaits)
 	{
 		for (const RenderGraph::QueueSyncPlan& plan : inGroup.queueWaitPlans)
 		{
@@ -902,16 +913,13 @@ void RenderGraphInstance::_BuildCompiledGraphPlan()
 			edge.dstQueue = plan.dstQueue;
 			edge.waitStage |= waitStage;
 
-			CompiledQueueWait wait;
-			wait.syncEdge = edgeIndex;
-			wait.waitStage = waitStage;
-			inoutWaits.push_back(wait);
+			inoutWaits.push_back(edgeIndex);
 		}
 	};
 
-	for (uint32_t submitIndex = 0; submitIndex < m_pBuildResult->GetSubmitBatchCount(); ++submitIndex)
+	for (uint32_t submitIndex = 0; submitIndex < m_buildResult.GetSubmitBatchCount(); ++submitIndex)
 	{
-		const RenderGraph::SubmitBatch& submitBatch = m_pBuildResult->GetSubmitBatch(submitIndex);
+		const RenderGraph::SubmitBatch& submitBatch = m_buildResult.GetSubmitBatch(submitIndex);
 
 		CompiledSubmitBatch& compiledSubmit = m_compiledPlan.submitBatches[submitIndex];
 		compiledSubmit.graphicsGroups.resize(submitBatch.graphicsGroups.size());
@@ -921,7 +929,6 @@ void RenderGraphInstance::_BuildCompiledGraphPlan()
 		{
 			const RenderGraph::SubmitBatch::PassGroupPlan& group = submitBatch.graphicsGroups[groupIndex];
 			CompiledPassGroup& compiledGroup = compiledSubmit.graphicsGroups[groupIndex];
-			compiledGroup.queue = group.queue;
 			compiledGroup.passes = group.passes;
 			if (_GetManagedRenderPass(submitIndex, groupIndex) != nullptr)
 			{
@@ -939,7 +946,6 @@ void RenderGraphInstance::_BuildCompiledGraphPlan()
 		{
 			const RenderGraph::SubmitBatch::PassGroupPlan& group = submitBatch.computeGroups[groupIndex];
 			CompiledPassGroup& compiledGroup = compiledSubmit.computeGroups[groupIndex];
-			compiledGroup.queue = group.queue;
 			compiledGroup.passes = group.passes;
 
 			funcAppendIfValid(compiledGroup.prologueCommands, _CreateBarrierCommand(group.prologueBarriers, BarrierCommandMode::QUEUE_ACQUIRE));
@@ -1031,14 +1037,15 @@ void RenderGraphInstance::_AppendRenderPassCommands(
 	{
 		const PassIndex passIndex = inPasses[subpassIndex];
 		CHECK_TRUE(passIndex < m_passInfos.size(), "Invalid render graph pass index!");
-		CHECK_TRUE(m_passInfos[passIndex].m_process != nullptr, "Render graph pass process is not set up!");
-		const RenderGraph::PassRecord& pass = m_pBuildResult->GetPass(passIndex);
+		const PassInfo& passInfo = m_passInfos[passIndex];
+		CHECK_TRUE(passInfo.m_process != nullptr, "Render graph pass process is not set up!");
+		const RenderGraph::PassRecord& pass = m_buildResult.GetPass(passIndex);
 		for (const RenderGraph::ImageUsage& usage : pass.imageUsages)
 		{
 			if (usage.type == RenderGraph::ResourceUsageType::COLOR_ATTACHMENT && usage.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR)
 			{
-				const auto overrideIter = m_colorClearValueOverrides.find(_MakeEdgeKey(passIndex, usage.attachmentSlot));
-				if (overrideIter != m_colorClearValueOverrides.end())
+				const auto overrideIter = passInfo.m_colorClearValueOverrides.find(usage.attachmentSlot);
+				if (overrideIter != passInfo.m_colorClearValueOverrides.end())
 				{
 					const uint32_t attachmentIndex = funcFindAttachment(usage);
 					CHECK_TRUE(attachmentIndex < renderPassScope.clearValues.size(), "Invalid managed color attachment clear value index!");
@@ -1048,18 +1055,17 @@ void RenderGraphInstance::_AppendRenderPassCommands(
 			else if (usage.type == RenderGraph::ResourceUsageType::DEPTH_STENCIL_ATTACHMENT &&
 				(usage.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR || usage.stencilLoadOp == VK_ATTACHMENT_LOAD_OP_CLEAR))
 			{
-				const auto overrideIter = m_depthStencilClearValueOverrides.find(passIndex);
-				if (overrideIter != m_depthStencilClearValueOverrides.end())
+				if (passInfo.m_depthStencilClearValueOverride.has_value())
 				{
 					const uint32_t attachmentIndex = funcFindAttachment(usage);
 					CHECK_TRUE(attachmentIndex < renderPassScope.clearValues.size(), "Invalid managed depth stencil attachment clear value index!");
-					renderPassScope.clearValues[attachmentIndex].depthStencil = overrideIter->second;
+					renderPassScope.clearValues[attachmentIndex].depthStencil = passInfo.m_depthStencilClearValueOverride.value();
 				}
 			}
 		}
 		context.m_currentPass = passIndex;
 		context.m_currentSubpass = subpassIndex;
-		m_passInfos[passIndex].m_process(context);
+		passInfo.m_process(context);
 	}
 
 	inCommandBuffer.AppendRenderPass(&renderPassScope);
@@ -1145,8 +1151,8 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 			return false;
 		}
 
-		const RenderGraph::QueueType srcQueue = m_pBuildResult->GetPass(inPlan.before).queue;
-		const RenderGraph::QueueType dstQueue = m_pBuildResult->GetPass(inPlan.after).queue;
+		const RenderGraph::QueueType srcQueue = m_buildResult.GetPass(inPlan.before).queue;
+		const RenderGraph::QueueType dstQueue = m_buildResult.GetPass(inPlan.after).queue;
 		if (srcQueue == dstQueue)
 		{
 			return false;
@@ -1182,7 +1188,7 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 				CHECK_TRUE(bufferIndex < m_buffers.size() && m_buffers[bufferIndex] != nullptr, "External render graph buffer is not available!");
 
 				const ExternalBufferInfo& externalInfo = m_externalBufferInfos[bufferIndex].value();
-				const RenderGraph::AccessState graphState = m_pBuildResult->GetBufferAccessState(boundaryPass, bufferIndex);
+				const RenderGraph::AccessState graphState = m_buildResult.GetBufferAccessState(boundaryPass, bufferIndex);
 
 				const Buffer::Information& bufferInfo = m_buffers[bufferIndex]->GetBufferInformation();
 				VkBufferMemoryBarrier barrier{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
@@ -1205,7 +1211,7 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 
 			const ExternalImageInfo& externalInfo = m_externalImageInfos[imageIndex].value();
 			const RenderGraph::AccessState graphState =
-				m_pBuildResult->GetImageAccessState(boundaryPass, imageIndex, plan.subresourceRange);
+				m_buildResult.GetImageAccessState(boundaryPass, imageIndex, plan.subresourceRange);
 
 			VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
 			barrier.srcAccessMask = _ToAccessFlags(entering ? externalInfo.enteringAccess : graphState.access);
@@ -1216,7 +1222,7 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			barrier.image = m_images[imageIndex]->GetVkImage();
 			const RenderGraph::ImageSubresourceRange barrierRange =
-				m_pBuildResult->GetImageInfo(imageIndex).NormalizeSubresourceRange(plan.subresourceRange);
+				m_buildResult.GetImageInfo(imageIndex).NormalizeSubresourceRange(plan.subresourceRange);
 			const ImageView* view = m_images[imageIndex]->View(_MakeImageViewInfo(barrierRange));
 			barrier.subresourceRange = view->GetImageSubresourceRange();
 			parameters.srcStageMask |= _ToStageFlags(entering ? externalInfo.enteringStage : graphState.stage);
@@ -1229,7 +1235,7 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 		{
 			CHECK_TRUE(plan.image < m_images.size() && m_images[plan.image] != nullptr, "Render graph barrier image is not available!");
 			const RenderGraph::ImageSubresourceRange barrierRange =
-				m_pBuildResult->GetImageInfo(plan.image).NormalizeSubresourceRange(plan.subresourceRange);
+				m_buildResult.GetImageInfo(plan.image).NormalizeSubresourceRange(plan.subresourceRange);
 			const ImageView* view = m_images[plan.image]->View(_MakeImageViewInfo(barrierRange));
 			const Image::Information& imageInfo = m_images[plan.image]->GetImageInformation();
 
@@ -1238,15 +1244,15 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 			if (plan.before == INVALID_INDEX)
 			{
 				CHECK_TRUE(plan.after != INVALID_INDEX, "Render graph initial image barrier target pass is invalid!");
-				dstState = m_pBuildResult->GetImageAccessState(plan.after, plan.image, plan.subresourceRange);
+				dstState = m_buildResult.GetImageAccessState(plan.after, plan.image, plan.subresourceRange);
 				srcState.layout = VK_IMAGE_LAYOUT_UNDEFINED;
 				srcState.stage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
 			}
 			else
 			{
 				CHECK_TRUE(plan.after != INVALID_INDEX, "Render graph image barrier target pass is invalid!");
-				srcState = m_pBuildResult->GetImageAccessState(plan.before, plan.image, plan.subresourceRange);
-				dstState = m_pBuildResult->GetImageAccessState(plan.after, plan.image, plan.subresourceRange);
+				srcState = m_buildResult.GetImageAccessState(plan.before, plan.image, plan.subresourceRange);
+				dstState = m_buildResult.GetImageAccessState(plan.after, plan.image, plan.subresourceRange);
 			}
 
 			RenderGraph::HazardType hazard = RenderGraph::HazardType::WAR;
@@ -1297,8 +1303,8 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 			CHECK_TRUE(plan.buffer < m_buffers.size() && m_buffers[plan.buffer] != nullptr, "Render graph barrier buffer is not available!");
 			CHECK_TRUE(plan.before != INVALID_INDEX && plan.after != INVALID_INDEX, "Render graph buffer barrier pass edge is invalid!");
 			const Buffer::Information& bufferInfo = m_buffers[plan.buffer]->GetBufferInformation();
-			const RenderGraph::AccessState srcState = m_pBuildResult->GetBufferAccessState(plan.before, plan.buffer);
-			const RenderGraph::AccessState dstState = m_pBuildResult->GetBufferAccessState(plan.after, plan.buffer);
+			const RenderGraph::AccessState srcState = m_buildResult.GetBufferAccessState(plan.before, plan.buffer);
+			const RenderGraph::AccessState dstState = m_buildResult.GetBufferAccessState(plan.after, plan.buffer);
 
 			const RenderGraph::HazardType hazard = srcState.writes ? (dstState.writes ? RenderGraph::HazardType::WAW : RenderGraph::HazardType::RAW) : RenderGraph::HazardType::WAR;
 			uint32_t srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1347,11 +1353,12 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 
 void RenderGraphInstance::Compile()
 {
-	CHECK_TRUE(m_pBuildResult != nullptr && m_pBuildResult->IsValid(), "No valid render graph build result!");
+	CHECK_TRUE(m_buildResult.IsValid(), "No valid render graph build result!");
+	CHECK_TRUE(!m_inFlight, "Render graph instance cannot be compiled while an execute is in flight!");
 
-	for (PassIndex index = 0; index < m_pBuildResult->GetPassCount(); ++index)
+	for (PassIndex index = 0; index < m_buildResult.GetPassCount(); ++index)
 	{
-		if (!m_pBuildResult->GetPass(index).active)
+		if (!m_buildResult.GetPass(index).active)
 		{
 			continue;
 		}
@@ -1367,14 +1374,132 @@ void RenderGraphInstance::Compile()
 
 void RenderGraphInstance::Execute()
 {
-	CHECK_TRUE(m_pBuildResult != nullptr, "No render graph build result!");
+	Execute(ExecuteInfo{});
+}
+
+void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
+{
 	CHECK_TRUE(m_compiled, "Render graph instance must be compiled before execution!");
+	CHECK_TRUE(!m_inFlight, "Render graph instance has an execute in flight!");
 
 	auto& device = MyDevice::GetInstance();
 	GraphicsQueue* graphicsQueue = device.GetGraphicsCommandQueue();
 	ComputeQueue* computeQueue = device.GetComputeCommandQueue();
 	CHECK_TRUE(graphicsQueue != nullptr, "Graphics command queue is not available!");
 	CHECK_TRUE(computeQueue != nullptr, "Compute command queue is not available!");
+
+	std::vector<std::vector<VkSemaphore>> externalWaits(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::vector<VkSemaphore>> externalSignals(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::unordered_set<VkSemaphore>> externalWaitSets(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::unordered_set<VkSemaphore>> externalSignalSets(m_compiledPlan.submitBatches.size() * 2);
+	std::unordered_set<const QueueSyncInfo*> enteringObjects;
+	std::unordered_set<QueueSyncInfo*> leavingObjects;
+
+	auto funcAddWait = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, VkSemaphore inSemaphore)
+	{
+		if (inSubmit == INVALID_INDEX || inSemaphore == VK_NULL_HANDLE)
+		{
+			return;
+		}
+		const size_t index = static_cast<size_t>(inSubmit) * 2 + (inQueue == RenderGraph::QueueType::GRAPHICS ? 0 : 1);
+		if (externalWaitSets[index].insert(inSemaphore).second)
+		{
+			externalWaits[index].push_back(inSemaphore);
+		}
+	};
+	auto funcAddSignal = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, VkSemaphore inSemaphore)
+	{
+		if (inSubmit == INVALID_INDEX || inSemaphore == VK_NULL_HANDLE)
+		{
+			return;
+		}
+		const size_t index = static_cast<size_t>(inSubmit) * 2 + (inQueue == RenderGraph::QueueType::GRAPHICS ? 0 : 1);
+		if (externalSignalSets[index].insert(inSemaphore).second)
+		{
+			externalSignals[index].push_back(inSemaphore);
+		}
+	};
+
+	auto funcBindEntering = [&](const QueueSyncInfo& inSync, const RenderGraph::SubmitBoundary& inBoundary)
+	{
+		if (!enteringObjects.insert(&inSync).second)
+		{
+			return;
+		}
+		CHECK_TRUE(!inSync.m_enteringUsed, "QueueSyncInfo entering connection was already used!");
+		funcAddWait(inBoundary.firstComputeSubmit, RenderGraph::QueueType::COMPUTE, inSync.GetGraphicsToComputeSemaphore());
+		funcAddWait(inBoundary.firstGraphicsSubmit, RenderGraph::QueueType::GRAPHICS, inSync.GetComputeToGraphicsSemaphore());
+	};
+	auto funcBindLeaving = [&](QueueSyncInfo& inSync, const RenderGraph::SubmitBoundary& inBoundary)
+	{
+		if (!leavingObjects.insert(&inSync).second)
+		{
+			return;
+		}
+		CHECK_TRUE(!inSync.m_leavingUsed, "QueueSyncInfo leaving connection was already used!");
+		funcAddSignal(inBoundary.lastGraphicsSubmit, RenderGraph::QueueType::GRAPHICS, inSync.GetGraphicsToComputeSemaphore());
+		funcAddSignal(inBoundary.lastComputeSubmit, RenderGraph::QueueType::COMPUTE, inSync.GetComputeToGraphicsSemaphore());
+	};
+
+	for (const QueueSyncInfo* sync : inExecuteInfo.m_enteringQueueSyncInfos)
+	{
+		CHECK_TRUE(sync != nullptr, "Render graph entering QueueSyncInfo is null!");
+		funcBindEntering(*sync, m_buildResult.GetGraphSubmitBoundary());
+	}
+	for (QueueSyncInfo* sync : inExecuteInfo.m_leavingQueueSyncInfos)
+	{
+		CHECK_TRUE(sync != nullptr, "Render graph leaving QueueSyncInfo is null!");
+		funcBindLeaving(*sync, m_buildResult.GetGraphSubmitBoundary());
+	}
+
+	auto funcBindResource = [&](const ExecuteInfo::ResourceQueueSyncInfo& inResource, bool inIsBuffer)
+	{
+		const RenderGraph::SubmitBoundary* boundary = nullptr;
+		if (inIsBuffer)
+		{
+			const BufferIndex index = m_buildResult.GetBufferIndex(inResource.name);
+			CHECK_TRUE(m_buildResult.GetBufferInfo(index).m_external, "External queue sync requires an external buffer!");
+			boundary = &m_buildResult.GetBufferSubmitBoundary(index);
+		}
+		else
+		{
+			const ImageIndex index = m_buildResult.GetImageIndex(inResource.name);
+			CHECK_TRUE(m_buildResult.GetImageInfo(index).m_external, "External queue sync requires an external image!");
+			boundary = &m_buildResult.GetImageSubmitBoundary(index);
+		}
+		if (inResource.entering != nullptr)
+		{
+			funcBindEntering(*inResource.entering, *boundary);
+		}
+		if (inResource.leaving != nullptr)
+		{
+			funcBindLeaving(*inResource.leaving, *boundary);
+		}
+	};
+	for (const ExecuteInfo::ResourceQueueSyncInfo& resource : inExecuteInfo.m_externalBufferQueueSyncInfos)
+	{
+		funcBindResource(resource, true);
+	}
+	for (const ExecuteInfo::ResourceQueueSyncInfo& resource : inExecuteInfo.m_externalImageQueueSyncInfos)
+	{
+		funcBindResource(resource, false);
+	}
+	for (const QueueSyncInfo* sync : enteringObjects)
+	{
+		CHECK_TRUE(leavingObjects.find(const_cast<QueueSyncInfo*>(sync)) == leavingObjects.end(),
+			"QueueSyncInfo cannot be entering and leaving in the same Execute!");
+	}
+	for (const QueueSyncInfo* sync : enteringObjects)
+	{
+		sync->m_enteringUsed = true;
+	}
+	for (QueueSyncInfo* sync : leavingObjects)
+	{
+		sync->m_leavingUsed = true;
+	}
+
+	m_submittedGraphicsCommands = false;
+	m_submittedComputeCommands = false;
 
 	std::vector<VkSemaphore> queueSyncSemaphores(m_compiledPlan.queueSyncEdges.size(), VK_NULL_HANDLE);
 	for (uint32_t edgeIndex = 0; edgeIndex < m_compiledPlan.queueSyncEdges.size(); ++edgeIndex)
@@ -1400,15 +1525,17 @@ void RenderGraphInstance::Execute()
 		return true;
 	};
 
-	auto funcFillSyncInfo = [&](const std::vector<CompiledQueueWait>& inWaits, const std::vector<uint32_t>& inSignals)->CommandQueue::SyncInfo
+	auto funcFillSyncInfo = [&](const std::vector<uint32_t>& inWaits, const std::vector<uint32_t>& inSignals)->CommandQueue::SyncInfo
 	{
 		CommandQueue::SyncInfo syncInfo;
-		for (const CompiledQueueWait& wait : inWaits)
+		for (uint32_t syncEdge : inWaits)
 		{
-			CHECK_TRUE(wait.syncEdge < queueSyncSemaphores.size(), "Invalid render graph queue wait sync edge!");
-			const VkSemaphore semaphore = queueSyncSemaphores[wait.syncEdge];
+			CHECK_TRUE(syncEdge < queueSyncSemaphores.size(), "Invalid render graph queue wait sync edge!");
+			const VkSemaphore semaphore = queueSyncSemaphores[syncEdge];
 			CHECK_TRUE(semaphore != VK_NULL_HANDLE, "Render graph wait semaphore is missing!");
-			const VkPipelineStageFlags waitStage = wait.waitStage == 0 ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : wait.waitStage;
+			const VkPipelineStageFlags waitStage = m_compiledPlan.queueSyncEdges[syncEdge].waitStage == 0
+				? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
+				: m_compiledPlan.queueSyncEdges[syncEdge].waitStage;
 			syncInfo.AddWaitSemaphore(semaphore, waitStage);
 		}
 
@@ -1423,8 +1550,18 @@ void RenderGraphInstance::Execute()
 		return syncInfo;
 	};
 
-	bool submittedGraphicsCommands = false;
-	bool submittedComputeCommands = false;
+	auto funcAppendExternalSync = [&](CommandQueue::SyncInfo& inoutSyncInfo, uint32_t inSubmitIndex, RenderGraph::QueueType inQueue)
+	{
+		const size_t index = static_cast<size_t>(inSubmitIndex) * 2 + (inQueue == RenderGraph::QueueType::GRAPHICS ? 0 : 1);
+		for (VkSemaphore semaphore : externalWaits[index])
+		{
+			inoutSyncInfo.AddWaitSemaphore(semaphore, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+		}
+		for (VkSemaphore semaphore : externalSignals[index])
+		{
+			inoutSyncInfo.AddSemaphoreToSignal(semaphore);
+		}
+	};
 
 	for (uint32_t submitIndex = 0; submitIndex < m_compiledPlan.submitBatches.size(); ++submitIndex)
 	{
@@ -1481,24 +1618,46 @@ void RenderGraphInstance::Execute()
 		if (hasGraphicsCommands)
 		{
 			CommandQueue::SyncInfo syncInfo = funcFillSyncInfo(submitBatch.graphicsWaitSyncs, submitBatch.graphicsSignalSyncs);
+			funcAppendExternalSync(syncInfo, submitIndex, RenderGraph::QueueType::GRAPHICS);
 			graphicsQueue->Enqueue(&graphicsCommandBuffer, 1).Submit(std::move(syncInfo));
-			submittedGraphicsCommands = true;
+			m_submittedGraphicsCommands = true;
 		}
 		if (hasComputeCommands)
 		{
 			CommandQueue::SyncInfo syncInfo = funcFillSyncInfo(submitBatch.computeWaitSyncs, submitBatch.computeSignalSyncs);
+			funcAppendExternalSync(syncInfo, submitIndex, RenderGraph::QueueType::COMPUTE);
 			computeQueue->Enqueue(&computeCommandBuffer, 1).Submit(std::move(syncInfo));
-			submittedComputeCommands = true;
+			m_submittedComputeCommands = true;
 		}
 	}
+	m_inFlight = m_submittedGraphicsCommands || m_submittedComputeCommands;
+}
 
-	if (submittedGraphicsCommands)
+void RenderGraphInstance::WaitTillDone()
+{
+	if (!m_compiled)
 	{
+		return;
+	}
+	if (!m_inFlight)
+	{
+		return;
+	}
+	auto& device = MyDevice::GetInstance();
+	if (m_submittedGraphicsCommands)
+	{
+		GraphicsQueue* graphicsQueue = device.GetGraphicsCommandQueue();
+		CHECK_TRUE(graphicsQueue != nullptr, "Graphics command queue is not available!");
 		graphicsQueue->WaitTillDone();
 	}
-	if (submittedComputeCommands)
+	if (m_submittedComputeCommands)
 	{
+		ComputeQueue* computeQueue = device.GetComputeCommandQueue();
+		CHECK_TRUE(computeQueue != nullptr, "Compute command queue is not available!");
 		computeQueue->WaitTillDone();
 	}
 	_RecycleExecuteSemaphores();
+	m_submittedGraphicsCommands = false;
+	m_submittedComputeCommands = false;
+	m_inFlight = false;
 }

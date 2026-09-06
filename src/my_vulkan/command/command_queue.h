@@ -2,25 +2,46 @@
 #include "command_buffer.h"
 #include "command_pool.h"
 #include "common_enums.h"
-class FenceAllocator;
+#include "queue_signal_chain.h"
+#include "completion_fence.h"
+
 class MyDevice;
 
 class CommandQueue
 {
 public:
-	class SyncInfo
+	// Describes the synchronization objects used by one queue submission.
+	// Each chain is both a wait on its previous signal (when present) and a
+	// signal for the next submission using that chain.
+	class SubmitInfo final
 	{
+		friend class CommandQueue;
+
 	private:
-		std::vector<VkSemaphore> m_waitSemaphores;
-		std::vector<VkPipelineStageFlags> m_waitStages;
-		std::vector<VkSemaphore> m_signalSemaphores;
+		struct ChainEntry final
+		{
+			QueueSignalChain* chain = nullptr;
+			VkPipelineStageFlags2 waitStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+		};
+
+		std::vector<ChainEntry> m_chainEntries;
+		CompletionFence* m_completionFence = nullptr;
 
 	public:
-		auto AddWaitSemaphore(VkSemaphore inSemaphore, VkPipelineStageFlags inStage)->SyncInfo&;
-		auto AddSemaphoreToSignal(VkSemaphore inSemaphore)->SyncInfo&;
+		SubmitInfo() = default;
+		SubmitInfo(const SubmitInfo&) = default;
+		SubmitInfo& operator=(const SubmitInfo&) = default;
+		SubmitInfo(SubmitInfo&&) noexcept = default;
+		SubmitInfo& operator=(SubmitInfo&&) noexcept = default;
 
-	private:
-		friend class CommandQueue;
+		// Add a chain to this submission. Duplicate chain entries are merged and
+		// their wait stages are ORed together.
+		auto AddQueueSignalChain(
+			QueueSignalChain& inChain,
+			VkPipelineStageFlags2 inWaitStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)
+			-> SubmitInfo&;
+
+		auto SetCompletionFence(CompletionFence& inFence) -> SubmitInfo&;
 	};
 
 protected:
@@ -33,15 +54,14 @@ protected:
 	QueueFamilyType m_queueFamilyType = QueueFamilyType::UNSET;
 	uint8_t m_currentFrameIndex = FRAME_IN_FLIGHT_COUNT - 1;
 	std::array<std::array<std::unique_ptr<CommandPool>, THREAD_COUNT>, FRAME_IN_FLIGHT_COUNT> m_commandPools;
-	std::array<std::vector<VkFence>, FRAME_IN_FLIGHT_COUNT> m_frameFences;
+	std::array<CompletionFence*, FRAME_IN_FLIGHT_COUNT> m_frameCompletionFences{};
 	std::vector<VkCommandBuffer> m_recordedCommandBuffers;
-	std::unique_ptr<FenceAllocator> m_uptrFenceAllocator;
+	std::vector<std::function<void()>> m_pendingRecycleActions;
 
 protected:
 	auto _GetCommandPool(uint8_t inFrameIndex, uint8_t inThreadIndex) const->CommandPool*;
 	auto _Init(QueueFamilyType inQueueFamilyType)->void;
 	auto _Deinit()->void;
-	auto _WaitFrameFences(uint8_t inFrameIndex)->void;
 	auto _ResetFrameCommandPools(uint8_t inFrameIndex)->void;
 	auto _RecordCommandBuffer(CommandBuffer* inCommandBuffers, size_t inCount)->void;
 
@@ -53,10 +73,11 @@ public:
 	CommandQueue& operator=(const CommandQueue&) = delete;
 	virtual ~CommandQueue();
 
-	virtual auto StartFrame()->void;
 	virtual auto Enqueue(CommandBuffer* inCommandBuffers, size_t inCount)->CommandQueue&;
-	virtual auto Submit(SyncInfo inSyncInfo)->void;
-	virtual auto WaitTillDone()->void;
+	// Submit the currently recorded command buffers. A missing completion fence
+	// is valid; reclamation is deferred until a later fenced submission.
+	virtual auto Submit(SubmitInfo inSubmitInfo)->void;
+	virtual auto Submit()->void;
 
 	auto GetVkQueue() const->VkQueue { return m_vkQueue; };
 	auto GetQueueFamilyIndex() const->uint32_t { return m_queueFamilyIndex; };

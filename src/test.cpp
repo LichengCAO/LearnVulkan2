@@ -101,35 +101,24 @@ struct RenderGraphTestProbe
 			});
 		});
 		instance.SetUpPass("opaque", passInfo);
-
 		CommandBuffer commands;
 		instance._AppendPassCommands(graph.m_buildResult.GetPassIndex("opaque"), commands);
 		return commands.m_scopes.size() == 1 &&
 			std::holds_alternative<CommandBuffer::RenderPassScope>(commands.m_scopes.front());
 	}
 
-	static auto ClearOverridesDoNotInvalidateCompileState() -> bool
+	static auto PassInfoClearOverridesCanBeCustomized() -> bool
 	{
-		RenderGraph graph;
-		RenderGraph::ImageInfo image;
-		image.SetAsExternal();
-		graph.AddImage("color", image);
-		RenderGraph::AttachmentInfo attachment;
-		attachment.SetLoadStoreOperations(VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE);
-		RenderGraph::RenderPassInfo renderPass;
-		renderPass.AddColorAttachment(0, "color", attachment);
-		renderPass.SetNeverCull();
-		graph.AddPass("render", renderPass);
-		graph.Build();
-
-		RenderGraphInstance instance(graph);
-		instance.m_compiled = true;
+		RenderGraphInstance::PassInfo passInfo;
 		VkClearColorValue clear{};
 		clear.float32[0] = 0.25f;
-		instance.SetColorClearValue("render", 0, clear);
-		const bool setPreservedCompile = instance.m_compiled && instance.m_colorClearValueOverrides.size() == 1;
-		instance.ResetClearValue("render", 0);
-		return setPreservedCompile && instance.m_compiled && instance.m_colorClearValueOverrides.empty();
+		passInfo.CustomizeColorClearValue(0, clear);
+		VkClearDepthStencilValue depth{ 0.5f, 1 };
+		passInfo.CustomizeDepthStencilClearValue(depth);
+		return passInfo.m_colorClearValueOverrides.size() == 1 &&
+			passInfo.m_depthStencilClearValueOverride.has_value() &&
+			passInfo.m_depthStencilClearValueOverride->depth == depth.depth &&
+			passInfo.m_depthStencilClearValueOverride->stencil == depth.stencil;
 	}
 
 	static auto GetScheduledPassNames(const RenderGraph& inGraph) -> std::vector<std::string>
@@ -1368,7 +1357,7 @@ namespace
 		resolveOnly.SetResolveAttachment(0, "resolved");
 		ExpectThrows([&]() { resolveGraph.AddPass("resolve", resolveOnly); }, "no color attachment");
 
-		CHECK_TRUE(RenderGraphTestProbe::ClearOverridesDoNotInvalidateCompileState(), "Clear overrides must not require recompilation!");
+		CHECK_TRUE(RenderGraphTestProbe::PassInfoClearOverridesCanBeCustomized(), "PassInfo clear overrides must support customization!");
 	}
 }
 

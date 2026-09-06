@@ -50,6 +50,17 @@ auto SemaphoreAllocator::Free(VkSemaphore inSemaphore)->void
 	m_freeList.push_back(inSemaphore);
 }
 
+auto SemaphoreAllocator::Discard(VkSemaphore inSemaphore)->void
+{
+	CHECK_TRUE(m_created, "Semaphore allocator is not created!");
+	CHECK_TRUE(inSemaphore != VK_NULL_HANDLE, "Cannot discard null semaphore!");
+
+	const auto iter = m_usedList.find(inSemaphore);
+	CHECK_TRUE(iter != m_usedList.end(), "Semaphore allocator doesn't have this allocated semaphore!");
+	m_usedList.erase(iter);
+	vkDestroySemaphore(m_vkDevice, inSemaphore, nullptr);
+}
+
 auto SemaphoreAllocator::Destroy()->void
 {
 	if (!m_created)

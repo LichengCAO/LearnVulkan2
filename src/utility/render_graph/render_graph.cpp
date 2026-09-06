@@ -157,6 +157,18 @@ auto RenderGraph::BuildResult::GetSubmitBatch(uint32_t inSubmitIndex) const -> c
 	return submitBatches[inSubmitIndex];
 }
 
+auto RenderGraph::BuildResult::GetBufferSubmitBoundary(BufferIndex inBufferIndex) const -> const SubmitBoundary&
+{
+	CHECK_TRUE(inBufferIndex < bufferBoundaries.size(), "Invalid render graph buffer submit boundary index!");
+	return bufferBoundaries[inBufferIndex];
+}
+
+auto RenderGraph::BuildResult::GetImageSubmitBoundary(ImageIndex inImageIndex) const -> const SubmitBoundary&
+{
+	CHECK_TRUE(inImageIndex < imageBoundaries.size(), "Invalid render graph image submit boundary index!");
+	return imageBoundaries[inImageIndex];
+}
+
 auto RenderGraph::BuildResult::GetBufferCount() const -> size_t
 {
 	return buffers.size();
@@ -2356,6 +2368,91 @@ void RenderGraph::_BuildScheduledResourceBarriers(BuildContext& inContext, Build
 	}
 }
 
+void RenderGraph::_BuildSubmitBoundaries(const BuildContext& inContext, BuildResult& inoutResult) const
+{
+	inoutResult.graphBoundary = {};
+	inoutResult.bufferBoundaries.assign(inContext.bufferInfos.size(), {});
+	inoutResult.imageBoundaries.assign(inContext.imageInfos.size(), {});
+
+	auto funcAddSubmit = [](SubmitBoundary& inoutBoundary, QueueType inQueue, uint32_t inSubmitIndex)
+	{
+		uint32_t& first = inQueue == QueueType::GRAPHICS
+			? inoutBoundary.firstGraphicsSubmit
+			: inoutBoundary.firstComputeSubmit;
+		uint32_t& last = inQueue == QueueType::GRAPHICS
+			? inoutBoundary.lastGraphicsSubmit
+			: inoutBoundary.lastComputeSubmit;
+		first = std::min(first, inSubmitIndex);
+		last = last == INVALID_INDEX ? inSubmitIndex : std::max(last, inSubmitIndex);
+	};
+
+	auto funcVisitGroup = [&](const SubmitBatch::PassGroupPlan& inGroup, uint32_t inSubmitIndex)
+	{
+		CHECK_TRUE(!inGroup.passes.empty(), "Render graph submit boundary group cannot be empty!");
+		funcAddSubmit(inoutResult.graphBoundary, inGroup.queue, inSubmitIndex);
+		for (PassIndex passIndex : inGroup.passes)
+		{
+			CHECK_TRUE(passIndex < inContext.passes.size(), "Render graph submit boundary pass index is invalid!");
+			const PassRecord& pass = inContext.passes[passIndex];
+			for (const BufferUsage& usage : pass.bufferUsages)
+			{
+				CHECK_TRUE(usage.bufferIndex < inContext.bufferInfos.size(), "Render graph submit boundary buffer index is invalid!");
+				if (inContext.bufferInfos[usage.bufferIndex].m_external)
+				{
+					funcAddSubmit(inoutResult.bufferBoundaries[usage.bufferIndex], inGroup.queue, inSubmitIndex);
+				}
+			}
+			for (const ImageUsage& usage : pass.imageUsages)
+			{
+				CHECK_TRUE(usage.imageIndex < inContext.imageInfos.size(), "Render graph submit boundary image index is invalid!");
+				if (inContext.imageInfos[usage.imageIndex].m_external)
+				{
+					funcAddSubmit(inoutResult.imageBoundaries[usage.imageIndex], inGroup.queue, inSubmitIndex);
+				}
+			}
+		}
+	};
+
+	for (uint32_t submitIndex = 0; submitIndex < inoutResult.submitBatches.size(); ++submitIndex)
+	{
+		const SubmitBatch& submitBatch = inoutResult.submitBatches[submitIndex];
+		for (const SubmitBatch::PassGroupPlan& group : submitBatch.graphicsGroups)
+		{
+			funcVisitGroup(group, submitIndex);
+		}
+		for (const SubmitBatch::PassGroupPlan& group : submitBatch.computeGroups)
+		{
+			funcVisitGroup(group, submitIndex);
+		}
+	}
+
+	auto funcValidateBoundary = [](const SubmitBoundary& inBoundary)
+	{
+		CHECK_TRUE(
+			(inBoundary.firstGraphicsSubmit == INVALID_INDEX) == (inBoundary.lastGraphicsSubmit == INVALID_INDEX),
+			"Render graph graphics submit boundary is incomplete!");
+		CHECK_TRUE(
+			(inBoundary.firstComputeSubmit == INVALID_INDEX) == (inBoundary.lastComputeSubmit == INVALID_INDEX),
+			"Render graph compute submit boundary is incomplete!");
+		CHECK_TRUE(
+			inBoundary.firstGraphicsSubmit == INVALID_INDEX || inBoundary.firstGraphicsSubmit <= inBoundary.lastGraphicsSubmit,
+			"Render graph graphics submit boundary is reversed!");
+		CHECK_TRUE(
+			inBoundary.firstComputeSubmit == INVALID_INDEX || inBoundary.firstComputeSubmit <= inBoundary.lastComputeSubmit,
+			"Render graph compute submit boundary is reversed!");
+	};
+
+	funcValidateBoundary(inoutResult.graphBoundary);
+	for (const SubmitBoundary& boundary : inoutResult.bufferBoundaries)
+	{
+		funcValidateBoundary(boundary);
+	}
+	for (const SubmitBoundary& boundary : inoutResult.imageBoundaries)
+	{
+		funcValidateBoundary(boundary);
+	}
+}
+
 void RenderGraph::_BuildManagedRenderPassPlans(
 	const BuildContext& inContext,
 	BuildResult& inoutResult) const
@@ -2546,6 +2643,7 @@ const RenderGraph::BuildResult& RenderGraph::Build()
 	_BuildResourceAliases(context, buildResult);
 	_MaterializeResourceAliases(context);
 	_BuildScheduledResourceBarriers(context, buildResult);
+	_BuildSubmitBoundaries(context, buildResult);
 	_BuildManagedRenderPassPlans(context, buildResult);
 	buildResult.passes = std::move(context.passes);
 	buildResult.buffers = std::move(context.bufferInfos);

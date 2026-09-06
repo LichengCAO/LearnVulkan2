@@ -1,6 +1,8 @@
 #include "command_queue.h"
-#include "allocator/fence_allocator.h"
+#include "allocator/semaphore_allocator.h"
 #include "device.h"
+
+#include <iterator>
 
 namespace
 {
@@ -111,27 +113,46 @@ namespace
 	}
 }
 
-auto CommandQueue::SyncInfo::AddWaitSemaphore(VkSemaphore inSemaphore, VkPipelineStageFlags inStage)->SyncInfo&
+namespace
 {
-	CHECK_TRUE(inSemaphore != VK_NULL_HANDLE, "Invalid wait semaphore!");
-	CHECK_TRUE(inStage != 0, "Invalid wait stage!");
+	auto _RunRecycleActions(std::vector<std::function<void()>> actions)->void
+	{
+		for (auto& action : actions)
+		{
+			if (action)
+			{
+				action();
+			}
+		}
+	}
+}
 
-	m_waitSemaphores.push_back(inSemaphore);
-	m_waitStages.push_back(inStage);
+auto CommandQueue::SubmitInfo::AddQueueSignalChain(
+	QueueSignalChain& inChain,
+	VkPipelineStageFlags2 inWaitStage)->SubmitInfo&
+{
+	CHECK_TRUE(inWaitStage != 0, "Queue signal chain wait stage cannot be zero!");
+	for (ChainEntry& entry : m_chainEntries)
+	{
+		if (entry.chain == &inChain)
+		{
+			entry.waitStage |= inWaitStage;
+			return *this;
+		}
+	}
+
+	m_chainEntries.push_back({ &inChain, inWaitStage });
 	return *this;
 }
 
-auto CommandQueue::SyncInfo::AddSemaphoreToSignal(VkSemaphore inSemaphore)->SyncInfo&
+auto CommandQueue::SubmitInfo::SetCompletionFence(CompletionFence& inFence)->SubmitInfo&
 {
-	CHECK_TRUE(inSemaphore != VK_NULL_HANDLE, "Invalid signal semaphore!");
-	m_signalSemaphores.push_back(inSemaphore);
+	m_completionFence = &inFence;
 	return *this;
 }
 
 CommandQueue::CommandQueue()
 {
-	m_uptrFenceAllocator = std::make_unique<FenceAllocator>();
-	m_uptrFenceAllocator->Create();
 }
 
 CommandQueue::~CommandQueue()
@@ -152,12 +173,6 @@ auto CommandQueue::_Init(QueueFamilyType inQueueFamilyType)->void
 	CHECK_TRUE(m_vkQueue != VK_NULL_HANDLE, "Invalid command queue!");
 	CHECK_TRUE(m_queueFamilyIndex != VK_QUEUE_FAMILY_IGNORED, "Invalid command queue family index!");
 
-	if (m_uptrFenceAllocator == nullptr)
-	{
-		m_uptrFenceAllocator = std::make_unique<FenceAllocator>();
-	}
-	m_uptrFenceAllocator->Create();
-
 	CommandPoolCreateInfo commandPoolCreateInfo;
 	commandPoolCreateInfo.CustomizeQueueFamilyType(inQueueFamilyType);
 
@@ -176,9 +191,19 @@ auto CommandQueue::_Init(QueueFamilyType inQueueFamilyType)->void
 
 auto CommandQueue::_Deinit()->void
 {
-	for (uint8_t frameIndex = 0; frameIndex < FRAME_IN_FLIGHT_COUNT; ++frameIndex)
+	for (CompletionFence*& fence : m_frameCompletionFences)
 	{
-		_WaitFrameFences(frameIndex);
+		if (fence != nullptr)
+		{
+			fence->Wait();
+			fence = nullptr;
+		}
+	}
+	if (!m_pendingRecycleActions.empty())
+	{
+		MyDevice::GetInstance().WaitIdle();
+		_RunRecycleActions(std::move(m_pendingRecycleActions));
+		m_pendingRecycleActions.clear();
 	}
 
 	m_recordedCommandBuffers.clear();
@@ -193,11 +218,6 @@ auto CommandQueue::_Deinit()->void
 				commandPool.reset();
 			}
 		}
-	}
-
-	if (m_uptrFenceAllocator != nullptr)
-	{
-		m_uptrFenceAllocator->Destroy();
 	}
 
 	m_vkQueue = VK_NULL_HANDLE;
@@ -238,26 +258,6 @@ auto CommandQueue::_GetCommandPool(uint8_t inFrameIndex, uint8_t inThreadIndex) 
 	return commandPool.get();
 }
 
-auto CommandQueue::_WaitFrameFences(uint8_t inFrameIndex)->void
-{
-	CHECK_TRUE(inFrameIndex < FRAME_IN_FLIGHT_COUNT, "Command queue frame index out of range!");
-
-	std::vector<VkFence>& frameFences = m_frameFences[inFrameIndex];
-	if (frameFences.empty())
-	{
-		return;
-	}
-
-	CHECK_TRUE(m_uptrFenceAllocator != nullptr, "Command queue fence allocator is not created!");
-
-	VK_CHECK(
-		MyDevice::GetInstance().WaitForFences(frameFences, true, UINT64_MAX),
-		"Failed to wait for command queue frame fences!");
-
-	m_uptrFenceAllocator->FreeVkFence(frameFences.data(), frameFences.size());
-	frameFences.clear();
-}
-
 auto CommandQueue::_ResetFrameCommandPools(uint8_t inFrameIndex)->void
 {
 	CHECK_TRUE(inFrameIndex < FRAME_IN_FLIGHT_COUNT, "Command queue frame index out of range!");
@@ -268,49 +268,159 @@ auto CommandQueue::_ResetFrameCommandPools(uint8_t inFrameIndex)->void
 	}
 }
 
-auto CommandQueue::StartFrame()->void
-{
-	m_currentFrameIndex = static_cast<uint8_t>((m_currentFrameIndex + 1) % FRAME_IN_FLIGHT_COUNT);
-
-	_WaitFrameFences(m_currentFrameIndex);
-	_ResetFrameCommandPools(m_currentFrameIndex);
-}
-
 auto CommandQueue::Enqueue(CommandBuffer* inCommandBuffers, size_t inCount)->CommandQueue&
 {
+	CompletionFence* frameFence = m_frameCompletionFences[m_currentFrameIndex];
+	if (frameFence != nullptr && frameFence->IsInFlight())
+	{
+		// The slot was used by an earlier fenced submission. Waiting here is the
+		// point at which the slot becomes legal to record into again.
+		frameFence->Wait();
+	}
 	_RecordCommandBuffer(inCommandBuffers, inCount);
 	return *this;
 }
 
-auto CommandQueue::Submit(SyncInfo inSyncInfo)->void
+auto CommandQueue::Submit(SubmitInfo inSubmitInfo)->void
 {
 	CHECK_TRUE(m_vkQueue != VK_NULL_HANDLE, "Command queue is not created!");
 	CHECK_TRUE(!m_recordedCommandBuffers.empty(), "No command buffers to submit!");
-	CHECK_TRUE(
-		inSyncInfo.m_waitSemaphores.size() == inSyncInfo.m_waitStages.size(),
-		"Wait semaphore count must match wait stage count!");
-	CHECK_TRUE(m_uptrFenceAllocator != nullptr, "Command queue fence allocator is not created!");
 
-	VkFence frameFence = m_uptrFenceAllocator->CreateOrGetVkFence();
+	std::vector<VkSemaphoreSubmitInfo> waitInfos;
+	std::vector<VkSemaphoreSubmitInfo> signalInfos;
+	std::vector<VkSemaphore> consumedSemaphores;
+	std::vector<VkSemaphore> preparedSemaphores;
+	waitInfos.reserve(inSubmitInfo.m_chainEntries.size());
+	signalInfos.reserve(inSubmitInfo.m_chainEntries.size());
+	consumedSemaphores.reserve(inSubmitInfo.m_chainEntries.size());
+	preparedSemaphores.reserve(inSubmitInfo.m_chainEntries.size());
 
-	VkSubmitInfo submitInfo{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
-	submitInfo.waitSemaphoreCount = static_cast<uint32_t>(inSyncInfo.m_waitSemaphores.size());
-	submitInfo.pWaitSemaphores = inSyncInfo.m_waitSemaphores.empty() ? nullptr : inSyncInfo.m_waitSemaphores.data();
-	submitInfo.pWaitDstStageMask = inSyncInfo.m_waitStages.empty() ? nullptr : inSyncInfo.m_waitStages.data();
-	submitInfo.commandBufferCount = static_cast<uint32_t>(m_recordedCommandBuffers.size());
-	submitInfo.pCommandBuffers = m_recordedCommandBuffers.data();
-	submitInfo.signalSemaphoreCount = static_cast<uint32_t>(inSyncInfo.m_signalSemaphores.size());
-	submitInfo.pSignalSemaphores = inSyncInfo.m_signalSemaphores.empty() ? nullptr : inSyncInfo.m_signalSemaphores.data();
+	try
+	{
+		for (const SubmitInfo::ChainEntry& entry : inSubmitInfo.m_chainEntries)
+		{
+			CHECK_TRUE(entry.chain != nullptr, "Queue signal chain entry is null!");
+			VkSemaphore waitSemaphore = VK_NULL_HANDLE;
+			VkSemaphore signalSemaphore = VK_NULL_HANDLE;
+			entry.chain->PrepareForSubmit(waitSemaphore, signalSemaphore);
+			preparedSemaphores.push_back(signalSemaphore);
 
-	VK_CHECK(vkQueueSubmit(m_vkQueue, 1, &submitInfo, frameFence), "Failed to submit command queue!");
+			if (waitSemaphore != VK_NULL_HANDLE)
+			{
+				VkSemaphoreSubmitInfo waitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+				waitInfo.semaphore = waitSemaphore;
+				waitInfo.stageMask = entry.waitStage;
+				waitInfos.push_back(waitInfo);
+				consumedSemaphores.push_back(waitSemaphore);
+			}
 
-	m_frameFences[m_currentFrameIndex].push_back(frameFence);
-	m_recordedCommandBuffers.clear();
+			VkSemaphoreSubmitInfo signalInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+			signalInfo.semaphore = signalSemaphore;
+			signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+			signalInfos.push_back(signalInfo);
+		}
+
+		if (inSubmitInfo.m_completionFence != nullptr)
+		{
+			inSubmitInfo.m_completionFence->PrepareForSubmit();
+		}
+
+		std::vector<VkCommandBufferSubmitInfo> commandInfos;
+		commandInfos.reserve(m_recordedCommandBuffers.size());
+		for (VkCommandBuffer commandBuffer : m_recordedCommandBuffers)
+		{
+			VkCommandBufferSubmitInfo commandInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+			commandInfo.commandBuffer = commandBuffer;
+			commandInfos.push_back(commandInfo);
+		}
+
+		VkSubmitInfo2 submitInfo{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+		submitInfo.waitSemaphoreInfoCount = static_cast<uint32_t>(waitInfos.size());
+		submitInfo.pWaitSemaphoreInfos = waitInfos.empty() ? nullptr : waitInfos.data();
+		submitInfo.commandBufferInfoCount = static_cast<uint32_t>(commandInfos.size());
+		submitInfo.pCommandBufferInfos = commandInfos.data();
+		submitInfo.signalSemaphoreInfoCount = static_cast<uint32_t>(signalInfos.size());
+		submitInfo.pSignalSemaphoreInfos = signalInfos.empty() ? nullptr : signalInfos.data();
+
+		const VkFence vkFence = inSubmitInfo.m_completionFence == nullptr
+			? VK_NULL_HANDLE
+			: inSubmitInfo.m_completionFence->m_vkFence;
+		VK_CHECK(vkQueueSubmit2(m_vkQueue, 1, &submitInfo, vkFence),
+			"Failed to submit command queue!");
+
+		for (size_t chainIndex = 0; chainIndex < inSubmitInfo.m_chainEntries.size(); ++chainIndex)
+		{
+			inSubmitInfo.m_chainEntries[chainIndex].chain->CommitSubmit(preparedSemaphores[chainIndex]);
+		}
+
+		std::vector<std::function<void()>> recycleActions;
+		recycleActions.reserve(consumedSemaphores.size() + 1);
+		for (VkSemaphore semaphore : consumedSemaphores)
+		{
+			recycleActions.push_back([semaphore]
+			{
+				SemaphoreAllocator* allocator = MyDevice::GetInstance().GetSemaphoreAllocator();
+				if (allocator != nullptr)
+				{
+					allocator->Free(semaphore);
+				}
+			});
+		}
+
+		if (inSubmitInfo.m_completionFence != nullptr)
+		{
+			const uint8_t submittedFrameIndex = m_currentFrameIndex;
+			CompletionFence* completionFence = inSubmitInfo.m_completionFence;
+			recycleActions.push_back([this, submittedFrameIndex, completionFence]
+			{
+				_ResetFrameCommandPools(submittedFrameIndex);
+				if (m_frameCompletionFences[submittedFrameIndex] == completionFence)
+				{
+					m_frameCompletionFences[submittedFrameIndex] = nullptr;
+				}
+			});
+
+			std::vector<std::function<void()>> allActions = std::move(m_pendingRecycleActions);
+			m_pendingRecycleActions.clear();
+			allActions.insert(
+				allActions.end(),
+				std::make_move_iterator(recycleActions.begin()),
+				std::make_move_iterator(recycleActions.end()));
+			inSubmitInfo.m_completionFence->AddCallback(
+				[actions = std::move(allActions)]() mutable
+				{
+					_RunRecycleActions(std::move(actions));
+				});
+			inSubmitInfo.m_completionFence->CommitSubmit();
+			m_frameCompletionFences[m_currentFrameIndex] = inSubmitInfo.m_completionFence;
+			m_currentFrameIndex = static_cast<uint8_t>((m_currentFrameIndex + 1) % FRAME_IN_FLIGHT_COUNT);
+		}
+		else
+		{
+			m_pendingRecycleActions.insert(
+				m_pendingRecycleActions.end(),
+				std::make_move_iterator(recycleActions.begin()),
+				std::make_move_iterator(recycleActions.end()));
+		}
+
+		m_recordedCommandBuffers.clear();
+	}
+	catch (...)
+	{
+		for (auto iter = inSubmitInfo.m_chainEntries.rbegin(); iter != inSubmitInfo.m_chainEntries.rend(); ++iter)
+		{
+			if (iter->chain != nullptr)
+			{
+				iter->chain->AbortSubmit();
+			}
+		}
+		throw;
+	}
 }
 
-auto CommandQueue::WaitTillDone()->void
+auto CommandQueue::Submit()->void
 {
-	_WaitFrameFences(m_currentFrameIndex);
+	Submit(SubmitInfo{});
 }
 
 auto CommandQueue::_RecordCommandBuffer(CommandBuffer* inCommandBuffers, size_t inCount)->void
