@@ -7,33 +7,37 @@ class CommandBuffer final
 {
 	friend class RenderGraphInstance;
 	friend struct RenderGraphTestProbe;
+	friend class CommandQueue;
 
-public:
-	struct PrimaryScope final
-	{
-		std::vector<const Command*> commands;
-	};
-
-	struct SubpassScope final
-	{
-		std::vector<const Command*> commands;
-	};
-
-	struct RenderPassScope final
+private:
+	struct LegacyRenderPassState final
 	{
 		VkRenderPass renderPass = VK_NULL_HANDLE;
 		VkFramebuffer framebuffer = VK_NULL_HANDLE;
-		VkRect2D renderArea{};
-		std::vector<VkClearValue> clearValues;
+		uint32_t currentSubpass = 0;
+		uint32_t subpassCount = 0;
 		VkSubpassContents contents = VK_SUBPASS_CONTENTS_INLINE;
-		const void* next = nullptr;
-		std::vector<SubpassScope> subpassScopes;
 	};
 
-	using Scope = std::variant<PrimaryScope, RenderPassScope>;
+	struct DynamicRenderingState final
+	{
+	};
+
+	using RenderingScopeState = std::variant<
+		std::monostate,
+		LegacyRenderPassState,
+		DynamicRenderingState>;
 
 private:
-	std::vector<Scope> m_scopes;
+	std::vector<const Command*> m_commands;
+	std::vector<std::unique_ptr<Command>> m_ownedCommands;
+	RenderingScopeState m_renderingScopeState;
+	bool m_hasRenderingCommands = false;
+
+private:
+	auto _AppendCommand(const Command* inCommand)->void;
+	auto _AppendOwnedCommand(std::unique_ptr<Command> inCommand)->void;
+	auto _Append(CommandBuffer&& inCommandBuffer)->CommandBuffer&;
 
 public:
 	CommandBuffer() = default;
@@ -43,8 +47,13 @@ public:
 	CommandBuffer& operator=(CommandBuffer&&) noexcept = default;
 	~CommandBuffer() = default;
 
-	auto AppendCommands(const PrimaryScope* inPrimaryScope)->CommandBuffer&;
-	auto AppendRenderPass(const RenderPassScope* inRenderPassScope)->CommandBuffer&;
+	auto BeginRenderPass(
+		const BeginRenderPassCommand::Parameters& inParameters,
+		uint32_t inSubpassCount = 1)->CommandBuffer&;
+	auto NextSubpass(
+		VkSubpassContents inContents = VK_SUBPASS_CONTENTS_INLINE)->CommandBuffer&;
+	auto EndRenderPass()->CommandBuffer&;
 
-	friend class CommandQueue;
+	// Commands are borrowed and must remain alive until this command buffer is enqueued.
+	auto AddCommands(const Command* const* inCommands, size_t inCount)->CommandBuffer&;
 };

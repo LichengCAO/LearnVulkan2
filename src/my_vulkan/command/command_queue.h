@@ -11,8 +11,6 @@ class CommandQueue
 {
 public:
 	// Describes the synchronization objects used by one queue submission.
-	// Each chain is both a wait on its previous signal (when present) and a
-	// signal for the next submission using that chain.
 	class SubmitInfo final
 	{
 		friend class CommandQueue;
@@ -21,10 +19,19 @@ public:
 		struct ChainEntry final
 		{
 			QueueSignalChain* chain = nullptr;
-			VkPipelineStageFlags2 waitStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+			VkPipelineStageFlags2 waitStage = 0;
+			bool useWait = false;
+			bool useSignal = false;
+		};
+		struct WaitSemaphoreEntry final
+		{
+			VkSemaphore semaphore = VK_NULL_HANDLE;
+			VkPipelineStageFlags2 stage = 0;
 		};
 
 		std::vector<ChainEntry> m_chainEntries;
+		std::vector<WaitSemaphoreEntry> m_waitSemaphoreEntries;
+		std::vector<VkSemaphore> m_signalSemaphores;
 		CompletionFence* m_completionFence = nullptr;
 
 	public:
@@ -34,12 +41,17 @@ public:
 		SubmitInfo(SubmitInfo&&) noexcept = default;
 		SubmitInfo& operator=(SubmitInfo&&) noexcept = default;
 
-		// Add a chain to this submission. Duplicate chain entries are merged and
-		// their wait stages are ORed together.
-		auto AddQueueSignalChain(
+		// Duplicate wait requests for a chain are merged by ORing their stages.
+		auto AddWaitQueueSignalChain(
 			QueueSignalChain& inChain,
 			VkPipelineStageFlags2 inWaitStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)
 			-> SubmitInfo&;
+		auto AddSignalQueueSignalChain(QueueSignalChain& inChain)->SubmitInfo&;
+
+		auto AddWaitSemaphore(
+			VkSemaphore inSemaphore,
+			VkPipelineStageFlags2 inWaitStage)->SubmitInfo&;
+		auto AddSemaphoreToSignal(VkSemaphore inSemaphore)->SubmitInfo&;
 
 		auto SetCompletionFence(CompletionFence& inFence) -> SubmitInfo&;
 	};
@@ -78,6 +90,8 @@ public:
 	// is valid; reclamation is deferred until a later fenced submission.
 	virtual auto Submit(SubmitInfo inSubmitInfo)->void;
 	virtual auto Submit()->void;
+	// Waits for all work on this queue and runs deferred recycle actions.
+	virtual auto WaitTillDone()->void;
 
 	auto GetVkQueue() const->VkQueue { return m_vkQueue; };
 	auto GetQueueFamilyIndex() const->uint32_t { return m_queueFamilyIndex; };

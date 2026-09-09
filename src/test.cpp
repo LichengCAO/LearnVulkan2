@@ -93,18 +93,19 @@ struct RenderGraphTestProbe
 		{
 			inContext.RecordCommands([](CommandBuffer* inCommandBuffer)
 			{
-				CommandBuffer::RenderPassScope scope;
-				scope.renderPass = (VkRenderPass)1;
-				scope.framebuffer = (VkFramebuffer)1;
-				scope.subpassScopes.resize(1);
-				inCommandBuffer->AppendRenderPass(&scope);
+				BeginRenderPassCommand::Parameters parameters;
+				parameters.renderPass = (VkRenderPass)1;
+				parameters.framebuffer = (VkFramebuffer)1;
+				inCommandBuffer->BeginRenderPass(parameters);
+				inCommandBuffer->EndRenderPass();
 			});
 		});
 		instance.SetUpPass("opaque", passInfo);
 		CommandBuffer commands;
 		instance._AppendPassCommands(graph.m_buildResult.GetPassIndex("opaque"), commands);
-		return commands.m_scopes.size() == 1 &&
-			std::holds_alternative<CommandBuffer::RenderPassScope>(commands.m_scopes.front());
+		return commands.m_commands.size() == 2 &&
+			dynamic_cast<const BeginRenderPassCommand*>(commands.m_commands[0]) != nullptr &&
+			dynamic_cast<const EndRenderPassCommand*>(commands.m_commands[1]) != nullptr;
 	}
 
 	static auto PassInfoClearOverridesCanBeCustomized() -> bool
@@ -393,6 +394,57 @@ namespace
 				graph.Build();
 			},
 			"Internal render graph image cannot be read before it is written");
+	}
+
+	void TestCommandBufferRenderingScopeStateTransitions()
+	{
+		CommandBuffer commandBuffer;
+		ExpectThrows(
+			[&commandBuffer]()
+			{
+				commandBuffer.NextSubpass();
+			},
+			"NextSubpass requires an active render pass");
+		ExpectThrows(
+			[&commandBuffer]()
+			{
+				commandBuffer.EndRenderPass();
+			},
+			"EndRenderPass requires an active render pass");
+
+		BeginRenderPassCommand::Parameters parameters;
+		parameters.renderPass = (VkRenderPass)1;
+		parameters.framebuffer = (VkFramebuffer)1;
+		BeginRenderPassCommand directBegin;
+		const Command* directCommand = &directBegin;
+		ExpectThrows(
+			[&commandBuffer, &directCommand]()
+			{
+				commandBuffer.AddCommands(&directCommand, 1);
+			},
+			"must be appended through CommandBuffer members");
+
+		commandBuffer.BeginRenderPass(parameters, 2);
+
+		ExpectThrows(
+			[&commandBuffer, &parameters]()
+			{
+				commandBuffer.BeginRenderPass(parameters);
+			},
+			"A rendering scope is already active");
+
+		commandBuffer.NextSubpass();
+		ExpectThrows(
+			[&commandBuffer]()
+			{
+				commandBuffer.NextSubpass();
+			},
+			"No next subpass exists");
+		commandBuffer.EndRenderPass();
+
+		// Ending a scope resets the state machine and permits a new scope.
+		commandBuffer.BeginRenderPass(parameters);
+		commandBuffer.EndRenderPass();
 	}
 
 	void TestInternalAttachmentLoadRequiresWriter()
@@ -1365,6 +1417,7 @@ int main()
 {
 	try
 	{
+		TestCommandBufferRenderingScopeStateTransitions();
 		TestInternalSampledImageRequiresWriter();
 		TestInternalAttachmentLoadRequiresWriter();
 		TestInternalStorageImageCanBeFirstWriter();

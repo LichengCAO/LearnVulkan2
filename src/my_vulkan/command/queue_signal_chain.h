@@ -6,10 +6,11 @@ class CommandQueue;
 
 // A linear GPU-to-GPU dependency chain.
 //
-// Each successful use advances the chain:
+// A chain starts with a signal-only submit, may be advanced by wait-and-signal
+// submits, and must be terminated by a wait-only submit:
 //   first submit  : signal S0
-//   second submit : wait S0, signal S1
-//   third submit  : wait S1, signal S2
+//   middle submit : wait S0, signal S1
+//   final submit  : wait S1
 //
 // The semaphore handles are deliberately hidden from callers. CommandQueue is
 // the only class allowed to translate this object into Vulkan submit data.
@@ -19,7 +20,9 @@ class QueueSignalChain final
 
 private:
 	VkSemaphore m_currentSignal = VK_NULL_HANDLE;
+	VkSemaphore m_preparedWait = VK_NULL_HANDLE;
 	VkSemaphore m_preparedSignal = VK_NULL_HANDLE;
+	bool m_submitPrepared = false;
 
 public:
 	QueueSignalChain() = default;
@@ -33,8 +36,15 @@ public:
 	bool HasPendingSignal() const { return m_currentSignal != VK_NULL_HANDLE; }
 
 private:
-	void PrepareForSubmit(VkSemaphore& outWaitSemaphore, VkSemaphore& outSignalSemaphore);
-	void CommitSubmit(VkSemaphore inSignalSemaphore);
+	void PrepareForSubmit(
+		bool inUseWait,
+		bool inUseSignal,
+		VkSemaphore& outWaitSemaphore,
+		VkSemaphore& outSignalSemaphore);
+	auto CommitSubmit(
+		bool inUseWait,
+		VkSemaphore inWaitSemaphore,
+		VkSemaphore inSignalSemaphore)->VkSemaphore;
 	void AbortSubmit();
 };
 
@@ -43,15 +53,19 @@ Example:
 
 QueueSignalChain uploadToGraphics;
 
-// First submit: signal an internal semaphore.
+// First submit: create and signal the first internal semaphore.
 graphicsQueue.Enqueue(&uploadCommands, 1).Submit(
-    CommandQueue::SubmitInfo{}.AddQueueSignalChain(uploadToGraphics));
+    CommandQueue::SubmitInfo{}.AddSignalQueueSignalChain(uploadToGraphics));
 
-// Later submit: wait for the previous signal at the first consuming stage,
-// then produce the next signal in the same chain.
+// Middle submit: consume the previous signal and produce the next one.
 CommandQueue::SubmitInfo submitInfo;
-submitInfo.AddQueueSignalChain(
+submitInfo.AddWaitQueueSignalChain(
     uploadToGraphics,
-    VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT);
+    VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT)
+    .AddSignalQueueSignalChain(uploadToGraphics);
 graphicsQueue.Enqueue(&drawCommands, 1).Submit(std::move(submitInfo));
+
+// Final submit: consume the tail without producing another signal.
+graphicsQueue.Enqueue(&finishCommands, 1).Submit(
+    CommandQueue::SubmitInfo{}.AddWaitQueueSignalChain(uploadToGraphics));
 */

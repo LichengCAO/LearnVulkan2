@@ -178,15 +178,13 @@ void RenderGraphInstance::ExecutionContext::FillSubpassCommands(
 	std::vector<const Command*> inCommands)
 {
 	CHECK_TRUE(m_pInstance != nullptr, "Render graph execution context is not initialized!");
-	CHECK_TRUE(m_pRenderPassScope != nullptr, "FillSubpassCommands can only be used inside a render pass scope!");
+	CHECK_TRUE(m_pCommandBuffer != nullptr, "FillSubpassCommands needs a command buffer!");
 
 	const PassIndex passIndex = m_pInstance->m_buildResult.GetPassIndex(inTarget);
 	const auto iter = m_passToSubpass.find(passIndex);
 	CHECK_TRUE(iter != m_passToSubpass.end(), "Target pass is not in current render pass scope!");
-	CHECK_TRUE(iter->second < m_pRenderPassScope->subpassScopes.size(), "Invalid target subpass index!");
-
-	auto& commands = m_pRenderPassScope->subpassScopes[iter->second].commands;
-	commands.insert(commands.end(), inCommands.begin(), inCommands.end());
+	CHECK_TRUE(iter->second == m_currentSubpass, "Target pass is not the current subpass!");
+	m_pCommandBuffer->AddCommands(inCommands.data(), inCommands.size());
 }
 
 void RenderGraphInstance::ExecutionContext::RecordCommandBuffer(
@@ -229,13 +227,7 @@ void RenderGraphInstance::PassInfo::CustomizeDepthStencilClearValue(
 	m_depthStencilClearValueOverride = inClearValue;
 }
 
-RenderGraphInstance::QueueSyncInfo::QueueSyncInfo()
-	: graphicsToCompute(m_graphicsToCompute.GetVkSemaphore())
-	, computeToGraphics(m_computeToGraphics.GetVkSemaphore())
-{
-}
-
-void RenderGraphInstance::ExecuteInfo::AddEnteringQueueSyncInfo(const QueueSyncInfo& inQueueSyncInfo)
+void RenderGraphInstance::ExecuteInfo::AddEnteringQueueSyncInfo(QueueSyncInfo& inQueueSyncInfo)
 {
 	m_enteringQueueSyncInfos.push_back(&inQueueSyncInfo);
 }
@@ -247,7 +239,7 @@ void RenderGraphInstance::ExecuteInfo::AddLeavingQueueSyncInfo(QueueSyncInfo& in
 
 void RenderGraphInstance::ExecuteInfo::AddExternalBufferQueueSyncInfo(
 	const std::string& inName,
-	const QueueSyncInfo* inEntering,
+	QueueSyncInfo* inEntering,
 	QueueSyncInfo* inLeaving)
 {
 	CHECK_TRUE(!inName.empty(), "External buffer queue sync name cannot be empty!");
@@ -257,7 +249,7 @@ void RenderGraphInstance::ExecuteInfo::AddExternalBufferQueueSyncInfo(
 
 void RenderGraphInstance::ExecuteInfo::AddExternalImageQueueSyncInfo(
 	const std::string& inName,
-	const QueueSyncInfo* inEntering,
+	QueueSyncInfo* inEntering,
 	QueueSyncInfo* inLeaving)
 {
 	CHECK_TRUE(!inName.empty(), "External image queue sync name cannot be empty!");
@@ -979,11 +971,7 @@ void RenderGraphInstance::_AppendPassCommands(
 	CommandBuffer tmpCommandBuffer;
 	context.m_pCommandBuffer = &tmpCommandBuffer;
 	m_passInfos[inPassIndex].m_process(context);
-
-	for (CommandBuffer::Scope& scope : tmpCommandBuffer.m_scopes)
-	{
-		inCommandBuffer.m_scopes.push_back(std::move(scope));
-	}
+	inCommandBuffer._Append(std::move(tmpCommandBuffer));
 }
 
 void RenderGraphInstance::_AppendRenderPassCommands(
@@ -1001,17 +989,16 @@ void RenderGraphInstance::_AppendRenderPassCommands(
 		inRenderPass.framebuffer->GetVkFramebuffer() != VK_NULL_HANDLE,
 		"Invalid render graph temporary framebuffer!");
 
-	CommandBuffer::RenderPassScope renderPassScope;
-	renderPassScope.renderPass = inRenderPass.renderPass->GetVkRenderPass();
-	renderPassScope.framebuffer = inRenderPass.framebuffer->GetVkFramebuffer();
-	renderPassScope.renderArea = inRenderPass.renderArea;
-	renderPassScope.clearValues = inRenderPass.defaultClearValues;
-	renderPassScope.contents = VK_SUBPASS_CONTENTS_INLINE;
-	renderPassScope.subpassScopes.resize(inPasses.size());
+	BeginRenderPassCommand::Parameters beginParameters;
+	beginParameters.renderPass = inRenderPass.renderPass->GetVkRenderPass();
+	beginParameters.framebuffer = inRenderPass.framebuffer->GetVkFramebuffer();
+	beginParameters.renderArea = inRenderPass.renderArea;
+	beginParameters.clearValues = inRenderPass.defaultClearValues;
+	beginParameters.contents = VK_SUBPASS_CONTENTS_INLINE;
 
 	ExecutionContext context;
 	context.m_pInstance = this;
-	context.m_pRenderPassScope = &renderPassScope;
+	context.m_pCommandBuffer = &inCommandBuffer;
 	context.m_pRenderPass = inRenderPass.renderPass.get();
 	for (size_t subpassIndex = 0; subpassIndex < inPasses.size(); ++subpassIndex)
 	{
@@ -1033,9 +1020,8 @@ void RenderGraphInstance::_AppendRenderPassCommands(
 		return INVALID_INDEX;
 	};
 
-	for (uint32_t subpassIndex = 0; subpassIndex < inPasses.size(); ++subpassIndex)
+	for (PassIndex passIndex : inPasses)
 	{
-		const PassIndex passIndex = inPasses[subpassIndex];
 		CHECK_TRUE(passIndex < m_passInfos.size(), "Invalid render graph pass index!");
 		const PassInfo& passInfo = m_passInfos[passIndex];
 		CHECK_TRUE(passInfo.m_process != nullptr, "Render graph pass process is not set up!");
@@ -1048,8 +1034,8 @@ void RenderGraphInstance::_AppendRenderPassCommands(
 				if (overrideIter != passInfo.m_colorClearValueOverrides.end())
 				{
 					const uint32_t attachmentIndex = funcFindAttachment(usage);
-					CHECK_TRUE(attachmentIndex < renderPassScope.clearValues.size(), "Invalid managed color attachment clear value index!");
-					renderPassScope.clearValues[attachmentIndex].color = overrideIter->second;
+					CHECK_TRUE(attachmentIndex < beginParameters.clearValues.size(), "Invalid managed color attachment clear value index!");
+					beginParameters.clearValues[attachmentIndex].color = overrideIter->second;
 				}
 			}
 			else if (usage.type == RenderGraph::ResourceUsageType::DEPTH_STENCIL_ATTACHMENT &&
@@ -1058,17 +1044,29 @@ void RenderGraphInstance::_AppendRenderPassCommands(
 				if (passInfo.m_depthStencilClearValueOverride.has_value())
 				{
 					const uint32_t attachmentIndex = funcFindAttachment(usage);
-					CHECK_TRUE(attachmentIndex < renderPassScope.clearValues.size(), "Invalid managed depth stencil attachment clear value index!");
-					renderPassScope.clearValues[attachmentIndex].depthStencil = passInfo.m_depthStencilClearValueOverride.value();
+					CHECK_TRUE(attachmentIndex < beginParameters.clearValues.size(), "Invalid managed depth stencil attachment clear value index!");
+					beginParameters.clearValues[attachmentIndex].depthStencil = passInfo.m_depthStencilClearValueOverride.value();
 				}
 			}
 		}
+	}
+
+	inCommandBuffer.BeginRenderPass(beginParameters, static_cast<uint32_t>(inPasses.size()));
+
+	for (uint32_t subpassIndex = 0; subpassIndex < inPasses.size(); ++subpassIndex)
+	{
+		const PassIndex passIndex = inPasses[subpassIndex];
+		const PassInfo& passInfo = m_passInfos[passIndex];
 		context.m_currentPass = passIndex;
 		context.m_currentSubpass = subpassIndex;
 		passInfo.m_process(context);
+		if (subpassIndex + 1 < inPasses.size())
+		{
+			inCommandBuffer.NextSubpass();
+		}
 	}
 
-	inCommandBuffer.AppendRenderPass(&renderPassScope);
+	inCommandBuffer.EndRenderPass();
 }
 
 void RenderGraphInstance::_RecordSubpassCommandBuffer(
@@ -1077,22 +1075,13 @@ void RenderGraphInstance::_RecordSubpassCommandBuffer(
 	ExecutionContext& inContext)
 {
 	CHECK_TRUE(inProcess != nullptr, "Render graph subpass command recording process is empty!");
-	CHECK_TRUE(inContext.m_pRenderPassScope != nullptr, "Subpass command recording needs a render pass scope!");
+	CHECK_TRUE(inContext.m_pCommandBuffer != nullptr, "Subpass command recording needs a command buffer!");
 
 	const auto iter = inContext.m_passToSubpass.find(inPassIndex);
 	CHECK_TRUE(iter != inContext.m_passToSubpass.end(), "Target pass is not in current render pass scope!");
-	CHECK_TRUE(iter->second < inContext.m_pRenderPassScope->subpassScopes.size(), "Invalid target subpass index!");
+	CHECK_TRUE(iter->second == inContext.m_currentSubpass, "Target pass is not the current subpass!");
 
-	CommandBuffer tmpCommandBuffer;
-	inProcess(&tmpCommandBuffer);
-
-	for (CommandBuffer::Scope& scope : tmpCommandBuffer.m_scopes)
-	{
-		CHECK_TRUE(std::holds_alternative<CommandBuffer::PrimaryScope>(scope), "Subpass can only append primary command scopes!");
-		auto& srcCommands = std::get<CommandBuffer::PrimaryScope>(scope).commands;
-		auto& dstCommands = inContext.m_pRenderPassScope->subpassScopes[iter->second].commands;
-		dstCommands.insert(dstCommands.end(), srcCommands.begin(), srcCommands.end());
-	}
+	inProcess(inContext.m_pCommandBuffer);
 }
 
 auto RenderGraphInstance::_AcquireSemaphore() -> VkSemaphore
@@ -1388,47 +1377,47 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 	CHECK_TRUE(graphicsQueue != nullptr, "Graphics command queue is not available!");
 	CHECK_TRUE(computeQueue != nullptr, "Compute command queue is not available!");
 
-	std::vector<std::vector<VkSemaphore>> externalWaits(m_compiledPlan.submitBatches.size() * 2);
-	std::vector<std::vector<VkSemaphore>> externalSignals(m_compiledPlan.submitBatches.size() * 2);
-	std::vector<std::unordered_set<VkSemaphore>> externalWaitSets(m_compiledPlan.submitBatches.size() * 2);
-	std::vector<std::unordered_set<VkSemaphore>> externalSignalSets(m_compiledPlan.submitBatches.size() * 2);
-	std::unordered_set<const QueueSyncInfo*> enteringObjects;
+	std::vector<std::vector<QueueSignalChain*>> externalWaits(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::vector<QueueSignalChain*>> externalSignals(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::unordered_set<QueueSignalChain*>> externalWaitSets(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::unordered_set<QueueSignalChain*>> externalSignalSets(m_compiledPlan.submitBatches.size() * 2);
+	std::unordered_set<QueueSyncInfo*> enteringObjects;
 	std::unordered_set<QueueSyncInfo*> leavingObjects;
 
-	auto funcAddWait = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, VkSemaphore inSemaphore)
+	auto funcAddWait = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, QueueSignalChain& inChain)
 	{
-		if (inSubmit == INVALID_INDEX || inSemaphore == VK_NULL_HANDLE)
+		if (inSubmit == INVALID_INDEX)
 		{
 			return;
 		}
 		const size_t index = static_cast<size_t>(inSubmit) * 2 + (inQueue == RenderGraph::QueueType::GRAPHICS ? 0 : 1);
-		if (externalWaitSets[index].insert(inSemaphore).second)
+		if (externalWaitSets[index].insert(&inChain).second)
 		{
-			externalWaits[index].push_back(inSemaphore);
+			externalWaits[index].push_back(&inChain);
 		}
 	};
-	auto funcAddSignal = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, VkSemaphore inSemaphore)
+	auto funcAddSignal = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, QueueSignalChain& inChain)
 	{
-		if (inSubmit == INVALID_INDEX || inSemaphore == VK_NULL_HANDLE)
+		if (inSubmit == INVALID_INDEX)
 		{
 			return;
 		}
 		const size_t index = static_cast<size_t>(inSubmit) * 2 + (inQueue == RenderGraph::QueueType::GRAPHICS ? 0 : 1);
-		if (externalSignalSets[index].insert(inSemaphore).second)
+		if (externalSignalSets[index].insert(&inChain).second)
 		{
-			externalSignals[index].push_back(inSemaphore);
+			externalSignals[index].push_back(&inChain);
 		}
 	};
 
-	auto funcBindEntering = [&](const QueueSyncInfo& inSync, const RenderGraph::SubmitBoundary& inBoundary)
+	auto funcBindEntering = [&](QueueSyncInfo& inSync, const RenderGraph::SubmitBoundary& inBoundary)
 	{
 		if (!enteringObjects.insert(&inSync).second)
 		{
 			return;
 		}
 		CHECK_TRUE(!inSync.m_enteringUsed, "QueueSyncInfo entering connection was already used!");
-		funcAddWait(inBoundary.firstComputeSubmit, RenderGraph::QueueType::COMPUTE, inSync.GetGraphicsToComputeSemaphore());
-		funcAddWait(inBoundary.firstGraphicsSubmit, RenderGraph::QueueType::GRAPHICS, inSync.GetComputeToGraphicsSemaphore());
+		funcAddWait(inBoundary.firstComputeSubmit, RenderGraph::QueueType::COMPUTE, inSync.m_graphicsToCompute);
+		funcAddWait(inBoundary.firstGraphicsSubmit, RenderGraph::QueueType::GRAPHICS, inSync.m_computeToGraphics);
 	};
 	auto funcBindLeaving = [&](QueueSyncInfo& inSync, const RenderGraph::SubmitBoundary& inBoundary)
 	{
@@ -1437,11 +1426,11 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 			return;
 		}
 		CHECK_TRUE(!inSync.m_leavingUsed, "QueueSyncInfo leaving connection was already used!");
-		funcAddSignal(inBoundary.lastGraphicsSubmit, RenderGraph::QueueType::GRAPHICS, inSync.GetGraphicsToComputeSemaphore());
-		funcAddSignal(inBoundary.lastComputeSubmit, RenderGraph::QueueType::COMPUTE, inSync.GetComputeToGraphicsSemaphore());
+		funcAddSignal(inBoundary.lastGraphicsSubmit, RenderGraph::QueueType::GRAPHICS, inSync.m_graphicsToCompute);
+		funcAddSignal(inBoundary.lastComputeSubmit, RenderGraph::QueueType::COMPUTE, inSync.m_computeToGraphics);
 	};
 
-	for (const QueueSyncInfo* sync : inExecuteInfo.m_enteringQueueSyncInfos)
+	for (QueueSyncInfo* sync : inExecuteInfo.m_enteringQueueSyncInfos)
 	{
 		CHECK_TRUE(sync != nullptr, "Render graph entering QueueSyncInfo is null!");
 		funcBindEntering(*sync, m_buildResult.GetGraphSubmitBoundary());
@@ -1484,12 +1473,12 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 	{
 		funcBindResource(resource, false);
 	}
-	for (const QueueSyncInfo* sync : enteringObjects)
+	for (QueueSyncInfo* sync : enteringObjects)
 	{
-		CHECK_TRUE(leavingObjects.find(const_cast<QueueSyncInfo*>(sync)) == leavingObjects.end(),
+		CHECK_TRUE(leavingObjects.find(sync) == leavingObjects.end(),
 			"QueueSyncInfo cannot be entering and leaving in the same Execute!");
 	}
-	for (const QueueSyncInfo* sync : enteringObjects)
+	for (QueueSyncInfo* sync : enteringObjects)
 	{
 		sync->m_enteringUsed = true;
 	}
@@ -1514,20 +1503,20 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 			return false;
 		}
 
-		CommandBuffer::PrimaryScope scope;
-		scope.commands.reserve(inCommands.size());
+		std::vector<const Command*> commands;
+		commands.reserve(inCommands.size());
 		for (const std::unique_ptr<Command>& command : inCommands)
 		{
 			CHECK_TRUE(command != nullptr, "Compiled render graph command cannot be null!");
-			scope.commands.push_back(command.get());
+			commands.push_back(command.get());
 		}
-		inCommandBuffer.AppendCommands(&scope);
+		inCommandBuffer.AddCommands(commands.data(), commands.size());
 		return true;
 	};
 
-	auto funcFillSyncInfo = [&](const std::vector<uint32_t>& inWaits, const std::vector<uint32_t>& inSignals)->CommandQueue::SyncInfo
+	auto funcFillSyncInfo = [&](const std::vector<uint32_t>& inWaits, const std::vector<uint32_t>& inSignals)->CommandQueue::SubmitInfo
 	{
-		CommandQueue::SyncInfo syncInfo;
+		CommandQueue::SubmitInfo syncInfo;
 		for (uint32_t syncEdge : inWaits)
 		{
 			CHECK_TRUE(syncEdge < queueSyncSemaphores.size(), "Invalid render graph queue wait sync edge!");
@@ -1550,16 +1539,18 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 		return syncInfo;
 	};
 
-	auto funcAppendExternalSync = [&](CommandQueue::SyncInfo& inoutSyncInfo, uint32_t inSubmitIndex, RenderGraph::QueueType inQueue)
+	auto funcAppendExternalSync = [&](CommandQueue::SubmitInfo& inoutSyncInfo, uint32_t inSubmitIndex, RenderGraph::QueueType inQueue)
 	{
 		const size_t index = static_cast<size_t>(inSubmitIndex) * 2 + (inQueue == RenderGraph::QueueType::GRAPHICS ? 0 : 1);
-		for (VkSemaphore semaphore : externalWaits[index])
+		for (QueueSignalChain* chain : externalWaits[index])
 		{
-			inoutSyncInfo.AddWaitSemaphore(semaphore, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+			CHECK_TRUE(chain != nullptr, "External queue wait chain is null!");
+			inoutSyncInfo.AddWaitQueueSignalChain(*chain, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 		}
-		for (VkSemaphore semaphore : externalSignals[index])
+		for (QueueSignalChain* chain : externalSignals[index])
 		{
-			inoutSyncInfo.AddSemaphoreToSignal(semaphore);
+			CHECK_TRUE(chain != nullptr, "External queue signal chain is null!");
+			inoutSyncInfo.AddSignalQueueSignalChain(*chain);
 		}
 	};
 
@@ -1617,14 +1608,14 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 
 		if (hasGraphicsCommands)
 		{
-			CommandQueue::SyncInfo syncInfo = funcFillSyncInfo(submitBatch.graphicsWaitSyncs, submitBatch.graphicsSignalSyncs);
+			CommandQueue::SubmitInfo syncInfo = funcFillSyncInfo(submitBatch.graphicsWaitSyncs, submitBatch.graphicsSignalSyncs);
 			funcAppendExternalSync(syncInfo, submitIndex, RenderGraph::QueueType::GRAPHICS);
 			graphicsQueue->Enqueue(&graphicsCommandBuffer, 1).Submit(std::move(syncInfo));
 			m_submittedGraphicsCommands = true;
 		}
 		if (hasComputeCommands)
 		{
-			CommandQueue::SyncInfo syncInfo = funcFillSyncInfo(submitBatch.computeWaitSyncs, submitBatch.computeSignalSyncs);
+			CommandQueue::SubmitInfo syncInfo = funcFillSyncInfo(submitBatch.computeWaitSyncs, submitBatch.computeSignalSyncs);
 			funcAppendExternalSync(syncInfo, submitIndex, RenderGraph::QueueType::COMPUTE);
 			computeQueue->Enqueue(&computeCommandBuffer, 1).Submit(std::move(syncInfo));
 			m_submittedComputeCommands = true;

@@ -75,6 +75,20 @@ public:
 	virtual auto Record(VkCommandBuffer inVkCommandBuffer) const->void override;
 };
 
+class NextSubpassCommand final : public Command
+{
+private:
+	VkSubpassContents m_contents = VK_SUBPASS_CONTENTS_INLINE;
+
+public:
+	auto SetContents(VkSubpassContents inContents)->NextSubpassCommand&
+	{
+		m_contents = inContents;
+		return *this;
+	}
+	virtual auto Record(VkCommandBuffer inVkCommandBuffer) const->void override;
+};
+
 class EndRenderPassCommand final : public Command
 {
 public:

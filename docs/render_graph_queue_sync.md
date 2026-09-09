@@ -19,8 +19,8 @@
 ```cpp
 struct QueueSyncInfo
 {
-    VkSemaphore graphicsToCompute;
-    VkSemaphore computeToGraphics;
+    QueueSignalChain graphicsToCompute;
+    QueueSignalChain computeToGraphics;
 };
 ```
 
@@ -39,7 +39,7 @@ struct QueueSyncInfo
 
 ### 所有权和一次性检查
 
-`QueueSyncInfo` 使用 `my_vulkan::Semaphore` 管理两个 semaphore 的所有权。对象不可复制，建议不可移动，以保证绑定引用稳定。
+`QueueSyncInfo` 使用两个 `QueueSignalChain` 管理同步方向和 semaphore 生命周期。对象不可复制、不可移动，以保证提交期间绑定引用稳定。chain 在 producer signal submit 时才分配 semaphore，在 consumer wait submit 完成后由 `CommandQueue` 回收。
 
 内部维护两个使用标志：
 
@@ -57,9 +57,9 @@ LEAVING_USED
 - 第二次跨 Execute 使用时直接报错；
 - 不提供 reset 或复用接口，新的 graph 连接必须创建新的对象。
 
-entering API 可以接受 `const QueueSyncInfo&`，因为只读取 semaphore；内部使用标记可以通过逻辑 const 的 mutable 状态记录。leaving API 接受 `QueueSyncInfo&`，用于登记 signal 使用。
+entering 和 leaving API 都接受 `QueueSyncInfo&`。signal 会推进 chain，wait 会消费并清空 chain，因此两种操作都会修改同步对象。
 
-对象必须保持有效，直到 producer signal 和 consumer wait 都完成。析构 `Semaphore` 只会把 Vulkan handle 交回 allocator，不代表可以在 GPU 仍使用时提前销毁。
+对象必须保持有效，直到 producer signal 和 consumer wait 都提交完成。正常的 consumer wait 会将 semaphore 移交给 `CommandQueue`，由 completion fence 或 queue drain 延迟回收；未被消费的 signal 在 chain 析构时只能等待设备空闲并销毁，不能直接作为未 signaled semaphore 复用。
 
 ## ExecuteInfo
 
@@ -68,17 +68,17 @@ entering API 可以接受 `const QueueSyncInfo&`，因为只读取 semaphore；�
 ```cpp
 struct ExecuteInfo
 {
-    void AddEnteringQueueSyncInfo(const QueueSyncInfo&);
+    void AddEnteringQueueSyncInfo(QueueSyncInfo&);
     void AddLeavingQueueSyncInfo(QueueSyncInfo&);
 
     void AddExternalBufferQueueSyncInfo(
         const std::string& name,
-        const QueueSyncInfo* entering,
+        QueueSyncInfo* entering,
         QueueSyncInfo* leaving);
 
     void AddExternalImageQueueSyncInfo(
         const std::string& name,
-        const QueueSyncInfo* entering,
+        QueueSyncInfo* entering,
         QueueSyncInfo* leaving);
 };
 ```
@@ -163,7 +163,7 @@ struct SubmitBoundary
 3. 根据 `BuildResult` 获取 graph/resource 的 `SubmitBoundary`；
 4. 按 QueueSyncInfo 对象地址去重并聚合目标 submit；
 5. 检查 entering/leaving 一次性使用状态；
-6. 将外部 semaphore 加入对应 submit 的 `CommandQueue::SyncInfo`；
+6. 将外部 chain 以显式 wait/signal 语义加入对应 submit 的 `CommandQueue::SubmitInfo`；
 7. 合并现有 graph 内部 queue-sync edge semaphore；
 8. 按 Vulkan handle 去重每个 submit 的 wait/signal 列表；
 9. 提交 graphics/compute queue；

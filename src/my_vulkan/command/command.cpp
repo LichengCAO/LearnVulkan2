@@ -24,6 +24,13 @@ auto EndRenderPassCommand::Record(VkCommandBuffer inVkCommandBuffer) const->void
 	vkCmdEndRenderPass(inVkCommandBuffer);
 }
 
+auto NextSubpassCommand::Record(VkCommandBuffer inVkCommandBuffer) const->void
+{
+	CHECK_TRUE(inVkCommandBuffer != VK_NULL_HANDLE, "Invalid command buffer!");
+
+	vkCmdNextSubpass(inVkCommandBuffer, m_contents);
+}
+
 auto PipelineBarrierCommand::Record(VkCommandBuffer inVkCommandBuffer) const->void
 {
 	CHECK_TRUE(inVkCommandBuffer != VK_NULL_HANDLE, "Invalid command buffer!");

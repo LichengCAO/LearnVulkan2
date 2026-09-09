@@ -3,21 +3,15 @@
 #include "device.h"
 
 #include <iterator>
+#include <unordered_set>
 
 namespace
 {
 	constexpr size_t COMMAND_COUNT_PER_VK_COMMAND_BUFFER = 256;
 
-	struct _ScopeRecordItem final
-	{
-		CommandBuffer::Scope scope;
-		size_t commandCount = 0;
-	};
-
 	struct _CommandBufferRecordBatch final
 	{
-		std::vector<_ScopeRecordItem> scopes;
-		size_t commandCount = 0;
+		std::vector<const Command*> commands;
 		VkCommandBuffer vkCommandBuffer = VK_NULL_HANDLE;
 	};
 
@@ -26,77 +20,6 @@ namespace
 		std::vector<size_t> commandBufferBatchIndices;
 	};
 
-	auto _CountRenderPassScopeCommands(const CommandBuffer::RenderPassScope& inScope)->size_t
-	{
-		size_t result = 0;
-		for (const CommandBuffer::SubpassScope& subpassScope : inScope.subpassScopes)
-		{
-			result += subpassScope.commands.size();
-		}
-
-		return result;
-	}
-
-	auto _RecordPrimaryScope(VkCommandBuffer inVkCommandBuffer, const CommandBuffer::PrimaryScope& inScope)->void
-	{
-		for (const Command* command : inScope.commands)
-		{
-			CHECK_TRUE(command != nullptr, "Invalid command!");
-			command->Record(inVkCommandBuffer);
-		}
-	}
-
-	auto _RecordRenderPassScope(VkCommandBuffer inVkCommandBuffer, const CommandBuffer::RenderPassScope& inScope)->void
-	{
-		CHECK_TRUE(inScope.renderPass != VK_NULL_HANDLE, "Invalid render pass!");
-		CHECK_TRUE(inScope.framebuffer != VK_NULL_HANDLE, "Invalid framebuffer!");
-		CHECK_TRUE(inScope.contents == VK_SUBPASS_CONTENTS_INLINE, "Only inline render pass scopes are supported!");
-
-		BeginRenderPassCommand::Parameters beginParameters;
-		beginParameters.renderPass = inScope.renderPass;
-		beginParameters.framebuffer = inScope.framebuffer;
-		beginParameters.renderArea = inScope.renderArea;
-		beginParameters.clearValues = inScope.clearValues;
-		beginParameters.contents = inScope.contents;
-		beginParameters.next = inScope.next;
-
-		BeginRenderPassCommand beginRenderPassCommand;
-		beginRenderPassCommand.SetParameters(beginParameters).Record(inVkCommandBuffer);
-
-		for (size_t subpassIndex = 0; subpassIndex < inScope.subpassScopes.size(); ++subpassIndex)
-		{
-			const CommandBuffer::SubpassScope& subpassScope = inScope.subpassScopes[subpassIndex];
-			for (const Command* command : subpassScope.commands)
-			{
-				CHECK_TRUE(command != nullptr, "Invalid command!");
-				command->Record(inVkCommandBuffer);
-			}
-
-			if (subpassIndex + 1 < inScope.subpassScopes.size())
-			{
-				vkCmdNextSubpass(inVkCommandBuffer, inScope.contents);
-			}
-		}
-
-		EndRenderPassCommand{}.Record(inVkCommandBuffer);
-	}
-
-	auto _RecordScope(VkCommandBuffer inVkCommandBuffer, const _ScopeRecordItem& inScope)->void
-	{
-		if (std::holds_alternative<CommandBuffer::PrimaryScope>(inScope.scope))
-		{
-			_RecordPrimaryScope(inVkCommandBuffer, std::get<CommandBuffer::PrimaryScope>(inScope.scope));
-		}
-		else if (std::holds_alternative<CommandBuffer::RenderPassScope>(inScope.scope))
-		{
-			_RecordRenderPassScope(inVkCommandBuffer, std::get<CommandBuffer::RenderPassScope>(inScope.scope));
-		}
-		else
-		{
-			CHECK_TRUE(false, "Unsupported command buffer scope!");
-		}
-	}
-
 	auto _RecordCommandBufferBatch(const _CommandBufferRecordBatch& inBatch)->void
 	{
 		CHECK_TRUE(inBatch.vkCommandBuffer != VK_NULL_HANDLE, "Invalid command buffer!");
@@ -104,9 +27,10 @@ namespace
 		VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 		VK_CHECK(vkBeginCommandBuffer(inBatch.vkCommandBuffer, &beginInfo), "Failed to begin command buffer!");
 
-		for (const _ScopeRecordItem& scope : inBatch.scopes)
+		for (const Command* command : inBatch.commands)
 		{
-			_RecordScope(inBatch.vkCommandBuffer, scope);
+			CHECK_TRUE(command != nullptr, "Invalid command!");
+			command->Record(inBatch.vkCommandBuffer);
 		}
 
 		VK_CHECK(vkEndCommandBuffer(inBatch.vkCommandBuffer), "Failed to end command buffer!");
@@ -127,7 +51,7 @@ namespace
 	}
 }
 
-auto CommandQueue::SubmitInfo::AddQueueSignalChain(
+auto CommandQueue::SubmitInfo::AddWaitQueueSignalChain(
 	QueueSignalChain& inChain,
 	VkPipelineStageFlags2 inWaitStage)->SubmitInfo&
 {
@@ -137,11 +61,44 @@ auto CommandQueue::SubmitInfo::AddQueueSignalChain(
 		if (entry.chain == &inChain)
 		{
 			entry.waitStage |= inWaitStage;
+			entry.useWait = true;
 			return *this;
 		}
 	}
 
-	m_chainEntries.push_back({ &inChain, inWaitStage });
+	m_chainEntries.push_back({ &inChain, inWaitStage, true, false });
+	return *this;
+}
+
+auto CommandQueue::SubmitInfo::AddSignalQueueSignalChain(QueueSignalChain& inChain)->SubmitInfo&
+{
+	for (ChainEntry& entry : m_chainEntries)
+	{
+		if (entry.chain == &inChain)
+		{
+			entry.useSignal = true;
+			return *this;
+		}
+	}
+
+	m_chainEntries.push_back({ &inChain, 0, false, true });
+	return *this;
+}
+
+auto CommandQueue::SubmitInfo::AddWaitSemaphore(
+	VkSemaphore inSemaphore,
+	VkPipelineStageFlags2 inWaitStage)->SubmitInfo&
+{
+	CHECK_TRUE(inSemaphore != VK_NULL_HANDLE, "Invalid wait semaphore!");
+	CHECK_TRUE(inWaitStage != 0, "Invalid wait stage!");
+	m_waitSemaphoreEntries.push_back({ inSemaphore, inWaitStage });
+	return *this;
+}
+
+auto CommandQueue::SubmitInfo::AddSemaphoreToSignal(VkSemaphore inSemaphore)->SubmitInfo&
+{
+	CHECK_TRUE(inSemaphore != VK_NULL_HANDLE, "Invalid signal semaphore!");
+	m_signalSemaphores.push_back(inSemaphore);
 	return *this;
 }
 
@@ -289,35 +246,77 @@ auto CommandQueue::Submit(SubmitInfo inSubmitInfo)->void
 	std::vector<VkSemaphoreSubmitInfo> waitInfos;
 	std::vector<VkSemaphoreSubmitInfo> signalInfos;
 	std::vector<VkSemaphore> consumedSemaphores;
-	std::vector<VkSemaphore> preparedSemaphores;
-	waitInfos.reserve(inSubmitInfo.m_chainEntries.size());
-	signalInfos.reserve(inSubmitInfo.m_chainEntries.size());
+	waitInfos.reserve(inSubmitInfo.m_chainEntries.size() + inSubmitInfo.m_waitSemaphoreEntries.size());
+	signalInfos.reserve(inSubmitInfo.m_chainEntries.size() + inSubmitInfo.m_signalSemaphores.size());
 	consumedSemaphores.reserve(inSubmitInfo.m_chainEntries.size());
-	preparedSemaphores.reserve(inSubmitInfo.m_chainEntries.size());
+
+	std::vector<VkSemaphore> preparedWaitSemaphores;
+	std::vector<VkSemaphore> preparedSignalSemaphores;
+	preparedWaitSemaphores.reserve(inSubmitInfo.m_chainEntries.size());
+	preparedSignalSemaphores.reserve(inSubmitInfo.m_chainEntries.size());
+
+	std::unordered_set<VkSemaphore> waitHandles;
+	std::unordered_set<VkSemaphore> signalHandles;
+	waitHandles.reserve(inSubmitInfo.m_chainEntries.size() + inSubmitInfo.m_waitSemaphoreEntries.size());
+	signalHandles.reserve(inSubmitInfo.m_chainEntries.size() + inSubmitInfo.m_signalSemaphores.size());
 
 	try
 	{
+		for (const SubmitInfo::WaitSemaphoreEntry& entry : inSubmitInfo.m_waitSemaphoreEntries)
+		{
+			CHECK_TRUE(waitHandles.insert(entry.semaphore).second,
+				"A semaphore cannot appear more than once in queue wait list!");
+
+			VkSemaphoreSubmitInfo waitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+			waitInfo.semaphore = entry.semaphore;
+			waitInfo.stageMask = entry.stage;
+			waitInfos.push_back(waitInfo);
+		}
+		for (VkSemaphore semaphore : inSubmitInfo.m_signalSemaphores)
+		{
+			CHECK_TRUE(signalHandles.insert(semaphore).second,
+				"A semaphore cannot appear more than once in queue signal list!");
+
+			VkSemaphoreSubmitInfo signalInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+			signalInfo.semaphore = semaphore;
+			signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+			signalInfos.push_back(signalInfo);
+		}
+
 		for (const SubmitInfo::ChainEntry& entry : inSubmitInfo.m_chainEntries)
 		{
 			CHECK_TRUE(entry.chain != nullptr, "Queue signal chain entry is null!");
 			VkSemaphore waitSemaphore = VK_NULL_HANDLE;
 			VkSemaphore signalSemaphore = VK_NULL_HANDLE;
-			entry.chain->PrepareForSubmit(waitSemaphore, signalSemaphore);
-			preparedSemaphores.push_back(signalSemaphore);
+			entry.chain->PrepareForSubmit(entry.useWait, entry.useSignal, waitSemaphore, signalSemaphore);
+			preparedWaitSemaphores.push_back(waitSemaphore);
+			preparedSignalSemaphores.push_back(signalSemaphore);
 
 			if (waitSemaphore != VK_NULL_HANDLE)
 			{
+				CHECK_TRUE(waitHandles.insert(waitSemaphore).second,
+					"A semaphore cannot appear in both duplicate queue wait entries!");
 				VkSemaphoreSubmitInfo waitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
 				waitInfo.semaphore = waitSemaphore;
 				waitInfo.stageMask = entry.waitStage;
 				waitInfos.push_back(waitInfo);
-				consumedSemaphores.push_back(waitSemaphore);
 			}
 
-			VkSemaphoreSubmitInfo signalInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
-			signalInfo.semaphore = signalSemaphore;
-			signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-			signalInfos.push_back(signalInfo);
+			if (signalSemaphore != VK_NULL_HANDLE)
+			{
+				CHECK_TRUE(signalHandles.insert(signalSemaphore).second,
+					"A semaphore cannot appear in both duplicate queue signal entries!");
+				VkSemaphoreSubmitInfo signalInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+				signalInfo.semaphore = signalSemaphore;
+				signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+				signalInfos.push_back(signalInfo);
+			}
+		}
+
+		for (VkSemaphore semaphore : waitHandles)
+		{
+			CHECK_TRUE(signalHandles.find(semaphore) == signalHandles.end(),
+				"A semaphore cannot be both waited and signaled in one queue submit!");
 		}
 
 		if (inSubmitInfo.m_completionFence != nullptr)
@@ -350,7 +349,15 @@ auto CommandQueue::Submit(SubmitInfo inSubmitInfo)->void
 
 		for (size_t chainIndex = 0; chainIndex < inSubmitInfo.m_chainEntries.size(); ++chainIndex)
 		{
-			inSubmitInfo.m_chainEntries[chainIndex].chain->CommitSubmit(preparedSemaphores[chainIndex]);
+			const SubmitInfo::ChainEntry& entry = inSubmitInfo.m_chainEntries[chainIndex];
+			const VkSemaphore consumedSemaphore = entry.chain->CommitSubmit(
+				entry.useWait,
+				preparedWaitSemaphores[chainIndex],
+				preparedSignalSemaphores[chainIndex]);
+			if (consumedSemaphore != VK_NULL_HANDLE)
+			{
+				consumedSemaphores.push_back(consumedSemaphore);
+			}
 		}
 
 		std::vector<std::function<void()>> recycleActions;
@@ -418,6 +425,27 @@ auto CommandQueue::Submit(SubmitInfo inSubmitInfo)->void
 	}
 }
 
+auto CommandQueue::WaitTillDone()->void
+{
+	CHECK_TRUE(m_vkQueue != VK_NULL_HANDLE, "Command queue is not created!");
+
+	MyDevice::GetInstance().WaitIdle();
+	for (CompletionFence*& fence : m_frameCompletionFences)
+	{
+		if (fence != nullptr)
+		{
+			fence->Wait();
+			fence = nullptr;
+		}
+	}
+
+	if (!m_pendingRecycleActions.empty())
+	{
+		_RunRecycleActions(std::move(m_pendingRecycleActions));
+		m_pendingRecycleActions.clear();
+	}
+}
+
 auto CommandQueue::Submit()->void
 {
 	Submit(SubmitInfo{});
@@ -432,77 +460,63 @@ auto CommandQueue::_RecordCommandBuffer(CommandBuffer* inCommandBuffers, size_t 
 
 	CHECK_TRUE(inCommandBuffers != nullptr, "No command buffers!");
 
-	std::vector<_ScopeRecordItem> scopeItems;
-
-	// Move all input scopes into a local linear stream. This consumes the input
-	// CommandBuffers and keeps Vulkan scope boundaries intact for batching.
-	for (size_t commandBufferIndex = 0; commandBufferIndex < inCount; ++commandBufferIndex)
-	{
-		CommandBuffer& commandBuffer = inCommandBuffers[commandBufferIndex];
-
-		for (CommandBuffer::Scope& scopeVariant : commandBuffer.m_scopes)
-		{
-			if (std::holds_alternative<CommandBuffer::PrimaryScope>(scopeVariant))
-			{
-				const auto& primaryScope = std::get<CommandBuffer::PrimaryScope>(scopeVariant);
-				if (primaryScope.commands.empty())
-				{
-					continue;
-				}
-
-				_ScopeRecordItem item;
-				item.commandCount = primaryScope.commands.size();
-				item.scope = std::move(scopeVariant);
-				scopeItems.push_back(std::move(item));
-			}
-			else if (std::holds_alternative<CommandBuffer::RenderPassScope>(scopeVariant))
-			{
-				const auto& renderPassScope = std::get<CommandBuffer::RenderPassScope>(scopeVariant);
-				const size_t commandCount = _CountRenderPassScopeCommands(renderPassScope);
-				if (commandCount == 0)
-				{
-					continue;
-				}
-
-				_ScopeRecordItem item;
-				item.commandCount = commandCount;
-				item.scope = std::move(scopeVariant);
-				scopeItems.push_back(std::move(item));
-			}
-			else
-			{
-				CHECK_TRUE(false, "Unsupported command buffer scope!");
-			}
-		}
-
-		commandBuffer.m_scopes.clear();
-	}
-
+	std::vector<CommandBuffer*> consumedCommandBuffers;
+	consumedCommandBuffers.reserve(inCount);
 	std::vector<_CommandBufferRecordBatch> commandBufferBatches;
 	_CommandBufferRecordBatch currentBatch;
 
-	// Pack multiple scopes into one VkCommandBuffer until the command-count budget is
-	// reached. A single oversized scope is never split, so render pass validity is preserved.
-	for (_ScopeRecordItem& scopeItem : scopeItems)
+	for (size_t commandBufferIndex = 0; commandBufferIndex < inCount; ++commandBufferIndex)
 	{
-		if (!currentBatch.scopes.empty() &&
-			currentBatch.commandCount + scopeItem.commandCount > COMMAND_COUNT_PER_VK_COMMAND_BUFFER)
+		CommandBuffer& commandBuffer = inCommandBuffers[commandBufferIndex];
+		CHECK_TRUE(
+			std::holds_alternative<std::monostate>(commandBuffer.m_renderingScopeState),
+			"Command buffer has an active rendering scope!");
+		consumedCommandBuffers.push_back(&commandBuffer);
+
+		// Rendering state cannot be inherited by another VkCommandBuffer. Keep a stream
+		// containing rendering commands in one physical command buffer for now.
+		if (commandBuffer.m_hasRenderingCommands)
 		{
-			commandBufferBatches.push_back(std::move(currentBatch));
-			currentBatch = _CommandBufferRecordBatch{};
+			if (!currentBatch.commands.empty())
+			{
+				commandBufferBatches.push_back(std::move(currentBatch));
+				currentBatch = _CommandBufferRecordBatch{};
+			}
+
+			if (!commandBuffer.m_commands.empty())
+			{
+				_CommandBufferRecordBatch renderingBatch;
+				renderingBatch.commands = commandBuffer.m_commands;
+				commandBufferBatches.push_back(std::move(renderingBatch));
+			}
+			continue;
 		}
 
-		currentBatch.commandCount += scopeItem.commandCount;
-		currentBatch.scopes.push_back(std::move(scopeItem));
+		for (const Command* command : commandBuffer.m_commands)
+		{
+			if (currentBatch.commands.size() >= COMMAND_COUNT_PER_VK_COMMAND_BUFFER)
+			{
+				commandBufferBatches.push_back(std::move(currentBatch));
+				currentBatch = _CommandBufferRecordBatch{};
+			}
+			currentBatch.commands.push_back(command);
+		}
 	}
 
-	if (!currentBatch.scopes.empty())
+	if (!currentBatch.commands.empty())
 	{
 		commandBufferBatches.push_back(std::move(currentBatch));
 	}
 
 	if (commandBufferBatches.empty())
 	{
+		for (CommandBuffer* commandBuffer : consumedCommandBuffers)
+		{
+			commandBuffer->m_commands.clear();
+			commandBuffer->m_ownedCommands.clear();
+			commandBuffer->m_renderingScopeState = std::monostate{};
+			commandBuffer->m_hasRenderingCommands = false;
+		}
 		return;
 	}
 
@@ -549,5 +563,13 @@ auto CommandQueue::_RecordCommandBuffer(CommandBuffer* inCommandBuffers, size_t 
 		{
 			_RecordCommandBufferBatch(commandBufferBatches[commandBufferBatchIndex]);
 		}
+	}
+
+	for (CommandBuffer* commandBuffer : consumedCommandBuffers)
+	{
+		commandBuffer->m_commands.clear();
+		commandBuffer->m_ownedCommands.clear();
+		commandBuffer->m_renderingScopeState = std::monostate{};
+		commandBuffer->m_hasRenderingCommands = false;
 	}
 }

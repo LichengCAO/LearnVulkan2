@@ -1,6 +1,6 @@
 #pragma once
 #include "render_graph.h"
-#include "my_vulkan/command/semaphore.h"
+#include "my_vulkan/command/queue_signal_chain.h"
 
 class GraphicsPipelineStateInfo;
 
@@ -20,25 +20,17 @@ public:
 		friend struct RenderGraphTestProbe;
 
 	private:
-		Semaphore m_graphicsToCompute;
-		Semaphore m_computeToGraphics;
-		mutable bool m_enteringUsed = false;
+		QueueSignalChain m_graphicsToCompute;
+		QueueSignalChain m_computeToGraphics;
+		bool m_enteringUsed = false;
 		bool m_leavingUsed = false;
 
 	public:
-		const VkSemaphore graphicsToCompute;
-		const VkSemaphore computeToGraphics;
-
-		QueueSyncInfo();
+		QueueSyncInfo() = default;
 		QueueSyncInfo(const QueueSyncInfo&) = delete;
 		QueueSyncInfo& operator=(const QueueSyncInfo&) = delete;
 		QueueSyncInfo(QueueSyncInfo&&) = delete;
 		QueueSyncInfo& operator=(QueueSyncInfo&&) = delete;
-
-		auto GetGraphicsToComputeSemaphore() const -> VkSemaphore { return graphicsToCompute; }
-		auto GetComputeToGraphicsSemaphore() const -> VkSemaphore { return computeToGraphics; }
-		auto GetGraphicsToCompute() const -> VkSemaphore { return graphicsToCompute; }
-		auto GetComputeToGraphics() const -> VkSemaphore { return computeToGraphics; }
 	};
 
 	struct ExternalBufferInfo
@@ -68,7 +60,6 @@ public:
 	private:
 		RenderGraphInstance* m_pInstance = nullptr;
 		CommandBuffer* m_pCommandBuffer = nullptr;
-		CommandBuffer::RenderPassScope* m_pRenderPassScope = nullptr;
 		const RenderPass* m_pRenderPass = nullptr;
 		PassIndex m_currentPass = INVALID_INDEX;
 		uint32_t m_currentSubpass = INVALID_INDEX;
@@ -95,25 +86,25 @@ public:
 		struct ResourceQueueSyncInfo
 		{
 			std::string name;
-			const QueueSyncInfo* entering = nullptr;
+			QueueSyncInfo* entering = nullptr;
 			QueueSyncInfo* leaving = nullptr;
 		};
 
-		std::vector<const QueueSyncInfo*> m_enteringQueueSyncInfos;
+		std::vector<QueueSyncInfo*> m_enteringQueueSyncInfos;
 		std::vector<QueueSyncInfo*> m_leavingQueueSyncInfos;
 		std::vector<ResourceQueueSyncInfo> m_externalBufferQueueSyncInfos;
 		std::vector<ResourceQueueSyncInfo> m_externalImageQueueSyncInfos;
 
 	public:
-		void AddEnteringQueueSyncInfo(const QueueSyncInfo& inQueueSyncInfo);
+		void AddEnteringQueueSyncInfo(QueueSyncInfo& inQueueSyncInfo);
 		void AddLeavingQueueSyncInfo(QueueSyncInfo& inQueueSyncInfo);
 		void AddExternalBufferQueueSyncInfo(
 			const std::string& inName,
-			const QueueSyncInfo* inEntering,
+			QueueSyncInfo* inEntering,
 			QueueSyncInfo* inLeaving);
 		void AddExternalImageQueueSyncInfo(
 			const std::string& inName,
-			const QueueSyncInfo* inEntering,
+			QueueSyncInfo* inEntering,
 			QueueSyncInfo* inLeaving);
 	};
 
