@@ -20,8 +20,8 @@ public:
 		friend struct RenderGraphTestProbe;
 
 	private:
-		QueueSignalChain m_graphicsToCompute;
-		QueueSignalChain m_computeToGraphics;
+		QueueSemaphore m_graphicsToCompute;
+		QueueSemaphore m_computeToGraphics;
 		bool m_enteringUsed = false;
 		bool m_leavingUsed = false;
 

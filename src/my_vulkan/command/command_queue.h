@@ -18,7 +18,7 @@ public:
 	private:
 		struct ChainEntry final
 		{
-			QueueSignalChain* chain = nullptr;
+			QueueSemaphore* chain = nullptr;
 			VkPipelineStageFlags2 waitStage = 0;
 			bool useWait = false;
 			bool useSignal = false;
@@ -32,7 +32,7 @@ public:
 		std::vector<ChainEntry> m_chainEntries;
 		std::vector<WaitSemaphoreEntry> m_waitSemaphoreEntries;
 		std::vector<VkSemaphore> m_signalSemaphores;
-		CompletionFence* m_completionFence = nullptr;
+		HostFence* m_completionFence = nullptr;
 
 	public:
 		SubmitInfo() = default;
@@ -43,38 +43,36 @@ public:
 
 		// Duplicate wait requests for a chain are merged by ORing their stages.
 		auto AddWaitQueueSignalChain(
-			QueueSignalChain& inChain,
-			VkPipelineStageFlags2 inWaitStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)
-			-> SubmitInfo&;
-		auto AddSignalQueueSignalChain(QueueSignalChain& inChain)->SubmitInfo&;
+			QueueSemaphore& inChain,
+			VkPipelineStageFlags2 inWaitStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)->SubmitInfo&;
+
+		auto AddSignalQueueSignalChain(QueueSemaphore& inChain)->SubmitInfo&;
 
 		auto AddWaitSemaphore(
 			VkSemaphore inSemaphore,
 			VkPipelineStageFlags2 inWaitStage)->SubmitInfo&;
+
 		auto AddSemaphoreToSignal(VkSemaphore inSemaphore)->SubmitInfo&;
 
-		auto SetCompletionFence(CompletionFence& inFence) -> SubmitInfo&;
+		auto SetFence(HostFence& inFence) -> SubmitInfo&;
 	};
 
 protected:
 	static constexpr uint8_t THREAD_COUNT = 4;
-	static constexpr uint8_t FRAME_IN_FLIGHT_COUNT = 3;
 
 protected:
 	VkQueue m_vkQueue = VK_NULL_HANDLE;
 	uint32_t m_queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	QueueFamilyType m_queueFamilyType = QueueFamilyType::UNSET;
-	uint8_t m_currentFrameIndex = FRAME_IN_FLIGHT_COUNT - 1;
-	std::array<std::array<std::unique_ptr<CommandPool>, THREAD_COUNT>, FRAME_IN_FLIGHT_COUNT> m_commandPools;
-	std::array<CompletionFence*, FRAME_IN_FLIGHT_COUNT> m_frameCompletionFences{};
+	std::array<std::unique_ptr<CommandPool>, THREAD_COUNT> m_commandPools;
 	std::vector<VkCommandBuffer> m_recordedCommandBuffers;
 	std::vector<std::function<void()>> m_pendingRecycleActions;
 
 protected:
-	auto _GetCommandPool(uint8_t inFrameIndex, uint8_t inThreadIndex) const->CommandPool*;
+	auto _GetCommandPool(uint8_t inThreadIndex) const->CommandPool*;
 	auto _Init(QueueFamilyType inQueueFamilyType)->void;
 	auto _Deinit()->void;
-	auto _ResetFrameCommandPools(uint8_t inFrameIndex)->void;
+	auto _ResetCommandPools()->void;
 	auto _RecordCommandBuffer(CommandBuffer* inCommandBuffers, size_t inCount)->void;
 
 protected:

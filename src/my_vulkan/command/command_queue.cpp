@@ -52,7 +52,7 @@ namespace
 }
 
 auto CommandQueue::SubmitInfo::AddWaitQueueSignalChain(
-	QueueSignalChain& inChain,
+	QueueSemaphore& inChain,
 	VkPipelineStageFlags2 inWaitStage)->SubmitInfo&
 {
 	CHECK_TRUE(inWaitStage != 0, "Queue signal chain wait stage cannot be zero!");
@@ -70,7 +70,7 @@ auto CommandQueue::SubmitInfo::AddWaitQueueSignalChain(
 	return *this;
 }
 
-auto CommandQueue::SubmitInfo::AddSignalQueueSignalChain(QueueSignalChain& inChain)->SubmitInfo&
+auto CommandQueue::SubmitInfo::AddSignalQueueSignalChain(QueueSemaphore& inChain)->SubmitInfo&
 {
 	for (ChainEntry& entry : m_chainEntries)
 	{
@@ -102,7 +102,7 @@ auto CommandQueue::SubmitInfo::AddSemaphoreToSignal(VkSemaphore inSemaphore)->Su
 	return *this;
 }
 
-auto CommandQueue::SubmitInfo::SetCompletionFence(CompletionFence& inFence)->SubmitInfo&
+auto CommandQueue::SubmitInfo::SetFence(HostFence& inFence)->SubmitInfo&
 {
 	m_completionFence = &inFence;
 	return *this;
@@ -133,54 +133,40 @@ auto CommandQueue::_Init(QueueFamilyType inQueueFamilyType)->void
 	CommandPoolCreateInfo commandPoolCreateInfo;
 	commandPoolCreateInfo.CustomizeQueueFamilyType(inQueueFamilyType);
 
-	for (auto& frameCommandPools : m_commandPools)
+	for (auto& commandPool : m_commandPools)
 	{
-		for (auto& commandPool : frameCommandPools)
-		{
-			CHECK_TRUE(commandPool == nullptr, "Command pool is already initialized!");
-			commandPool = std::make_unique<CommandPool>();
-			commandPool->Create(&commandPoolCreateInfo);
-		}
+		CHECK_TRUE(commandPool == nullptr, "Command pool is already initialized!");
+		commandPool = std::make_unique<CommandPool>();
+		commandPool->Create(&commandPoolCreateInfo);
 	}
-
-	m_currentFrameIndex = FRAME_IN_FLIGHT_COUNT - 1;
 }
 
 auto CommandQueue::_Deinit()->void
 {
-	for (CompletionFence*& fence : m_frameCompletionFences)
+	if (m_vkQueue != VK_NULL_HANDLE)
 	{
-		if (fence != nullptr)
-		{
-			fence->Wait();
-			fence = nullptr;
-		}
+		MyDevice::GetInstance().WaitIdle();
 	}
 	if (!m_pendingRecycleActions.empty())
 	{
-		MyDevice::GetInstance().WaitIdle();
 		_RunRecycleActions(std::move(m_pendingRecycleActions));
 		m_pendingRecycleActions.clear();
 	}
 
 	m_recordedCommandBuffers.clear();
 
-	for (auto& frameCommandPools : m_commandPools)
+	for (auto& commandPool : m_commandPools)
 	{
-		for (auto& commandPool : frameCommandPools)
+		if (commandPool != nullptr)
 		{
-			if (commandPool != nullptr)
-			{
-				commandPool->Destroy();
-				commandPool.reset();
-			}
+			commandPool->Destroy();
+			commandPool.reset();
 		}
 	}
 
 	m_vkQueue = VK_NULL_HANDLE;
 	m_queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	m_queueFamilyType = QueueFamilyType::UNSET;
-	m_currentFrameIndex = FRAME_IN_FLIGHT_COUNT - 1;
 }
 
 GraphicsQueue::GraphicsQueue() = default;
@@ -204,36 +190,22 @@ auto TransferQueue::Init()->void
 	_Init(QueueFamilyType::TRANSFER);
 }
 
-auto CommandQueue::_GetCommandPool(uint8_t inFrameIndex, uint8_t inThreadIndex) const->CommandPool*
+auto CommandQueue::_GetCommandPool(uint8_t inThreadIndex) const->CommandPool*
 {
-	CHECK_TRUE(inFrameIndex < FRAME_IN_FLIGHT_COUNT, "Command queue frame index out of range!");
 	CHECK_TRUE(inThreadIndex < THREAD_COUNT, "Command queue thread index out of range!");
 
-	const auto& commandPool = m_commandPools[inFrameIndex][inThreadIndex];
+	const auto& commandPool = m_commandPools[inThreadIndex];
 	CHECK_TRUE(commandPool != nullptr, "Command pool is not created!");
 
 	return commandPool.get();
 }
 
-auto CommandQueue::_ResetFrameCommandPools(uint8_t inFrameIndex)->void
+auto CommandQueue::_ResetCommandPools()->void
 {
-	CHECK_TRUE(inFrameIndex < FRAME_IN_FLIGHT_COUNT, "Command queue frame index out of range!");
-
-	for (uint8_t threadIndex = 0; threadIndex < THREAD_COUNT; ++threadIndex)
-	{
-		_GetCommandPool(inFrameIndex, threadIndex)->Reset();
-	}
 }
 
 auto CommandQueue::Enqueue(CommandBuffer* inCommandBuffers, size_t inCount)->CommandQueue&
 {
-	CompletionFence* frameFence = m_frameCompletionFences[m_currentFrameIndex];
-	if (frameFence != nullptr && frameFence->IsInFlight())
-	{
-		// The slot was used by an earlier fenced submission. Waiting here is the
-		// point at which the slot becomes legal to record into again.
-		frameFence->Wait();
-	}
 	_RecordCommandBuffer(inCommandBuffers, inCount);
 	return *this;
 }
@@ -376,17 +348,6 @@ auto CommandQueue::Submit(SubmitInfo inSubmitInfo)->void
 
 		if (inSubmitInfo.m_completionFence != nullptr)
 		{
-			const uint8_t submittedFrameIndex = m_currentFrameIndex;
-			CompletionFence* completionFence = inSubmitInfo.m_completionFence;
-			recycleActions.push_back([this, submittedFrameIndex, completionFence]
-			{
-				_ResetFrameCommandPools(submittedFrameIndex);
-				if (m_frameCompletionFences[submittedFrameIndex] == completionFence)
-				{
-					m_frameCompletionFences[submittedFrameIndex] = nullptr;
-				}
-			});
-
 			std::vector<std::function<void()>> allActions = std::move(m_pendingRecycleActions);
 			m_pendingRecycleActions.clear();
 			allActions.insert(
@@ -399,8 +360,6 @@ auto CommandQueue::Submit(SubmitInfo inSubmitInfo)->void
 					_RunRecycleActions(std::move(actions));
 				});
 			inSubmitInfo.m_completionFence->CommitSubmit();
-			m_frameCompletionFences[m_currentFrameIndex] = inSubmitInfo.m_completionFence;
-			m_currentFrameIndex = static_cast<uint8_t>((m_currentFrameIndex + 1) % FRAME_IN_FLIGHT_COUNT);
 		}
 		else
 		{
@@ -430,14 +389,6 @@ auto CommandQueue::WaitTillDone()->void
 	CHECK_TRUE(m_vkQueue != VK_NULL_HANDLE, "Command queue is not created!");
 
 	MyDevice::GetInstance().WaitIdle();
-	for (CompletionFence*& fence : m_frameCompletionFences)
-	{
-		if (fence != nullptr)
-		{
-			fence->Wait();
-			fence = nullptr;
-		}
-	}
 
 	if (!m_pendingRecycleActions.empty())
 	{
@@ -536,7 +487,7 @@ auto CommandQueue::_RecordCommandBuffer(CommandBuffer* inCommandBuffers, size_t 
 			continue;
 		}
 
-		CommandPool* commandPool = _GetCommandPool(m_currentFrameIndex, threadIndex);
+		CommandPool* commandPool = _GetCommandPool(threadIndex);
 		_CommandPoolRecordBatch& commandPoolBatch = commandPoolBatches[threadIndex];
 		commandPoolBatch.commandBufferBatchIndices.reserve(threadBatchCount);
 

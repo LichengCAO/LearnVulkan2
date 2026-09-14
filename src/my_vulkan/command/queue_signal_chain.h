@@ -14,7 +14,7 @@ class CommandQueue;
 //
 // The semaphore handles are deliberately hidden from callers. CommandQueue is
 // the only class allowed to translate this object into Vulkan submit data.
-class QueueSignalChain final
+class QueueSemaphore final
 {
 	friend class CommandQueue;
 
@@ -25,12 +25,12 @@ private:
 	bool m_submitPrepared = false;
 
 public:
-	QueueSignalChain() = default;
-	QueueSignalChain(const QueueSignalChain&) = delete;
-	QueueSignalChain& operator=(const QueueSignalChain&) = delete;
-	QueueSignalChain(QueueSignalChain&&) = delete;
-	QueueSignalChain& operator=(QueueSignalChain&&) = delete;
-	~QueueSignalChain();
+	QueueSemaphore() = default;
+	QueueSemaphore(const QueueSemaphore&) = delete;
+	QueueSemaphore& operator=(const QueueSemaphore&) = delete;
+	QueueSemaphore(QueueSemaphore&&) = delete;
+	QueueSemaphore& operator=(QueueSemaphore&&) = delete;
+	~QueueSemaphore();
 
 	// Returns whether the next use will have a semaphore to wait on.
 	bool HasPendingSignal() const { return m_currentSignal != VK_NULL_HANDLE; }

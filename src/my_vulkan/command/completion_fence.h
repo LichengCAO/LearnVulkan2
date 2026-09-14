@@ -9,7 +9,7 @@ class CommandQueue;
 // Reusing the object waits for the previous submission, runs its callbacks,
 // resets the VkFence, and binds the fence to the next submission. Callbacks are
 // one-shot and therefore belong to a submission, not permanently to the fence.
-class CompletionFence final
+class HostFence final
 {
 	friend class CommandQueue;
 
@@ -24,12 +24,12 @@ private:
 	std::vector<Callback> m_activeCallbacks;
 
 public:
-	CompletionFence();
-	CompletionFence(const CompletionFence&) = delete;
-	CompletionFence& operator=(const CompletionFence&) = delete;
-	CompletionFence(CompletionFence&&) = delete;
-	CompletionFence& operator=(CompletionFence&&) = delete;
-	~CompletionFence();
+	HostFence();
+	HostFence(const HostFence&) = delete;
+	HostFence& operator=(const HostFence&) = delete;
+	HostFence(HostFence&&) = delete;
+	HostFence& operator=(HostFence&&) = delete;
+	~HostFence();
 
 	bool HasSubmittedWork() const { return m_hasSubmittedWork; }
 	bool IsInFlight() const { return m_isInFlight; }
@@ -43,7 +43,7 @@ public:
 	bool Poll();
 
 	// Registers a one-shot callback for the next submission using this fence.
-	CompletionFence& AddCallback(Callback inCallback);
+	HostFence& AddCallback(Callback inCallback);
 
 private:
 	void PrepareForSubmit();
@@ -55,14 +55,14 @@ private:
 /*
 Example:
 
-CompletionFence frameCompletion;
+HostFence frameCompletion;
 frameCompletion.AddCallback([]
 {
     // Release CPU/GPU resources after the submission is complete.
 });
 
 queue.Enqueue(&commands, 1).Submit(
-    CommandQueue::SubmitInfo{}.SetCompletionFence(frameCompletion));
+    CommandQueue::SubmitInfo{}.SetFence(frameCompletion));
 
 // The application may wait only when it needs the result.
 frameCompletion.Wait();

@@ -2,14 +2,14 @@
 
 #include "device.h"
 
-CompletionFence::CompletionFence()
+HostFence::HostFence()
 {
 	CHECK_TRUE(MyDevice::GetInstance().GetVkDevice() != VK_NULL_HANDLE,
 		"Cannot create completion fence before the device!");
 	m_vkFence = MyDevice::GetInstance().CreateVkFence(0);
 }
 
-CompletionFence::~CompletionFence()
+HostFence::~HostFence()
 {
 	if (MyDevice::GetInstance().GetVkDevice() != VK_NULL_HANDLE)
 	{
@@ -23,7 +23,7 @@ CompletionFence::~CompletionFence()
 	m_activeCallbacks.clear();
 }
 
-bool CompletionFence::IsComplete() const
+bool HostFence::IsComplete() const
 {
 	if (!m_isInFlight)
 	{
@@ -33,7 +33,7 @@ bool CompletionFence::IsComplete() const
 	return MyDevice::GetInstance().GetFenceStatus(m_vkFence) == VK_SUCCESS;
 }
 
-void CompletionFence::Wait()
+void HostFence::Wait()
 {
 	if (!m_isInFlight)
 	{
@@ -48,7 +48,7 @@ void CompletionFence::Wait()
 	RunCallbacks();
 }
 
-bool CompletionFence::Poll()
+bool HostFence::Poll()
 {
 	if (!m_isInFlight)
 	{
@@ -64,14 +64,14 @@ bool CompletionFence::Poll()
 	return true;
 }
 
-CompletionFence& CompletionFence::AddCallback(Callback inCallback)
+HostFence& HostFence::AddCallback(Callback inCallback)
 {
 	CHECK_TRUE(static_cast<bool>(inCallback), "Completion callback is empty!");
 	m_pendingCallbacks.push_back(std::move(inCallback));
 	return *this;
 }
 
-void CompletionFence::PrepareForSubmit()
+void HostFence::PrepareForSubmit()
 {
 	// A fence cannot be reset or reused while its previous submission is active.
 	Wait();
@@ -79,7 +79,7 @@ void CompletionFence::PrepareForSubmit()
 		"Failed to reset completion fence!");
 }
 
-void CompletionFence::CommitSubmit()
+void HostFence::CommitSubmit()
 {
 	m_activeCallbacks = std::move(m_pendingCallbacks);
 	m_pendingCallbacks.clear();
@@ -87,7 +87,7 @@ void CompletionFence::CommitSubmit()
 	m_isInFlight = true;
 }
 
-void CompletionFence::ForceComplete()
+void HostFence::ForceComplete()
 {
 	if (m_isInFlight)
 	{
@@ -95,7 +95,7 @@ void CompletionFence::ForceComplete()
 	}
 }
 
-void CompletionFence::RunCallbacks()
+void HostFence::RunCallbacks()
 {
 	std::vector<Callback> callbacks = std::move(m_activeCallbacks);
 	m_activeCallbacks.clear();

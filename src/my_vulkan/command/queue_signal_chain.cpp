@@ -3,7 +3,7 @@
 #include "allocator/semaphore_allocator.h"
 #include "device.h"
 
-QueueSignalChain::~QueueSignalChain()
+QueueSemaphore::~QueueSemaphore()
 {
 	SemaphoreAllocator* allocator = MyDevice::GetInstance().GetSemaphoreAllocator();
 	if (allocator == nullptr)
@@ -35,7 +35,7 @@ QueueSignalChain::~QueueSignalChain()
 	}
 }
 
-void QueueSignalChain::PrepareForSubmit(
+void QueueSemaphore::PrepareForSubmit(
 	bool inUseWait,
 	bool inUseSignal,
 	VkSemaphore& outWaitSemaphore,
@@ -68,7 +68,7 @@ void QueueSignalChain::PrepareForSubmit(
 	m_submitPrepared = true;
 }
 
-auto QueueSignalChain::CommitSubmit(
+auto QueueSemaphore::CommitSubmit(
 	bool inUseWait,
 	VkSemaphore inWaitSemaphore,
 	VkSemaphore inSignalSemaphore)->VkSemaphore
@@ -86,7 +86,7 @@ auto QueueSignalChain::CommitSubmit(
 	return consumedSemaphore;
 }
 
-void QueueSignalChain::AbortSubmit()
+void QueueSemaphore::AbortSubmit()
 {
 	if (!m_submitPrepared)
 	{

@@ -1377,14 +1377,14 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 	CHECK_TRUE(graphicsQueue != nullptr, "Graphics command queue is not available!");
 	CHECK_TRUE(computeQueue != nullptr, "Compute command queue is not available!");
 
-	std::vector<std::vector<QueueSignalChain*>> externalWaits(m_compiledPlan.submitBatches.size() * 2);
-	std::vector<std::vector<QueueSignalChain*>> externalSignals(m_compiledPlan.submitBatches.size() * 2);
-	std::vector<std::unordered_set<QueueSignalChain*>> externalWaitSets(m_compiledPlan.submitBatches.size() * 2);
-	std::vector<std::unordered_set<QueueSignalChain*>> externalSignalSets(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::vector<QueueSemaphore*>> externalWaits(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::vector<QueueSemaphore*>> externalSignals(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::unordered_set<QueueSemaphore*>> externalWaitSets(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::unordered_set<QueueSemaphore*>> externalSignalSets(m_compiledPlan.submitBatches.size() * 2);
 	std::unordered_set<QueueSyncInfo*> enteringObjects;
 	std::unordered_set<QueueSyncInfo*> leavingObjects;
 
-	auto funcAddWait = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, QueueSignalChain& inChain)
+	auto funcAddWait = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, QueueSemaphore& inChain)
 	{
 		if (inSubmit == INVALID_INDEX)
 		{
@@ -1396,7 +1396,7 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 			externalWaits[index].push_back(&inChain);
 		}
 	};
-	auto funcAddSignal = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, QueueSignalChain& inChain)
+	auto funcAddSignal = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, QueueSemaphore& inChain)
 	{
 		if (inSubmit == INVALID_INDEX)
 		{
@@ -1542,12 +1542,12 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 	auto funcAppendExternalSync = [&](CommandQueue::SubmitInfo& inoutSyncInfo, uint32_t inSubmitIndex, RenderGraph::QueueType inQueue)
 	{
 		const size_t index = static_cast<size_t>(inSubmitIndex) * 2 + (inQueue == RenderGraph::QueueType::GRAPHICS ? 0 : 1);
-		for (QueueSignalChain* chain : externalWaits[index])
+		for (QueueSemaphore* chain : externalWaits[index])
 		{
 			CHECK_TRUE(chain != nullptr, "External queue wait chain is null!");
 			inoutSyncInfo.AddWaitQueueSignalChain(*chain, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 		}
-		for (QueueSignalChain* chain : externalSignals[index])
+		for (QueueSemaphore* chain : externalSignals[index])
 		{
 			CHECK_TRUE(chain != nullptr, "External queue signal chain is null!");
 			inoutSyncInfo.AddSignalQueueSignalChain(*chain);
