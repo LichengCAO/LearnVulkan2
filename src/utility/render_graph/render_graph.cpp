@@ -687,6 +687,10 @@ void RenderGraph::_LinkPasses(BuildContext& inoutContext) const
 			const ImageIndex imageIndex = imageIter->second;
 			usage.imageIndex = imageIndex;
 			CHECK_TRUE(imageIndex < inoutContext.imageInfos.size(), "Render graph image index is invalid!");
+			const ImageInfo& imageInfo = inoutContext.imageInfos[imageIndex];
+			CHECK_TRUE(
+				!imageInfo.m_external || imageInfo.m_externalAccessQueue == pass.queue,
+				"External render graph image can only be accessed from its declared queue!");
 			usage.subresourceRange = inoutContext.imageInfos[imageIndex].NormalizeSubresourceRange(usage.subresourceRange);
 		}
 		for (BufferUsage& usage : pass.bufferUsages)
@@ -695,6 +699,10 @@ void RenderGraph::_LinkPasses(BuildContext& inoutContext) const
 			CHECK_TRUE(bufferIter != inoutContext.nameToBuffer.end(), "Render graph buffer name is not registered!");
 			usage.bufferIndex = bufferIter->second;
 			CHECK_TRUE(usage.bufferIndex < inoutContext.bufferInfos.size(), "Render graph buffer index is invalid!");
+			const BufferInfo& bufferInfo = inoutContext.bufferInfos[usage.bufferIndex];
+			CHECK_TRUE(
+				!bufferInfo.m_external || bufferInfo.m_externalAccessQueue == pass.queue,
+				"External render graph buffer can only be accessed from its declared queue!");
 		}
 	}
 

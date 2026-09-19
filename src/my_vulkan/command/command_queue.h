@@ -40,10 +40,6 @@ public:
 		std::vector<WaitSemaphoreEntry> m_waitSemaphoreEntries;
 		std::vector<VkSemaphore> m_signalSemaphores;
 		HostFence* m_completionFence = nullptr;
-		const void* m_completionFenceObserver = nullptr;
-
-	private:
-		void _SetFenceForObserver(HostFence& inFence, const void* inObserver);
 
 	public:
 		SubmitInfo() = default;

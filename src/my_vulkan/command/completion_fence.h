@@ -5,7 +5,6 @@
 
 class CommandQueue;
 class CommandQueueManager;
-class RenderGraphInstance;
 
 // A reusable GPU-to-host completion object.
 //
@@ -16,7 +15,6 @@ class HostFence final
 {
 	friend class CommandQueue;
 	friend class CommandQueueManager;
-	friend class RenderGraphInstance;
 
 public:
 	using Callback = std::function<void()>;
@@ -26,7 +24,6 @@ private:
 	bool m_hasSubmittedWork = false;
 	bool m_isInFlight = false;
 	CommandQueueManager* m_commandQueueManager = nullptr;
-	const void* m_completionObserver = nullptr;
 	SubmissionFrontier m_submissionFrontier;
 	std::vector<Callback> m_pendingCallbacks;
 	std::vector<Callback> m_activeCallbacks;
@@ -54,9 +51,7 @@ public:
 	auto AddCallback(Callback inCallback)->HostFence&;
 
 private:
-	void _AcquireCompletionObserver(const void* inObserver);
-	void _ReleaseCompletionObserver(const void* inObserver);
-	void _PrepareForSubmit(const void* inCompletionObserver);
+	void _PrepareForSubmit();
 	void _CommitSubmit(CommandQueueManager& inCommandQueueManager, const SubmissionFrontier& inSubmissionFrontier);
 	void _ForceComplete();
 	void _RunCallbacks();

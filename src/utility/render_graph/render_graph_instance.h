@@ -15,28 +15,11 @@ private:
 	using PassIndex = RenderGraph::PassIndex;
 
 public:
-	class QueueSyncInfo final
-	{
-		friend class RenderGraphInstance;
-		friend struct RenderGraphTestProbe;
-
-	private:
-		QueueDependency m_graphicsToCompute;
-		QueueDependency m_computeToGraphics;
-		bool m_enteringUsed = false;
-		bool m_leavingUsed = false;
-
-	public:
-		QueueSyncInfo() = default;
-		QueueSyncInfo(const QueueSyncInfo&) = delete;
-		QueueSyncInfo& operator=(const QueueSyncInfo&) = delete;
-		QueueSyncInfo(QueueSyncInfo&&) = delete;
-		QueueSyncInfo& operator=(QueueSyncInfo&&) = delete;
-	};
-
 	struct ExternalBufferInfo
 	{
 		Buffer* pBuffer{};
+		QueueDependency* pAcquireDependency = nullptr;
+		QueueDependency* pReleaseDependency = nullptr;
 		VkPipelineStageFlags2 enteringStage = 0;
 		VkAccessFlags2 enteringAccess = 0;
 		VkPipelineStageFlags2 leavingStage = 0;
@@ -46,6 +29,8 @@ public:
 	struct ExternalImageInfo
 	{
 		Image* pImage{};
+		QueueDependency* pAcquireDependency = nullptr;
+		QueueDependency* pReleaseDependency = nullptr;
 		VkImageLayout enteringLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		VkPipelineStageFlags2 enteringStage = 0;
 		VkAccessFlags2 enteringAccess = 0;
@@ -74,45 +59,6 @@ public:
 		auto ResolveImage(const std::string& inName) -> Image*;
 		void ConfigureGraphicsPipelineState(GraphicsPipelineStateInfo& inoutStateInfo) const;
 		void RecordCommands(std::function<void(CommandBuffer*)> inProcess);
-		void FillSubpassCommands(const std::string& inTarget, std::vector<const Command*> inCommands);
-		void RecordCommandBuffer(const std::string& inTarget, std::function<void(CommandBuffer*)> inProcess);
-	};
-
-	class ExecuteInfo final
-	{
-		friend class RenderGraphInstance;
-		friend struct RenderGraphTestProbe;
-
-	private:
-		struct ResourceQueueSyncInfo
-		{
-			std::string name;
-			QueueSyncInfo* entering = nullptr;
-			QueueSyncInfo* leaving = nullptr;
-		};
-
-		std::vector<QueueSyncInfo*> m_enteringQueueSyncInfos;
-		std::vector<QueueSyncInfo*> m_leavingQueueSyncInfos;
-		std::vector<ResourceQueueSyncInfo> m_externalBufferQueueSyncInfos;
-		std::vector<ResourceQueueSyncInfo> m_externalImageQueueSyncInfos;
-		HostFence* m_graphicsCompletionFence = nullptr;
-		HostFence* m_computeCompletionFence = nullptr;
-
-	public:
-		void AddEnteringQueueSyncInfo(QueueSyncInfo& inQueueSyncInfo);
-		void AddLeavingQueueSyncInfo(QueueSyncInfo& inQueueSyncInfo);
-		void AddExternalBufferQueueSyncInfo(
-			const std::string& inName,
-			QueueSyncInfo* inEntering,
-			QueueSyncInfo* inLeaving);
-		void AddExternalImageQueueSyncInfo(
-			const std::string& inName,
-			QueueSyncInfo* inEntering,
-			QueueSyncInfo* inLeaving);
-		// Completion fences must remain alive until the instance observes their
-		// completion from its next Execute/Compile call or from its destructor.
-		void SetGraphicsCompletionFence(HostFence& inCompletionFence);
-		void SetComputeCompletionFence(HostFence& inCompletionFence);
 	};
 
 	using PassProcess = std::function<void(ExecutionContext&)>;
@@ -131,6 +77,52 @@ public:
 		void SetProcess(PassProcess inProcess);
 		void CustomizeColorClearValue(uint32_t inLocation, const VkClearColorValue& inClearValue);
 		void CustomizeDepthStencilClearValue(const VkClearDepthStencilValue& inClearValue);
+	};
+
+	class ExecuteInfo final
+	{
+		friend class RenderGraphInstance;
+		friend struct RenderGraphTestProbe;
+
+	private:
+		struct PassBinding
+		{
+			std::string name;
+			PassInfo info;
+		};
+
+		struct ExternalBufferBinding
+		{
+			std::string name;
+			ExternalBufferInfo info;
+		};
+
+		struct ExternalImageBinding
+		{
+			std::string name;
+			ExternalImageInfo info;
+		};
+
+		std::vector<PassBinding> m_passes;
+		std::vector<ExternalBufferBinding> m_externalBuffers;
+		std::vector<ExternalImageBinding> m_externalImages;
+		HostFence* m_graphicsCompletionFence = nullptr;
+		HostFence* m_computeCompletionFence = nullptr;
+
+	public:
+		void SetUpPass(
+			const std::string& inName,
+			const PassInfo& inPassInfo);
+		void SetUpExternalBuffer(
+			const std::string& inName,
+			const ExternalBufferInfo& inBufferInfo);
+		void SetUpExternalImage(
+			const std::string& inName,
+			const ExternalImageInfo& inImageInfo);
+		// The caller owns completion fences and must keep them alive until the
+		// associated queue submissions complete.
+		void SetGraphicsCompletionFence(HostFence& inCompletionFence);
+		void SetComputeCompletionFence(HostFence& inCompletionFence);
 	};
 
 private:
@@ -179,6 +171,14 @@ private:
 		std::vector<CompiledQueueSyncEdge> queueSyncEdges;
 	};
 
+	struct ExternalDependencyBinding
+	{
+		QueueDependency* dependency = nullptr;
+		RenderGraph::QueueType queue = RenderGraph::QueueType::GRAPHICS;
+		uint32_t waitSubmit = INVALID_INDEX;
+		uint32_t signalSubmit = INVALID_INDEX;
+	};
+
 	enum class BarrierCommandMode
 	{
 		NORMAL,
@@ -197,20 +197,17 @@ private:
 	std::vector<ManagedRenderPass> m_managedRenderPasses;
 	std::vector<std::vector<uint32_t>> m_graphicsBatchToManagedRenderPass;
 	CompiledGraphPlan m_compiledPlan;
-	HostFence* m_graphicsCompletionFence = nullptr;
-	HostFence* m_computeCompletionFence = nullptr;
-	bool m_compiled = false;
-	bool m_inFlight = false;
-	bool m_submittedGraphicsCommands = false;
-	bool m_submittedComputeCommands = false;
 
 private:
 	void _DestroyManagedRenderPasses();
 	void _DestroyInternalResources();
-	void _SetUpPhysicalResources();
+	void _ApplyPasses(const ExecuteInfo& inExecuteInfo);
+	void _ApplyExternalResources(const ExecuteInfo& inExecuteInfo);
+	void _SetUpInternalResources();
+	void _BindExternalResources();
 	void _CreateManagedRenderPasses();
 	void _BuildCompiledGraphPlan();
-	auto _RefreshExecutionState()->bool;
+	auto _BuildExternalDependencyBindings() const->std::vector<ExternalDependencyBinding>;
 	auto _GetManagedRenderPass(uint32_t inSubmitIndex, uint32_t inGraphicsBatchIndex)->ManagedRenderPass*;
 	auto _GetBuffer(const std::string& inName) const->Buffer*;
 	auto _GetImage(const std::string& inName) const->Image*;
@@ -224,12 +221,7 @@ private:
 public:
 	RenderGraphInstance(const RenderGraph& inRenderGraph);
 	~RenderGraphInstance();
-	void SetUpExternalBuffer(const std::string& inName, const RenderGraphInstance::ExternalBufferInfo& inBufferInfo);
-	void SetUpExternalImage(const std::string& inName, const RenderGraphInstance::ExternalImageInfo& inImageInfo);
-	void SetUpPass(const std::string& inName, const PassInfo& inPassInfo);
-	void Compile();
 	void Execute(const ExecuteInfo& inExecuteInfo);
 };
 
-using QueueSyncInfo = RenderGraphInstance::QueueSyncInfo;
 using ExecuteInfo = RenderGraphInstance::ExecuteInfo;

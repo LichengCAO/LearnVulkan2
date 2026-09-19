@@ -20,6 +20,12 @@ class RenderGraph
 public:
 	static constexpr uint32_t INVALID_INDEX = ~0u;
 
+	enum class QueueType
+	{
+		GRAPHICS,
+		COMPUTE,
+	};
+
 	struct ImageSubresourceRange
 	{
 		ImageSubresourceRange() = default;
@@ -52,12 +58,6 @@ private:
 		GRAPHICS, // Owns opaque graphics queue commands and manages any render pass itself
 		RENDER_PASS, // Owns one graph-managed render pass
 		SUBPASS,  // Owns graphics commands in a graph-managed, mergeable subpass
-	};
-
-	enum class QueueType
-	{
-		GRAPHICS,
-		COMPUTE,
 	};
 
 	enum class ResourceType
@@ -404,6 +404,7 @@ public:
 		VkMemoryPropertyFlags m_memoryProperty = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 		VkSharingMode m_sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 		std::optional<VkDeviceSize> m_optAlignment;
+		QueueType m_externalAccessQueue = QueueType::GRAPHICS;
 		bool m_external = false;
 
 		auto IsAliasCompatible(const BufferInfo& inOther) const->bool;
@@ -433,9 +434,10 @@ public:
 			CHECK_TRUE(inAlignment > 0, "Render graph buffer alignment must be greater than 0!");
 			m_optAlignment = inAlignment;
 		};
-		void SetAsExternal()
+		void SetAsExternal(QueueType inAccessQueue)
 		{
 			m_external = true;
+			m_externalAccessQueue = inAccessQueue;
 		};
 	};
 
@@ -458,6 +460,7 @@ public:
 		std::optional<VkImageTiling> m_optTiling;
 		std::optional<VkMemoryPropertyFlags> m_optMemoryProperty;
 		std::optional<VkSampleCountFlagBits> m_optSampleCount;
+		QueueType m_externalAccessQueue = QueueType::GRAPHICS;
 		bool m_external = false;
 
 		auto GetWholeSubresourceRange() const->ImageSubresourceRange;
@@ -522,9 +525,10 @@ public:
 		{
 			m_optSampleCount = inSampleCount;
 		};
-		void SetAsExternal()
+		void SetAsExternal(QueueType inAccessQueue)
 		{
 			m_external = true;
+			m_externalAccessQueue = inAccessQueue;
 		};
 	};
 

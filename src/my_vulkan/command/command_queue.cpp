@@ -93,15 +93,7 @@ auto CommandQueue::SubmitInfo::AddSemaphoreToSignal(VkSemaphore inSemaphore)->Su
 auto CommandQueue::SubmitInfo::SetFence(HostFence& inFence)->SubmitInfo&
 {
 	m_completionFence = &inFence;
-	m_completionFenceObserver = nullptr;
 	return *this;
-}
-
-void CommandQueue::SubmitInfo::_SetFenceForObserver(HostFence& inFence, const void* inObserver)
-{
-	CHECK_TRUE(inObserver != nullptr, "Completion fence observer cannot be null!");
-	m_completionFence = &inFence;
-	m_completionFenceObserver = inObserver;
 }
 
 CommandQueue::CommandQueue() = default;
@@ -313,7 +305,7 @@ void CommandQueueManager::_Submit(
 	QueueState& state = _GetQueueState(inQueueStateIndex);
 	if (inSubmitInfo.m_completionFence != nullptr)
 	{
-		inSubmitInfo.m_completionFence->_PrepareForSubmit(inSubmitInfo.m_completionFenceObserver);
+		inSubmitInfo.m_completionFence->_PrepareForSubmit();
 	}
 
 	std::lock_guard<std::mutex> submitLock(state.submitMutex);

@@ -72,25 +72,8 @@ auto HostFence::AddCallback(Callback inCallback)->HostFence&
 	return *this;
 }
 
-void HostFence::_AcquireCompletionObserver(const void* inObserver)
+void HostFence::_PrepareForSubmit()
 {
-	CHECK_TRUE(inObserver != nullptr, "Completion observer cannot be null!");
-	CHECK_TRUE(m_completionObserver == nullptr, "Completion fence is already owned by another observer!");
-	m_completionObserver = inObserver;
-}
-
-void HostFence::_ReleaseCompletionObserver(const void* inObserver)
-{
-	CHECK_TRUE(inObserver != nullptr, "Completion observer cannot be null!");
-	CHECK_TRUE(m_completionObserver == inObserver, "Completion fence observer does not match!");
-	m_completionObserver = nullptr;
-}
-
-void HostFence::_PrepareForSubmit(const void* inCompletionObserver)
-{
-	CHECK_TRUE(
-		m_completionObserver == inCompletionObserver,
-		"Completion fence is reserved by a different observer!");
 	// A fence cannot be reset or reused while its previous submission is active.
 	Wait();
 	VK_CHECK(vkResetFences(MyDevice::GetInstance().GetVkDevice(), 1, &m_vkFence),

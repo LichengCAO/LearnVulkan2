@@ -101,7 +101,9 @@ struct RenderGraphTestProbe
 				inCommandBuffer->EndRenderPass();
 			});
 		});
-		instance.SetUpPass("opaque", passInfo);
+		RenderGraphInstance::ExecuteInfo executeInfo;
+		executeInfo.SetUpPass("opaque", passInfo);
+		instance._ApplyPasses(executeInfo);
 		CommandBuffer commands;
 		instance._AppendPassCommands(graph.m_buildResult.GetPassIndex("opaque"), commands);
 		return commands.m_commands.size() == 2 &&
@@ -121,6 +123,50 @@ struct RenderGraphTestProbe
 			passInfo.m_depthStencilClearValueOverride.has_value() &&
 			passInfo.m_depthStencilClearValueOverride->depth == depth.depth &&
 			passInfo.m_depthStencilClearValueOverride->stencil == depth.stencil;
+	}
+
+	static void ApplyPasses(
+		RenderGraphInstance& inInstance,
+		const RenderGraphInstance::ExecuteInfo& inExecuteInfo)
+	{
+		inInstance._ApplyPasses(inExecuteInfo);
+	}
+
+	static auto SharedExternalDependenciesAreAggregated() -> bool
+	{
+		RenderGraph graph;
+		RenderGraph::BufferInfo buffer;
+		buffer.SetAsExternal(RenderGraph::QueueType::COMPUTE);
+		graph.AddBuffer("a", buffer);
+		graph.AddBuffer("b", buffer);
+
+		RenderGraph::ComputePassInfo pass;
+		pass.AddDescriptorStorageBuffer("a", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		pass.AddDescriptorStorageBuffer("b", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
+		graph.AddPass("write", pass);
+		graph.Build();
+
+		QueueDependency sharedDependency;
+		RenderGraphInstance::ExternalBufferInfo bufferA;
+		bufferA.pBuffer = reinterpret_cast<Buffer*>(static_cast<uintptr_t>(1));
+		bufferA.pAcquireDependency = &sharedDependency;
+		bufferA.pReleaseDependency = &sharedDependency;
+		RenderGraphInstance::ExternalBufferInfo bufferB = bufferA;
+		bufferB.pBuffer = reinterpret_cast<Buffer*>(static_cast<uintptr_t>(2));
+
+		RenderGraphInstance::ExecuteInfo executeInfo;
+		executeInfo.SetUpExternalBuffer("a", bufferA);
+		executeInfo.SetUpExternalBuffer("b", bufferB);
+
+		RenderGraphInstance instance(graph);
+		instance._ApplyExternalResources(executeInfo);
+		const std::vector<RenderGraphInstance::ExternalDependencyBinding> bindings =
+			instance._BuildExternalDependencyBindings();
+		return bindings.size() == 1 &&
+			bindings.front().dependency == &sharedDependency &&
+			bindings.front().queue == RenderGraph::QueueType::COMPUTE &&
+			bindings.front().waitSubmit != RenderGraph::INVALID_INDEX &&
+			bindings.front().signalSubmit != RenderGraph::INVALID_INDEX;
 	}
 
 	static auto GetScheduledPassNames(const RenderGraph& inGraph) -> std::vector<std::string>
@@ -444,6 +490,12 @@ namespace
 			"Retired semaphore reclamation must stop at the first incomplete version!");
 	}
 
+	void TestSharedExternalDependenciesAreAggregated()
+	{
+		CHECK_TRUE(RenderGraphTestProbe::SharedExternalDependenciesAreAggregated(),
+			"External resources sharing one queue dependency must produce one aggregated binding!");
+	}
+
 	void ExpectThrows(const std::function<void()>& inProcess, const std::string& inMessageFragment)
 	{
 		try
@@ -460,6 +512,38 @@ namespace
 		}
 
 		CHECK_TRUE(false, "Expected exception was not thrown!");
+	}
+
+	void TestExecuteInfoOwnsTransientPassBindings()
+	{
+		RenderGraph graph;
+		RenderGraph::GraphicsPassInfo graphPass;
+		graphPass.SetNeverCull();
+		graph.AddPass("draw", graphPass);
+		graph.Build();
+
+		RenderGraphInstance::PassInfo passInfo;
+		passInfo.SetProcess([](RenderGraphInstance::ExecutionContext&) {});
+
+		RenderGraphInstance::ExecuteInfo executeInfo;
+		executeInfo.SetUpPass("draw", passInfo);
+		ExpectThrows(
+			[&executeInfo, &passInfo]()
+			{
+				executeInfo.SetUpPass("draw", passInfo);
+			},
+			"already set up");
+
+		RenderGraphInstance instance(graph);
+		RenderGraphTestProbe::ApplyPasses(instance, executeInfo);
+
+		const RenderGraphInstance::ExecuteInfo emptyExecuteInfo;
+		ExpectThrows(
+			[&instance, &emptyExecuteInfo]()
+			{
+				RenderGraphTestProbe::ApplyPasses(instance, emptyExecuteInfo);
+			},
+			"Active render graph pass is not set up for this execution");
 	}
 
 	void TestInternalSampledImageRequiresWriter()
@@ -627,14 +711,14 @@ namespace
 			"Internal render graph image cannot be read before it is written");
 	}
 
-	void TestImageSubresourceCrossQueueSyncDependsOnMipOverlap()
+	void TestExternalImageRejectsAccessFromAnotherQueue()
 	{
 		RenderGraph graph;
 
 		RenderGraph::ImageInfo image;
 		image.AddUsage(VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 		image.CustomizeMipLevels(2);
-		image.SetAsExternal();
+		image.SetAsExternal(RenderGraph::QueueType::GRAPHICS);
 		graph.AddImage("image", image);
 
 		RenderGraph::GraphicsPassInfo writePass;
@@ -647,9 +731,12 @@ namespace
 		readPass.AddSampledImage("image", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, mip1);
 		graph.AddPass("compute_read", readPass);
 
-		CHECK_TRUE(
-			RenderGraphTestProbe::CountQueueSyncPlansAfterLinkCullAndResolve(graph) == 0,
-			"Different mips should not create a queue sync plan!");
+		ExpectThrows(
+			[&graph]()
+			{
+				graph.Build();
+			},
+			"External render graph image can only be accessed from its declared queue");
 	}
 
 	void TestImageSubresourceCrossQueueSyncForSameMip()
@@ -659,7 +746,6 @@ namespace
 		RenderGraph::ImageInfo image;
 		image.AddUsage(VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 		image.CustomizeMipLevels(2);
-		image.SetAsExternal();
 		graph.AddImage("image", image);
 
 		RenderGraph::GraphicsPassInfo writePass;
@@ -669,6 +755,7 @@ namespace
 
 		RenderGraph::ComputePassInfo readPass;
 		readPass.AddSampledImage("image", VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, mip0);
+		readPass.SetNeverCull();
 		graph.AddPass("compute_read", readPass);
 
 		CHECK_TRUE(
@@ -685,7 +772,7 @@ namespace
 		graph.AddImage("image", image);
 
 		RenderGraph::BufferInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::COMPUTE);
 		graph.AddBuffer("output", output);
 
 		RenderGraph::GraphicsPassInfo writePass;
@@ -717,7 +804,7 @@ namespace
 		graph.AddImage("image", image);
 
 		RenderGraph::BufferInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::COMPUTE);
 		graph.AddBuffer("output", output);
 
 		RenderGraph::GraphicsPassInfo writePass;
@@ -744,7 +831,7 @@ namespace
 		graph.AddBuffer("buffer", buffer);
 
 		RenderGraph::ImageInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::GRAPHICS);
 		graph.AddImage("output", output);
 
 		RenderGraph::ComputePassInfo writePass;
@@ -776,7 +863,7 @@ namespace
 		graph.AddImage("image", image);
 
 		RenderGraph::BufferInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::COMPUTE);
 		graph.AddBuffer("output", output);
 
 		RenderGraph::GraphicsPassInfo writePass;
@@ -806,7 +893,7 @@ namespace
 		graph.AddImage("image", image);
 
 		RenderGraph::BufferInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::COMPUTE);
 		graph.AddBuffer("output", output);
 
 		RenderGraph::GraphicsPassInfo graphicsWritePass;
@@ -839,7 +926,7 @@ namespace
 		graph.AddBuffer("scratch", scratch);
 
 		RenderGraph::BufferInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::COMPUTE);
 		graph.AddBuffer("output", output);
 
 		RenderGraph::ComputePassInfo unusedPass;
@@ -888,7 +975,7 @@ namespace
 		graph.AddBuffer("intermediate", intermediate);
 
 		RenderGraph::BufferInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::COMPUTE);
 		graph.AddBuffer("output", output);
 
 		RenderGraph::ComputePassInfo producerPass;
@@ -919,7 +1006,7 @@ namespace
 		graph.AddBuffer("scratch_b", scratch);
 
 		RenderGraph::BufferInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::COMPUTE);
 		graph.AddBuffer("output", output);
 
 		RenderGraph::ComputePassInfo writeA;
@@ -964,7 +1051,7 @@ namespace
 		graph.AddBuffer("scratch_b", scratch);
 
 		RenderGraph::BufferInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::COMPUTE);
 		graph.AddBuffer("output", output);
 
 		RenderGraph::ComputePassInfo writeA;
@@ -1032,7 +1119,7 @@ namespace
 		graph.AddBuffer("scratch_b", scratch);
 
 		RenderGraph::BufferInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::COMPUTE);
 		graph.AddBuffer("output", output);
 
 		RenderGraph::ComputePassInfo writeA;
@@ -1068,7 +1155,7 @@ namespace
 		graph.AddBuffer("scratch_graphics", scratch);
 
 		RenderGraph::ImageInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::GRAPHICS);
 		graph.AddImage("output", output);
 
 		RenderGraph::ComputePassInfo computeWrite;
@@ -1109,7 +1196,7 @@ namespace
 		graph.AddBuffer("scratch_b", scratch);
 
 		RenderGraph::BufferInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::COMPUTE);
 		graph.AddBuffer("output", output);
 
 		RenderGraph::ComputePassInfo writeA;
@@ -1149,7 +1236,7 @@ namespace
 		graph.AddImage("scratch_b", scratch);
 
 		RenderGraph::BufferInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::COMPUTE);
 		graph.AddBuffer("output", output);
 
 		RenderGraph::ComputePassInfo writeA;
@@ -1208,7 +1295,7 @@ namespace
 		graph.AddImage("scratch_b", scratchB);
 
 		RenderGraph::BufferInfo output;
-		output.SetAsExternal();
+		output.SetAsExternal(RenderGraph::QueueType::COMPUTE);
 		graph.AddBuffer("output", output);
 
 		RenderGraph::ComputePassInfo writeA;
@@ -1256,7 +1343,7 @@ namespace
 	{
 		RenderGraph graph;
 		RenderGraph::ImageInfo image;
-		image.SetAsExternal();
+		image.SetAsExternal(RenderGraph::QueueType::GRAPHICS);
 		graph.AddImage("color", image);
 
 		RenderGraph::SubpassInfo before;
@@ -1289,7 +1376,7 @@ namespace
 	{
 		RenderGraph graph;
 		RenderGraph::ImageInfo image;
-		image.SetAsExternal();
+		image.SetAsExternal(RenderGraph::QueueType::GRAPHICS);
 		graph.AddImage("color", image);
 
 		RenderGraph::AttachmentInfo firstAttachment;
@@ -1335,7 +1422,7 @@ namespace
 		RenderGraph rangeGraph;
 		RenderGraph::ImageInfo layeredImage;
 		layeredImage.CustomizeArrayLayers(2);
-		layeredImage.SetAsExternal();
+		layeredImage.SetAsExternal(RenderGraph::QueueType::GRAPHICS);
 		rangeGraph.AddImage("image", layeredImage);
 		RenderGraph::AttachmentInfo bothLayers;
 		RenderGraph::ImageSubresourceRange bothRange;
@@ -1356,7 +1443,7 @@ namespace
 
 		RenderGraph roleGraph;
 		RenderGraph::ImageInfo roleImage;
-		roleImage.SetAsExternal();
+		roleImage.SetAsExternal(RenderGraph::QueueType::GRAPHICS);
 		roleGraph.AddImage("image", roleImage);
 		RenderGraph::SubpassInfo colorPass;
 		colorPass.AddColorAttachment(0, "image");
@@ -1371,10 +1458,10 @@ namespace
 
 		RenderGraph accessGraph;
 		RenderGraph::ImageInfo attachmentImage;
-		attachmentImage.SetAsExternal();
+		attachmentImage.SetAsExternal(RenderGraph::QueueType::GRAPHICS);
 		accessGraph.AddImage("attachment", attachmentImage);
 		RenderGraph::ImageInfo sharedImage;
-		sharedImage.SetAsExternal();
+		sharedImage.SetAsExternal(RenderGraph::QueueType::GRAPHICS);
 		accessGraph.AddImage("shared", sharedImage);
 		RenderGraph::SubpassInfo readPass;
 		readPass.AddColorAttachment(0, "attachment");
@@ -1505,13 +1592,15 @@ int main()
 	{
 		TestSubmissionFrontierPropagation();
 		TestCommandQueueRoleDeduplication();
+		TestSharedExternalDependenciesAreAggregated();
+		TestExecuteInfoOwnsTransientPassBindings();
 		TestCommandBufferRenderingScopeStateTransitions();
 		TestInternalSampledImageRequiresWriter();
 		TestInternalAttachmentLoadRequiresWriter();
 		TestInternalStorageImageCanBeFirstWriter();
 		TestImageSubresourceBarrierUsesMipRange();
 		TestInternalImageReadFromUntouchedMipStillFails();
-		TestImageSubresourceCrossQueueSyncDependsOnMipOverlap();
+		TestExternalImageRejectsAccessFromAnotherQueue();
 		TestImageSubresourceCrossQueueSyncForSameMip();
 		TestGraphicsToComputeImageDependencyBuildsCrossQueueSync();
 		TestResolveAndCullBuildActiveQueueSyncPlans();
