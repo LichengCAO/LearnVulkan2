@@ -1,8 +1,9 @@
 #pragma once
 #include "render_graph.h"
-#include "my_vulkan/command/queue_signal_chain.h"
+#include "my_vulkan/command/queue_dependency.h"
 
 class GraphicsPipelineStateInfo;
+class HostFence;
 
 class RenderGraphInstance
 {
@@ -20,8 +21,8 @@ public:
 		friend struct RenderGraphTestProbe;
 
 	private:
-		QueueSemaphore m_graphicsToCompute;
-		QueueSemaphore m_computeToGraphics;
+		QueueDependency m_graphicsToCompute;
+		QueueDependency m_computeToGraphics;
 		bool m_enteringUsed = false;
 		bool m_leavingUsed = false;
 
@@ -94,6 +95,8 @@ public:
 		std::vector<QueueSyncInfo*> m_leavingQueueSyncInfos;
 		std::vector<ResourceQueueSyncInfo> m_externalBufferQueueSyncInfos;
 		std::vector<ResourceQueueSyncInfo> m_externalImageQueueSyncInfos;
+		HostFence* m_graphicsCompletionFence = nullptr;
+		HostFence* m_computeCompletionFence = nullptr;
 
 	public:
 		void AddEnteringQueueSyncInfo(QueueSyncInfo& inQueueSyncInfo);
@@ -106,6 +109,10 @@ public:
 			const std::string& inName,
 			QueueSyncInfo* inEntering,
 			QueueSyncInfo* inLeaving);
+		// Completion fences must remain alive until the instance observes their
+		// completion from its next Execute/Compile call or from its destructor.
+		void SetGraphicsCompletionFence(HostFence& inCompletionFence);
+		void SetComputeCompletionFence(HostFence& inCompletionFence);
 	};
 
 	using PassProcess = std::function<void(ExecutionContext&)>;
@@ -190,8 +197,8 @@ private:
 	std::vector<ManagedRenderPass> m_managedRenderPasses;
 	std::vector<std::vector<uint32_t>> m_graphicsBatchToManagedRenderPass;
 	CompiledGraphPlan m_compiledPlan;
-	std::vector<VkSemaphore> m_freeSemaphores;
-	std::vector<VkSemaphore> m_executeSemaphores;
+	HostFence* m_graphicsCompletionFence = nullptr;
+	HostFence* m_computeCompletionFence = nullptr;
 	bool m_compiled = false;
 	bool m_inFlight = false;
 	bool m_submittedGraphicsCommands = false;
@@ -203,14 +210,13 @@ private:
 	void _SetUpPhysicalResources();
 	void _CreateManagedRenderPasses();
 	void _BuildCompiledGraphPlan();
+	auto _RefreshExecutionState()->bool;
 	auto _GetManagedRenderPass(uint32_t inSubmitIndex, uint32_t inGraphicsBatchIndex)->ManagedRenderPass*;
 	auto _GetBuffer(const std::string& inName) const->Buffer*;
 	auto _GetImage(const std::string& inName) const->Image*;
 	void _AppendPassCommands(PassIndex inPassIndex, CommandBuffer& inCommandBuffer);
 	void _AppendRenderPassCommands(const std::vector<PassIndex>& inPasses, const ManagedRenderPass& inRenderPass, CommandBuffer& inCommandBuffer);
 	void _RecordSubpassCommandBuffer(PassIndex inPassIndex, std::function<void(CommandBuffer*)> inProcess, ExecutionContext& inContext);
-	auto _AcquireSemaphore()->VkSemaphore;
-	void _RecycleExecuteSemaphores();
 	auto _CreateBarrierCommand(
 		const std::vector<RenderGraph::BarrierPlan>& inBarrierPlans,
 		BarrierCommandMode inMode = BarrierCommandMode::NORMAL)->std::unique_ptr<Command>;
@@ -222,9 +228,7 @@ public:
 	void SetUpExternalImage(const std::string& inName, const RenderGraphInstance::ExternalImageInfo& inImageInfo);
 	void SetUpPass(const std::string& inName, const PassInfo& inPassInfo);
 	void Compile();
-	void Execute();
 	void Execute(const ExecuteInfo& inExecuteInfo);
-	void WaitTillDone();
 };
 
 using QueueSyncInfo = RenderGraphInstance::QueueSyncInfo;

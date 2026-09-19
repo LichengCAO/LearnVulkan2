@@ -18,6 +18,7 @@ class SemaphoreAllocator;
 class GraphicsQueue;
 class ComputeQueue;
 class TransferQueue;
+class CommandQueueManager;
 
 struct UserInput
 {
@@ -85,9 +86,7 @@ private:
 	std::unique_ptr<RayTracingPipelineAllocator> m_uptrRayTracingPipelineAllocator;
 	std::unique_ptr<SamplerAllocator> m_uptrSamplerAllocator;
 	std::unique_ptr<SemaphoreAllocator> m_uptrSemaphoreAllocator;
-	std::unique_ptr<GraphicsQueue> m_uptrGraphicsCommandQueue;
-	std::unique_ptr<ComputeQueue> m_uptrComputeCommandQueue;
-	std::unique_ptr<TransferQueue> m_uptrTransferCommandQueue;
+	std::unique_ptr<CommandQueueManager> m_uptrCommandQueueManager;
 	std::unordered_map<VkCommandPool, uint32_t> m_mapPoolToQueueFamily;
 
 private:
@@ -196,6 +195,7 @@ public:
 	auto GetGraphicsCommandQueue()->GraphicsQueue*;
 	auto GetComputeCommandQueue()->ComputeQueue*;
 	auto GetTransferCommandQueue()->TransferQueue*;
+	auto GetCommandQueueManager()->CommandQueueManager*;
 
 	// Get queue family index by the function,
 	// https://github.com/KhronosGroup/Vulkan-Guide/blob/main/chapters/queues.adoc

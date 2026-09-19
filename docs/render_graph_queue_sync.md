@@ -19,8 +19,8 @@
 ```cpp
 struct QueueSyncInfo
 {
-    QueueSignalChain graphicsToCompute;
-    QueueSignalChain computeToGraphics;
+    QueueDependency graphicsToCompute;
+    QueueDependency computeToGraphics;
 };
 ```
 
@@ -39,7 +39,7 @@ struct QueueSyncInfo
 
 ### 所有权和一次性检查
 
-`QueueSyncInfo` 使用两个 `QueueSignalChain` 管理同步方向和 semaphore 生命周期。对象不可复制、不可移动，以保证提交期间绑定引用稳定。chain 在 producer signal submit 时才分配 semaphore，在 consumer wait submit 完成后由 `CommandQueue` 回收。
+`QueueSyncInfo` 使用两个 `QueueDependency` 表示同步方向。对象不可复制、不可移动，以保证提交期间绑定引用稳定。dependency 只临时保存 producer 和 consumer submission 之间的待消费同步 handle；底层 semaphore 的分配和回收全部由 `CommandQueue` 负责。
 
 内部维护两个使用标志：
 
@@ -57,9 +57,9 @@ LEAVING_USED
 - 第二次跨 Execute 使用时直接报错；
 - 不提供 reset 或复用接口，新的 graph 连接必须创建新的对象。
 
-entering 和 leaving API 都接受 `QueueSyncInfo&`。signal 会推进 chain，wait 会消费并清空 chain，因此两种操作都会修改同步对象。
+entering 和 leaving API 都接受 `QueueSyncInfo&`。signal 会产生 pending dependency，wait 会消费并清空 dependency，因此两种操作都会修改同步对象。
 
-对象必须保持有效，直到 producer signal 和 consumer wait 都提交完成。正常的 consumer wait 会将 semaphore 移交给 `CommandQueue`，由 completion fence 或 queue drain 延迟回收；未被消费的 signal 在 chain 析构时只能等待设备空闲并销毁，不能直接作为未 signaled semaphore 复用。
+对象必须保持有效，直到 producer signal 和 consumer wait 都提交完成。正常的 consumer wait 会将底层 handle 移交给 `CommandQueue`，由 completion fence 或 queue drain 延迟回收。`QueueDependency` 析构时必须为空；仍有未消费的 dependency 会直接报错，不执行等待或资源兜底。
 
 ## ExecuteInfo
 
@@ -80,6 +80,9 @@ struct ExecuteInfo
         const std::string& name,
         QueueSyncInfo* entering,
         QueueSyncInfo* leaving);
+
+    void SetGraphicsCompletionFence(HostFence&);
+    void SetComputeCompletionFence(HostFence&);
 };
 ```
 
@@ -163,49 +166,65 @@ struct SubmitBoundary
 3. 根据 `BuildResult` 获取 graph/resource 的 `SubmitBoundary`；
 4. 按 QueueSyncInfo 对象地址去重并聚合目标 submit；
 5. 检查 entering/leaving 一次性使用状态；
-6. 将外部 chain 以显式 wait/signal 语义加入对应 submit 的 `CommandQueue::SubmitInfo`；
-7. 合并现有 graph 内部 queue-sync edge semaphore；
+6. 将外部 dependency 以显式 wait/signal 语义加入对应 submit 的 `CommandQueue::SubmitInfo`；
+7. 将 graph 内部 queue-sync edge 绑定为 `QueueDependency`；
 8. 按 Vulkan handle 去重每个 submit 的 wait/signal 列表；
 9. 提交 graphics/compute queue；
-10. 不调用 `WaitTillDone()`。
+10. 将调用者提供的 completion fence 绑定到每个活跃 queue role 的最后一次 submit。
 
 一个 submit 中不能重复出现相同的 Binary semaphore。一个 semaphore 只能有一个 signal 和一个 wait。
 
 ## 异步执行和完成
 
-`RenderGraphInstance` 只允许一个尚未完成的 Execute：
+`RenderGraphInstance` 只允许一个尚未完成的 Execute。它不在 graph 内部等待 GPU，而是要求调用者为 graph 实际使用的每个 queue role 提供一个 `HostFence`：
 
 ```text
-Execute()
+Execute(info)
     -> 异步提交 command
+    -> 最后一次 graphics/compute submit 分别绑定 caller-owned fence
     -> instance 标记 in-flight
 
-WaitTillDone()
-    -> 等待 graphics queue
-    -> 等待 compute queue
-    -> 回收 instance 内部的 graph-sync semaphore
-    -> 清除 in-flight
+下一次 Execute/Compile
+    -> Poll 上一次提交的 fence
+    -> 全部完成后清除 in-flight
+
+析构
+    -> 等待仍在 flight 的 caller-owned fence
+    -> 再销毁 graph 内部 GPU 资源
 ```
 
+同时使用 graphics 和 compute 时必须提供两个不同的 fence，即使两个 role 映射到同一个实际 `VkQueue`。这些 fence 必须存活到 Instance 在下一次 `Execute`/`Compile` 中观察到完成，或者存活到 Instance 析构；仅在外部等待完成后立即销毁 fence 仍会留下悬空引用。
+Instance 观察完成前，其他 Instance 或直接 queue submit 不能复用已绑定的 fence；manager 会拒绝这种覆盖旧 completion frontier 的操作。
+
 `QueueSyncInfo` 不由 Instance 回收。它的生命周期由连接两端的调用者管理，必须覆盖 producer signal 和 consumer wait 的 GPU 使用周期。
+
+`CommandQueueManager` 为每个实际 `VkQueue` 维护递增 submission version 和 `SubmissionFrontier`。dependency signal 保存 producer frontier，consumer wait 将其合并到自己的 submission frontier。某个 `HostFence` 完成后，manager 合并该 fence 的 frontier，并回收所有已被完成 frontier 覆盖的 consumer-wait semaphore。这个模型不使用 timeline semaphore。
 
 ## 跨 Graph 使用示例
 
 ```cpp
 QueueSyncInfo sync;
+HostFence producerGraphicsDone;
+HostFence producerComputeDone;
+HostFence consumerGraphicsDone;
+HostFence consumerComputeDone;
 
 // Producer graph
 ExecuteInfo producerInfo;
 producerInfo.AddLeavingQueueSyncInfo(sync);
+producerInfo.SetGraphicsCompletionFence(producerGraphicsDone);
+producerInfo.SetComputeCompletionFence(producerComputeDone);
 producer.Execute(producerInfo);
 
 // Consumer graph
 ExecuteInfo consumerInfo;
 consumerInfo.AddEnteringQueueSyncInfo(sync);
+consumerInfo.SetGraphicsCompletionFence(consumerGraphicsDone);
+consumerInfo.SetComputeCompletionFence(consumerComputeDone);
 consumer.Execute(consumerInfo);
 
-producer.WaitTillDone();
-consumer.WaitTillDone();
+consumerGraphicsDone.Wait();
+consumerComputeDone.Wait();
 ```
 
 producer 的 Execute 必须先提交，consumer 的 Execute 后提交。这样同 queue 可以依靠提交顺序，跨 queue 则使用 `QueueSyncInfo` 中对应方向的 semaphore。
@@ -223,6 +242,8 @@ producer 的 Execute 必须先提交，consumer 的 Execute 后提交。这样�
 - 同一个 Execute 中同时作为 entering 和 leaving；
 - 需要 signal/wait 的 submit 不存在；
 - submit 内出现重复 semaphore handle；
+- 活跃 queue role 没有提供 completion fence；
+- graphics 和 compute 使用同一个 completion fence；
 - 单个 RenderGraphInstance 在前一次 Execute 未完成时再次 Execute。
 
 ## 测试清单
@@ -231,7 +252,7 @@ producer 的 Execute 必须先提交，consumer 的 Execute 后提交。这样�
 - compute-only graph 的 boundary 和 sync 绑定；
 - graphics/compute 双 queue graph 的 `graphicsToCompute` 和 `computeToGraphics`；
 - 同 queue graph 链路只使用 barrier 和 submit order；
-- 跨 queue graph 链路不依赖 CPU `WaitTillDone()`；
+- 跨 queue graph 链路不依赖 RenderGraph 的 CPU wait API；
 - 多个 graph-level entering sync；
 - 多个 graph-level leaving sync；
 - 多个 resource-level sync；
@@ -239,22 +260,19 @@ producer 的 Execute 必须先提交，consumer 的 Execute 后提交。这样�
 - graph-level 和 resource-level 同时引用同一对象时正确聚合；
 - `INVALID_INDEX` queue 边界被正确跳过；
 - 重复使用 QueueSyncInfo 被检测；
-- Execute 异步提交，WaitTillDone 后恢复可执行状态；
+- Execute 异步提交，caller fence 完成后恢复可执行状态；
 - 现有 graph 内部 queue-sync edge 行为不受影响。
 
-## 实现拆分（明日执行清单）
+## 回收实现
 
-1. 在 `RenderGraph::BuildResult` 中加入 graph/resource `SubmitBoundary`，并在 Build 阶段基于最终 submit 计划填充边界。
-2. 实现拥有两个 Binary semaphore 的 `QueueSyncInfo`，加入不可复制语义及 entering/leaving 一次性使用检查。
-3. 增加 `ExecuteInfo` 的 graph-level 和 external Buffer/Image queue-sync 接口，保持 external resource info 不持有 transient sync。
-4. 在 `RenderGraphInstance::Execute()` 入口校验并聚合所有 graph/resource sync，按 boundary 将 wait/signal 绑定到有效 submit。
-5. 对同一 `QueueSyncInfo` 和同一 Vulkan semaphore handle 做去重，处理 `INVALID_INDEX` queue 边界和无有效 submit 的情况。
-6. 移除 Execute 末尾的隐式 `WaitTillDone()`，增加 in-flight 状态管理，并由显式 `WaitTillDone()` 完成等待和 instance 内部资源回收。
-7. 按下方测试清单补充单元测试和跨 Graph 集成测试，确认现有 graph 内部 queue-sync edge 不受影响。
+1. `MyDevice` 持有一个 `CommandQueueManager`；graphics、compute、transfer role 根据 `(queueFamilyIndex, queueIndex)` 映射到最多三个实际 queue state。
+2. 每个实际 queue state 的 `m_tailFrontier` 自身分量就是该队列的 submission version，不维护额外的全局或 static 计数器。
+3. consumer wait 成功提交后，binary semaphore 以 consumer queue/version 进入 retired 队列。
+4. `HostFence::Poll/Wait` 确认完成时推进 manager completed frontier，并释放满足版本条件的 retired semaphore。
+5. manager 销毁时等待 device idle，并在 semaphore allocator 销毁前清空剩余 retired semaphore。
 
 ## 暂不包含
 
-- Timeline semaphore；
 - 一个 Binary semaphore 向多个 consumer graph 扇出；
 - relay/join submit；
 - external resource 的 queue-family ownership transfer；

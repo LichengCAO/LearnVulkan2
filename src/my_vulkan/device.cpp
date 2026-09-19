@@ -726,21 +726,17 @@ void MyDevice::_DestroySemaphoreAllocator()
 
 void MyDevice::_CreateCommandQueues()
 {
-	m_uptrGraphicsCommandQueue = std::make_unique<GraphicsQueue>();
-	m_uptrGraphicsCommandQueue->Init();
-
-	m_uptrComputeCommandQueue = std::make_unique<ComputeQueue>();
-	m_uptrComputeCommandQueue->Init();
-
-	m_uptrTransferCommandQueue = std::make_unique<TransferQueue>();
-	m_uptrTransferCommandQueue->Init();
+	m_uptrCommandQueueManager = std::make_unique<CommandQueueManager>();
+	m_uptrCommandQueueManager->Create();
 }
 
 void MyDevice::_DestroyCommandQueues()
 {
-	m_uptrTransferCommandQueue.reset();
-	m_uptrComputeCommandQueue.reset();
-	m_uptrGraphicsCommandQueue.reset();
+	if (m_uptrCommandQueueManager != nullptr)
+	{
+		m_uptrCommandQueueManager->Destroy();
+		m_uptrCommandQueueManager.reset();
+	}
 }
 
 void MyDevice::Create()
@@ -830,17 +826,28 @@ auto MyDevice::GetSemaphoreAllocator()->SemaphoreAllocator*
 
 auto MyDevice::GetGraphicsCommandQueue()->GraphicsQueue*
 {
-	return m_uptrGraphicsCommandQueue.get();
+	return m_uptrCommandQueueManager == nullptr
+		? nullptr
+		: m_uptrCommandQueueManager->GetGraphicsQueue();
 }
 
 auto MyDevice::GetComputeCommandQueue()->ComputeQueue*
 {
-	return m_uptrComputeCommandQueue.get();
+	return m_uptrCommandQueueManager == nullptr
+		? nullptr
+		: m_uptrCommandQueueManager->GetComputeQueue();
 }
 
 auto MyDevice::GetTransferCommandQueue()->TransferQueue*
 {
-	return m_uptrTransferCommandQueue.get();
+	return m_uptrCommandQueueManager == nullptr
+		? nullptr
+		: m_uptrCommandQueueManager->GetTransferQueue();
+}
+
+auto MyDevice::GetCommandQueueManager()->CommandQueueManager*
+{
+	return m_uptrCommandQueueManager.get();
 }
 
 VkFence MyDevice::CreateVkFence(

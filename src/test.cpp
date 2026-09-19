@@ -1,4 +1,5 @@
 #include "common.h"
+#include "my_vulkan/command/command_queue.h"
 #include "utility/render_graph/render_graph.h"
 #include "utility/render_graph/render_graph_instance.h"
 
@@ -356,8 +357,93 @@ struct RenderGraphTestProbe
 	}
 };
 
+struct CommandQueueManagerTestProbe
+{
+	static auto DeduplicatesAliasedQueueRoles()->bool
+	{
+		CommandQueueManager manager;
+		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
+		const VkQueue transferHandle = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(2));
+		const size_t graphicsQueue = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue, 4, 0);
+		const size_t computeQueue = manager._RegisterQueue(QueueFamilyType::COMPUTE, queue, 4, 0);
+		const size_t transferQueue = manager._RegisterQueue(QueueFamilyType::TRANSFER, transferHandle, 7, 0);
+		return graphicsQueue == computeQueue &&
+			transferQueue != graphicsQueue &&
+			manager.m_queueStateCount == 2;
+	}
+
+	static auto AliasedRolesShareSubmissionVersions()->bool
+	{
+		CommandQueueManager manager;
+		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
+		manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue, 4, 0);
+		manager._RegisterQueue(QueueFamilyType::COMPUTE, queue, 4, 0);
+		const size_t queueStateIndex = manager._GetQueueStateIndex(QueueFamilyType::GRAPHICS);
+		CommandQueueManager::QueueState& state = manager._GetQueueState(queueStateIndex);
+		state.tailFrontier.Advance(queueStateIndex);
+		state.tailFrontier.Advance(queueStateIndex);
+		return state.tailFrontier.GetVersion(queueStateIndex) == 2 &&
+			manager._GetQueueStateIndex(QueueFamilyType::COMPUTE) == queueStateIndex;
+	}
+
+	static auto RetiredSemaphoreReclamationStopsAtIncompleteVersion()->bool
+	{
+		CommandQueueManager manager;
+		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
+		const size_t queueStateIndex = manager._RegisterQueue(
+			QueueFamilyType::GRAPHICS,
+			queue,
+			4,
+			0);
+		CommandQueueManager::QueueState& state = manager._GetQueueState(queueStateIndex);
+		state.retiredSemaphores.push_back({ reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(11)), 1 });
+		state.retiredSemaphores.push_back({ reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(12)), 2 });
+		state.retiredSemaphores.push_back({ reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(13)), 3 });
+		SubmissionFrontier completed;
+		completed.Advance(queueStateIndex);
+		completed.Advance(queueStateIndex);
+		return manager._GetRetiredSemaphoreReclaimCount(state, queueStateIndex, completed) == 2;
+	}
+};
+
 namespace
 {
+	void TestSubmissionFrontierPropagation()
+	{
+		SubmissionFrontier graphicsFrontier;
+		graphicsFrontier.Advance(0);
+
+		SubmissionFrontier computeFrontier;
+		computeFrontier.Merge(graphicsFrontier);
+		computeFrontier.Advance(1);
+
+		SubmissionFrontier completedFrontier;
+		completedFrontier.Merge(computeFrontier);
+		CHECK_TRUE(completedFrontier.Covers(0, 1),
+			"Compute completion must cover the graphics dependency it waited on!");
+		CHECK_TRUE(completedFrontier.Covers(1, 1),
+			"Compute completion must cover its own submission version!");
+		CHECK_TRUE(completedFrontier.Covers(computeFrontier),
+			"A completion frontier must cover every dependency component of the submission!");
+		CHECK_TRUE(!completedFrontier.Covers(0, 2),
+			"A completion frontier must not cover a newer graphics submission!");
+
+		SubmissionFrontier independentComputeFrontier;
+		independentComputeFrontier.Advance(1);
+		CHECK_TRUE(!independentComputeFrontier.Covers(0, 1),
+			"An unrelated compute completion must not advance graphics completion!");
+	}
+
+	void TestCommandQueueRoleDeduplication()
+	{
+		CHECK_TRUE(CommandQueueManagerTestProbe::DeduplicatesAliasedQueueRoles(),
+			"Logical queue roles sharing one Vulkan queue must share one queue state!");
+		CHECK_TRUE(CommandQueueManagerTestProbe::AliasedRolesShareSubmissionVersions(),
+			"Aliased queue roles must share one submission version sequence!");
+		CHECK_TRUE(CommandQueueManagerTestProbe::RetiredSemaphoreReclamationStopsAtIncompleteVersion(),
+			"Retired semaphore reclamation must stop at the first incomplete version!");
+	}
+
 	void ExpectThrows(const std::function<void()>& inProcess, const std::string& inMessageFragment)
 	{
 		try
@@ -1417,6 +1503,8 @@ int main()
 {
 	try
 	{
+		TestSubmissionFrontierPropagation();
+		TestCommandQueueRoleDeduplication();
 		TestCommandBufferRenderingScopeStateTransitions();
 		TestInternalSampledImageRequiresWriter();
 		TestInternalAttachmentLoadRequiresWriter();

@@ -257,6 +257,16 @@ void RenderGraphInstance::ExecuteInfo::AddExternalImageQueueSyncInfo(
 	m_externalImageQueueSyncInfos.push_back({ inName, inEntering, inLeaving });
 }
 
+void RenderGraphInstance::ExecuteInfo::SetGraphicsCompletionFence(HostFence& inCompletionFence)
+{
+	m_graphicsCompletionFence = &inCompletionFence;
+}
+
+void RenderGraphInstance::ExecuteInfo::SetComputeCompletionFence(HostFence& inCompletionFence)
+{
+	m_computeCompletionFence = &inCompletionFence;
+}
+
 RenderGraphInstance::RenderGraphInstance(const RenderGraph& inRenderGraph)
 	: m_buildResult(inRenderGraph.GetBuildResult())
 {
@@ -271,27 +281,17 @@ RenderGraphInstance::RenderGraphInstance(const RenderGraph& inRenderGraph)
 
 RenderGraphInstance::~RenderGraphInstance()
 {
-	WaitTillDone();
+	if (m_submittedGraphicsCommands && m_graphicsCompletionFence != nullptr)
+	{
+		m_graphicsCompletionFence->Wait();
+	}
+	if (m_submittedComputeCommands && m_computeCompletionFence != nullptr)
+	{
+		m_computeCompletionFence->Wait();
+	}
+	_RefreshExecutionState();
 	_DestroyManagedRenderPasses();
 	_DestroyInternalResources();
-
-	auto& device = MyDevice::GetInstance();
-	for (VkSemaphore& semaphore : m_executeSemaphores)
-	{
-		if (semaphore != VK_NULL_HANDLE)
-		{
-			device.DestroyVkSemaphore(semaphore);
-		}
-	}
-	for (VkSemaphore& semaphore : m_freeSemaphores)
-	{
-		if (semaphore != VK_NULL_HANDLE)
-		{
-			device.DestroyVkSemaphore(semaphore);
-		}
-	}
-	m_executeSemaphores.clear();
-	m_freeSemaphores.clear();
 }
 
 void RenderGraphInstance::_DestroyManagedRenderPasses()
@@ -1084,28 +1084,6 @@ void RenderGraphInstance::_RecordSubpassCommandBuffer(
 	inProcess(inContext.m_pCommandBuffer);
 }
 
-auto RenderGraphInstance::_AcquireSemaphore() -> VkSemaphore
-{
-	if (!m_freeSemaphores.empty())
-	{
-		VkSemaphore semaphore = m_freeSemaphores.back();
-		m_freeSemaphores.pop_back();
-		CHECK_TRUE(semaphore != VK_NULL_HANDLE, "Render graph semaphore pool returned an invalid semaphore!");
-		m_executeSemaphores.push_back(semaphore);
-		return semaphore;
-	}
-
-	VkSemaphore semaphore = MyDevice::GetInstance().CreateVkSemaphore();
-	m_executeSemaphores.push_back(semaphore);
-	return semaphore;
-}
-
-void RenderGraphInstance::_RecycleExecuteSemaphores()
-{
-	m_freeSemaphores.insert(m_freeSemaphores.end(), m_executeSemaphores.begin(), m_executeSemaphores.end());
-	m_executeSemaphores.clear();
-}
-
 auto RenderGraphInstance::_CreateBarrierCommand(
 	const std::vector<RenderGraph::BarrierPlan>& inBarrierPlans,
 	BarrierCommandMode inMode) -> std::unique_ptr<Command>
@@ -1340,10 +1318,35 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 	return command;
 }
 
+auto RenderGraphInstance::_RefreshExecutionState()->bool
+{
+	if (!m_inFlight)
+	{
+		return true;
+	}
+
+	if (m_submittedGraphicsCommands && m_graphicsCompletionFence != nullptr && m_graphicsCompletionFence->Poll())
+	{
+		m_graphicsCompletionFence->_ReleaseCompletionObserver(this);
+		m_graphicsCompletionFence = nullptr;
+		m_submittedGraphicsCommands = false;
+	}
+	if (m_submittedComputeCommands && m_computeCompletionFence != nullptr && m_computeCompletionFence->Poll())
+	{
+		m_computeCompletionFence->_ReleaseCompletionObserver(this);
+		m_computeCompletionFence = nullptr;
+		m_submittedComputeCommands = false;
+	}
+
+	m_inFlight = m_submittedGraphicsCommands || m_submittedComputeCommands;
+	return !m_inFlight;
+}
+
 void RenderGraphInstance::Compile()
 {
 	CHECK_TRUE(m_buildResult.IsValid(), "No valid render graph build result!");
-	CHECK_TRUE(!m_inFlight, "Render graph instance cannot be compiled while an execute is in flight!");
+	CHECK_TRUE(_RefreshExecutionState(),
+		"Render graph instance cannot be compiled while an execute is in flight!");
 
 	for (PassIndex index = 0; index < m_buildResult.GetPassCount(); ++index)
 	{
@@ -1361,15 +1364,22 @@ void RenderGraphInstance::Compile()
 	m_compiled = true;
 }
 
-void RenderGraphInstance::Execute()
-{
-	Execute(ExecuteInfo{});
-}
-
 void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 {
 	CHECK_TRUE(m_compiled, "Render graph instance must be compiled before execution!");
-	CHECK_TRUE(!m_inFlight, "Render graph instance has an execute in flight!");
+	CHECK_TRUE(_RefreshExecutionState(), "Render graph instance has an execute in flight!");
+
+	const RenderGraph::SubmitBoundary& graphBoundary = m_buildResult.GetGraphSubmitBoundary();
+	const bool usesGraphicsQueue = graphBoundary.lastGraphicsSubmit != INVALID_INDEX;
+	const bool usesComputeQueue = graphBoundary.lastComputeSubmit != INVALID_INDEX;
+	CHECK_TRUE(!usesGraphicsQueue || inExecuteInfo.m_graphicsCompletionFence != nullptr,
+		"A graphics completion fence is required for this render graph execution!");
+	CHECK_TRUE(!usesComputeQueue || inExecuteInfo.m_computeCompletionFence != nullptr,
+		"A compute completion fence is required for this render graph execution!");
+	CHECK_TRUE(
+		!usesGraphicsQueue || !usesComputeQueue ||
+		inExecuteInfo.m_graphicsCompletionFence != inExecuteInfo.m_computeCompletionFence,
+		"Graphics and compute completion fences must be different objects!");
 
 	auto& device = MyDevice::GetInstance();
 	GraphicsQueue* graphicsQueue = device.GetGraphicsCommandQueue();
@@ -1377,35 +1387,35 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 	CHECK_TRUE(graphicsQueue != nullptr, "Graphics command queue is not available!");
 	CHECK_TRUE(computeQueue != nullptr, "Compute command queue is not available!");
 
-	std::vector<std::vector<QueueSemaphore*>> externalWaits(m_compiledPlan.submitBatches.size() * 2);
-	std::vector<std::vector<QueueSemaphore*>> externalSignals(m_compiledPlan.submitBatches.size() * 2);
-	std::vector<std::unordered_set<QueueSemaphore*>> externalWaitSets(m_compiledPlan.submitBatches.size() * 2);
-	std::vector<std::unordered_set<QueueSemaphore*>> externalSignalSets(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::vector<QueueDependency*>> externalWaits(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::vector<QueueDependency*>> externalSignals(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::unordered_set<QueueDependency*>> externalWaitSets(m_compiledPlan.submitBatches.size() * 2);
+	std::vector<std::unordered_set<QueueDependency*>> externalSignalSets(m_compiledPlan.submitBatches.size() * 2);
 	std::unordered_set<QueueSyncInfo*> enteringObjects;
 	std::unordered_set<QueueSyncInfo*> leavingObjects;
 
-	auto funcAddWait = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, QueueSemaphore& inChain)
+	auto funcAddWait = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, QueueDependency& inDependency)
 	{
 		if (inSubmit == INVALID_INDEX)
 		{
 			return;
 		}
 		const size_t index = static_cast<size_t>(inSubmit) * 2 + (inQueue == RenderGraph::QueueType::GRAPHICS ? 0 : 1);
-		if (externalWaitSets[index].insert(&inChain).second)
+		if (externalWaitSets[index].insert(&inDependency).second)
 		{
-			externalWaits[index].push_back(&inChain);
+			externalWaits[index].push_back(&inDependency);
 		}
 	};
-	auto funcAddSignal = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, QueueSemaphore& inChain)
+	auto funcAddSignal = [&](uint32_t inSubmit, RenderGraph::QueueType inQueue, QueueDependency& inDependency)
 	{
 		if (inSubmit == INVALID_INDEX)
 		{
 			return;
 		}
 		const size_t index = static_cast<size_t>(inSubmit) * 2 + (inQueue == RenderGraph::QueueType::GRAPHICS ? 0 : 1);
-		if (externalSignalSets[index].insert(&inChain).second)
+		if (externalSignalSets[index].insert(&inDependency).second)
 		{
-			externalSignals[index].push_back(&inChain);
+			externalSignals[index].push_back(&inDependency);
 		}
 	};
 
@@ -1478,6 +1488,37 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 		CHECK_TRUE(leavingObjects.find(sync) == leavingObjects.end(),
 			"QueueSyncInfo cannot be entering and leaving in the same Execute!");
 	}
+	bool graphicsFenceObserved = false;
+	bool computeFenceObserved = false;
+	try
+	{
+		if (usesGraphicsQueue)
+		{
+			inExecuteInfo.m_graphicsCompletionFence->_AcquireCompletionObserver(this);
+			graphicsFenceObserved = true;
+		}
+		if (usesComputeQueue)
+		{
+			inExecuteInfo.m_computeCompletionFence->_AcquireCompletionObserver(this);
+			computeFenceObserved = true;
+		}
+	}
+	catch (...)
+	{
+		if (computeFenceObserved)
+		{
+			inExecuteInfo.m_computeCompletionFence->_ReleaseCompletionObserver(this);
+		}
+		if (graphicsFenceObserved)
+		{
+			inExecuteInfo.m_graphicsCompletionFence->_ReleaseCompletionObserver(this);
+		}
+		throw;
+	}
+
+	m_graphicsCompletionFence = usesGraphicsQueue ? inExecuteInfo.m_graphicsCompletionFence : nullptr;
+	m_computeCompletionFence = usesComputeQueue ? inExecuteInfo.m_computeCompletionFence : nullptr;
+
 	for (QueueSyncInfo* sync : enteringObjects)
 	{
 		sync->m_enteringUsed = true;
@@ -1490,11 +1531,14 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 	m_submittedGraphicsCommands = false;
 	m_submittedComputeCommands = false;
 
-	std::vector<VkSemaphore> queueSyncSemaphores(m_compiledPlan.queueSyncEdges.size(), VK_NULL_HANDLE);
-	for (uint32_t edgeIndex = 0; edgeIndex < m_compiledPlan.queueSyncEdges.size(); ++edgeIndex)
+	std::vector<std::unique_ptr<QueueDependency>> queueSyncDependencies;
+	try
 	{
-		queueSyncSemaphores[edgeIndex] = _AcquireSemaphore();
-	}
+		queueSyncDependencies.reserve(m_compiledPlan.queueSyncEdges.size());
+		for (uint32_t edgeIndex = 0; edgeIndex < m_compiledPlan.queueSyncEdges.size(); ++edgeIndex)
+		{
+			queueSyncDependencies.push_back(std::make_unique<QueueDependency>());
+		}
 
 	auto funcAppendCompiledCommands = [](const std::vector<std::unique_ptr<Command>>& inCommands, CommandBuffer& inCommandBuffer) -> bool
 	{
@@ -1519,21 +1563,19 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 		CommandQueue::SubmitInfo syncInfo;
 		for (uint32_t syncEdge : inWaits)
 		{
-			CHECK_TRUE(syncEdge < queueSyncSemaphores.size(), "Invalid render graph queue wait sync edge!");
-			const VkSemaphore semaphore = queueSyncSemaphores[syncEdge];
-			CHECK_TRUE(semaphore != VK_NULL_HANDLE, "Render graph wait semaphore is missing!");
+			CHECK_TRUE(syncEdge < queueSyncDependencies.size(), "Invalid render graph queue wait sync edge!");
+			CHECK_TRUE(queueSyncDependencies[syncEdge] != nullptr, "Render graph wait dependency is missing!");
 			const VkPipelineStageFlags waitStage = m_compiledPlan.queueSyncEdges[syncEdge].waitStage == 0
 				? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
 				: m_compiledPlan.queueSyncEdges[syncEdge].waitStage;
-			syncInfo.AddWaitSemaphore(semaphore, waitStage);
+			syncInfo.AddWaitQueueDependency(*queueSyncDependencies[syncEdge], waitStage);
 		}
 
 		for (uint32_t syncEdge : inSignals)
 		{
-			CHECK_TRUE(syncEdge < queueSyncSemaphores.size(), "Invalid render graph queue signal sync edge!");
-			const VkSemaphore semaphore = queueSyncSemaphores[syncEdge];
-			CHECK_TRUE(semaphore != VK_NULL_HANDLE, "Render graph signal semaphore is missing!");
-			syncInfo.AddSemaphoreToSignal(semaphore);
+			CHECK_TRUE(syncEdge < queueSyncDependencies.size(), "Invalid render graph queue signal sync edge!");
+			CHECK_TRUE(queueSyncDependencies[syncEdge] != nullptr, "Render graph signal dependency is missing!");
+			syncInfo.AddSignalQueueDependency(*queueSyncDependencies[syncEdge]);
 		}
 
 		return syncInfo;
@@ -1542,15 +1584,15 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 	auto funcAppendExternalSync = [&](CommandQueue::SubmitInfo& inoutSyncInfo, uint32_t inSubmitIndex, RenderGraph::QueueType inQueue)
 	{
 		const size_t index = static_cast<size_t>(inSubmitIndex) * 2 + (inQueue == RenderGraph::QueueType::GRAPHICS ? 0 : 1);
-		for (QueueSemaphore* chain : externalWaits[index])
+		for (QueueDependency* dependency : externalWaits[index])
 		{
-			CHECK_TRUE(chain != nullptr, "External queue wait chain is null!");
-			inoutSyncInfo.AddWaitQueueSignalChain(*chain, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+			CHECK_TRUE(dependency != nullptr, "External queue wait dependency is null!");
+			inoutSyncInfo.AddWaitQueueDependency(*dependency, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 		}
-		for (QueueSemaphore* chain : externalSignals[index])
+		for (QueueDependency* dependency : externalSignals[index])
 		{
-			CHECK_TRUE(chain != nullptr, "External queue signal chain is null!");
-			inoutSyncInfo.AddSignalQueueSignalChain(*chain);
+			CHECK_TRUE(dependency != nullptr, "External queue signal dependency is null!");
+			inoutSyncInfo.AddSignalQueueDependency(*dependency);
 		}
 	};
 
@@ -1610,6 +1652,10 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 		{
 			CommandQueue::SubmitInfo syncInfo = funcFillSyncInfo(submitBatch.graphicsWaitSyncs, submitBatch.graphicsSignalSyncs);
 			funcAppendExternalSync(syncInfo, submitIndex, RenderGraph::QueueType::GRAPHICS);
+			if (submitIndex == graphBoundary.lastGraphicsSubmit)
+			{
+				syncInfo._SetFenceForObserver(*inExecuteInfo.m_graphicsCompletionFence, this);
+			}
 			graphicsQueue->Enqueue(&graphicsCommandBuffer, 1).Submit(std::move(syncInfo));
 			m_submittedGraphicsCommands = true;
 		}
@@ -1617,38 +1663,81 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 		{
 			CommandQueue::SubmitInfo syncInfo = funcFillSyncInfo(submitBatch.computeWaitSyncs, submitBatch.computeSignalSyncs);
 			funcAppendExternalSync(syncInfo, submitIndex, RenderGraph::QueueType::COMPUTE);
+			if (submitIndex == graphBoundary.lastComputeSubmit)
+			{
+				syncInfo._SetFenceForObserver(*inExecuteInfo.m_computeCompletionFence, this);
+			}
 			computeQueue->Enqueue(&computeCommandBuffer, 1).Submit(std::move(syncInfo));
 			m_submittedComputeCommands = true;
 		}
 	}
+		for (const std::unique_ptr<QueueDependency>& dependency : queueSyncDependencies)
+		{
+			CHECK_TRUE(dependency != nullptr && !dependency->_HasSemaphore(),
+				"Render graph execution left a pending queue dependency!");
+		}
+		if (!m_submittedGraphicsCommands && m_graphicsCompletionFence != nullptr)
+		{
+			m_graphicsCompletionFence->_ReleaseCompletionObserver(this);
+			m_graphicsCompletionFence = nullptr;
+		}
+		if (!m_submittedComputeCommands && m_computeCompletionFence != nullptr)
+		{
+			m_computeCompletionFence->_ReleaseCompletionObserver(this);
+			m_computeCompletionFence = nullptr;
+		}
 	m_inFlight = m_submittedGraphicsCommands || m_submittedComputeCommands;
-}
+	}
+	catch (...)
+	{
+		if (m_graphicsCompletionFence != nullptr && m_graphicsCompletionFence->IsInFlight())
+		{
+			m_graphicsCompletionFence->Wait();
+		}
+		if (m_computeCompletionFence != nullptr && m_computeCompletionFence->IsInFlight())
+		{
+			m_computeCompletionFence->Wait();
+		}
 
-void RenderGraphInstance::WaitTillDone()
-{
-	if (!m_compiled)
-	{
-		return;
+		std::vector<QueueDependency*> dependenciesToDiscard;
+		dependenciesToDiscard.reserve(queueSyncDependencies.size() + enteringObjects.size() * 2 + leavingObjects.size() * 2);
+		for (const std::unique_ptr<QueueDependency>& dependency : queueSyncDependencies)
+		{
+			dependenciesToDiscard.push_back(dependency.get());
+		}
+		auto funcAppendQueueSyncDependencies = [&dependenciesToDiscard](QueueSyncInfo* inSync)
+		{
+			if (inSync != nullptr)
+			{
+				dependenciesToDiscard.push_back(&inSync->m_graphicsToCompute);
+				dependenciesToDiscard.push_back(&inSync->m_computeToGraphics);
+			}
+		};
+		for (QueueSyncInfo* sync : enteringObjects)
+		{
+			funcAppendQueueSyncDependencies(sync);
+		}
+		for (QueueSyncInfo* sync : leavingObjects)
+		{
+			funcAppendQueueSyncDependencies(sync);
+		}
+		CommandQueueManager* manager = device.GetCommandQueueManager();
+		CHECK_TRUE(manager != nullptr, "Command queue manager is not available!");
+		manager->_WaitIdleAndDiscardDependencies(dependenciesToDiscard.data(), dependenciesToDiscard.size());
+
+		if (m_graphicsCompletionFence != nullptr)
+		{
+			m_graphicsCompletionFence->_ReleaseCompletionObserver(this);
+			m_graphicsCompletionFence = nullptr;
+		}
+		if (m_computeCompletionFence != nullptr)
+		{
+			m_computeCompletionFence->_ReleaseCompletionObserver(this);
+			m_computeCompletionFence = nullptr;
+		}
+		m_submittedGraphicsCommands = false;
+		m_submittedComputeCommands = false;
+		m_inFlight = false;
+		throw;
 	}
-	if (!m_inFlight)
-	{
-		return;
-	}
-	auto& device = MyDevice::GetInstance();
-	if (m_submittedGraphicsCommands)
-	{
-		GraphicsQueue* graphicsQueue = device.GetGraphicsCommandQueue();
-		CHECK_TRUE(graphicsQueue != nullptr, "Graphics command queue is not available!");
-		graphicsQueue->WaitTillDone();
-	}
-	if (m_submittedComputeCommands)
-	{
-		ComputeQueue* computeQueue = device.GetComputeCommandQueue();
-		CHECK_TRUE(computeQueue != nullptr, "Compute command queue is not available!");
-		computeQueue->WaitTillDone();
-	}
-	_RecycleExecuteSemaphores();
-	m_submittedGraphicsCommands = false;
-	m_submittedComputeCommands = false;
-	m_inFlight = false;
 }

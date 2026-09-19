@@ -1,6 +1,7 @@
 #include "buffer.h"
 #include "device.h"
 #include "command_buffer.h"
+#include "command/command_queue.h"
 #include "memory_allocator.h"
 #include "utils.h"
 
@@ -8,16 +9,15 @@ namespace
 {
 	void _SubmitToGraphicsQueueAndWait(VkCommandBuffer inCommandBuffer)
 	{
-		VkSubmitInfo submitInfo{};
-		std::vector<VkCommandBuffer> cmdsToSubmit = { inCommandBuffer };
 		auto& device = MyDevice::GetInstance();
-		VkQueue queueToSubmit = device.GetQueueOfType(QueueFamilyType::GRAPHICS);
-		
-		submitInfo.commandBufferCount = cmdsToSubmit.size();
-		submitInfo.pCommandBuffers = cmdsToSubmit.data();
-		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-		vkQueueSubmit(queueToSubmit, 1, &submitInfo, VK_NULL_HANDLE);
-		vkQueueWaitIdle(queueToSubmit);
+		GraphicsQueue* queue = device.GetGraphicsCommandQueue();
+		CHECK_TRUE(queue != nullptr, "Graphics command queue is not available!");
+
+		HostFence completionFence;
+		CommandQueue::SubmitInfo submitInfo;
+		submitInfo.SetFence(completionFence);
+		queue->SubmitVkCommandBuffers(&inCommandBuffer, 1, std::move(submitInfo));
+		completionFence.Wait();
 	}
 }
 
