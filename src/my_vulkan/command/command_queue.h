@@ -9,12 +9,15 @@
 #include <mutex>
 
 class MyDevice;
+class Buffer;
 class CommandQueueManager;
 class RenderGraphInstance;
 struct CommandQueueManagerTestProbe;
 
 class CommandQueue
 {
+	friend class Buffer;
+
 public:
 	class SubmitInfo final
 	{
@@ -59,13 +62,17 @@ public:
 		auto SetFence(HostFence& inFence)->SubmitInfo&;
 	};
 
+private:
+	void _SubmitVkCommandBuffers(
+		const VkCommandBuffer* inCommandBuffers,
+		size_t inCount,
+		SubmitInfo inSubmitInfo);
+
 protected:
 	static constexpr uint8_t THREAD_COUNT = 4;
 
 	CommandQueueManager* m_commandQueueManager = nullptr;
 	size_t m_queueStateIndex = SubmissionFrontier::MAX_QUEUE_COUNT;
-	uint32_t m_queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	QueueFamilyType m_queueFamilyType = QueueFamilyType::UNSET;
 	std::array<std::unique_ptr<CommandPool>, THREAD_COUNT> m_commandPools;
 	std::vector<VkCommandBuffer> m_recordedCommandBuffers;
 
@@ -85,15 +92,6 @@ public:
 
 	auto Enqueue(CommandBuffer* inCommandBuffers, size_t inCount)->CommandQueue&;
 	void Submit(SubmitInfo inSubmitInfo);
-	void Submit();
-	void SubmitVkCommandBuffers(
-		const VkCommandBuffer* inCommandBuffers,
-		size_t inCount,
-		SubmitInfo inSubmitInfo);
-
-	auto GetVkQueue() const->VkQueue;
-	auto GetQueueFamilyIndex() const->uint32_t { return m_queueFamilyIndex; }
-	auto GetQueueFamilyType() const->QueueFamilyType { return m_queueFamilyType; }
 };
 
 class GraphicsQueue final : public CommandQueue
@@ -180,8 +178,6 @@ private:
 	auto _GetQueueStateIndex(QueueFamilyType inQueueFamilyType) const->size_t;
 	auto _GetQueueState(size_t inQueueStateIndex)->QueueState&;
 	auto _GetQueueState(size_t inQueueStateIndex) const->const QueueState&;
-	auto _GetVkQueue(size_t inQueueStateIndex) const->VkQueue;
-	auto _GetQueueFamilyIndex(size_t inQueueStateIndex) const->uint32_t;
 	void _Submit(
 		size_t inQueueStateIndex,
 		const VkCommandBuffer* inCommandBuffers,

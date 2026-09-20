@@ -1109,11 +1109,11 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 		if (inQueue == RenderGraph::QueueType::GRAPHICS)
 		{
 			CHECK_TRUE(graphicsQueue != nullptr, "Graphics command queue is not available!");
-			return graphicsQueue->GetQueueFamilyIndex();
+			return device.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
 		}
 
 		CHECK_TRUE(computeQueue != nullptr, "Compute command queue is not available!");
-		return computeQueue->GetQueueFamilyIndex();
+		return device.GetQueueFamilyIndexOfType(QueueFamilyType::COMPUTE);
 	};
 
 	auto funcUsesQueueOwnershipTransfer = [&](const RenderGraph::BarrierPlan& inPlan, uint32_t& outSrcFamily, uint32_t& outDstFamily)->bool

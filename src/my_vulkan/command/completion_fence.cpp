@@ -1,6 +1,5 @@
 #include "completion_fence.h"
 
-#include "command_queue.h"
 #include "device.h"
 
 HostFence::HostFence()
@@ -80,14 +79,10 @@ void HostFence::_PrepareForSubmit()
 		"Failed to reset completion fence!");
 }
 
-void HostFence::_CommitSubmit(
-	CommandQueueManager& inCommandQueueManager,
-	const SubmissionFrontier& inSubmissionFrontier)
+void HostFence::_CommitSubmit()
 {
 	m_activeCallbacks = std::move(m_pendingCallbacks);
 	m_pendingCallbacks.clear();
-	m_commandQueueManager = &inCommandQueueManager;
-	m_submissionFrontier = inSubmissionFrontier;
 	m_hasSubmittedWork = true;
 	m_isInFlight = true;
 }
@@ -102,13 +97,6 @@ void HostFence::_ForceComplete()
 
 void HostFence::_RunCallbacks()
 {
-	if (m_commandQueueManager != nullptr)
-	{
-		m_commandQueueManager->_NotifyCompletion(m_submissionFrontier);
-		m_commandQueueManager = nullptr;
-		m_submissionFrontier = {};
-	}
-
 	std::vector<Callback> callbacks = std::move(m_activeCallbacks);
 	m_activeCallbacks.clear();
 	for (Callback& callback : callbacks)

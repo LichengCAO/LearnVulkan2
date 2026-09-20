@@ -1,25 +1,7 @@
 #include "buffer.h"
 #include "device.h"
-#include "command_buffer.h"
-#include "command/command_queue.h"
 #include "memory_allocator.h"
 #include "utils.h"
-
-namespace 
-{
-	void _SubmitToGraphicsQueueAndWait(VkCommandBuffer inCommandBuffer)
-	{
-		auto& device = MyDevice::GetInstance();
-		GraphicsQueue* queue = device.GetGraphicsCommandQueue();
-		CHECK_TRUE(queue != nullptr, "Graphics command queue is not available!");
-
-		HostFence completionFence;
-		CommandQueue::SubmitInfo submitInfo;
-		submitInfo.SetFence(completionFence);
-		queue->SubmitVkCommandBuffers(&inCommandBuffer, 1, std::move(submitInfo));
-		completionFence.Wait();
-	}
-}
 
 Buffer::~Buffer()
 {
@@ -99,7 +81,7 @@ void Buffer::_UnmapHostMemory()
 	pAllocator->UnmapVkBuffer(m_vkBuffer);
 }
 
-void Buffer::_CopyFromHostWithMappedMemory(const void* src, size_t bufferOffest, size_t size)
+void Buffer::_CopyFromHostWithMappedMemory(const void* src, size_t bufferOffset, size_t size)
 {
 	if (m_mappedMemory == nullptr)
 	{
@@ -107,24 +89,8 @@ void Buffer::_CopyFromHostWithMappedMemory(const void* src, size_t bufferOffest,
 		pAllocator->MapVkBufferToHost(m_vkBuffer, m_mappedMemory);
 	}
 	uint8_t* pMapped = (uint8_t*)m_mappedMemory;
-	pMapped += bufferOffest;
+	pMapped += bufferOffset;
 	memcpy((void*)pMapped, src, size);
-}
-
-void Buffer::_CopyFromHostWithStaggingBuffer(const void* src, size_t bufferOffest, size_t size)
-{
-	Buffer stagingBuffer{};
-	BufferCreateInfo createInfo{};
-
-	createInfo.SetBufferSize(size).SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-	createInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	
-	stagingBuffer.Create(&createInfo);
-	stagingBuffer.CopyFromHost(src, 0, size);
-	
-	CopyFromBuffer(&stagingBuffer, 0, bufferOffest, size);
-
-	stagingBuffer.Destroy();
 }
 
 Buffer::Buffer()
@@ -143,66 +109,19 @@ Buffer::Buffer(Buffer&& _toMove)
 
 void Buffer::CopyFromHost(const void* src, size_t bufferOffset, size_t size)
 {
-	CHECK_TRUE(size <= static_cast<size_t>(m_bufferInformation.size), "Try to copy too much data from host!");
-	if (CONTAIN_BITS(m_bufferInformation.memoryProperty, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-		&& CONTAIN_BITS(m_bufferInformation.memoryProperty, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
-	{
-		_CopyFromHostWithMappedMemory(src, bufferOffset, size);
-	}
-	else
-	{
-		_CopyFromHostWithStaggingBuffer(src, bufferOffset, size);
-	}
-}
+	CHECK_TRUE(src != nullptr, "No source data!");
+	CHECK_TRUE(
+		CONTAIN_BITS(m_bufferInformation.memoryProperty, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT),
+		"CopyFromHost requires host-visible memory!");
+	CHECK_TRUE(
+		CONTAIN_BITS(m_bufferInformation.memoryProperty, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+		"CopyFromHost requires host-coherent memory!");
+	CHECK_TRUE(bufferOffset <= static_cast<size_t>(m_bufferInformation.size), "Copy offset out of range!");
+	CHECK_TRUE(
+		size <= static_cast<size_t>(m_bufferInformation.size) - bufferOffset,
+		"Try to copy too much data from host!");
 
-void Buffer::CopyFromBuffer(const Buffer* pOtherBuffer, size_t srcOffset, size_t dstOffset, size_t size)
-{
-	CHECK_TRUE(pOtherBuffer != nullptr);
-
-	auto& device = MyDevice::GetInstance();
-	VkCommandPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-	poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-	poolInfo.queueFamilyIndex = device.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
-
-	VkCommandPool tmpPool = device.CreateCommandPool(poolInfo);
-	VkCommandBuffer tmpCmdBuffer = device.AllocateCommandBuffer(tmpPool);
-
-	VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	VK_CHECK(vkBeginCommandBuffer(tmpCmdBuffer, &beginInfo), "Failed to begin buffer copy command!");
-
-	VkBufferCopy copyRegion{};
-	copyRegion.srcOffset = srcOffset;
-	copyRegion.dstOffset = dstOffset;
-	copyRegion.size = size;
-	vkCmdCopyBuffer(tmpCmdBuffer, pOtherBuffer->GetVkBuffer(), m_vkBuffer, 1, &copyRegion);
-
-	VK_CHECK(vkEndCommandBuffer(tmpCmdBuffer), "Failed to end buffer copy command!");
-	_SubmitToGraphicsQueueAndWait(tmpCmdBuffer);
-
-	device.FreeCommandBuffer(tmpPool, tmpCmdBuffer);
-	device.DestroyCommandPool(tmpPool);
-}
-
-void Buffer::Fill(uint32_t inData)
-{
-	auto& device = MyDevice::GetInstance();
-	VkCommandPoolCreateInfo poolInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-	poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-	poolInfo.queueFamilyIndex = device.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
-
-	VkCommandPool tmpPool = device.CreateCommandPool(poolInfo);
-	VkCommandBuffer tmpCmdBuffer = device.AllocateCommandBuffer(tmpPool);
-
-	VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-	VK_CHECK(vkBeginCommandBuffer(tmpCmdBuffer, &beginInfo), "Failed to begin buffer fill command!");
-	vkCmdFillBuffer(tmpCmdBuffer, m_vkBuffer, 0, m_bufferInformation.size, inData);
-	VK_CHECK(vkEndCommandBuffer(tmpCmdBuffer), "Failed to end buffer fill command!");
-	_SubmitToGraphicsQueueAndWait(tmpCmdBuffer);
-
-	device.FreeCommandBuffer(tmpPool, tmpCmdBuffer);
-	device.DestroyCommandPool(tmpPool);
+	_CopyFromHostWithMappedMemory(src, bufferOffset, size);
 }
 
 const Buffer::Information& Buffer::GetBufferInformation() const

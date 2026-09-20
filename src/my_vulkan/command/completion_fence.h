@@ -1,7 +1,6 @@
 #pragma once
 
 #include "common.h"
-#include "submission_frontier.h"
 
 class CommandQueue;
 class CommandQueueManager;
@@ -23,8 +22,6 @@ private:
 	VkFence m_vkFence = VK_NULL_HANDLE;
 	bool m_hasSubmittedWork = false;
 	bool m_isInFlight = false;
-	CommandQueueManager* m_commandQueueManager = nullptr;
-	SubmissionFrontier m_submissionFrontier;
 	std::vector<Callback> m_pendingCallbacks;
 	std::vector<Callback> m_activeCallbacks;
 
@@ -52,7 +49,7 @@ public:
 
 private:
 	void _PrepareForSubmit();
-	void _CommitSubmit(CommandQueueManager& inCommandQueueManager, const SubmissionFrontier& inSubmissionFrontier);
+	void _CommitSubmit();
 	void _ForceComplete();
 	void _RunCallbacks();
 };

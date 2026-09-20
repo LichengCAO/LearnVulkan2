@@ -109,9 +109,7 @@ void CommandQueue::_Init(CommandQueueManager& inCommandQueueManager, QueueFamily
 	CHECK_TRUE(m_commandQueueManager == nullptr, "Command queue is already initialized!");
 
 	m_commandQueueManager = &inCommandQueueManager;
-	m_queueFamilyType = inQueueFamilyType;
 	m_queueStateIndex = inCommandQueueManager._GetQueueStateIndex(inQueueFamilyType);
-	m_queueFamilyIndex = inCommandQueueManager._GetQueueFamilyIndex(m_queueStateIndex);
 
 	CommandPoolCreateInfo commandPoolCreateInfo;
 	commandPoolCreateInfo.CustomizeQueueFamilyType(inQueueFamilyType);
@@ -137,8 +135,6 @@ void CommandQueue::_Deinit()
 
 	m_commandQueueManager = nullptr;
 	m_queueStateIndex = SubmissionFrontier::MAX_QUEUE_COUNT;
-	m_queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	m_queueFamilyType = QueueFamilyType::UNSET;
 }
 
 void CommandQueue::_ResetCommandPools()
@@ -171,12 +167,7 @@ void CommandQueue::Submit(SubmitInfo inSubmitInfo)
 		std::move(inSubmitInfo));
 }
 
-void CommandQueue::Submit()
-{
-	Submit(SubmitInfo{});
-}
-
-void CommandQueue::SubmitVkCommandBuffers(
+void CommandQueue::_SubmitVkCommandBuffers(
 	const VkCommandBuffer* inCommandBuffers,
 	size_t inCount,
 	SubmitInfo inSubmitInfo)
@@ -187,12 +178,6 @@ void CommandQueue::SubmitVkCommandBuffers(
 		inCommandBuffers,
 		inCount,
 		std::move(inSubmitInfo));
-}
-
-auto CommandQueue::GetVkQueue() const->VkQueue
-{
-	CHECK_TRUE(m_commandQueueManager != nullptr, "Command queue is not initialized!");
-	return m_commandQueueManager->_GetVkQueue(m_queueStateIndex);
 }
 
 GraphicsQueue::GraphicsQueue() = default;
@@ -281,16 +266,6 @@ auto CommandQueueManager::_GetQueueState(size_t inQueueStateIndex) const->const 
 	CHECK_TRUE(inQueueStateIndex < m_queueStateCount, "Command queue state index is out of range!");
 	CHECK_TRUE(m_queueStates[inQueueStateIndex] != nullptr, "Command queue state is not created!");
 	return *m_queueStates[inQueueStateIndex];
-}
-
-auto CommandQueueManager::_GetVkQueue(size_t inQueueStateIndex) const->VkQueue
-{
-	return _GetQueueState(inQueueStateIndex).vkQueue;
-}
-
-auto CommandQueueManager::_GetQueueFamilyIndex(size_t inQueueStateIndex) const->uint32_t
-{
-	return _GetQueueState(inQueueStateIndex).familyIndex;
 }
 
 void CommandQueueManager::_Submit(
@@ -481,7 +456,12 @@ void CommandQueueManager::_Submit(
 
 	if (inSubmitInfo.m_completionFence != nullptr)
 	{
-		inSubmitInfo.m_completionFence->_CommitSubmit(*this, submissionFrontier);
+		inSubmitInfo.m_completionFence->AddCallback(
+			[this, submissionFrontier]
+			{
+				_NotifyCompletion(submissionFrontier);
+			});
+		inSubmitInfo.m_completionFence->_CommitSubmit();
 	}
 }
 

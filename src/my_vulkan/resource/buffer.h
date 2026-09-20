@@ -112,11 +112,8 @@ private:
 
 	void _UnmapHostMemory();
 
-	// Map the memory and copy, if this buffer is host coherent
+	// Map the memory and copy from host-visible, host-coherent memory.
 	void _CopyFromHostWithMappedMemory(const void* src, size_t bufferOffset, size_t size);
-	
-	// Create a staging buffer to copy from host and then copy from staging buffer
-	void _CopyFromHostWithStaggingBuffer(const void* src, size_t bufferOffest, size_t size);
 
 	BufferView* _FindView(const BufferViewInfo& inCreateInfo) const;
 
@@ -135,18 +132,8 @@ public:
 	
 	void Destroy();
 
-	// Copy from host wait till finish, will use stagging buffer if necessary
+	// Copy from host memory. Requires host-visible, host-coherent memory.
 	void CopyFromHost(const void* src, size_t bufferOffset, size_t size);
-
-	// Copy from buffer on graphics queue, wait till copy finish
-	void CopyFromBuffer(
-		const Buffer* inSrcBufferPtr, 
-		size_t inSrcOffset, 
-		size_t inDstOffset, 
-		size_t inSize);
-
-	// Fill buffer with input data by graphics queue, wait till finish
-	void Fill(uint32_t inData);
 
 	auto View(const BufferViewInfo& inCreateInfo)->const BufferView*;
 
