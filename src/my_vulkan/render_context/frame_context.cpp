@@ -165,8 +165,7 @@ private:
     }
 };
 
-FrameContext::FrameContext(size_t inFrameIndex)
-    : m_frameIndex(inFrameIndex)
+FrameContext::FrameContext()
 {
 }
 
@@ -356,7 +355,6 @@ auto FrameContext::DispatchRecording(
     }
 
     RecordingTicket ticket;
-    ticket.m_frameIndex = m_frameIndex;
     ticket.m_serial = serial;
     return ticket;
 }
@@ -364,7 +362,6 @@ auto FrameContext::DispatchRecording(
 auto FrameContext::TakeRecordedPayload(RecordingTicket inTicket) -> RecordedPayload
 {
     CHECK_TRUE(inTicket.IsValid(), "Recording ticket is invalid!");
-    CHECK_TRUE(inTicket.m_frameIndex == m_frameIndex, "Recording ticket belongs to another frame context!");
 
     const auto iter = m_recordTasks.find(inTicket.m_serial);
     CHECK_TRUE(iter != m_recordTasks.end(), "Recording ticket does not exist or was already consumed!");

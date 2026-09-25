@@ -38,5 +38,14 @@ public:
 	// Waits for and consumes every recording request issued to this queue since
 	// its previous submit, then submits their command buffers in commit order.
 	void SubmitQueue(QueueFamilyType inQueue, const QueueSubmitInfo& inSubmitInfo);
+
+	// Records, submits, and waits until the specified queue completes the commands.
+	// This operation is independent of the active frame lifecycle.
+	void ExecuteCommandsAndWait(
+		QueueFamilyType inQueue,
+		std::vector<CommandBuffer> inBuffers);
+
+	// Runs once after all queues used by the current frame have completed.
+	void AddCurrentFrameCompletionCallback(HostFence::Callback inCallback);
 };
 

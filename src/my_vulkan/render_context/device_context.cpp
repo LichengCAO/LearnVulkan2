@@ -24,9 +24,10 @@ DeviceContext::DeviceContext(size_t inFrameCount)
 	CHECK_TRUE(inFrameCount > 0, "Device context must have at least one frame slot!");
 
 	m_frameContexts.reserve(inFrameCount);
-	for (size_t frameIndex = 0; frameIndex < inFrameCount; ++frameIndex)
+	while (m_frameContexts.size() < inFrameCount)
 	{
-		m_frameContexts.push_back(std::make_unique<FrameContext>(frameIndex));
+		m_frameContexts.push_back(
+			std::unique_ptr<FrameContext>(new FrameContext()));
 	}
 }
 
@@ -161,4 +162,51 @@ void DeviceContext::SubmitQueue(
 		commandBuffers.empty() ? nullptr : commandBuffers.data(),
 		commandBuffers.size(),
 		std::move(submitInfo));
+}
+
+void DeviceContext::ExecuteCommandsAndWait(
+	QueueFamilyType inQueue,
+	std::vector<CommandBuffer> inBuffers)
+{
+	_GetQueueIndex(inQueue);
+
+	FrameContext immediateFrameContext;
+	const FrameContext::RecordingTicket ticket =
+		immediateFrameContext.DispatchRecording(inQueue, std::move(inBuffers));
+	FrameContext::RecordedPayload payload =
+		immediateFrameContext.TakeRecordedPayload(ticket);
+	CHECK_TRUE(payload.queue == inQueue, "Immediate recorded payload belongs to another queue!");
+
+	CommandQueue* commandQueue = nullptr;
+	switch (inQueue)
+	{
+	case QueueFamilyType::GRAPHICS:
+		commandQueue = MyDevice::GetInstance().GetGraphicsCommandQueue();
+		break;
+	case QueueFamilyType::COMPUTE:
+		commandQueue = MyDevice::GetInstance().GetComputeCommandQueue();
+		break;
+	case QueueFamilyType::TRANSFER:
+		commandQueue = MyDevice::GetInstance().GetTransferCommandQueue();
+		break;
+	default:
+		CHECK_TRUE(false, "Invalid queue family type for immediate execution!");
+		break;
+	}
+	CHECK_TRUE(commandQueue != nullptr, "Command queue is not available!");
+
+	HostFence completionFence;
+	CommandQueue::SubmitInfo submitInfo;
+	submitInfo.SetFence(completionFence);
+	commandQueue->_SubmitVkCommandBuffers(
+		payload.vkCommandBuffers.empty() ? nullptr : payload.vkCommandBuffers.data(),
+		payload.vkCommandBuffers.size(),
+		std::move(submitInfo));
+	completionFence.Wait();
+}
+
+void DeviceContext::AddCurrentFrameCompletionCallback(
+	HostFence::Callback inCallback)
+{
+	_GetCurrentFrameContext().AddCompletionCallback(std::move(inCallback));
 }

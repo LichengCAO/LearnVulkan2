@@ -9,6 +9,9 @@
 class CommandBuffer;
 class DeviceContext;
 
+// Internal frame-slot implementation owned and coordinated by DeviceContext.
+// Other modules must not create, retain, or access FrameContext directly;
+// frame recording, submission, and completion operations must go through DeviceContext.
 class FrameContext final
 {
     friend class DeviceContext;
@@ -19,11 +22,10 @@ public:
         friend class FrameContext;
 
     private:
-        size_t m_frameIndex = SIZE_MAX;
         uint64_t m_serial = 0;
 
     public:
-        auto IsValid() const -> bool { return m_frameIndex != SIZE_MAX && m_serial != 0; }
+        auto IsValid() const -> bool { return m_serial != 0; }
     };
 
     struct RecordedPayload
@@ -33,6 +35,8 @@ public:
     };
 
 private:
+    FrameContext();
+
     struct RecordContext;
 
     using ThreadCommandPools =
@@ -40,7 +44,6 @@ private:
 
     static auto _GetQueueIndex(QueueFamilyType inQueueFamilyType) -> size_t;
 
-    size_t m_frameIndex = 0;
     std::array<std::unique_ptr<HostFence>, SubmissionFrontier::MAX_QUEUE_COUNT> m_completionFences;
     std::vector<HostFence::Callback> m_completionCallbacks;
     std::array<ThreadCommandPools, SubmissionFrontier::MAX_QUEUE_COUNT> m_commandPools;
@@ -55,7 +58,6 @@ private:
     void _Wait();
 
 public:
-    explicit FrameContext(size_t inFrameIndex);
     FrameContext(const FrameContext&) = delete;
     FrameContext& operator=(const FrameContext&) = delete;
     FrameContext(FrameContext&&) = delete;
