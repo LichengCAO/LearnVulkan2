@@ -12,6 +12,12 @@
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 
+// Temporarily keep the render-graph implementation out of the build while
+// the command submission interfaces are being migrated.
+#ifndef MY_VULKAN_ENABLE_RENDER_GRAPH
+#   define MY_VULKAN_ENABLE_RENDER_GRAPH 0
+#endif
+
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>

@@ -203,7 +203,7 @@ void MyTaskScheduler::Create()
 {
 	enki::TaskScheduler* piImpl = dynamic_cast<enki::TaskScheduler*>(m_uptrImpl.get());
 	CHECK_TRUE(piImpl != nullptr);
-	piImpl->Initialize(4);
+	piImpl->Initialize(THREAD_COUNT);
 }
 
 void MyTaskScheduler::AddSingleThreadTask(ISingleThreadTask* pSingleThreadTask)

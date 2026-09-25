@@ -67,5 +67,5 @@ queue.Enqueue(&commands, 1).Submit(
     CommandQueue::SubmitInfo{}.SetFence(frameCompletion));
 
 // The application may wait only when it needs the result.
-frameCompletion.Wait();
+frameCompletion._Wait();
 */

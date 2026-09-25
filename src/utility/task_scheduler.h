@@ -76,11 +76,13 @@ private:
 	MyTaskScheduler();
 
 public:
+	static constexpr uint32_t THREAD_COUNT = 4;
+
 	static MyTaskScheduler& GetInstance();
 	void Create();
 	virtual void AddSingleThreadTask(ISingleThreadTask* pSingleThreadTask) override;
 	virtual void AddMutiThreadTask(IMultiThreadTask* pMultiThreadTask) override;
-	// Wait till the task is no longer pending/executing on the system
+	// _Wait till the task is no longer pending/executing on the system
 	virtual void WaitForTask(const IWaitable* pToWait) override;
 	virtual void WaitForAll() override;
 	void Destroy();

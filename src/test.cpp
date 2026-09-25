@@ -1,8 +1,12 @@
 #include "common.h"
 #include "my_vulkan/command/command_queue.h"
+
+#if MY_VULKAN_ENABLE_RENDER_GRAPH
 #include "utility/render_graph/render_graph.h"
 #include "utility/render_graph/render_graph_instance.h"
+#endif
 
+#if MY_VULKAN_ENABLE_RENDER_GRAPH
 struct RenderGraphTestProbe
 {
 	struct GraphicsGroupSummary
@@ -402,6 +406,7 @@ struct RenderGraphTestProbe
 		return std::nullopt;
 	}
 };
+#endif // MY_VULKAN_ENABLE_RENDER_GRAPH
 
 struct CommandQueueManagerTestProbe
 {
@@ -489,6 +494,8 @@ namespace
 		CHECK_TRUE(CommandQueueManagerTestProbe::RetiredSemaphoreReclamationStopsAtIncompleteVersion(),
 			"Retired semaphore reclamation must stop at the first incomplete version!");
 	}
+
+#if MY_VULKAN_ENABLE_RENDER_GRAPH
 
 	void TestSharedExternalDependenciesAreAggregated()
 	{
@@ -1584,6 +1591,7 @@ namespace
 
 		CHECK_TRUE(RenderGraphTestProbe::PassInfoClearOverridesCanBeCustomized(), "PassInfo clear overrides must support customization!");
 	}
+#endif // MY_VULKAN_ENABLE_RENDER_GRAPH
 }
 
 int main()
@@ -1592,6 +1600,8 @@ int main()
 	{
 		TestSubmissionFrontierPropagation();
 		TestCommandQueueRoleDeduplication();
+
+#if MY_VULKAN_ENABLE_RENDER_GRAPH
 		TestSharedExternalDependenciesAreAggregated();
 		TestExecuteInfoOwnsTransientPassBindings();
 		TestCommandBufferRenderingScopeStateTransitions();
@@ -1624,6 +1634,7 @@ int main()
 		TestManagedPlanUsesExactLayersAndPreserveAttachments();
 		TestResolvePlanAndInferredImageUsages();
 		TestManagedAttachmentDeclarationValidation();
+#endif // MY_VULKAN_ENABLE_RENDER_GRAPH
 	}
 	catch (const std::exception& e)
 	{

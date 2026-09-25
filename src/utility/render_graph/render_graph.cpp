@@ -1,3 +1,7 @@
+#include "common.h"
+
+#if MY_VULKAN_ENABLE_RENDER_GRAPH
+
 #include "render_graph.h"
 
 #include <algorithm>
@@ -2689,3 +2693,5 @@ const RenderGraph::BuildResult& RenderGraph::GetBuildResult() const
 	CHECK_TRUE(m_built && m_buildResult.IsValid(), "Render graph must be built before reading its build result!");
 	return m_buildResult;
 }
+
+#endif // MY_VULKAN_ENABLE_RENDER_GRAPH

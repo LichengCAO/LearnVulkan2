@@ -1,3 +1,7 @@
+#include "common.h"
+
+#if MY_VULKAN_ENABLE_RENDER_GRAPH
+
 #include "render_graph_instance.h"
 
 #include "buffer.h"
@@ -1646,3 +1650,5 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 		throw;
 	}
 }
+
+#endif // MY_VULKAN_ENABLE_RENDER_GRAPH

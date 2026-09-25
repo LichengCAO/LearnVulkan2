@@ -10,6 +10,7 @@
 
 class MyDevice;
 class Buffer;
+class DeviceContext;
 class CommandQueueManager;
 class RenderGraphInstance;
 struct CommandQueueManagerTestProbe;
@@ -17,6 +18,7 @@ struct CommandQueueManagerTestProbe;
 class CommandQueue
 {
 	friend class Buffer;
+	friend class DeviceContext;
 
 public:
 	class SubmitInfo final

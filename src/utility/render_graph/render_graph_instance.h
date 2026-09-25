@@ -1,4 +1,8 @@
 #pragma once
+#include "common.h"
+
+#if MY_VULKAN_ENABLE_RENDER_GRAPH
+
 #include "render_graph.h"
 #include "my_vulkan/command/queue_dependency.h"
 
@@ -225,3 +229,5 @@ public:
 };
 
 using ExecuteInfo = RenderGraphInstance::ExecuteInfo;
+
+#endif // MY_VULKAN_ENABLE_RENDER_GRAPH

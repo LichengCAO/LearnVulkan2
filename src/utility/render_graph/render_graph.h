@@ -1,5 +1,8 @@
 #pragma once
 #include "common.h"
+
+#if MY_VULKAN_ENABLE_RENDER_GRAPH
+
 #include "command_buffer.h"
 #include "my_vulkan/pipeline/render_pass.h"
 
@@ -645,3 +648,5 @@ public:
 	const BuildResult& Build();
 	const BuildResult& GetBuildResult() const;
 };
+
+#endif // MY_VULKAN_ENABLE_RENDER_GRAPH

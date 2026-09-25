@@ -274,8 +274,9 @@ void CommandQueueManager::_Submit(
 	size_t inCommandBufferCount,
 	CommandQueue::SubmitInfo inSubmitInfo)
 {
-	CHECK_TRUE(inCommandBuffers != nullptr, "No command buffers to submit!");
-	CHECK_TRUE(inCommandBufferCount > 0, "No command buffers to submit!");
+	CHECK_TRUE(
+		inCommandBufferCount == 0 || inCommandBuffers != nullptr,
+		"Command buffer pointer is null for a non-empty submission!");
 
 	QueueState& state = _GetQueueState(inQueueStateIndex);
 	if (inSubmitInfo.m_completionFence != nullptr)
@@ -400,7 +401,7 @@ void CommandQueueManager::_Submit(
 		submitInfo.waitSemaphoreInfoCount = static_cast<uint32_t>(waitInfos.size());
 		submitInfo.pWaitSemaphoreInfos = waitInfos.empty() ? nullptr : waitInfos.data();
 		submitInfo.commandBufferInfoCount = static_cast<uint32_t>(commandInfos.size());
-		submitInfo.pCommandBufferInfos = commandInfos.data();
+		submitInfo.pCommandBufferInfos = commandInfos.empty() ? nullptr : commandInfos.data();
 		submitInfo.signalSemaphoreInfoCount = static_cast<uint32_t>(signalInfos.size());
 		submitInfo.pSignalSemaphoreInfos = signalInfos.empty() ? nullptr : signalInfos.data();
 
