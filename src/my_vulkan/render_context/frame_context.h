@@ -55,7 +55,7 @@ private:
     auto _GetCommandPool(QueueFamilyType inQueue, uint32_t inThreadIndex) -> CommandPool&;
     void _WaitForRecordingTasks() noexcept;
     // Waits for all queue completion fences and runs frame callbacks.
-    void _Wait();
+    void _Wait(DeviceContext& inDeviceContext);
 
 public:
     FrameContext(const FrameContext&) = delete;
@@ -76,5 +76,5 @@ public:
 
     auto AddCompletionCallback(HostFence::Callback inCallback) -> FrameContext&;
 
-    void ResetForReuse();
+    void ResetForReuse(DeviceContext& inDeviceContext);
 };

@@ -24,11 +24,10 @@ class QueueDependency final
 private:
 	struct PendingSignal final
 	{
-		VkSemaphore semaphore = VK_NULL_HANDLE;
 		SubmissionFrontier frontier;
 	};
 
-	VkSemaphore m_semaphore = VK_NULL_HANDLE;
+	bool m_hasPendingSignal = false;
 	SubmissionFrontier m_frontier;
 
 public:
@@ -40,37 +39,7 @@ public:
 	~QueueDependency() noexcept(false);
 
 private:
-	auto _HasSemaphore() const->bool { return m_semaphore != VK_NULL_HANDLE; }
+	auto _HasPendingSignal() const->bool { return m_hasPendingSignal; }
 	auto _Take()->PendingSignal;
-	void _Store(VkSemaphore inSemaphore, const SubmissionFrontier& inFrontier);
+	void _Store(const SubmissionFrontier& inFrontier);
 };
-
-/*
-Example:
-
-QueueDependency uploadToGraphics;
-
-// First submit: create and signal the first internal semaphore.
-CommandQueue::SubmitInfo uploadSubmitInfo;
-uploadSubmitInfo
-    .SetCommandBuffers({ uploadVkCommandBuffer })
-    .AddSignalQueueDependency(uploadToGraphics);
-graphicsQueue.Submit(std::move(uploadSubmitInfo));
-
-// Middle submit: consume the previous signal and produce the next one.
-CommandQueue::SubmitInfo submitInfo;
-submitInfo
-    .SetCommandBuffers({ drawVkCommandBuffer })
-    .AddWaitQueueDependency(
-        uploadToGraphics,
-        VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT)
-    .AddSignalQueueDependency(uploadToGraphics);
-graphicsQueue.Submit(std::move(submitInfo));
-
-// Final submit: consume the tail without producing another signal.
-CommandQueue::SubmitInfo finishSubmitInfo;
-finishSubmitInfo
-    .SetCommandBuffers({ finishVkCommandBuffer })
-    .AddWaitQueueDependency(uploadToGraphics);
-graphicsQueue.Submit(std::move(finishSubmitInfo));
-*/

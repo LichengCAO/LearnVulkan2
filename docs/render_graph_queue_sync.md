@@ -85,7 +85,7 @@ external producer signal S0
 
 调用者必须为 Graph 实际使用的每个 queue role 提供一个 `HostFence`。同时使用 graphics 和 compute 时需要两个不同的 fence。
 
-consumer wait 成功提交后，旧 binary semaphore 以 consumer queue/version 进入 retired 队列。`HostFence::Poll()`、`Wait()`、fence 复用或 manager 销毁会推进 completed frontier，并回收已覆盖的 semaphore。
+consumer wait 成功提交后，旧 binary semaphore 以 consumer queue/version 进入 retired 队列。`DeviceContext::Poll()`、`Wait()`、后续 host fence 完成或 manager 销毁会推进 completed frontier，并回收已覆盖的 semaphore。
 
 外部资源、dependency 和 completion fence 必须存活到相关提交完成。`RenderGraphInstance` 不会等待或追踪 completion fence；调用者必须在再次 Execute 或销毁 instance 前等待相关 fence。Release dependency 在被后续 consumer wait 前不能销毁。
 

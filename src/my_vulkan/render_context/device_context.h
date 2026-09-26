@@ -4,12 +4,15 @@
 #include "command/queue_dependency.h"
 #include "render_context/frame_context.h"
 
+class CommandQueueManager;
+
 struct QueueSubmitInfo
 {
 	std::vector<QueueDependency*> queueSignals;
 	HostFence* hostFence = nullptr;
 };
 
+// Thread-affine. Public methods must be called from the owning thread.
 class DeviceContext
 {
 private:
@@ -20,6 +23,7 @@ private:
 
 	static auto _GetQueueIndex(QueueFamilyType inQueue) -> size_t;
 	auto _GetCurrentFrameContext() -> FrameContext&;
+	std::unique_ptr<CommandQueueManager> m_uptrCommandQueueManager;
 	std::vector<std::unique_ptr<FrameContext>> m_frameContexts;
 	size_t m_currentFrameIndex = SIZE_MAX;
 	bool m_frameActive = false;
@@ -27,6 +31,9 @@ private:
 
 public:
 	explicit DeviceContext(size_t inFrameCount);
+	DeviceContext(const DeviceContext&) = delete;
+	DeviceContext& operator=(const DeviceContext&) = delete;
+	~DeviceContext() noexcept(false);
 
 	void StartFrame();
 
@@ -44,6 +51,13 @@ public:
 	void ExecuteCommandsAndWait(
 		QueueFamilyType inQueue,
 		std::vector<CommandBuffer> inBuffers);
+
+	// Consumes the fence's current logical submission. A fence whose Vulkan
+	// resource was already reclaimed by a later wait completes immediately.
+	void Wait(HostFence& inFence);
+
+	// Returns false only while the fence's current submission is incomplete.
+	auto Poll(HostFence& inFence)->bool;
 
 	// Runs once after all queues used by the current frame have completed.
 	void AddCurrentFrameCompletionCallback(HostFence::Callback inCallback);

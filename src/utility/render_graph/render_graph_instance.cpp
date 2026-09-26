@@ -1472,9 +1472,9 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 		CHECK_TRUE(binding.dependency != nullptr, "External resource queue dependency is null!");
 		const bool hasWait = binding.waitSubmit != INVALID_INDEX;
 		const bool hasSignal = binding.signalSubmit != INVALID_INDEX;
-		CHECK_TRUE(!hasWait || binding.dependency->_HasSemaphore(),
+		CHECK_TRUE(!hasWait || binding.dependency->_HasPendingSignal(),
 			"External acquire dependency has no pending signal!");
-		CHECK_TRUE(hasWait || !hasSignal || !binding.dependency->_HasSemaphore(),
+		CHECK_TRUE(hasWait || !hasSignal || !binding.dependency->_HasPendingSignal(),
 			"External release dependency already has a pending signal!");
 		if (hasWait && hasSignal)
 		{
@@ -1632,7 +1632,7 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 	}
 		for (const std::unique_ptr<QueueDependency>& dependency : queueSyncDependencies)
 		{
-			CHECK_TRUE(dependency != nullptr && !dependency->_HasSemaphore(),
+			CHECK_TRUE(dependency != nullptr && !dependency->_HasPendingSignal(),
 				"Render graph execution left a pending queue dependency!");
 		}
 	}

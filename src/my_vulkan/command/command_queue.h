@@ -1,24 +1,23 @@
 #pragma once
 
+#include "allocator/fence_allocator.h"
+#include "allocator/semaphore_allocator.h"
 #include "common_enums.h"
 #include "completion_fence.h"
 #include "queue_dependency.h"
 
-#include <mutex>
-
 class MyDevice;
-class SemaphoreAllocator;
-class CommandQueueManager;
-class RenderGraphInstance;
 struct CommandQueueManagerTestProbe;
 
-class CommandQueue
+// Not thread-safe. Its owner must serialize submission and completion calls.
+class CommandQueueManager final
 {
+	friend struct CommandQueueManagerTestProbe;
+
 public:
 	class SubmitInfo final
 	{
 		friend class CommandQueueManager;
-		friend class RenderGraphInstance;
 
 	private:
 		struct DependencyEntry final
@@ -34,12 +33,6 @@ public:
 		HostFence* m_completionFence = nullptr;
 
 	public:
-		SubmitInfo() = default;
-		SubmitInfo(const SubmitInfo&) = default;
-		SubmitInfo& operator=(const SubmitInfo&) = default;
-		SubmitInfo(SubmitInfo&&) noexcept = default;
-		SubmitInfo& operator=(SubmitInfo&&) noexcept = default;
-
 		auto SetCommandBuffers(std::vector<VkCommandBuffer> inCommandBuffers)->SubmitInfo&;
 		auto AddWaitQueueDependency(
 			QueueDependency& inDependency,
@@ -48,58 +41,17 @@ public:
 		auto SetFence(HostFence& inFence)->SubmitInfo&;
 	};
 
-protected:
-	CommandQueueManager* m_commandQueueManager = nullptr;
-	size_t m_queueStateIndex = SubmissionFrontier::MAX_QUEUE_COUNT;
-
-protected:
-	void _Init(CommandQueueManager& inCommandQueueManager, QueueFamilyType inQueueFamilyType);
-	void _Deinit();
-
-	CommandQueue();
-
-public:
-	CommandQueue(const CommandQueue&) = delete;
-	CommandQueue& operator=(const CommandQueue&) = delete;
-	virtual ~CommandQueue();
-
-	void Submit(SubmitInfo inSubmitInfo);
-};
-
-class GraphicsQueue final : public CommandQueue
-{
-	friend class CommandQueueManager;
-
-public:
-	explicit GraphicsQueue();
-	void Init(CommandQueueManager& inCommandQueueManager);
-};
-
-class ComputeQueue final : public CommandQueue
-{
-	friend class CommandQueueManager;
-
-public:
-	explicit ComputeQueue();
-	void Init(CommandQueueManager& inCommandQueueManager);
-};
-
-class TransferQueue final : public CommandQueue
-{
-	friend class CommandQueueManager;
-
-public:
-	explicit TransferQueue();
-	void Init(CommandQueueManager& inCommandQueueManager);
-};
-
-class CommandQueueManager final
-{
-	friend class CommandQueue;
-	friend class RenderGraphInstance;
-	friend struct CommandQueueManagerTestProbe;
-
 private:
+	struct UninitializedTag final
+	{
+	};
+
+	struct DependencySignal final
+	{
+		VkSemaphore semaphore = VK_NULL_HANDLE;
+		SubmissionFrontier frontier;
+	};
+
 	struct RetiredSemaphore final
 	{
 		VkSemaphore semaphore = VK_NULL_HANDLE;
@@ -112,6 +64,13 @@ private:
 		SubmissionFrontier producerFrontier;
 	};
 
+	struct HostFenceRecord final
+	{
+		VkFence vkFence = VK_NULL_HANDLE;
+		SubmissionFrontier submissionFrontier;
+		std::vector<HostFence::Callback> callbacks;
+	};
+
 	struct QueueState final
 	{
 		VkQueue vkQueue = VK_NULL_HANDLE;
@@ -119,28 +78,26 @@ private:
 		uint32_t queueIndex = 0;
 		SubmissionFrontier tailFrontier;
 		std::vector<RetiredSemaphore> retiredSemaphores;
-		std::mutex submitMutex;
+		std::vector<HostFenceRecord> pendingHostFences;
 	};
 
-	std::array<std::unique_ptr<QueueState>, SubmissionFrontier::MAX_QUEUE_COUNT> m_queueStates;
+	std::array<QueueState, SubmissionFrontier::MAX_QUEUE_COUNT> m_queueStates;
 	std::array<size_t, SubmissionFrontier::MAX_QUEUE_COUNT> m_roleToQueueState
 	{
 		SubmissionFrontier::MAX_QUEUE_COUNT,
 		SubmissionFrontier::MAX_QUEUE_COUNT,
 		SubmissionFrontier::MAX_QUEUE_COUNT
 	};
-	std::unique_ptr<SemaphoreAllocator> m_uptrSemaphoreAllocator;
+	FenceAllocator m_fenceAllocator;
+	SemaphoreAllocator m_semaphoreAllocator;
 	size_t m_queueStateCount = 0;
 	SubmissionFrontier m_completedFrontier;
+	std::unordered_map<QueueDependency*, VkSemaphore> m_dependencySemaphores;
 	std::vector<AbandonedSemaphore> m_abandonedSemaphores;
-	std::mutex m_completionMutex;
-	std::mutex m_semaphoreMutex;
-	std::unique_ptr<GraphicsQueue> m_graphicsQueue;
-	std::unique_ptr<ComputeQueue> m_computeQueue;
-	std::unique_ptr<TransferQueue> m_transferQueue;
 	bool m_created = false;
 
 private:
+	explicit CommandQueueManager(UninitializedTag);
 	static auto _GetRoleIndex(QueueFamilyType inQueueFamilyType)->size_t;
 	auto _RegisterQueue(
 		QueueFamilyType inQueueFamilyType,
@@ -150,28 +107,32 @@ private:
 	auto _GetQueueStateIndex(QueueFamilyType inQueueFamilyType) const->size_t;
 	auto _GetQueueState(size_t inQueueStateIndex)->QueueState&;
 	auto _GetQueueState(size_t inQueueStateIndex) const->const QueueState&;
-	void _Submit(
-		size_t inQueueStateIndex,
-		CommandQueue::SubmitInfo inSubmitInfo);
-	void _NotifyCompletion(const SubmissionFrontier& inSubmissionFrontier);
+	auto _TakeDependencySignal(QueueDependency& inDependency)->DependencySignal;
+	void _StoreDependencySignal(
+		QueueDependency& inDependency,
+		VkSemaphore inSemaphore,
+		const SubmissionFrontier& inFrontier);
+	auto _AdvanceCompletion(
+		const SubmissionFrontier& inSubmissionFrontier)->std::vector<HostFence::Callback>;
+	auto _FindHostFenceVkFence(const HostFence& inFence)->VkFence;
+	static void _RunCallbacks(std::vector<HostFence::Callback> inCallbacks);
+	auto _ConsumeHostFence(HostFence& inFence, uint64_t inTimeout)->bool;
 	static auto _GetRetiredSemaphoreReclaimCount(
 		const QueueState& inState,
 		size_t inQueueStateIndex,
 		const SubmissionFrontier& inCompletedFrontier)->size_t;
 	void _CollectRetiredSemaphores(const SubmissionFrontier& inCompletedFrontier);
-	void _DrainRetiredSemaphores();
-	void _WaitIdleAndDiscardDependencies(QueueDependency* const* inDependencies, size_t inCount);
+	void _Destroy();
 
 public:
-	CommandQueueManager() = default;
+	CommandQueueManager();
 	CommandQueueManager(const CommandQueueManager&) = delete;
 	CommandQueueManager& operator=(const CommandQueueManager&) = delete;
 	~CommandQueueManager();
 
-	void Create();
-	void Destroy();
-
-	auto GetGraphicsQueue()->GraphicsQueue* { return m_graphicsQueue.get(); }
-	auto GetComputeQueue()->ComputeQueue* { return m_computeQueue.get(); }
-	auto GetTransferQueue()->TransferQueue* { return m_transferQueue.get(); }
+	void Submit(
+		QueueFamilyType inQueueFamilyType,
+		SubmitInfo inSubmitInfo);
+	void Wait(HostFence& inFence);
+	auto Poll(HostFence& inFence)->bool;
 };

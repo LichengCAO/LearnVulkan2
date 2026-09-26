@@ -1,58 +1,12 @@
 #include "completion_fence.h"
 
-#include "device.h"
+#include <utility>
 
-HostFence::HostFence()
+HostFence::~HostFence() noexcept(false)
 {
-	CHECK_TRUE(MyDevice::GetInstance().GetVkDevice() != VK_NULL_HANDLE,
-		"Cannot create completion fence before the device!");
-	m_vkFence = MyDevice::GetInstance().CreateVkFence(0);
-}
-
-HostFence::~HostFence()
-{
-	if (MyDevice::GetInstance().GetVkDevice() != VK_NULL_HANDLE)
-	{
-		if (m_isInFlight)
-		{
-			Wait();
-		}
-		if (m_vkFence != VK_NULL_HANDLE)
-		{
-			MyDevice::GetInstance().DestroyVkFence(m_vkFence);
-		}
-	}
-}
-
-void HostFence::Wait()
-{
-	if (!m_isInFlight)
-	{
-		return;
-	}
-
-	std::vector<VkFence> fences{ m_vkFence };
-	VK_CHECK(
-		MyDevice::GetInstance().WaitForFences(fences, true, UINT64_MAX),
-		"Failed to wait for completion fence!");
-	m_isInFlight = false;
-	_RunCallbacks();
-}
-
-auto HostFence::Poll()->bool
-{
-	if (!m_isInFlight)
-	{
-		return true;
-	}
-	if (MyDevice::GetInstance().GetFenceStatus(m_vkFence) != VK_SUCCESS)
-	{
-		return false;
-	}
-
-	m_isInFlight = false;
-	_RunCallbacks();
-	return true;
+	CHECK_TRUE(
+		!m_isInFlight,
+		"Host fence must be consumed through DeviceContext before destruction!");
 }
 
 auto HostFence::AddCallback(Callback inCallback)->HostFence&
@@ -70,21 +24,47 @@ void HostFence::_PrepareForSubmit()
 	CHECK_TRUE(
 		!m_isInFlight,
 		"Host fence is still bound to an unconsumed submission!");
-	VK_CHECK(vkResetFences(MyDevice::GetInstance().GetVkDevice(), 1, &m_vkFence),
-		"Failed to reset completion fence!");
 }
 
-void HostFence::_CommitSubmit()
-{
-	m_isInFlight = true;
-}
-
-void HostFence::_RunCallbacks()
+auto HostFence::_TakeCallbacks()->std::vector<Callback>
 {
 	std::vector<Callback> callbacks = std::move(m_callbacks);
 	m_callbacks.clear();
-	for (Callback& callback : callbacks)
-	{
-		callback();
-	}
+	return callbacks;
+}
+
+void HostFence::_RestoreCallbacks(std::vector<Callback> inCallbacks)
+{
+	CHECK_TRUE(m_callbacks.empty(), "Host fence already has callbacks!");
+	m_callbacks = std::move(inCallbacks);
+}
+
+void HostFence::_CommitSubmit(
+	size_t inQueueStateIndex,
+	const SubmissionFrontier& inSubmissionFrontier)
+{
+	CHECK_TRUE(!m_isInFlight, "Host fence is already in flight!");
+	CHECK_TRUE(
+		inQueueStateIndex < SubmissionFrontier::MAX_QUEUE_COUNT,
+		"Host fence queue state index is out of range!");
+	m_queueStateIndex = inQueueStateIndex;
+	m_submissionFrontier = inSubmissionFrontier;
+	m_isInFlight = true;
+}
+
+void HostFence::_AbortSubmit(std::vector<Callback> inCallbacks)
+{
+	CHECK_TRUE(m_isInFlight, "Host fence submit was not committed!");
+	m_isInFlight = false;
+	m_queueStateIndex = SubmissionFrontier::MAX_QUEUE_COUNT;
+	m_submissionFrontier = {};
+	_RestoreCallbacks(std::move(inCallbacks));
+}
+
+void HostFence::_Complete()
+{
+	CHECK_TRUE(m_isInFlight, "Host fence has no in-flight submission!");
+	m_isInFlight = false;
+	m_queueStateIndex = SubmissionFrontier::MAX_QUEUE_COUNT;
+	m_submissionFrontier = {};
 }

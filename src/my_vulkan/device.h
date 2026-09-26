@@ -14,7 +14,6 @@ class GraphicsPipelineAllocator;
 class ComputePipelineAllocator;
 class RayTracingPipelineAllocator;
 class SamplerAllocator;
-class CommandQueueManager;
 
 struct UserInput
 {
@@ -81,7 +80,6 @@ private:
 	std::unique_ptr<ComputePipelineAllocator> m_uptrComputePipelineAllocator;
 	std::unique_ptr<RayTracingPipelineAllocator> m_uptrRayTracingPipelineAllocator;
 	std::unique_ptr<SamplerAllocator> m_uptrSamplerAllocator;
-	std::unique_ptr<CommandQueueManager> m_uptrCommandQueueManager;
 	std::unordered_map<VkCommandPool, uint32_t> m_mapPoolToQueueFamily;
 
 private:
@@ -118,8 +116,6 @@ private:
 	void _DestroyMemoryAllocator();
 	void _CreateSamplerAllocator();
 	void _DestroySamplerAllocator();
-	void _CreateCommandQueues();
-	void _DestroyCommandQueues();
 
 	// Add required extensions to the device, before select physical device
 	void _AddBaseExtensionsAndFeatures(vkb::PhysicalDeviceSelector& _selector) const;
@@ -183,8 +179,6 @@ public:
 	DescriptorSetAllocator* GetDescriptorSetAllocator();
 
 	auto GetSamplerAllocator()->SamplerAllocator*;
-
-	auto GetCommandQueueManager()->CommandQueueManager*;
 
 	// Get queue family index by the function,
 	// https://github.com/KhronosGroup/Vulkan-Guide/blob/main/chapters/queues.adoc

@@ -12,7 +12,6 @@
 #include "pipeline_layout_allocator.h"
 #include "pipeline_allocator.h"
 #include "allocator/sampler_allocator.h"
-#include "command/command_queue.h"
 #include <iomanip>
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
@@ -708,21 +707,6 @@ void MyDevice::_DestroySamplerAllocator()
 	}
 }
 
-void MyDevice::_CreateCommandQueues()
-{
-	m_uptrCommandQueueManager = std::make_unique<CommandQueueManager>();
-	m_uptrCommandQueueManager->Create();
-}
-
-void MyDevice::_DestroyCommandQueues()
-{
-	if (m_uptrCommandQueueManager != nullptr)
-	{
-		m_uptrCommandQueueManager->Destroy();
-		m_uptrCommandQueueManager.reset();
-	}
-}
-
 void MyDevice::Create()
 {
 	_InitVolk();
@@ -731,7 +715,6 @@ void MyDevice::Create()
 	_CreateSurface();
 	_SelectPhysicalDevice();
 	_CreateLogicalDevice();
-	_CreateCommandQueues();
 	_CreateMemoryAllocator();
 	_CreateSamplerAllocator();
 	_CreateRenderPassAllocator();
@@ -745,7 +728,6 @@ void MyDevice::Create()
 
 void MyDevice::Destroy()
 {
-	_DestroyCommandQueues();
 	_DestroyDescriptorSetAllocator();
 	_DestroySwapchain();
 	_DestroyFramebufferAllocator();
@@ -799,11 +781,6 @@ DescriptorSetAllocator* MyDevice::GetDescriptorSetAllocator()
 auto MyDevice::GetSamplerAllocator()->SamplerAllocator*
 {
 	return m_uptrSamplerAllocator.get();
-}
-
-auto MyDevice::GetCommandQueueManager()->CommandQueueManager*
-{
-	return m_uptrCommandQueueManager.get();
 }
 
 VkFence MyDevice::CreateVkFence(

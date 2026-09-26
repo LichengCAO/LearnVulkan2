@@ -412,7 +412,7 @@ struct CommandQueueManagerTestProbe
 {
 	static auto DeduplicatesAliasedQueueRoles()->bool
 	{
-		CommandQueueManager manager;
+		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
 		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
 		const VkQueue transferHandle = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(2));
 		const size_t graphicsQueue = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue, 4, 0);
@@ -425,7 +425,7 @@ struct CommandQueueManagerTestProbe
 
 	static auto AliasedRolesShareSubmissionVersions()->bool
 	{
-		CommandQueueManager manager;
+		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
 		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
 		manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue, 4, 0);
 		manager._RegisterQueue(QueueFamilyType::COMPUTE, queue, 4, 0);
@@ -439,7 +439,7 @@ struct CommandQueueManagerTestProbe
 
 	static auto RetiredSemaphoreReclamationStopsAtIncompleteVersion()->bool
 	{
-		CommandQueueManager manager;
+		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
 		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
 		const size_t queueStateIndex = manager._RegisterQueue(
 			QueueFamilyType::GRAPHICS,

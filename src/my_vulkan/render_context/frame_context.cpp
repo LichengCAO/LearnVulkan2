@@ -2,6 +2,7 @@
 
 #include "command/command_buffer.h"
 #include "command/command.h"
+#include "render_context/device_context.h"
 
 #include <atomic>
 #include <limits>
@@ -172,13 +173,6 @@ FrameContext::FrameContext()
 FrameContext::~FrameContext()
 {
     _WaitForRecordingTasks();
-    try
-    {
-        _Wait();
-    }
-    catch (...)
-    {
-    }
 }
 
 auto FrameContext::_GetQueueIndex(QueueFamilyType inQueueFamilyType) -> size_t
@@ -224,12 +218,12 @@ void FrameContext::_WaitForRecordingTasks() noexcept
     }
 }
 
-void FrameContext::ResetForReuse()
+void FrameContext::ResetForReuse(DeviceContext& inDeviceContext)
 {
     CHECK_TRUE(
         m_recordTasks.empty(),
         "Cannot reuse a frame context while recording tickets remain unconsumed!");
-    _Wait();
+    _Wait(inDeviceContext);
 
     for (ThreadCommandPools& queuePools : m_commandPools)
     {
@@ -273,13 +267,13 @@ auto FrameContext::AddCompletionCallback(HostFence::Callback inCallback) -> Fram
     return *this;
 }
 
-void FrameContext::_Wait()
+void FrameContext::_Wait(DeviceContext& inDeviceContext)
 {
     for (const std::unique_ptr<HostFence>& completionFence : m_completionFences)
     {
         if (completionFence != nullptr)
         {
-            completionFence->Wait();
+            inDeviceContext.Wait(*completionFence);
         }
     }
 

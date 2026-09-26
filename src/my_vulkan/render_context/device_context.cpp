@@ -1,7 +1,6 @@
 #include "render_context/device_context.h"
 
 #include "command/command_queue.h"
-#include "device.h"
 
 auto DeviceContext::_GetQueueIndex(QueueFamilyType inQueue) -> size_t
 {
@@ -22,12 +21,34 @@ auto DeviceContext::_GetQueueIndex(QueueFamilyType inQueue) -> size_t
 DeviceContext::DeviceContext(size_t inFrameCount)
 {
 	CHECK_TRUE(inFrameCount > 0, "Device context must have at least one frame slot!");
+	m_uptrCommandQueueManager = std::make_unique<CommandQueueManager>();
 
 	m_frameContexts.reserve(inFrameCount);
 	while (m_frameContexts.size() < inFrameCount)
 	{
 		m_frameContexts.push_back(
 			std::unique_ptr<FrameContext>(new FrameContext()));
+	}
+}
+
+DeviceContext::~DeviceContext() noexcept(false)
+{
+	for (const QueueRecordingState& recordingState : m_queueRecordingStates)
+	{
+		CHECK_TRUE(
+			recordingState.pendingTickets.empty(),
+			"Cannot destroy a device context with pending recording tickets!");
+	}
+	for (const std::unique_ptr<FrameContext>& frameContext : m_frameContexts)
+	{
+		if (frameContext != nullptr)
+		{
+			frameContext->_Wait(*this);
+		}
+	}
+	if (m_uptrCommandQueueManager != nullptr)
+	{
+		m_uptrCommandQueueManager.reset();
 	}
 }
 
@@ -52,7 +73,7 @@ void DeviceContext::StartFrame()
 		? 0
 		: (m_currentFrameIndex + 1) % m_frameContexts.size();
 	FrameContext& frameContext = *m_frameContexts[nextFrameIndex];
-	frameContext.ResetForReuse();
+	frameContext.ResetForReuse(*this);
 
 	for (QueueRecordingState& recordingState : m_queueRecordingStates)
 	{
@@ -85,27 +106,18 @@ void DeviceContext::EndFrame()
 			recordingState.pendingTickets.empty(),
 			"Cannot end frame while recording tickets remain pending!");
 	}
-	CommandQueueManager* commandQueueManager = MyDevice::GetInstance().GetCommandQueueManager();
-	CHECK_TRUE(commandQueueManager != nullptr, "Command queue manager is not available!");
-
+	CHECK_TRUE(m_uptrCommandQueueManager != nullptr, "Command queue manager is not available!");
 	const auto submitCompletionMarker =
-		[&frameContext](QueueFamilyType inQueue, CommandQueue* inCommandQueue)
+		[this, &frameContext](QueueFamilyType inQueue)
 		{
-			CHECK_TRUE(inCommandQueue != nullptr, "Command queue is not available!");
-			CommandQueue::SubmitInfo submitInfo;
+			CommandQueueManager::SubmitInfo submitInfo;
 			submitInfo.SetFence(frameContext.GetCompletionFence(inQueue));
-			inCommandQueue->Submit(std::move(submitInfo));
+			m_uptrCommandQueueManager->Submit(inQueue, std::move(submitInfo));
 		};
 
-	submitCompletionMarker(
-		QueueFamilyType::GRAPHICS,
-		commandQueueManager->GetGraphicsQueue());
-	submitCompletionMarker(
-		QueueFamilyType::COMPUTE,
-		commandQueueManager->GetComputeQueue());
-	submitCompletionMarker(
-		QueueFamilyType::TRANSFER,
-		commandQueueManager->GetTransferQueue());
+	submitCompletionMarker(QueueFamilyType::GRAPHICS);
+	submitCompletionMarker(QueueFamilyType::COMPUTE);
+	submitCompletionMarker(QueueFamilyType::TRANSFER);
 
 	m_frameActive = false;
 }
@@ -131,27 +143,8 @@ void DeviceContext::SubmitQueue(
 		recordingState.pendingTickets.erase(recordingState.pendingTickets.begin());
 	}
 
-	CommandQueue* commandQueue = nullptr;
-	CommandQueueManager* commandQueueManager = MyDevice::GetInstance().GetCommandQueueManager();
-	CHECK_TRUE(commandQueueManager != nullptr, "Command queue manager is not available!");
-	switch (inQueue)
-	{
-	case QueueFamilyType::GRAPHICS:
-		commandQueue = commandQueueManager->GetGraphicsQueue();
-		break;
-	case QueueFamilyType::COMPUTE:
-		commandQueue = commandQueueManager->GetComputeQueue();
-		break;
-	case QueueFamilyType::TRANSFER:
-		commandQueue = commandQueueManager->GetTransferQueue();
-		break;
-	default:
-		CHECK_TRUE(false, "Invalid queue family type for device context submit!");
-		break;
-	}
-	CHECK_TRUE(commandQueue != nullptr, "Command queue is not available!");
-
-	CommandQueue::SubmitInfo submitInfo;
+	CHECK_TRUE(m_uptrCommandQueueManager != nullptr, "Command queue manager is not available!");
+	CommandQueueManager::SubmitInfo submitInfo;
 	for (QueueDependency* dependency : inSubmitInfo.queueSignals)
 	{
 		CHECK_TRUE(dependency != nullptr, "Queue signal dependency is null!");
@@ -163,7 +156,7 @@ void DeviceContext::SubmitQueue(
 	}
 
 	submitInfo.SetCommandBuffers(std::move(commandBuffers));
-	commandQueue->Submit(std::move(submitInfo));
+	m_uptrCommandQueueManager->Submit(inQueue, std::move(submitInfo));
 }
 
 void DeviceContext::ExecuteCommandsAndWait(
@@ -179,33 +172,26 @@ void DeviceContext::ExecuteCommandsAndWait(
 		immediateFrameContext.TakeRecordedPayload(ticket);
 	CHECK_TRUE(payload.queue == inQueue, "Immediate recorded payload belongs to another queue!");
 
-	CommandQueue* commandQueue = nullptr;
-	CommandQueueManager* commandQueueManager = MyDevice::GetInstance().GetCommandQueueManager();
-	CHECK_TRUE(commandQueueManager != nullptr, "Command queue manager is not available!");
-	switch (inQueue)
-	{
-	case QueueFamilyType::GRAPHICS:
-		commandQueue = commandQueueManager->GetGraphicsQueue();
-		break;
-	case QueueFamilyType::COMPUTE:
-		commandQueue = commandQueueManager->GetComputeQueue();
-		break;
-	case QueueFamilyType::TRANSFER:
-		commandQueue = commandQueueManager->GetTransferQueue();
-		break;
-	default:
-		CHECK_TRUE(false, "Invalid queue family type for immediate execution!");
-		break;
-	}
-	CHECK_TRUE(commandQueue != nullptr, "Command queue is not available!");
-
+	CHECK_TRUE(m_uptrCommandQueueManager != nullptr, "Command queue manager is not available!");
 	HostFence completionFence;
-	CommandQueue::SubmitInfo submitInfo;
+	CommandQueueManager::SubmitInfo submitInfo;
 	submitInfo
 		.SetCommandBuffers(std::move(payload.vkCommandBuffers))
 		.SetFence(completionFence);
-	commandQueue->Submit(std::move(submitInfo));
-	completionFence.Wait();
+	m_uptrCommandQueueManager->Submit(inQueue, std::move(submitInfo));
+	Wait(completionFence);
+}
+
+void DeviceContext::Wait(HostFence& inFence)
+{
+	CHECK_TRUE(m_uptrCommandQueueManager != nullptr, "Command queue manager is not available!");
+	m_uptrCommandQueueManager->Wait(inFence);
+}
+
+auto DeviceContext::Poll(HostFence& inFence)->bool
+{
+	CHECK_TRUE(m_uptrCommandQueueManager != nullptr, "Command queue manager is not available!");
+	return m_uptrCommandQueueManager->Poll(inFence);
 }
 
 void DeviceContext::AddCurrentFrameCompletionCallback(
