@@ -224,7 +224,7 @@ void CommandQueueManager::_Submit(
 
 			if (entry.useSignal)
 			{
-				SemaphoreAllocator* allocator = MyDevice::GetInstance().GetSemaphoreAllocator();
+				SemaphoreAllocator* allocator = m_uptrSemaphoreAllocator.get();
 				CHECK_TRUE(allocator != nullptr, "Semaphore allocator is not created!");
 				{
 					std::lock_guard<std::mutex> semaphoreLock(m_semaphoreMutex);
@@ -290,7 +290,7 @@ void CommandQueueManager::_Submit(
 	}
 	catch (...)
 	{
-		SemaphoreAllocator* allocator = MyDevice::GetInstance().GetSemaphoreAllocator();
+		SemaphoreAllocator* allocator = m_uptrSemaphoreAllocator.get();
 		if (allocator != nullptr)
 		{
 			std::lock_guard<std::mutex> semaphoreLock(m_semaphoreMutex);
@@ -373,7 +373,7 @@ auto CommandQueueManager::_GetRetiredSemaphoreReclaimCount(
 
 void CommandQueueManager::_CollectRetiredSemaphores(const SubmissionFrontier& inCompletedFrontier)
 {
-	SemaphoreAllocator* allocator = MyDevice::GetInstance().GetSemaphoreAllocator();
+	SemaphoreAllocator* allocator = m_uptrSemaphoreAllocator.get();
 	if (allocator == nullptr)
 	{
 		return;
@@ -410,7 +410,7 @@ void CommandQueueManager::_CollectRetiredSemaphores(const SubmissionFrontier& in
 
 void CommandQueueManager::_DrainRetiredSemaphores()
 {
-	SemaphoreAllocator* allocator = MyDevice::GetInstance().GetSemaphoreAllocator();
+	SemaphoreAllocator* allocator = m_uptrSemaphoreAllocator.get();
 	if (allocator == nullptr)
 	{
 		return;
@@ -456,7 +456,7 @@ void CommandQueueManager::_WaitIdleAndDiscardDependencies(
 		m_completedFrontier.Merge(idleFrontier);
 	}
 
-	SemaphoreAllocator* allocator = MyDevice::GetInstance().GetSemaphoreAllocator();
+	SemaphoreAllocator* allocator = m_uptrSemaphoreAllocator.get();
 	CHECK_TRUE(allocator != nullptr, "Semaphore allocator is not created!");
 	std::lock_guard<std::mutex> semaphoreLock(m_semaphoreMutex);
 	for (size_t queueIndex = 0; queueIndex < m_queueStateCount; ++queueIndex)
@@ -488,6 +488,8 @@ void CommandQueueManager::_WaitIdleAndDiscardDependencies(
 void CommandQueueManager::Create()
 {
 	CHECK_TRUE(!m_created, "Command queue manager is already created!");
+	m_uptrSemaphoreAllocator = std::make_unique<SemaphoreAllocator>();
+	m_uptrSemaphoreAllocator->Create();
 	auto& device = MyDevice::GetInstance();
 	_RegisterQueue(
 		QueueFamilyType::GRAPHICS,
@@ -518,6 +520,11 @@ void CommandQueueManager::Destroy()
 {
 	if (!m_created)
 	{
+		if (m_uptrSemaphoreAllocator != nullptr)
+		{
+			m_uptrSemaphoreAllocator->Destroy();
+			m_uptrSemaphoreAllocator.reset();
+		}
 		return;
 	}
 
@@ -533,6 +540,11 @@ void CommandQueueManager::Destroy()
 	m_roleToQueueState.fill(SubmissionFrontier::MAX_QUEUE_COUNT);
 	m_queueStateCount = 0;
 	m_completedFrontier = {};
+	if (m_uptrSemaphoreAllocator != nullptr)
+	{
+		m_uptrSemaphoreAllocator->Destroy();
+		m_uptrSemaphoreAllocator.reset();
+	}
 	m_created = false;
 }
 

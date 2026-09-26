@@ -7,6 +7,7 @@
 #include <mutex>
 
 class MyDevice;
+class SemaphoreAllocator;
 class CommandQueueManager;
 class RenderGraphInstance;
 struct CommandQueueManagerTestProbe;
@@ -128,6 +129,7 @@ private:
 		SubmissionFrontier::MAX_QUEUE_COUNT,
 		SubmissionFrontier::MAX_QUEUE_COUNT
 	};
+	std::unique_ptr<SemaphoreAllocator> m_uptrSemaphoreAllocator;
 	size_t m_queueStateCount = 0;
 	SubmissionFrontier m_completedFrontier;
 	std::vector<AbandonedSemaphore> m_abandonedSemaphores;

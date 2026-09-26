@@ -12,7 +12,6 @@
 #include "pipeline_layout_allocator.h"
 #include "pipeline_allocator.h"
 #include "allocator/sampler_allocator.h"
-#include "allocator/semaphore_allocator.h"
 #include "command/command_queue.h"
 #include <iomanip>
 #define VOLK_IMPLEMENTATION
@@ -709,21 +708,6 @@ void MyDevice::_DestroySamplerAllocator()
 	}
 }
 
-void MyDevice::_CreateSemaphoreAllocator()
-{
-	m_uptrSemaphoreAllocator = std::make_unique<SemaphoreAllocator>();
-	m_uptrSemaphoreAllocator->Create();
-}
-
-void MyDevice::_DestroySemaphoreAllocator()
-{
-	if (m_uptrSemaphoreAllocator != nullptr)
-	{
-		m_uptrSemaphoreAllocator->Destroy();
-		m_uptrSemaphoreAllocator.reset();
-	}
-}
-
 void MyDevice::_CreateCommandQueues()
 {
 	m_uptrCommandQueueManager = std::make_unique<CommandQueueManager>();
@@ -747,7 +731,6 @@ void MyDevice::Create()
 	_CreateSurface();
 	_SelectPhysicalDevice();
 	_CreateLogicalDevice();
-	_CreateSemaphoreAllocator();
 	_CreateCommandQueues();
 	_CreateMemoryAllocator();
 	_CreateSamplerAllocator();
@@ -763,7 +746,6 @@ void MyDevice::Create()
 void MyDevice::Destroy()
 {
 	_DestroyCommandQueues();
-	_DestroySemaphoreAllocator();
 	_DestroyDescriptorSetAllocator();
 	_DestroySwapchain();
 	_DestroyFramebufferAllocator();
@@ -817,32 +799,6 @@ DescriptorSetAllocator* MyDevice::GetDescriptorSetAllocator()
 auto MyDevice::GetSamplerAllocator()->SamplerAllocator*
 {
 	return m_uptrSamplerAllocator.get();
-}
-
-auto MyDevice::GetSemaphoreAllocator()->SemaphoreAllocator*
-{
-	return m_uptrSemaphoreAllocator.get();
-}
-
-auto MyDevice::GetGraphicsCommandQueue()->GraphicsQueue*
-{
-	return m_uptrCommandQueueManager == nullptr
-		? nullptr
-		: m_uptrCommandQueueManager->GetGraphicsQueue();
-}
-
-auto MyDevice::GetComputeCommandQueue()->ComputeQueue*
-{
-	return m_uptrCommandQueueManager == nullptr
-		? nullptr
-		: m_uptrCommandQueueManager->GetComputeQueue();
-}
-
-auto MyDevice::GetTransferCommandQueue()->TransferQueue*
-{
-	return m_uptrCommandQueueManager == nullptr
-		? nullptr
-		: m_uptrCommandQueueManager->GetTransferQueue();
 }
 
 auto MyDevice::GetCommandQueueManager()->CommandQueueManager*

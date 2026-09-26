@@ -1105,8 +1105,10 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 	}
 
 	auto& device = MyDevice::GetInstance();
-	const GraphicsQueue* graphicsQueue = device.GetGraphicsCommandQueue();
-	const ComputeQueue* computeQueue = device.GetComputeCommandQueue();
+	CommandQueueManager* commandQueueManager = device.GetCommandQueueManager();
+	CHECK_TRUE(commandQueueManager != nullptr, "Command queue manager is not available!");
+	const GraphicsQueue* graphicsQueue = commandQueueManager->GetGraphicsQueue();
+	const ComputeQueue* computeQueue = commandQueueManager->GetComputeQueue();
 
 	auto funcGetQueueFamily = [&](RenderGraph::QueueType inQueue)->uint32_t
 	{
@@ -1453,8 +1455,10 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 	_BuildCompiledGraphPlan();
 
 	auto& device = MyDevice::GetInstance();
-	GraphicsQueue* graphicsQueue = device.GetGraphicsCommandQueue();
-	ComputeQueue* computeQueue = device.GetComputeCommandQueue();
+	CommandQueueManager* commandQueueManager = device.GetCommandQueueManager();
+	CHECK_TRUE(commandQueueManager != nullptr, "Command queue manager is not available!");
+	GraphicsQueue* graphicsQueue = commandQueueManager->GetGraphicsQueue();
+	ComputeQueue* computeQueue = commandQueueManager->GetComputeQueue();
 	CHECK_TRUE(graphicsQueue != nullptr, "Graphics command queue is not available!");
 	CHECK_TRUE(computeQueue != nullptr, "Compute command queue is not available!");
 

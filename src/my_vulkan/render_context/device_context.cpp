@@ -85,6 +85,8 @@ void DeviceContext::EndFrame()
 			recordingState.pendingTickets.empty(),
 			"Cannot end frame while recording tickets remain pending!");
 	}
+	CommandQueueManager* commandQueueManager = MyDevice::GetInstance().GetCommandQueueManager();
+	CHECK_TRUE(commandQueueManager != nullptr, "Command queue manager is not available!");
 
 	const auto submitCompletionMarker =
 		[&frameContext](QueueFamilyType inQueue, CommandQueue* inCommandQueue)
@@ -97,13 +99,13 @@ void DeviceContext::EndFrame()
 
 	submitCompletionMarker(
 		QueueFamilyType::GRAPHICS,
-		MyDevice::GetInstance().GetGraphicsCommandQueue());
+		commandQueueManager->GetGraphicsQueue());
 	submitCompletionMarker(
 		QueueFamilyType::COMPUTE,
-		MyDevice::GetInstance().GetComputeCommandQueue());
+		commandQueueManager->GetComputeQueue());
 	submitCompletionMarker(
 		QueueFamilyType::TRANSFER,
-		MyDevice::GetInstance().GetTransferCommandQueue());
+		commandQueueManager->GetTransferQueue());
 
 	m_frameActive = false;
 }
@@ -130,16 +132,18 @@ void DeviceContext::SubmitQueue(
 	}
 
 	CommandQueue* commandQueue = nullptr;
+	CommandQueueManager* commandQueueManager = MyDevice::GetInstance().GetCommandQueueManager();
+	CHECK_TRUE(commandQueueManager != nullptr, "Command queue manager is not available!");
 	switch (inQueue)
 	{
 	case QueueFamilyType::GRAPHICS:
-		commandQueue = MyDevice::GetInstance().GetGraphicsCommandQueue();
+		commandQueue = commandQueueManager->GetGraphicsQueue();
 		break;
 	case QueueFamilyType::COMPUTE:
-		commandQueue = MyDevice::GetInstance().GetComputeCommandQueue();
+		commandQueue = commandQueueManager->GetComputeQueue();
 		break;
 	case QueueFamilyType::TRANSFER:
-		commandQueue = MyDevice::GetInstance().GetTransferCommandQueue();
+		commandQueue = commandQueueManager->GetTransferQueue();
 		break;
 	default:
 		CHECK_TRUE(false, "Invalid queue family type for device context submit!");
@@ -176,16 +180,18 @@ void DeviceContext::ExecuteCommandsAndWait(
 	CHECK_TRUE(payload.queue == inQueue, "Immediate recorded payload belongs to another queue!");
 
 	CommandQueue* commandQueue = nullptr;
+	CommandQueueManager* commandQueueManager = MyDevice::GetInstance().GetCommandQueueManager();
+	CHECK_TRUE(commandQueueManager != nullptr, "Command queue manager is not available!");
 	switch (inQueue)
 	{
 	case QueueFamilyType::GRAPHICS:
-		commandQueue = MyDevice::GetInstance().GetGraphicsCommandQueue();
+		commandQueue = commandQueueManager->GetGraphicsQueue();
 		break;
 	case QueueFamilyType::COMPUTE:
-		commandQueue = MyDevice::GetInstance().GetComputeCommandQueue();
+		commandQueue = commandQueueManager->GetComputeQueue();
 		break;
 	case QueueFamilyType::TRANSFER:
-		commandQueue = MyDevice::GetInstance().GetTransferCommandQueue();
+		commandQueue = commandQueueManager->GetTransferQueue();
 		break;
 	default:
 		CHECK_TRUE(false, "Invalid queue family type for immediate execution!");
