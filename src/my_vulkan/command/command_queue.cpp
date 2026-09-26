@@ -4,39 +4,13 @@
 #include "device.h"
 
 #include <algorithm>
-#include <iterator>
 #include <unordered_set>
 
-namespace
+auto CommandQueue::SubmitInfo::SetCommandBuffers(
+	std::vector<VkCommandBuffer> inCommandBuffers)->SubmitInfo&
 {
-	constexpr size_t COMMAND_COUNT_PER_VK_COMMAND_BUFFER = 256;
-
-	struct _CommandBufferRecordBatch final
-	{
-		std::vector<const Command*> commands;
-		VkCommandBuffer vkCommandBuffer = VK_NULL_HANDLE;
-	};
-
-	struct _CommandPoolRecordBatch final
-	{
-		std::vector<size_t> commandBufferBatchIndices;
-	};
-
-	auto _RecordCommandBufferBatch(const _CommandBufferRecordBatch& inBatch)->void
-	{
-		CHECK_TRUE(inBatch.vkCommandBuffer != VK_NULL_HANDLE, "Invalid command buffer!");
-
-		VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-		VK_CHECK(vkBeginCommandBuffer(inBatch.vkCommandBuffer, &beginInfo), "Failed to begin command buffer!");
-
-		for (const Command* command : inBatch.commands)
-		{
-			CHECK_TRUE(command != nullptr, "Invalid command!");
-			command->Record(inBatch.vkCommandBuffer);
-		}
-
-		VK_CHECK(vkEndCommandBuffer(inBatch.vkCommandBuffer), "Failed to end command buffer!");
-	}
+	m_commandBuffers = std::move(inCommandBuffers);
+	return *this;
 }
 
 auto CommandQueue::SubmitInfo::AddWaitQueueDependency(
@@ -110,73 +84,19 @@ void CommandQueue::_Init(CommandQueueManager& inCommandQueueManager, QueueFamily
 
 	m_commandQueueManager = &inCommandQueueManager;
 	m_queueStateIndex = inCommandQueueManager._GetQueueStateIndex(inQueueFamilyType);
-
-	CommandPoolCreateInfo commandPoolCreateInfo;
-	commandPoolCreateInfo.CustomizeQueueFamilyType(inQueueFamilyType);
-	for (auto& commandPool : m_commandPools)
-	{
-		CHECK_TRUE(commandPool == nullptr, "Command pool is already initialized!");
-		commandPool = std::make_unique<CommandPool>();
-		commandPool->Create(&commandPoolCreateInfo);
-	}
 }
 
 void CommandQueue::_Deinit()
 {
-	m_recordedCommandBuffers.clear();
-	for (auto& commandPool : m_commandPools)
-	{
-		if (commandPool != nullptr)
-		{
-			commandPool->Destroy();
-			commandPool.reset();
-		}
-	}
-
 	m_commandQueueManager = nullptr;
 	m_queueStateIndex = SubmissionFrontier::MAX_QUEUE_COUNT;
-}
-
-void CommandQueue::_ResetCommandPools()
-{
-}
-
-auto CommandQueue::_GetCommandPool(uint8_t inThreadIndex) const->CommandPool*
-{
-	CHECK_TRUE(inThreadIndex < THREAD_COUNT, "Command queue thread index out of range!");
-	const auto& commandPool = m_commandPools[inThreadIndex];
-	CHECK_TRUE(commandPool != nullptr, "Command pool is not created!");
-	return commandPool.get();
-}
-
-auto CommandQueue::Enqueue(CommandBuffer* inCommandBuffers, size_t inCount)->CommandQueue&
-{
-	_RecordCommandBuffer(inCommandBuffers, inCount);
-	return *this;
 }
 
 void CommandQueue::Submit(SubmitInfo inSubmitInfo)
 {
 	CHECK_TRUE(m_commandQueueManager != nullptr, "Command queue is not initialized!");
-	CHECK_TRUE(!m_recordedCommandBuffers.empty(), "No command buffers to submit!");
-	std::vector<VkCommandBuffer> commandBuffers = std::move(m_recordedCommandBuffers);
 	m_commandQueueManager->_Submit(
 		m_queueStateIndex,
-		commandBuffers.data(),
-		commandBuffers.size(),
-		std::move(inSubmitInfo));
-}
-
-void CommandQueue::_SubmitVkCommandBuffers(
-	const VkCommandBuffer* inCommandBuffers,
-	size_t inCount,
-	SubmitInfo inSubmitInfo)
-{
-	CHECK_TRUE(m_commandQueueManager != nullptr, "Command queue is not initialized!");
-	m_commandQueueManager->_Submit(
-		m_queueStateIndex,
-		inCommandBuffers,
-		inCount,
 		std::move(inSubmitInfo));
 }
 
@@ -270,14 +190,8 @@ auto CommandQueueManager::_GetQueueState(size_t inQueueStateIndex) const->const 
 
 void CommandQueueManager::_Submit(
 	size_t inQueueStateIndex,
-	const VkCommandBuffer* inCommandBuffers,
-	size_t inCommandBufferCount,
 	CommandQueue::SubmitInfo inSubmitInfo)
 {
-	CHECK_TRUE(
-		inCommandBufferCount == 0 || inCommandBuffers != nullptr,
-		"Command buffer pointer is null for a non-empty submission!");
-
 	QueueState& state = _GetQueueState(inQueueStateIndex);
 	if (inSubmitInfo.m_completionFence != nullptr)
 	{
@@ -388,12 +302,12 @@ void CommandQueueManager::_Submit(
 			state.retiredSemaphores.size() + inSubmitInfo.m_dependencyEntries.size());
 
 		std::vector<VkCommandBufferSubmitInfo> commandInfos;
-		commandInfos.reserve(inCommandBufferCount);
-		for (size_t commandBufferIndex = 0; commandBufferIndex < inCommandBufferCount; ++commandBufferIndex)
+		commandInfos.reserve(inSubmitInfo.m_commandBuffers.size());
+		for (VkCommandBuffer commandBuffer : inSubmitInfo.m_commandBuffers)
 		{
-			CHECK_TRUE(inCommandBuffers[commandBufferIndex] != VK_NULL_HANDLE, "Invalid command buffer!");
+			CHECK_TRUE(commandBuffer != VK_NULL_HANDLE, "Invalid command buffer!");
 			VkCommandBufferSubmitInfo commandInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
-			commandInfo.commandBuffer = inCommandBuffers[commandBufferIndex];
+			commandInfo.commandBuffer = commandBuffer;
 			commandInfos.push_back(commandInfo);
 		}
 
@@ -662,121 +576,4 @@ void CommandQueueManager::Destroy()
 CommandQueueManager::~CommandQueueManager()
 {
 	Destroy();
-}
-
-auto CommandQueue::_RecordCommandBuffer(CommandBuffer* inCommandBuffers, size_t inCount)->void
-{
-	if (inCount == 0)
-	{
-		return;
-	}
-
-	CHECK_TRUE(inCommandBuffers != nullptr, "No command buffers!");
-
-	std::vector<CommandBuffer*> consumedCommandBuffers;
-	consumedCommandBuffers.reserve(inCount);
-	std::vector<_CommandBufferRecordBatch> commandBufferBatches;
-	_CommandBufferRecordBatch currentBatch;
-
-	for (size_t commandBufferIndex = 0; commandBufferIndex < inCount; ++commandBufferIndex)
-	{
-		CommandBuffer& commandBuffer = inCommandBuffers[commandBufferIndex];
-		CHECK_TRUE(
-			std::holds_alternative<std::monostate>(commandBuffer.m_renderingScopeState),
-			"Command buffer has an active rendering scope!");
-		consumedCommandBuffers.push_back(&commandBuffer);
-
-		if (commandBuffer.m_hasRenderingCommands)
-		{
-			if (!currentBatch.commands.empty())
-			{
-				commandBufferBatches.push_back(std::move(currentBatch));
-				currentBatch = _CommandBufferRecordBatch{};
-			}
-
-			if (!commandBuffer.m_commands.empty())
-			{
-				_CommandBufferRecordBatch renderingBatch;
-				renderingBatch.commands = commandBuffer.m_commands;
-				commandBufferBatches.push_back(std::move(renderingBatch));
-			}
-			continue;
-		}
-
-		for (const Command* command : commandBuffer.m_commands)
-		{
-			if (currentBatch.commands.size() >= COMMAND_COUNT_PER_VK_COMMAND_BUFFER)
-			{
-				commandBufferBatches.push_back(std::move(currentBatch));
-				currentBatch = _CommandBufferRecordBatch{};
-			}
-			currentBatch.commands.push_back(command);
-		}
-	}
-
-	if (!currentBatch.commands.empty())
-	{
-		commandBufferBatches.push_back(std::move(currentBatch));
-	}
-
-	if (commandBufferBatches.empty())
-	{
-		for (CommandBuffer* commandBuffer : consumedCommandBuffers)
-		{
-			commandBuffer->m_commands.clear();
-			commandBuffer->m_ownedCommands.clear();
-			commandBuffer->m_renderingScopeState = std::monostate{};
-			commandBuffer->m_hasRenderingCommands = false;
-		}
-		return;
-	}
-
-	std::array<_CommandPoolRecordBatch, THREAD_COUNT> commandPoolBatches;
-	const size_t batchCount = commandBufferBatches.size();
-	const size_t baseBatchCountPerThread = batchCount / THREAD_COUNT;
-	const size_t extraBatchCount = batchCount % THREAD_COUNT;
-	size_t nextBatchIndex = 0;
-
-	for (uint8_t threadIndex = 0; threadIndex < THREAD_COUNT; ++threadIndex)
-	{
-		const size_t threadBatchCount = baseBatchCountPerThread + (threadIndex < extraBatchCount ? 1 : 0);
-		if (threadBatchCount == 0)
-		{
-			continue;
-		}
-
-		CommandPool* commandPool = _GetCommandPool(threadIndex);
-		_CommandPoolRecordBatch& commandPoolBatch = commandPoolBatches[threadIndex];
-		commandPoolBatch.commandBufferBatchIndices.reserve(threadBatchCount);
-
-		for (size_t localBatchIndex = 0; localBatchIndex < threadBatchCount; ++localBatchIndex)
-		{
-			_CommandBufferRecordBatch& commandBufferBatch = commandBufferBatches[nextBatchIndex];
-			commandBufferBatch.vkCommandBuffer = commandPool->AllocateOrGetCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
-			commandPoolBatch.commandBufferBatchIndices.push_back(nextBatchIndex);
-			++nextBatchIndex;
-		}
-	}
-
-	for (const _CommandBufferRecordBatch& commandBufferBatch : commandBufferBatches)
-	{
-		CHECK_TRUE(commandBufferBatch.vkCommandBuffer != VK_NULL_HANDLE, "Invalid command buffer!");
-		m_recordedCommandBuffers.push_back(commandBufferBatch.vkCommandBuffer);
-	}
-
-	for (const _CommandPoolRecordBatch& commandPoolBatch : commandPoolBatches)
-	{
-		for (size_t commandBufferBatchIndex : commandPoolBatch.commandBufferBatchIndices)
-		{
-			_RecordCommandBufferBatch(commandBufferBatches[commandBufferBatchIndex]);
-		}
-	}
-
-	for (CommandBuffer* commandBuffer : consumedCommandBuffers)
-	{
-		commandBuffer->m_commands.clear();
-		commandBuffer->m_ownedCommands.clear();
-		commandBuffer->m_renderingScopeState = std::monostate{};
-		commandBuffer->m_hasRenderingCommands = false;
-	}
 }

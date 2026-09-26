@@ -1,7 +1,5 @@
 #pragma once
 
-#include "command_buffer.h"
-#include "command_pool.h"
 #include "common_enums.h"
 #include "completion_fence.h"
 #include "queue_dependency.h"
@@ -9,17 +7,12 @@
 #include <mutex>
 
 class MyDevice;
-class Buffer;
-class DeviceContext;
 class CommandQueueManager;
 class RenderGraphInstance;
 struct CommandQueueManagerTestProbe;
 
 class CommandQueue
 {
-	friend class Buffer;
-	friend class DeviceContext;
-
 public:
 	class SubmitInfo final
 	{
@@ -41,6 +34,7 @@ public:
 			VkPipelineStageFlags2 stage = 0;
 		};
 
+		std::vector<VkCommandBuffer> m_commandBuffers;
 		std::vector<DependencyEntry> m_dependencyEntries;
 		std::vector<WaitSemaphoreEntry> m_waitSemaphoreEntries;
 		std::vector<VkSemaphore> m_signalSemaphores;
@@ -53,6 +47,7 @@ public:
 		SubmitInfo(SubmitInfo&&) noexcept = default;
 		SubmitInfo& operator=(SubmitInfo&&) noexcept = default;
 
+		auto SetCommandBuffers(std::vector<VkCommandBuffer> inCommandBuffers)->SubmitInfo&;
 		auto AddWaitQueueDependency(
 			QueueDependency& inDependency,
 			VkPipelineStageFlags2 inWaitStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)->SubmitInfo&;
@@ -64,26 +59,13 @@ public:
 		auto SetFence(HostFence& inFence)->SubmitInfo&;
 	};
 
-private:
-	void _SubmitVkCommandBuffers(
-		const VkCommandBuffer* inCommandBuffers,
-		size_t inCount,
-		SubmitInfo inSubmitInfo);
-
 protected:
-	static constexpr uint8_t THREAD_COUNT = 4;
-
 	CommandQueueManager* m_commandQueueManager = nullptr;
 	size_t m_queueStateIndex = SubmissionFrontier::MAX_QUEUE_COUNT;
-	std::array<std::unique_ptr<CommandPool>, THREAD_COUNT> m_commandPools;
-	std::vector<VkCommandBuffer> m_recordedCommandBuffers;
 
 protected:
-	auto _GetCommandPool(uint8_t inThreadIndex) const->CommandPool*;
 	void _Init(CommandQueueManager& inCommandQueueManager, QueueFamilyType inQueueFamilyType);
 	void _Deinit();
-	void _ResetCommandPools();
-	void _RecordCommandBuffer(CommandBuffer* inCommandBuffers, size_t inCount);
 
 	CommandQueue();
 
@@ -92,7 +74,6 @@ public:
 	CommandQueue& operator=(const CommandQueue&) = delete;
 	virtual ~CommandQueue();
 
-	auto Enqueue(CommandBuffer* inCommandBuffers, size_t inCount)->CommandQueue&;
 	void Submit(SubmitInfo inSubmitInfo);
 };
 
@@ -182,8 +163,6 @@ private:
 	auto _GetQueueState(size_t inQueueStateIndex) const->const QueueState&;
 	void _Submit(
 		size_t inQueueStateIndex,
-		const VkCommandBuffer* inCommandBuffers,
-		size_t inCommandBufferCount,
 		CommandQueue::SubmitInfo inSubmitInfo);
 	void _NotifyCompletion(const SubmissionFrontier& inSubmissionFrontier);
 	static auto _GetRetiredSemaphoreReclaimCount(

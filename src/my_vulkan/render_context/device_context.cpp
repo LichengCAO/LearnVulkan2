@@ -92,7 +92,7 @@ void DeviceContext::EndFrame()
 			CHECK_TRUE(inCommandQueue != nullptr, "Command queue is not available!");
 			CommandQueue::SubmitInfo submitInfo;
 			submitInfo.SetFence(frameContext.GetCompletionFence(inQueue));
-			inCommandQueue->_SubmitVkCommandBuffers(nullptr, 0, std::move(submitInfo));
+			inCommandQueue->Submit(std::move(submitInfo));
 		};
 
 	submitCompletionMarker(
@@ -158,10 +158,8 @@ void DeviceContext::SubmitQueue(
 		submitInfo.SetFence(*inSubmitInfo.hostFence);
 	}
 
-	commandQueue->_SubmitVkCommandBuffers(
-		commandBuffers.empty() ? nullptr : commandBuffers.data(),
-		commandBuffers.size(),
-		std::move(submitInfo));
+	submitInfo.SetCommandBuffers(std::move(commandBuffers));
+	commandQueue->Submit(std::move(submitInfo));
 }
 
 void DeviceContext::ExecuteCommandsAndWait(
@@ -197,11 +195,10 @@ void DeviceContext::ExecuteCommandsAndWait(
 
 	HostFence completionFence;
 	CommandQueue::SubmitInfo submitInfo;
-	submitInfo.SetFence(completionFence);
-	commandQueue->_SubmitVkCommandBuffers(
-		payload.vkCommandBuffers.empty() ? nullptr : payload.vkCommandBuffers.data(),
-		payload.vkCommandBuffers.size(),
-		std::move(submitInfo));
+	submitInfo
+		.SetCommandBuffers(std::move(payload.vkCommandBuffers))
+		.SetFence(completionFence);
+	commandQueue->Submit(std::move(submitInfo));
 	completionFence.Wait();
 }
 

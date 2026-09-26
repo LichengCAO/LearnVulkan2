@@ -3,7 +3,6 @@
 #include "common.h"
 #include "submission_frontier.h"
 
-class CommandQueue;
 class CommandQueueManager;
 class RenderGraphInstance;
 
@@ -19,7 +18,6 @@ class RenderGraphInstance;
 // object only carries a pending dependency and its producer submission frontier.
 class QueueDependency final
 {
-	friend class CommandQueue;
 	friend class CommandQueueManager;
 	friend class RenderGraphInstance;
 
@@ -53,18 +51,26 @@ Example:
 QueueDependency uploadToGraphics;
 
 // First submit: create and signal the first internal semaphore.
-graphicsQueue.Enqueue(&uploadCommands, 1).Submit(
-    CommandQueue::SubmitInfo{}.AddSignalQueueDependency(uploadToGraphics));
+CommandQueue::SubmitInfo uploadSubmitInfo;
+uploadSubmitInfo
+    .SetCommandBuffers({ uploadVkCommandBuffer })
+    .AddSignalQueueDependency(uploadToGraphics);
+graphicsQueue.Submit(std::move(uploadSubmitInfo));
 
 // Middle submit: consume the previous signal and produce the next one.
 CommandQueue::SubmitInfo submitInfo;
-submitInfo.AddWaitQueueDependency(
-    uploadToGraphics,
-    VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT)
+submitInfo
+    .SetCommandBuffers({ drawVkCommandBuffer })
+    .AddWaitQueueDependency(
+        uploadToGraphics,
+        VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT)
     .AddSignalQueueDependency(uploadToGraphics);
-graphicsQueue.Enqueue(&drawCommands, 1).Submit(std::move(submitInfo));
+graphicsQueue.Submit(std::move(submitInfo));
 
 // Final submit: consume the tail without producing another signal.
-graphicsQueue.Enqueue(&finishCommands, 1).Submit(
-    CommandQueue::SubmitInfo{}.AddWaitQueueDependency(uploadToGraphics));
+CommandQueue::SubmitInfo finishSubmitInfo;
+finishSubmitInfo
+    .SetCommandBuffers({ finishVkCommandBuffer })
+    .AddWaitQueueDependency(uploadToGraphics);
+graphicsQueue.Submit(std::move(finishSubmitInfo));
 */

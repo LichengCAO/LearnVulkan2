@@ -2,7 +2,6 @@
 
 #include "common.h"
 
-class CommandQueue;
 class CommandQueueManager;
 
 // A reusable GPU-to-host completion object.
@@ -12,7 +11,6 @@ class CommandQueueManager;
 // one-shot and therefore belong to a submission, not permanently to the fence.
 class HostFence final
 {
-	friend class CommandQueue;
 	friend class CommandQueueManager;
 
 public:
@@ -63,9 +61,12 @@ frameCompletion.AddCallback([]
     // Release CPU/GPU resources after the submission is complete.
 });
 
-queue.Enqueue(&commands, 1).Submit(
-    CommandQueue::SubmitInfo{}.SetFence(frameCompletion));
+CommandQueue::SubmitInfo submitInfo;
+submitInfo
+    .SetCommandBuffers({ vkCommandBuffer })
+    .SetFence(frameCompletion);
+queue.Submit(std::move(submitInfo));
 
 // The application may wait only when it needs the result.
-frameCompletion._Wait();
+frameCompletion.Wait();
 */

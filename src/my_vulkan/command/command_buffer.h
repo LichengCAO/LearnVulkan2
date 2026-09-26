@@ -7,7 +7,6 @@ class CommandBuffer final
 {
 	friend class RenderGraphInstance;
 	friend struct RenderGraphTestProbe;
-	friend class CommandQueue;
 	friend class FrameContext;
 
 private:
@@ -55,6 +54,6 @@ public:
 		VkSubpassContents inContents = VK_SUBPASS_CONTENTS_INLINE)->CommandBuffer&;
 	auto EndRenderPass()->CommandBuffer&;
 
-	// Commands are borrowed and must remain alive until this command buffer is enqueued.
+	// Commands are borrowed and must remain alive until asynchronous recording completes.
 	auto AddCommands(const Command* const* inCommands, size_t inCount)->CommandBuffer&;
 };
