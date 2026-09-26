@@ -6,9 +6,9 @@ class CommandQueueManager;
 
 // A reusable GPU-to-host completion object.
 //
-// Reusing the object waits for the previous submission, runs its callbacks,
-// resets the VkFence, and binds the fence to the next submission. Callbacks are
-// one-shot and therefore belong to a submission, not permanently to the fence.
+// Wait() or Poll() must consume the previous submission before this object is
+// reused. Callbacks are one-shot and belong to a submission, not permanently
+// to the fence.
 class HostFence final
 {
 	friend class CommandQueueManager;
@@ -18,10 +18,8 @@ public:
 
 private:
 	VkFence m_vkFence = VK_NULL_HANDLE;
-	bool m_hasSubmittedWork = false;
 	bool m_isInFlight = false;
-	std::vector<Callback> m_pendingCallbacks;
-	std::vector<Callback> m_activeCallbacks;
+	std::vector<Callback> m_callbacks;
 
 public:
 	HostFence();
@@ -31,10 +29,6 @@ public:
 	HostFence& operator=(HostFence&&) = delete;
 	~HostFence();
 
-	auto HasSubmittedWork() const->bool { return m_hasSubmittedWork; }
-	auto IsInFlight() const->bool { return m_isInFlight; }
-	auto IsComplete() const->bool;
-
 	// Blocks until the current submission completes and runs its callbacks.
 	void Wait();
 
@@ -43,12 +37,12 @@ public:
 	auto Poll()->bool;
 
 	// Registers a one-shot callback for the next submission using this fence.
+	// The previous submission must already have been consumed by Wait() or Poll().
 	auto AddCallback(Callback inCallback)->HostFence&;
 
 private:
 	void _PrepareForSubmit();
 	void _CommitSubmit();
-	void _ForceComplete();
 	void _RunCallbacks();
 };
 

@@ -47,23 +47,6 @@ auto CommandQueue::SubmitInfo::AddSignalQueueDependency(QueueDependency& inDepen
 	return *this;
 }
 
-auto CommandQueue::SubmitInfo::AddWaitSemaphore(
-	VkSemaphore inSemaphore,
-	VkPipelineStageFlags2 inWaitStage)->SubmitInfo&
-{
-	CHECK_TRUE(inSemaphore != VK_NULL_HANDLE, "Invalid wait semaphore!");
-	CHECK_TRUE(inWaitStage != 0, "Invalid wait stage!");
-	m_waitSemaphoreEntries.push_back({ inSemaphore, inWaitStage });
-	return *this;
-}
-
-auto CommandQueue::SubmitInfo::AddSemaphoreToSignal(VkSemaphore inSemaphore)->SubmitInfo&
-{
-	CHECK_TRUE(inSemaphore != VK_NULL_HANDLE, "Invalid signal semaphore!");
-	m_signalSemaphores.push_back(inSemaphore);
-	return *this;
-}
-
 auto CommandQueue::SubmitInfo::SetFence(HostFence& inFence)->SubmitInfo&
 {
 	m_completionFence = &inFence;
@@ -209,10 +192,10 @@ void CommandQueueManager::_Submit(
 	std::unordered_set<VkSemaphore> signalHandles;
 	SubmissionFrontier submissionFrontier = state.tailFrontier;
 
-	waitInfos.reserve(inSubmitInfo.m_dependencyEntries.size() + inSubmitInfo.m_waitSemaphoreEntries.size());
-	signalInfos.reserve(inSubmitInfo.m_dependencyEntries.size() + inSubmitInfo.m_signalSemaphores.size());
-	waitHandles.reserve(inSubmitInfo.m_dependencyEntries.size() + inSubmitInfo.m_waitSemaphoreEntries.size());
-	signalHandles.reserve(inSubmitInfo.m_dependencyEntries.size() + inSubmitInfo.m_signalSemaphores.size());
+	waitInfos.reserve(inSubmitInfo.m_dependencyEntries.size());
+	signalInfos.reserve(inSubmitInfo.m_dependencyEntries.size());
+	waitHandles.reserve(inSubmitInfo.m_dependencyEntries.size());
+	signalHandles.reserve(inSubmitInfo.m_dependencyEntries.size());
 	{
 		std::lock_guard<std::mutex> semaphoreLock(m_semaphoreMutex);
 		m_abandonedSemaphores.reserve(
@@ -221,26 +204,6 @@ void CommandQueueManager::_Submit(
 
 	try
 	{
-		for (const CommandQueue::SubmitInfo::WaitSemaphoreEntry& entry : inSubmitInfo.m_waitSemaphoreEntries)
-		{
-			CHECK_TRUE(waitHandles.insert(entry.semaphore).second,
-				"A semaphore cannot appear more than once in queue wait list!");
-			VkSemaphoreSubmitInfo waitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
-			waitInfo.semaphore = entry.semaphore;
-			waitInfo.stageMask = entry.stage;
-			waitInfos.push_back(waitInfo);
-		}
-
-		for (VkSemaphore semaphore : inSubmitInfo.m_signalSemaphores)
-		{
-			CHECK_TRUE(signalHandles.insert(semaphore).second,
-				"A semaphore cannot appear more than once in queue signal list!");
-			VkSemaphoreSubmitInfo signalInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
-			signalInfo.semaphore = semaphore;
-			signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-			signalInfos.push_back(signalInfo);
-		}
-
 		for (size_t dependencyIndex = 0; dependencyIndex < inSubmitInfo.m_dependencyEntries.size(); ++dependencyIndex)
 		{
 			const CommandQueue::SubmitInfo::DependencyEntry& entry = inSubmitInfo.m_dependencyEntries[dependencyIndex];

@@ -28,16 +28,8 @@ public:
 			bool useSignal = false;
 		};
 
-		struct WaitSemaphoreEntry final
-		{
-			VkSemaphore semaphore = VK_NULL_HANDLE;
-			VkPipelineStageFlags2 stage = 0;
-		};
-
 		std::vector<VkCommandBuffer> m_commandBuffers;
 		std::vector<DependencyEntry> m_dependencyEntries;
-		std::vector<WaitSemaphoreEntry> m_waitSemaphoreEntries;
-		std::vector<VkSemaphore> m_signalSemaphores;
 		HostFence* m_completionFence = nullptr;
 
 	public:
@@ -52,10 +44,6 @@ public:
 			QueueDependency& inDependency,
 			VkPipelineStageFlags2 inWaitStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)->SubmitInfo&;
 		auto AddSignalQueueDependency(QueueDependency& inDependency)->SubmitInfo&;
-		auto AddWaitSemaphore(
-			VkSemaphore inSemaphore,
-			VkPipelineStageFlags2 inWaitStage)->SubmitInfo&;
-		auto AddSemaphoreToSignal(VkSemaphore inSemaphore)->SubmitInfo&;
 		auto SetFence(HostFence& inFence)->SubmitInfo&;
 	};
 
@@ -107,7 +95,6 @@ public:
 class CommandQueueManager final
 {
 	friend class CommandQueue;
-	friend class HostFence;
 	friend class RenderGraphInstance;
 	friend struct CommandQueueManagerTestProbe;
 
