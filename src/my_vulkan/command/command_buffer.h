@@ -7,7 +7,7 @@ class CommandBuffer final
 {
 	friend class RenderGraphInstance;
 	friend struct RenderGraphTestProbe;
-	friend class FrameContext;
+	friend class FrameSlot;
 
 private:
 	struct LegacyRenderPassState final

@@ -6,7 +6,7 @@
 
 #include "buffer.h"
 #include "command_buffer.h"
-#include "command_queue.h"
+#include "render_context/submission_manager.h"
 #include "device.h"
 #include "graphics_shader_program.h"
 #include "image.h"
@@ -1105,7 +1105,7 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 	}
 
 	auto& device = MyDevice::GetInstance();
-	CommandQueueManager* commandQueueManager = device.GetCommandQueueManager();
+	SubmissionManager* commandQueueManager = device.GetCommandQueueManager();
 	CHECK_TRUE(commandQueueManager != nullptr, "Command queue manager is not available!");
 	const GraphicsQueue* graphicsQueue = commandQueueManager->GetGraphicsQueue();
 	const ComputeQueue* computeQueue = commandQueueManager->GetComputeQueue();
@@ -1455,7 +1455,7 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 	_BuildCompiledGraphPlan();
 
 	auto& device = MyDevice::GetInstance();
-	CommandQueueManager* commandQueueManager = device.GetCommandQueueManager();
+	SubmissionManager* commandQueueManager = device.GetCommandQueueManager();
 	CHECK_TRUE(commandQueueManager != nullptr, "Command queue manager is not available!");
 	GraphicsQueue* graphicsQueue = commandQueueManager->GetGraphicsQueue();
 	ComputeQueue* computeQueue = commandQueueManager->GetComputeQueue();
@@ -1648,7 +1648,7 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 		{
 			dependenciesToDiscard.push_back(binding.dependency);
 		}
-		CommandQueueManager* manager = device.GetCommandQueueManager();
+		SubmissionManager* manager = device.GetCommandQueueManager();
 		CHECK_TRUE(manager != nullptr, "Command queue manager is not available!");
 		manager->_WaitIdleAndDiscardDependencies(dependenciesToDiscard.data(), dependenciesToDiscard.size());
 		throw;

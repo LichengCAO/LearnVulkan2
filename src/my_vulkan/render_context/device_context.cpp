@@ -1,6 +1,27 @@
 #include "render_context/device_context.h"
 
-#include "command/command_queue.h"
+#include "render_context/submission_manager.h"
+
+auto SubmissionSyncInfo::AddWaitQueueDependency(
+	QueueDependency& inDependency,
+	VkPipelineStageFlags2 inWaitStage)->SubmissionSyncInfo&
+{
+	m_submitInfo.AddWaitQueueDependency(inDependency, inWaitStage);
+	return *this;
+}
+
+auto SubmissionSyncInfo::AddSignalQueueDependency(
+	QueueDependency& inDependency)->SubmissionSyncInfo&
+{
+	m_submitInfo.AddSignalQueueDependency(inDependency);
+	return *this;
+}
+
+auto SubmissionSyncInfo::SetFence(HostFence& inFence)->SubmissionSyncInfo&
+{
+	m_submitInfo.SetFence(inFence);
+	return *this;
+}
 
 auto DeviceContext::_GetQueueIndex(QueueFamilyType inQueue) -> size_t
 {
@@ -21,13 +42,13 @@ auto DeviceContext::_GetQueueIndex(QueueFamilyType inQueue) -> size_t
 DeviceContext::DeviceContext(size_t inFrameCount)
 {
 	CHECK_TRUE(inFrameCount > 0, "Device context must have at least one frame slot!");
-	m_uptrCommandQueueManager = std::make_unique<CommandQueueManager>();
+	m_uptrCommandQueueManager = std::make_unique<SubmissionManager>();
 
 	m_frameContexts.reserve(inFrameCount);
 	while (m_frameContexts.size() < inFrameCount)
 	{
 		m_frameContexts.push_back(
-			std::unique_ptr<FrameContext>(new FrameContext()));
+			std::unique_ptr<FrameSlot>(new FrameSlot()));
 	}
 }
 
@@ -39,7 +60,7 @@ DeviceContext::~DeviceContext() noexcept(false)
 			recordingState.pendingTickets.empty(),
 			"Cannot destroy a device context with pending recording tickets!");
 	}
-	for (const std::unique_ptr<FrameContext>& frameContext : m_frameContexts)
+	for (const std::unique_ptr<FrameSlot>& frameContext : m_frameContexts)
 	{
 		if (frameContext != nullptr)
 		{
@@ -52,7 +73,7 @@ DeviceContext::~DeviceContext() noexcept(false)
 	}
 }
 
-auto DeviceContext::_GetCurrentFrameContext() -> FrameContext&
+auto DeviceContext::_GetCurrentFrameContext() -> FrameSlot&
 {
 	CHECK_TRUE(m_frameActive, "Device context has no active frame!");
 	CHECK_TRUE(
@@ -72,7 +93,7 @@ void DeviceContext::StartFrame()
 	const size_t nextFrameIndex = m_currentFrameIndex == SIZE_MAX
 		? 0
 		: (m_currentFrameIndex + 1) % m_frameContexts.size();
-	FrameContext& frameContext = *m_frameContexts[nextFrameIndex];
+	FrameSlot& frameContext = *m_frameContexts[nextFrameIndex];
 	frameContext.ResetForReuse(*this);
 
 	for (QueueRecordingState& recordingState : m_queueRecordingStates)
@@ -91,15 +112,15 @@ void DeviceContext::CommitCommandsToQueue(
 	std::vector<CommandBuffer> inBuffers)
 {
 	const size_t queueIndex = _GetQueueIndex(inQueue);
-	FrameContext& frameContext = _GetCurrentFrameContext();
-	FrameContext::RecordingTicket ticket =
+	FrameSlot& frameContext = _GetCurrentFrameContext();
+	FrameSlot::RecordingTicket ticket =
 		frameContext.DispatchRecording(inQueue, std::move(inBuffers));
 	m_queueRecordingStates[queueIndex].pendingTickets.push_back(ticket);
 }
 
 void DeviceContext::EndFrame()
 {
-	FrameContext& frameContext = _GetCurrentFrameContext();
+	FrameSlot& frameContext = _GetCurrentFrameContext();
 	for (const QueueRecordingState& recordingState : m_queueRecordingStates)
 	{
 		CHECK_TRUE(
@@ -110,7 +131,7 @@ void DeviceContext::EndFrame()
 	const auto submitCompletionMarker =
 		[this, &frameContext](QueueFamilyType inQueue)
 		{
-			CommandQueueManager::SubmitInfo submitInfo;
+			SubmissionManager::SubmitInfo submitInfo;
 			submitInfo.SetFence(frameContext.GetCompletionFence(inQueue));
 			m_uptrCommandQueueManager->Submit(inQueue, std::move(submitInfo));
 		};
@@ -124,17 +145,17 @@ void DeviceContext::EndFrame()
 
 void DeviceContext::SubmitQueue(
 	QueueFamilyType inQueue,
-	const QueueSubmitInfo& inSubmitInfo)
+	const SubmissionSyncInfo& inSubmitInfo)
 {
 	const size_t queueIndex = _GetQueueIndex(inQueue);
-	FrameContext& frameContext = _GetCurrentFrameContext();
+	FrameSlot& frameContext = _GetCurrentFrameContext();
 	QueueRecordingState& recordingState = m_queueRecordingStates[queueIndex];
 	std::vector<VkCommandBuffer> commandBuffers;
 
 	while (!recordingState.pendingTickets.empty())
 	{
-		const FrameContext::RecordingTicket ticket = recordingState.pendingTickets.front();
-		FrameContext::RecordedPayload payload = frameContext.TakeRecordedPayload(ticket);
+		const FrameSlot::RecordingTicket ticket = recordingState.pendingTickets.front();
+		FrameSlot::RecordingResult payload = frameContext.TakeRecordingResult(ticket);
 		CHECK_TRUE(payload.queue == inQueue, "Recorded payload belongs to another queue!");
 		commandBuffers.insert(
 			commandBuffers.end(),
@@ -144,17 +165,7 @@ void DeviceContext::SubmitQueue(
 	}
 
 	CHECK_TRUE(m_uptrCommandQueueManager != nullptr, "Command queue manager is not available!");
-	CommandQueueManager::SubmitInfo submitInfo;
-	for (QueueDependency* dependency : inSubmitInfo.queueSignals)
-	{
-		CHECK_TRUE(dependency != nullptr, "Queue signal dependency is null!");
-		submitInfo.AddSignalQueueDependency(*dependency);
-	}
-	if (inSubmitInfo.hostFence != nullptr)
-	{
-		submitInfo.SetFence(*inSubmitInfo.hostFence);
-	}
-
+	SubmissionManager::SubmitInfo submitInfo = inSubmitInfo.m_submitInfo;
 	submitInfo.SetCommandBuffers(std::move(commandBuffers));
 	m_uptrCommandQueueManager->Submit(inQueue, std::move(submitInfo));
 }
@@ -165,16 +176,16 @@ void DeviceContext::ExecuteCommandsAndWait(
 {
 	_GetQueueIndex(inQueue);
 
-	FrameContext immediateFrameContext;
-	const FrameContext::RecordingTicket ticket =
+	FrameSlot immediateFrameContext;
+	const FrameSlot::RecordingTicket ticket =
 		immediateFrameContext.DispatchRecording(inQueue, std::move(inBuffers));
-	FrameContext::RecordedPayload payload =
-		immediateFrameContext.TakeRecordedPayload(ticket);
+	FrameSlot::RecordingResult payload =
+		immediateFrameContext.TakeRecordingResult(ticket);
 	CHECK_TRUE(payload.queue == inQueue, "Immediate recorded payload belongs to another queue!");
 
 	CHECK_TRUE(m_uptrCommandQueueManager != nullptr, "Command queue manager is not available!");
 	HostFence completionFence;
-	CommandQueueManager::SubmitInfo submitInfo;
+	SubmissionManager::SubmitInfo submitInfo;
 	submitInfo
 		.SetCommandBuffers(std::move(payload.vkCommandBuffers))
 		.SetFence(completionFence);

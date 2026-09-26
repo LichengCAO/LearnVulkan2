@@ -1,4 +1,4 @@
-#include "frame_context.h"
+#include "frame_slot.h"
 
 #include "command/command_buffer.h"
 #include "command/command.h"
@@ -13,7 +13,7 @@ namespace
     constexpr size_t COMMAND_COUNT_PER_VK_COMMAND_BUFFER = 256;
 }
 
-struct FrameContext::RecordContext final
+struct FrameSlot::RecordingTask final
 {
     struct RecordBatch final
     {
@@ -21,7 +21,7 @@ struct FrameContext::RecordContext final
         VkCommandBuffer vkCommandBuffer = VK_NULL_HANDLE;
     };
 
-    FrameContext* owner = nullptr;
+    FrameSlot* owner = nullptr;
     QueueFamilyType queue = QueueFamilyType::UNSET;
     std::vector<CommandBuffer> sourceBuffers;
     std::vector<RecordBatch> batches;
@@ -32,8 +32,8 @@ struct FrameContext::RecordContext final
     bool dispatched = false;
     bool waited = false;
 
-    RecordContext(
-        FrameContext& inOwner,
+    RecordingTask(
+        FrameSlot& inOwner,
         QueueFamilyType inQueue,
         std::vector<CommandBuffer> inSourceBuffers,
         std::vector<RecordBatch> inBatches)
@@ -44,9 +44,9 @@ struct FrameContext::RecordContext final
     {
     }
 
-    RecordContext(const RecordContext&) = delete;
-    RecordContext& operator=(const RecordContext&) = delete;
-    ~RecordContext()
+    RecordingTask(const RecordingTask&) = delete;
+    RecordingTask& operator=(const RecordingTask&) = delete;
+    ~RecordingTask()
     {
         _WaitNoThrow();
     }
@@ -166,16 +166,16 @@ private:
     }
 };
 
-FrameContext::FrameContext()
+FrameSlot::FrameSlot()
 {
 }
 
-FrameContext::~FrameContext()
+FrameSlot::~FrameSlot()
 {
     _WaitForRecordingTasks();
 }
 
-auto FrameContext::_GetQueueIndex(QueueFamilyType inQueueFamilyType) -> size_t
+auto FrameSlot::_GetQueueIndex(QueueFamilyType inQueueFamilyType) -> size_t
 {
     switch (inQueueFamilyType)
     {
@@ -191,7 +191,7 @@ auto FrameContext::_GetQueueIndex(QueueFamilyType inQueueFamilyType) -> size_t
     }
 }
 
-auto FrameContext::_GetCommandPool(
+auto FrameSlot::_GetCommandPool(
     QueueFamilyType inQueue,
     uint32_t inThreadIndex) -> CommandPool&
 {
@@ -209,7 +209,7 @@ auto FrameContext::_GetCommandPool(
     return *commandPool;
 }
 
-void FrameContext::_WaitForRecordingTasks() noexcept
+void FrameSlot::_WaitForRecordingTasks() noexcept
 {
     for (auto& [serial, recordContext] : m_recordTasks)
     {
@@ -218,7 +218,7 @@ void FrameContext::_WaitForRecordingTasks() noexcept
     }
 }
 
-void FrameContext::ResetForReuse(DeviceContext& inDeviceContext)
+void FrameSlot::ResetForReuse(DeviceContext& inDeviceContext)
 {
     CHECK_TRUE(
         m_recordTasks.empty(),
@@ -237,7 +237,7 @@ void FrameContext::ResetForReuse(DeviceContext& inDeviceContext)
     }
 }
 
-void FrameContext::_RunCompletionCallbacks()
+void FrameSlot::_RunCompletionCallbacks()
 {
     std::vector<HostFence::Callback> callbacks = std::move(m_completionCallbacks);
     m_completionCallbacks.clear();
@@ -248,7 +248,7 @@ void FrameContext::_RunCompletionCallbacks()
     }
 }
 
-auto FrameContext::GetCompletionFence(QueueFamilyType inQueueFamilyType) -> HostFence&
+auto FrameSlot::GetCompletionFence(QueueFamilyType inQueueFamilyType) -> HostFence&
 {
     const size_t queueIndex = _GetQueueIndex(inQueueFamilyType);
     std::unique_ptr<HostFence>& completionFence = m_completionFences[queueIndex];
@@ -260,14 +260,14 @@ auto FrameContext::GetCompletionFence(QueueFamilyType inQueueFamilyType) -> Host
     return *completionFence;
 }
 
-auto FrameContext::AddCompletionCallback(HostFence::Callback inCallback) -> FrameContext&
+auto FrameSlot::AddCompletionCallback(HostFence::Callback inCallback) -> FrameSlot&
 {
     CHECK_TRUE(static_cast<bool>(inCallback), "Frame completion callback is empty!");
     m_completionCallbacks.push_back(std::move(inCallback));
     return *this;
 }
 
-void FrameContext::_Wait(DeviceContext& inDeviceContext)
+void FrameSlot::_Wait(DeviceContext& inDeviceContext)
 {
     for (const std::unique_ptr<HostFence>& completionFence : m_completionFences)
     {
@@ -280,14 +280,14 @@ void FrameContext::_Wait(DeviceContext& inDeviceContext)
     _RunCompletionCallbacks();
 }
 
-auto FrameContext::DispatchRecording(
+auto FrameSlot::DispatchRecording(
     QueueFamilyType inQueue,
     std::vector<CommandBuffer> inBuffers) -> RecordingTicket
 {
     _GetQueueIndex(inQueue);
 
-    std::vector<RecordContext::RecordBatch> batches;
-    RecordContext::RecordBatch currentBatch;
+    std::vector<RecordingTask::RecordBatch> batches;
+    RecordingTask::RecordBatch currentBatch;
     for (CommandBuffer& commandBuffer : inBuffers)
     {
         CHECK_TRUE(
@@ -299,12 +299,12 @@ auto FrameContext::DispatchRecording(
             if (!currentBatch.commands.empty())
             {
                 batches.push_back(std::move(currentBatch));
-                currentBatch = RecordContext::RecordBatch{};
+                currentBatch = RecordingTask::RecordBatch{};
             }
 
             if (!commandBuffer.m_commands.empty())
             {
-                RecordContext::RecordBatch renderingBatch;
+                RecordingTask::RecordBatch renderingBatch;
                 renderingBatch.commands = commandBuffer.m_commands;
                 batches.push_back(std::move(renderingBatch));
             }
@@ -316,7 +316,7 @@ auto FrameContext::DispatchRecording(
             if (currentBatch.commands.size() >= COMMAND_COUNT_PER_VK_COMMAND_BUFFER)
             {
                 batches.push_back(std::move(currentBatch));
-                currentBatch = RecordContext::RecordBatch{};
+                currentBatch = RecordingTask::RecordBatch{};
             }
             currentBatch.commands.push_back(command);
         }
@@ -329,12 +329,12 @@ auto FrameContext::DispatchRecording(
 
     CHECK_TRUE(m_nextRecordingSerial != 0, "Recording ticket serial overflow!");
     const uint64_t serial = m_nextRecordingSerial++;
-    auto recordContext = std::make_unique<RecordContext>(
+    auto recordContext = std::make_unique<RecordingTask>(
         *this,
         inQueue,
         std::move(inBuffers),
         std::move(batches));
-    RecordContext* recordContextPtr = recordContext.get();
+    RecordingTask* recordContextPtr = recordContext.get();
     const auto [iter, inserted] = m_recordTasks.emplace(serial, std::move(recordContext));
     CHECK_TRUE(inserted, "Recording ticket already exists!");
 
@@ -353,13 +353,13 @@ auto FrameContext::DispatchRecording(
     return ticket;
 }
 
-auto FrameContext::TakeRecordedPayload(RecordingTicket inTicket) -> RecordedPayload
+auto FrameSlot::TakeRecordingResult(RecordingTicket inTicket) -> RecordingResult
 {
     CHECK_TRUE(inTicket.IsValid(), "Recording ticket is invalid!");
 
     const auto iter = m_recordTasks.find(inTicket.m_serial);
     CHECK_TRUE(iter != m_recordTasks.end(), "Recording ticket does not exist or was already consumed!");
-    std::unique_ptr<RecordContext> recordContext = std::move(iter->second);
+    std::unique_ptr<RecordingTask> recordContext = std::move(iter->second);
     m_recordTasks.erase(iter);
     return recordContext->WaitAndTakePayload();
 }

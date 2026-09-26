@@ -1,13 +1,22 @@
 #include "common.h"
 #include "common_enums.h"
-#include "command/command_buffer.h"
-#include "command/command_queue.h"
-#include "render_context/frame_context.h"
+#include "command_buffer.h"
+#include "render_context/submission_manager.h"
+#include "render_context/frame_slot.h"
 
-struct QueueSubmitInfo
+class SubmissionSyncInfo final
 {
-	std::vector<QueueDependency*> queueSignals;
-	HostFence* hostFence = nullptr;
+	friend class DeviceContext;
+
+private:
+	SubmissionManager::SubmitInfo m_submitInfo;
+
+public:
+	auto AddWaitQueueDependency(
+		QueueDependency& inDependency,
+		VkPipelineStageFlags2 inWaitStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)->SubmissionSyncInfo&;
+	auto AddSignalQueueDependency(QueueDependency& inDependency)->SubmissionSyncInfo&;
+	auto SetFence(HostFence& inFence)->SubmissionSyncInfo&;
 };
 
 // Thread-affine. Public methods must be called from the owning thread.
@@ -16,13 +25,13 @@ class DeviceContext
 private:
 	struct QueueRecordingState final
 	{
-		std::vector<FrameContext::RecordingTicket> pendingTickets;
+		std::vector<FrameSlot::RecordingTicket> pendingTickets;
 	};
 
 	static auto _GetQueueIndex(QueueFamilyType inQueue) -> size_t;
-	auto _GetCurrentFrameContext() -> FrameContext&;
-	std::unique_ptr<CommandQueueManager> m_uptrCommandQueueManager;
-	std::vector<std::unique_ptr<FrameContext>> m_frameContexts;
+	auto _GetCurrentFrameContext() -> FrameSlot&;
+	std::unique_ptr<SubmissionManager> m_uptrCommandQueueManager;
+	std::vector<std::unique_ptr<FrameSlot>> m_frameContexts;
 	size_t m_currentFrameIndex = SIZE_MAX;
 	bool m_frameActive = false;
 	std::array<QueueRecordingState, SubmissionFrontier::MAX_QUEUE_COUNT> m_queueRecordingStates;
@@ -42,7 +51,7 @@ public:
 
 	// Waits for and consumes every recording request issued to this queue since
 	// its previous submit, then submits their command buffers in commit order.
-	void SubmitQueue(QueueFamilyType inQueue, const QueueSubmitInfo& inSubmitInfo);
+	void SubmitQueue(QueueFamilyType inQueue, const SubmissionSyncInfo& inSubmitInfo);
 
 	// Records, submits, and waits until the specified queue completes the commands.
 	// This operation is independent of the active frame lifecycle.

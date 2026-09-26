@@ -1,4 +1,4 @@
-#include "command_queue.h"
+#include "submission_manager.h"
 
 #include "device.h"
 
@@ -65,14 +65,14 @@ void HostFence::_Complete()
 	m_submissionFrontier = {};
 }
 
-auto CommandQueueManager::SubmitInfo::SetCommandBuffers(
+auto SubmissionManager::SubmitInfo::SetCommandBuffers(
 	std::vector<VkCommandBuffer> inCommandBuffers)->SubmitInfo&
 {
 	m_commandBuffers = std::move(inCommandBuffers);
 	return *this;
 }
 
-auto CommandQueueManager::SubmitInfo::AddWaitQueueDependency(
+auto SubmissionManager::SubmitInfo::AddWaitQueueDependency(
 	QueueDependency& inDependency,
 	VkPipelineStageFlags2 inWaitStage)->SubmitInfo&
 {
@@ -91,7 +91,7 @@ auto CommandQueueManager::SubmitInfo::AddWaitQueueDependency(
 	return *this;
 }
 
-auto CommandQueueManager::SubmitInfo::AddSignalQueueDependency(QueueDependency& inDependency)->SubmitInfo&
+auto SubmissionManager::SubmitInfo::AddSignalQueueDependency(QueueDependency& inDependency)->SubmitInfo&
 {
 	for (DependencyEntry& entry : m_dependencyEntries)
 	{
@@ -106,13 +106,13 @@ auto CommandQueueManager::SubmitInfo::AddSignalQueueDependency(QueueDependency& 
 	return *this;
 }
 
-auto CommandQueueManager::SubmitInfo::SetFence(HostFence& inFence)->SubmitInfo&
+auto SubmissionManager::SubmitInfo::SetFence(HostFence& inFence)->SubmitInfo&
 {
 	m_completionFence = &inFence;
 	return *this;
 }
 
-auto CommandQueueManager::_GetRoleIndex(QueueFamilyType inQueueFamilyType)->size_t
+auto SubmissionManager::_GetRoleIndex(QueueFamilyType inQueueFamilyType)->size_t
 {
 	switch (inQueueFamilyType)
 	{
@@ -128,7 +128,7 @@ auto CommandQueueManager::_GetRoleIndex(QueueFamilyType inQueueFamilyType)->size
 	}
 }
 
-CommandQueueManager::CommandQueueManager()
+SubmissionManager::SubmissionManager()
 {
 	m_fenceAllocator.Create();
 	m_semaphoreAllocator.Create();
@@ -145,11 +145,11 @@ CommandQueueManager::CommandQueueManager()
 	m_created = true;
 }
 
-CommandQueueManager::CommandQueueManager(UninitializedTag)
+SubmissionManager::SubmissionManager(UninitializedTag)
 {
 }
 
-auto CommandQueueManager::_RegisterQueue(
+auto SubmissionManager::_RegisterQueue(
 	QueueFamilyType inQueueFamilyType,
 	VkQueue inVkQueue)->size_t
 {
@@ -173,7 +173,7 @@ auto CommandQueueManager::_RegisterQueue(
 	return queueStateIndex;
 }
 
-auto CommandQueueManager::_GetQueueState(
+auto SubmissionManager::_GetQueueState(
 	QueueFamilyType inQueueFamilyType)->std::pair<size_t, QueueState&>
 {
 	const size_t roleIndex = _GetRoleIndex(inQueueFamilyType);
@@ -182,7 +182,7 @@ auto CommandQueueManager::_GetQueueState(
 	return { queueStateIndex, m_queueStates[queueStateIndex] };
 }
 
-void CommandQueueManager::Submit(
+void SubmissionManager::Submit(
 	QueueFamilyType inQueueFamilyType,
 	SubmitInfo inSubmitInfo)
 {
@@ -339,7 +339,7 @@ void CommandQueueManager::Submit(
 		completionVkFence);
 }
 
-auto CommandQueueManager::_PeekDependencySignal(
+auto SubmissionManager::_PeekDependencySignal(
 	QueueDependency& inDependency)->DependencySignal
 {
 	const auto iter = m_dependencySemaphores.find(&inDependency);
@@ -352,7 +352,7 @@ auto CommandQueueManager::_PeekDependencySignal(
 	return result;
 }
 
-void CommandQueueManager::_CommitPreparedSubmission(
+void SubmissionManager::_CommitPreparedSubmission(
 	size_t inQueueStateIndex,
 	QueueState& inoutState,
 	const SubmissionFrontier& inSubmissionFrontier,
@@ -415,7 +415,7 @@ void CommandQueueManager::_CommitPreparedSubmission(
 	}
 }
 
-auto CommandQueueManager::_AdvanceCompletion(
+auto SubmissionManager::_AdvanceCompletion(
 	const SubmissionFrontier& inSubmissionFrontier)->std::vector<HostFence::Callback>
 {
 	SubmissionFrontier completedFrontier = m_completedFrontier;
@@ -473,7 +473,7 @@ auto CommandQueueManager::_AdvanceCompletion(
 	return completedCallbacks;
 }
 
-auto CommandQueueManager::_FindHostFenceVkFence(const HostFence& inFence)->VkFence
+auto SubmissionManager::_FindHostFenceVkFence(const HostFence& inFence)->VkFence
 {
 	CHECK_TRUE(inFence.m_isInFlight, "Host fence has no in-flight submission!");
 	CHECK_TRUE(
@@ -494,7 +494,7 @@ auto CommandQueueManager::_FindHostFenceVkFence(const HostFence& inFence)->VkFen
 	return VK_NULL_HANDLE;
 }
 
-void CommandQueueManager::_RunCallbacks(std::vector<HostFence::Callback> inCallbacks)
+void SubmissionManager::_RunCallbacks(std::vector<HostFence::Callback> inCallbacks)
 {
 	for (HostFence::Callback& callback : inCallbacks)
 	{
@@ -502,7 +502,7 @@ void CommandQueueManager::_RunCallbacks(std::vector<HostFence::Callback> inCallb
 	}
 }
 
-auto CommandQueueManager::_ConsumeHostFence(
+auto SubmissionManager::_ConsumeHostFence(
 	HostFence& inFence,
 	uint64_t inTimeout)->bool
 {
@@ -534,19 +534,19 @@ auto CommandQueueManager::_ConsumeHostFence(
 	return true;
 }
 
-void CommandQueueManager::Wait(HostFence& inFence)
+void SubmissionManager::Wait(HostFence& inFence)
 {
 	CHECK_TRUE(
 		_ConsumeHostFence(inFence, UINT64_MAX),
 		"Infinite host fence wait timed out!");
 }
 
-auto CommandQueueManager::Poll(HostFence& inFence)->bool
+auto SubmissionManager::Poll(HostFence& inFence)->bool
 {
 	return _ConsumeHostFence(inFence, 0);
 }
 
-void CommandQueueManager::_CollectRetiredSemaphores(const SubmissionFrontier& inCompletedFrontier)
+void SubmissionManager::_CollectRetiredSemaphores(const SubmissionFrontier& inCompletedFrontier)
 {
 	for (size_t queueIndex = 0; queueIndex < m_queueStateCount; ++queueIndex)
 	{
@@ -571,7 +571,7 @@ void CommandQueueManager::_CollectRetiredSemaphores(const SubmissionFrontier& in
 
 }
 
-CommandQueueManager::~CommandQueueManager()
+SubmissionManager::~SubmissionManager()
 {
 	if (!m_created)
 	{

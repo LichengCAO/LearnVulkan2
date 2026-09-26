@@ -1,5 +1,5 @@
 #include "common.h"
-#include "my_vulkan/command/command_queue.h"
+#include "my_vulkan/render_context/submission_manager.h"
 
 #if MY_VULKAN_ENABLE_RENDER_GRAPH
 #include "utility/render_graph/render_graph.h"
@@ -433,7 +433,7 @@ struct CommandQueueManagerTestProbe
 {
 	static auto DeduplicatesAliasedQueueRoles()->bool
 	{
-		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
+		SubmissionManager manager(SubmissionManager::UninitializedTag{});
 		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
 		const VkQueue transferHandle = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(2));
 		const size_t graphicsQueue = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
@@ -446,7 +446,7 @@ struct CommandQueueManagerTestProbe
 
 	static auto AliasedRolesShareSubmissionVersions()->bool
 	{
-		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
+		SubmissionManager manager(SubmissionManager::UninitializedTag{});
 		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
 		manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
 		manager._RegisterQueue(QueueFamilyType::COMPUTE, queue);
@@ -462,20 +462,20 @@ struct CommandQueueManagerTestProbe
 
 	static auto FailedWaitSubmitPreservesDependency()->bool
 	{
-		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
+		SubmissionManager manager(SubmissionManager::UninitializedTag{});
 		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
 		const VkSemaphore semaphore = reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(11));
 		const size_t queueStateIndex = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
-		CommandQueueManager::QueueState& state = manager.m_queueStates[queueStateIndex];
+		SubmissionManager::QueueState& state = manager.m_queueStates[queueStateIndex];
 		QueueDependency dependency;
 
 		SubmissionFrontier producerFrontier;
 		producerFrontier.Advance(queueStateIndex);
 		manager.m_dependencySemaphores.reserve(1);
-		CommandQueueManager::DependencySemaphoreMap stagedSemaphores;
+		SubmissionManager::DependencySemaphoreMap stagedSemaphores;
 		stagedSemaphores.reserve(1);
 		stagedSemaphores.emplace(&dependency, semaphore);
-		const std::vector<CommandQueueManager::PreparedDependency> producerDependencies
+		const std::vector<SubmissionManager::PreparedDependency> producerDependencies
 		{
 			{ &dependency, VK_NULL_HANDLE, semaphore, false, true }
 		};
@@ -490,14 +490,14 @@ struct CommandQueueManagerTestProbe
 			VK_NULL_HANDLE);
 
 		const SubmissionFrontier originalTail = state.tailFrontier;
-		const CommandQueueManager::DependencySignal originalSignal =
+		const SubmissionManager::DependencySignal originalSignal =
 			manager._PeekDependencySignal(dependency);
 		const PFN_vkQueueSubmit2 previousQueueSubmit2 = vkQueueSubmit2;
 		vkQueueSubmit2 = _FailQueueSubmit2;
 		bool submitFailed = false;
 		try
 		{
-			CommandQueueManager::SubmitInfo submitInfo;
+			SubmissionManager::SubmitInfo submitInfo;
 			submitInfo.AddWaitQueueDependency(dependency);
 			manager.Submit(QueueFamilyType::GRAPHICS, std::move(submitInfo));
 		}
@@ -507,7 +507,7 @@ struct CommandQueueManagerTestProbe
 		}
 		vkQueueSubmit2 = previousQueueSubmit2;
 
-		const CommandQueueManager::DependencySignal remainingSignal =
+		const SubmissionManager::DependencySignal remainingSignal =
 			manager._PeekDependencySignal(dependency);
 		const bool unchanged = submitFailed &&
 			remainingSignal.semaphore == originalSignal.semaphore &&
@@ -520,8 +520,8 @@ struct CommandQueueManagerTestProbe
 		state.retiredSemaphores.reserve(1);
 		SubmissionFrontier cleanupFrontier = producerFrontier;
 		cleanupFrontier.Advance(queueStateIndex);
-		CommandQueueManager::DependencySemaphoreMap emptyStagedSemaphores;
-		const std::vector<CommandQueueManager::PreparedDependency> cleanupDependencies
+		SubmissionManager::DependencySemaphoreMap emptyStagedSemaphores;
+		const std::vector<SubmissionManager::PreparedDependency> cleanupDependencies
 		{
 			{ &dependency, semaphore, VK_NULL_HANDLE, true, false }
 		};
@@ -539,20 +539,20 @@ struct CommandQueueManagerTestProbe
 
 	static auto SuccessfulWaitSubmitCommitsDependency()->bool
 	{
-		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
+		SubmissionManager manager(SubmissionManager::UninitializedTag{});
 		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
 		const VkSemaphore semaphore = reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(21));
 		const size_t queueStateIndex = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
-		CommandQueueManager::QueueState& state = manager.m_queueStates[queueStateIndex];
+		SubmissionManager::QueueState& state = manager.m_queueStates[queueStateIndex];
 		QueueDependency dependency;
 
 		SubmissionFrontier producerFrontier;
 		producerFrontier.Advance(queueStateIndex);
 		manager.m_dependencySemaphores.reserve(1);
-		CommandQueueManager::DependencySemaphoreMap stagedSemaphores;
+		SubmissionManager::DependencySemaphoreMap stagedSemaphores;
 		stagedSemaphores.reserve(1);
 		stagedSemaphores.emplace(&dependency, semaphore);
-		const std::vector<CommandQueueManager::PreparedDependency> producerDependencies
+		const std::vector<SubmissionManager::PreparedDependency> producerDependencies
 		{
 			{ &dependency, VK_NULL_HANDLE, semaphore, false, true }
 		};
@@ -568,7 +568,7 @@ struct CommandQueueManagerTestProbe
 
 		const PFN_vkQueueSubmit2 previousQueueSubmit2 = vkQueueSubmit2;
 		vkQueueSubmit2 = _SucceedQueueSubmit2;
-		CommandQueueManager::SubmitInfo submitInfo;
+		SubmissionManager::SubmitInfo submitInfo;
 		submitInfo.AddWaitQueueDependency(dependency);
 		manager.Submit(QueueFamilyType::GRAPHICS, std::move(submitInfo));
 		vkQueueSubmit2 = previousQueueSubmit2;
@@ -582,22 +582,22 @@ struct CommandQueueManagerTestProbe
 
 	static auto WaitAndSignalCommitReplacesMapping()->bool
 	{
-		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
+		SubmissionManager manager(SubmissionManager::UninitializedTag{});
 		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
 		const VkSemaphore firstSemaphore = reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(31));
 		const VkSemaphore secondSemaphore = reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(32));
 		const size_t queueStateIndex = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
-		CommandQueueManager::QueueState& state = manager.m_queueStates[queueStateIndex];
+		SubmissionManager::QueueState& state = manager.m_queueStates[queueStateIndex];
 		QueueDependency dependency;
 
 		manager.m_dependencySemaphores.reserve(1);
 		state.retiredSemaphores.reserve(2);
 		SubmissionFrontier firstFrontier;
 		firstFrontier.Advance(queueStateIndex);
-		CommandQueueManager::DependencySemaphoreMap stagedSemaphores;
+		SubmissionManager::DependencySemaphoreMap stagedSemaphores;
 		stagedSemaphores.reserve(1);
 		stagedSemaphores.emplace(&dependency, firstSemaphore);
-		const std::vector<CommandQueueManager::PreparedDependency> firstDependencies
+		const std::vector<SubmissionManager::PreparedDependency> firstDependencies
 		{
 			{ &dependency, VK_NULL_HANDLE, firstSemaphore, false, true }
 		};
@@ -613,8 +613,8 @@ struct CommandQueueManagerTestProbe
 
 		SubmissionFrontier secondFrontier = firstFrontier;
 		secondFrontier.Advance(queueStateIndex);
-		CommandQueueManager::DependencySemaphoreMap emptyStagedSemaphores;
-		const std::vector<CommandQueueManager::PreparedDependency> replaceDependencies
+		SubmissionManager::DependencySemaphoreMap emptyStagedSemaphores;
+		const std::vector<SubmissionManager::PreparedDependency> replaceDependencies
 		{
 			{ &dependency, firstSemaphore, secondSemaphore, true, true }
 		};
@@ -628,7 +628,7 @@ struct CommandQueueManagerTestProbe
 			nullptr,
 			VK_NULL_HANDLE);
 
-		const CommandQueueManager::DependencySignal replacedSignal =
+		const SubmissionManager::DependencySignal replacedSignal =
 			manager._PeekDependencySignal(dependency);
 		const bool replaced = replacedSignal.semaphore == secondSemaphore &&
 			replacedSignal.frontier.Covers(secondFrontier) &&
@@ -638,7 +638,7 @@ struct CommandQueueManagerTestProbe
 
 		SubmissionFrontier finalFrontier = secondFrontier;
 		finalFrontier.Advance(queueStateIndex);
-		const std::vector<CommandQueueManager::PreparedDependency> consumeDependencies
+		const std::vector<SubmissionManager::PreparedDependency> consumeDependencies
 		{
 			{ &dependency, secondSemaphore, VK_NULL_HANDLE, true, false }
 		};
@@ -656,11 +656,11 @@ struct CommandQueueManagerTestProbe
 
 	static auto HostFenceCommitMovesCallbacks()->bool
 	{
-		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
+		SubmissionManager manager(SubmissionManager::UninitializedTag{});
 		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
 		const VkFence vkFence = reinterpret_cast<VkFence>(static_cast<uintptr_t>(41));
 		const size_t queueStateIndex = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
-		CommandQueueManager::QueueState& state = manager.m_queueStates[queueStateIndex];
+		SubmissionManager::QueueState& state = manager.m_queueStates[queueStateIndex];
 		state.pendingHostFences.reserve(1);
 		HostFence hostFence;
 		bool callbackRan = false;
@@ -668,8 +668,8 @@ struct CommandQueueManagerTestProbe
 
 		SubmissionFrontier submissionFrontier;
 		submissionFrontier.Advance(queueStateIndex);
-		const std::vector<CommandQueueManager::PreparedDependency> dependencies;
-		CommandQueueManager::DependencySemaphoreMap stagedSemaphores;
+		const std::vector<SubmissionManager::PreparedDependency> dependencies;
+		SubmissionManager::DependencySemaphoreMap stagedSemaphores;
 		manager._CommitPreparedSubmission(
 			queueStateIndex,
 			state,

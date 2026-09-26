@@ -66,11 +66,11 @@ public:
 //   middle submit : wait S0, signal S1
 //   final submit  : wait S1
 //
-// CommandQueueManager owns the underlying synchronization resources. This
+// SubmissionManager owns the underlying synchronization resources. This
 // object only carries a pending dependency and its producer submission frontier.
 class QueueDependency final
 {
-	friend class CommandQueueManager;
+	friend class SubmissionManager;
 	friend class RenderGraphInstance;
 
 private:
@@ -100,7 +100,7 @@ private:
 // are one-shot and belong to a submission, not permanently to the fence.
 class HostFence final
 {
-	friend class CommandQueueManager;
+	friend class SubmissionManager;
 
 public:
 	using Callback = std::function<void()>;
@@ -132,14 +132,14 @@ private:
 };
 
 // Not thread-safe. Its owner must serialize submission and completion calls.
-class CommandQueueManager final
+class SubmissionManager final
 {
 	friend struct CommandQueueManagerTestProbe;
 
 public:
 	class SubmitInfo final
 	{
-		friend class CommandQueueManager;
+		friend class SubmissionManager;
 
 	private:
 		struct DependencyEntry final
@@ -220,7 +220,7 @@ private:
 	bool m_created = false;
 
 private:
-	explicit CommandQueueManager(UninitializedTag);
+	explicit SubmissionManager(UninitializedTag);
 	static auto _GetRoleIndex(QueueFamilyType inQueueFamilyType)->size_t;
 	auto _RegisterQueue(
 		QueueFamilyType inQueueFamilyType,
@@ -245,10 +245,10 @@ private:
 	void _CollectRetiredSemaphores(const SubmissionFrontier& inCompletedFrontier);
 
 public:
-	CommandQueueManager();
-	CommandQueueManager(const CommandQueueManager&) = delete;
-	CommandQueueManager& operator=(const CommandQueueManager&) = delete;
-	~CommandQueueManager();
+	SubmissionManager();
+	SubmissionManager(const SubmissionManager&) = delete;
+	SubmissionManager& operator=(const SubmissionManager&) = delete;
+	~SubmissionManager();
 
 	void Submit(
 		QueueFamilyType inQueueFamilyType,
