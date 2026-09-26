@@ -3,6 +3,67 @@
 #include "device.h"
 
 #include <algorithm>
+#include <cassert>
+#include <utility>
+
+QueueDependency::~QueueDependency() noexcept(false)
+{
+	CHECK_TRUE(!m_hasPendingSignal,
+		"Queue dependency must be consumed before destruction!");
+}
+
+auto QueueDependency::_GetPendingFrontier() const->const SubmissionFrontier&
+{
+	CHECK_TRUE(m_hasPendingSignal, "Queue dependency has no pending signal!");
+	return m_frontier;
+}
+
+void QueueDependency::_CommitWait() noexcept
+{
+	m_hasPendingSignal = false;
+	m_frontier = {};
+}
+
+void QueueDependency::_CommitSignal(const SubmissionFrontier& inFrontier) noexcept
+{
+	m_hasPendingSignal = true;
+	m_frontier = inFrontier;
+}
+
+auto HostFence::AddCallback(Callback inCallback)->HostFence&
+{
+	CHECK_TRUE(static_cast<bool>(inCallback), "Completion callback is empty!");
+	CHECK_TRUE(
+		!m_isInFlight,
+		"Cannot add a callback while the previous submission is unconsumed!");
+	m_callbacks.push_back(std::move(inCallback));
+	return *this;
+}
+
+void HostFence::_PrepareForSubmit()
+{
+	CHECK_TRUE(
+		!m_isInFlight,
+		"Host fence is still bound to an unconsumed submission!");
+}
+
+auto HostFence::_CommitSubmit(
+	size_t inQueueStateIndex,
+	const SubmissionFrontier& inSubmissionFrontier) noexcept->std::vector<Callback>
+{
+	m_queueStateIndex = inQueueStateIndex;
+	m_submissionFrontier = inSubmissionFrontier;
+	m_isInFlight = true;
+	return std::exchange(m_callbacks, {});
+}
+
+void HostFence::_Complete()
+{
+	CHECK_TRUE(m_isInFlight, "Host fence has no in-flight submission!");
+	m_isInFlight = false;
+	m_queueStateIndex = SubmissionFrontier::MAX_QUEUE_COUNT;
+	m_submissionFrontier = {};
+}
 
 auto CommandQueueManager::SubmitInfo::SetCommandBuffers(
 	std::vector<VkCommandBuffer> inCommandBuffers)->SubmitInfo&
@@ -74,19 +135,13 @@ CommandQueueManager::CommandQueueManager()
 	auto& device = MyDevice::GetInstance();
 	_RegisterQueue(
 		QueueFamilyType::GRAPHICS,
-		device.GetQueueOfType(QueueFamilyType::GRAPHICS),
-		device.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS),
-		0);
+		device.GetQueueOfType(QueueFamilyType::GRAPHICS));
 	_RegisterQueue(
 		QueueFamilyType::COMPUTE,
-		device.GetQueueOfType(QueueFamilyType::COMPUTE),
-		device.GetQueueFamilyIndexOfType(QueueFamilyType::COMPUTE),
-		0);
+		device.GetQueueOfType(QueueFamilyType::COMPUTE));
 	_RegisterQueue(
 		QueueFamilyType::TRANSFER,
-		device.GetQueueOfType(QueueFamilyType::TRANSFER),
-		device.GetQueueFamilyIndexOfType(QueueFamilyType::TRANSFER),
-		0);
+		device.GetQueueOfType(QueueFamilyType::TRANSFER));
 	m_created = true;
 }
 
@@ -96,18 +151,15 @@ CommandQueueManager::CommandQueueManager(UninitializedTag)
 
 auto CommandQueueManager::_RegisterQueue(
 	QueueFamilyType inQueueFamilyType,
-	VkQueue inVkQueue,
-	uint32_t inFamilyIndex,
-	uint32_t inQueueIndex)->size_t
+	VkQueue inVkQueue)->size_t
 {
 	CHECK_TRUE(inVkQueue != VK_NULL_HANDLE, "Invalid Vulkan queue!");
 	const size_t roleIndex = _GetRoleIndex(inQueueFamilyType);
 	for (size_t queueIndex = 0; queueIndex < m_queueStateCount; ++queueIndex)
 	{
 		QueueState& state = m_queueStates[queueIndex];
-		if (state.familyIndex == inFamilyIndex && state.queueIndex == inQueueIndex)
+		if (state.vkQueue == inVkQueue)
 		{
-			CHECK_TRUE(state.vkQueue == inVkQueue, "Queue identity maps to different Vulkan handles!");
 			m_roleToQueueState[roleIndex] = queueIndex;
 			return queueIndex;
 		}
@@ -117,122 +169,136 @@ auto CommandQueueManager::_RegisterQueue(
 	const size_t queueStateIndex = m_queueStateCount++;
 	QueueState& state = m_queueStates[queueStateIndex];
 	state.vkQueue = inVkQueue;
-	state.familyIndex = inFamilyIndex;
-	state.queueIndex = inQueueIndex;
 	m_roleToQueueState[roleIndex] = queueStateIndex;
 	return queueStateIndex;
 }
 
-auto CommandQueueManager::_GetQueueStateIndex(QueueFamilyType inQueueFamilyType) const->size_t
+auto CommandQueueManager::_GetQueueState(
+	QueueFamilyType inQueueFamilyType)->std::pair<size_t, QueueState&>
 {
 	const size_t roleIndex = _GetRoleIndex(inQueueFamilyType);
-	CHECK_TRUE(m_roleToQueueState[roleIndex] < m_queueStateCount, "Command queue role is not registered!");
-	return m_roleToQueueState[roleIndex];
-}
-
-auto CommandQueueManager::_GetQueueState(size_t inQueueStateIndex)->QueueState&
-{
-	CHECK_TRUE(inQueueStateIndex < m_queueStateCount, "Command queue state index is out of range!");
-	return m_queueStates[inQueueStateIndex];
-}
-
-auto CommandQueueManager::_GetQueueState(size_t inQueueStateIndex) const->const QueueState&
-{
-	CHECK_TRUE(inQueueStateIndex < m_queueStateCount, "Command queue state index is out of range!");
-	return m_queueStates[inQueueStateIndex];
+	const size_t queueStateIndex = m_roleToQueueState[roleIndex];
+	CHECK_TRUE(queueStateIndex < m_queueStateCount, "Command queue role is not registered!");
+	return { queueStateIndex, m_queueStates[queueStateIndex] };
 }
 
 void CommandQueueManager::Submit(
 	QueueFamilyType inQueueFamilyType,
 	SubmitInfo inSubmitInfo)
 {
-	CHECK_TRUE(m_created, "Command queue manager is not created!");
-	const size_t inQueueStateIndex = _GetQueueStateIndex(inQueueFamilyType);
-	QueueState& state = _GetQueueState(inQueueStateIndex);
+	auto [queueStateIndex, state] = _GetQueueState(inQueueFamilyType);
 	if (inSubmitInfo.m_completionFence != nullptr)
 	{
 		inSubmitInfo.m_completionFence->_PrepareForSubmit();
 	}
 
+	std::vector<PreparedDependency> preparedDependencies;
+	SubmissionFrontier submissionFrontier = state.tailFrontier;
+	size_t waitCount = 0;
+	size_t signalCount = 0;
+	size_t signalOnlyCount = 0;
+	preparedDependencies.reserve(inSubmitInfo.m_dependencyEntries.size());
+	for (const SubmitInfo::DependencyEntry& entry : inSubmitInfo.m_dependencyEntries)
+	{
+		CHECK_TRUE(entry.dependency != nullptr, "Queue dependency entry is null!");
+		CHECK_TRUE(entry.useWait || entry.useSignal,
+			"Queue dependency submit has no wait or signal operation!");
+
+		PreparedDependency prepared;
+		prepared.dependency = entry.dependency;
+		prepared.useWait = entry.useWait;
+		prepared.useSignal = entry.useSignal;
+		if (entry.useWait)
+		{
+			const DependencySignal waitSignal = _PeekDependencySignal(*entry.dependency);
+			prepared.waitSemaphore = waitSignal.semaphore;
+			submissionFrontier.Merge(waitSignal.frontier);
+			++waitCount;
+		}
+		else
+		{
+			CHECK_TRUE(!entry.dependency->_HasPendingSignal(),
+				"A pending queue dependency must be waited before it can be signaled again!");
+			CHECK_TRUE(
+				m_dependencySemaphores.find(entry.dependency) == m_dependencySemaphores.end(),
+				"Queue dependency semaphore mapping is inconsistent!");
+		}
+		if (entry.useSignal)
+		{
+			++signalCount;
+			if (!entry.useWait)
+			{
+				++signalOnlyCount;
+			}
+		}
+		preparedDependencies.push_back(prepared);
+	}
+
+	std::vector<VkCommandBufferSubmitInfo> commandInfos;
+	commandInfos.reserve(inSubmitInfo.m_commandBuffers.size());
+	for (VkCommandBuffer commandBuffer : inSubmitInfo.m_commandBuffers)
+	{
+		CHECK_TRUE(commandBuffer != VK_NULL_HANDLE, "Invalid command buffer!");
+		VkCommandBufferSubmitInfo commandInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+		commandInfo.commandBuffer = commandBuffer;
+		commandInfos.push_back(commandInfo);
+	}
+
+	submissionFrontier.Advance(queueStateIndex);
+	const uint64_t consumerVersion = submissionFrontier.GetVersion(queueStateIndex);
+	state.retiredSemaphores.reserve(state.retiredSemaphores.size() + waitCount);
+	if (inSubmitInfo.m_completionFence != nullptr)
+	{
+		state.pendingHostFences.reserve(state.pendingHostFences.size() + 1);
+	}
+	m_dependencySemaphores.reserve(m_dependencySemaphores.size() + signalOnlyCount);
+
 	std::vector<VkSemaphoreSubmitInfo> waitInfos;
 	std::vector<VkSemaphoreSubmitInfo> signalInfos;
-	std::vector<DependencySignal> dependencyWaitSignals(
-		inSubmitInfo.m_dependencyEntries.size());
-	std::vector<VkSemaphore> dependencySignalSemaphores(
-		inSubmitInfo.m_dependencyEntries.size(), VK_NULL_HANDLE);
-	std::vector<bool> dependencySignalsStored(
-		inSubmitInfo.m_dependencyEntries.size(), false);
-	SubmissionFrontier submissionFrontier = state.tailFrontier;
+	waitInfos.reserve(waitCount);
+	signalInfos.reserve(signalCount);
+	DependencySemaphoreMap stagedDependencySemaphores;
+	stagedDependencySemaphores.reserve(signalOnlyCount);
 	VkFence completionVkFence = VK_NULL_HANDLE;
-	std::vector<HostFence::Callback> completionCallbacks;
-	bool completionCallbacksTaken = false;
-	bool completionRecordStored = false;
-	bool completionFenceCommitted = false;
-
-	waitInfos.reserve(inSubmitInfo.m_dependencyEntries.size());
-	signalInfos.reserve(inSubmitInfo.m_dependencyEntries.size());
-	m_abandonedSemaphores.reserve(
-		m_abandonedSemaphores.size() + inSubmitInfo.m_dependencyEntries.size());
 
 	try
 	{
-		for (size_t dependencyIndex = 0; dependencyIndex < inSubmitInfo.m_dependencyEntries.size(); ++dependencyIndex)
+		for (size_t dependencyIndex = 0; dependencyIndex < preparedDependencies.size(); ++dependencyIndex)
 		{
+			PreparedDependency& prepared = preparedDependencies[dependencyIndex];
 			const SubmitInfo::DependencyEntry& entry = inSubmitInfo.m_dependencyEntries[dependencyIndex];
-			CHECK_TRUE(entry.dependency != nullptr, "Queue dependency entry is null!");
-			CHECK_TRUE(entry.useWait || entry.useSignal,
-				"Queue dependency submit has no wait or signal operation!");
-
-			if (entry.useWait)
+			if (prepared.useSignal)
 			{
-				dependencyWaitSignals[dependencyIndex] = _TakeDependencySignal(*entry.dependency);
-				submissionFrontier.Merge(dependencyWaitSignals[dependencyIndex].frontier);
-			}
-			else
-			{
-				CHECK_TRUE(!entry.dependency->_HasPendingSignal(),
-					"A pending queue dependency must be waited before it can be signaled again!");
+				prepared.signalSemaphore = m_semaphoreAllocator.Allocate();
+				if (!prepared.useWait)
+				{
+					const auto [iter, inserted] = stagedDependencySemaphores.emplace(
+						prepared.dependency,
+						prepared.signalSemaphore);
+					(void)iter;
+					CHECK_TRUE(inserted, "Failed to stage queue dependency semaphore!");
+				}
 			}
 
-			if (entry.useSignal)
-			{
-				dependencySignalSemaphores[dependencyIndex] = m_semaphoreAllocator.Allocate();
-			}
-
-			const VkSemaphore waitSemaphore = dependencyWaitSignals[dependencyIndex].semaphore;
-			const VkSemaphore signalSemaphore = dependencySignalSemaphores[dependencyIndex];
-			if (waitSemaphore != VK_NULL_HANDLE)
+			if (prepared.useWait)
 			{
 				VkSemaphoreSubmitInfo waitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
-				waitInfo.semaphore = waitSemaphore;
+				waitInfo.semaphore = prepared.waitSemaphore;
 				waitInfo.stageMask = entry.waitStage;
 				waitInfos.push_back(waitInfo);
 			}
-			if (signalSemaphore != VK_NULL_HANDLE)
+			if (prepared.useSignal)
 			{
 				VkSemaphoreSubmitInfo signalInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
-				signalInfo.semaphore = signalSemaphore;
+				signalInfo.semaphore = prepared.signalSemaphore;
 				signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 				signalInfos.push_back(signalInfo);
 			}
 		}
 
-		submissionFrontier.Advance(inQueueStateIndex);
-		state.retiredSemaphores.reserve(
-			state.retiredSemaphores.size() + inSubmitInfo.m_dependencyEntries.size());
 		if (inSubmitInfo.m_completionFence != nullptr)
 		{
-			state.pendingHostFences.reserve(state.pendingHostFences.size() + 1);
-		}
-
-		std::vector<VkCommandBufferSubmitInfo> commandInfos;
-		commandInfos.reserve(inSubmitInfo.m_commandBuffers.size());
-		for (VkCommandBuffer commandBuffer : inSubmitInfo.m_commandBuffers)
-		{
-			CHECK_TRUE(commandBuffer != VK_NULL_HANDLE, "Invalid command buffer!");
-			VkCommandBufferSubmitInfo commandInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
-			commandInfo.commandBuffer = commandBuffer;
-			commandInfos.push_back(commandInfo);
+			completionVkFence = m_fenceAllocator.CreateOrGetVkFence();
 		}
 
 		VkSubmitInfo2 submitInfo{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
@@ -243,151 +309,109 @@ void CommandQueueManager::Submit(
 		submitInfo.signalSemaphoreInfoCount = static_cast<uint32_t>(signalInfos.size());
 		submitInfo.pSignalSemaphoreInfos = signalInfos.empty() ? nullptr : signalInfos.data();
 
-		for (size_t dependencyIndex = 0; dependencyIndex < inSubmitInfo.m_dependencyEntries.size(); ++dependencyIndex)
-		{
-			if (dependencySignalSemaphores[dependencyIndex] == VK_NULL_HANDLE)
-			{
-				continue;
-			}
-
-			QueueDependency* dependency = inSubmitInfo.m_dependencyEntries[dependencyIndex].dependency;
-			CHECK_TRUE(dependency != nullptr, "Queue dependency entry is null!");
-			_StoreDependencySignal(
-				*dependency,
-				dependencySignalSemaphores[dependencyIndex],
-				submissionFrontier);
-			dependencySignalsStored[dependencyIndex] = true;
-		}
-
-		if (inSubmitInfo.m_completionFence != nullptr)
-		{
-			completionVkFence = m_fenceAllocator.CreateOrGetVkFence();
-			completionCallbacks = inSubmitInfo.m_completionFence->_TakeCallbacks();
-			completionCallbacksTaken = true;
-			state.pendingHostFences.push_back({
-				completionVkFence,
-				submissionFrontier,
-				std::move(completionCallbacks) });
-			completionRecordStored = true;
-			inSubmitInfo.m_completionFence->_CommitSubmit(
-				inQueueStateIndex,
-				submissionFrontier);
-			completionFenceCommitted = true;
-		}
-
 		VK_CHECK(vkQueueSubmit2(state.vkQueue, 1, &submitInfo, completionVkFence),
 			"Failed to submit command queue!");
 	}
 	catch (...)
 	{
-		if (completionRecordStored)
-		{
-			CHECK_TRUE(
-				!state.pendingHostFences.empty(),
-				"Submitted host fence record is missing!");
-			completionCallbacks = std::move(state.pendingHostFences.back().callbacks);
-			state.pendingHostFences.pop_back();
-		}
-		if (inSubmitInfo.m_completionFence != nullptr)
-		{
-			if (completionFenceCommitted)
-			{
-				inSubmitInfo.m_completionFence->_AbortSubmit(std::move(completionCallbacks));
-			}
-			else if (completionCallbacksTaken)
-			{
-				inSubmitInfo.m_completionFence->_RestoreCallbacks(std::move(completionCallbacks));
-			}
-		}
 		if (completionVkFence != VK_NULL_HANDLE)
 		{
 			m_fenceAllocator.FreeVkFence(&completionVkFence, 1);
 		}
-
-		for (size_t dependencyIndex = 0; dependencyIndex < inSubmitInfo.m_dependencyEntries.size(); ++dependencyIndex)
+		for (const PreparedDependency& prepared : preparedDependencies)
 		{
-			if (!dependencySignalsStored[dependencyIndex])
+			if (prepared.signalSemaphore != VK_NULL_HANDLE)
 			{
-				continue;
-			}
-
-			QueueDependency* dependency = inSubmitInfo.m_dependencyEntries[dependencyIndex].dependency;
-			CHECK_TRUE(dependency != nullptr, "Queue dependency entry is null!");
-			const DependencySignal storedSignal = _TakeDependencySignal(*dependency);
-			CHECK_TRUE(
-				storedSignal.semaphore == dependencySignalSemaphores[dependencyIndex],
-				"Stored queue dependency semaphore does not match the allocated semaphore!");
-			dependencySignalsStored[dependencyIndex] = false;
-		}
-
-		for (const DependencySignal& pendingSignal : dependencyWaitSignals)
-		{
-			if (pendingSignal.semaphore != VK_NULL_HANDLE)
-			{
-				m_abandonedSemaphores.push_back({
-					pendingSignal.semaphore,
-					pendingSignal.frontier });
-			}
-		}
-		for (VkSemaphore semaphore : dependencySignalSemaphores)
-		{
-			if (semaphore != VK_NULL_HANDLE)
-			{
-				m_semaphoreAllocator.Free(semaphore);
+				m_semaphoreAllocator.Free(prepared.signalSemaphore);
 			}
 		}
 		throw;
 	}
 
-	// vkQueueSubmit2 succeeded. From this point the frontier and synchronization
-	// ownership must be committed and cannot be rolled back as an unsubmitted batch.
-	state.tailFrontier = submissionFrontier;
-	for (size_t dependencyIndex = 0; dependencyIndex < inSubmitInfo.m_dependencyEntries.size(); ++dependencyIndex)
-	{
-		if (dependencyWaitSignals[dependencyIndex].semaphore != VK_NULL_HANDLE)
-		{
-			state.retiredSemaphores.push_back({
-				dependencyWaitSignals[dependencyIndex].semaphore,
-				submissionFrontier.GetVersion(inQueueStateIndex) });
-		}
-	}
+	_CommitPreparedSubmission(
+		queueStateIndex,
+		state,
+		submissionFrontier,
+		consumerVersion,
+		preparedDependencies,
+		stagedDependencySemaphores,
+		inSubmitInfo.m_completionFence,
+		completionVkFence);
 }
 
-auto CommandQueueManager::_TakeDependencySignal(
+auto CommandQueueManager::_PeekDependencySignal(
 	QueueDependency& inDependency)->DependencySignal
 {
 	const auto iter = m_dependencySemaphores.find(&inDependency);
 	CHECK_TRUE(
 		iter != m_dependencySemaphores.end(),
 		"Queue dependency has no pending semaphore in this manager!");
-	const QueueDependency::PendingSignal pendingSignal = inDependency._Take();
 	DependencySignal result;
 	result.semaphore = iter->second;
-	result.frontier = pendingSignal.frontier;
-	m_dependencySemaphores.erase(iter);
+	result.frontier = inDependency._GetPendingFrontier();
 	return result;
 }
 
-void CommandQueueManager::_StoreDependencySignal(
-	QueueDependency& inDependency,
-	VkSemaphore inSemaphore,
-	const SubmissionFrontier& inFrontier)
+void CommandQueueManager::_CommitPreparedSubmission(
+	size_t inQueueStateIndex,
+	QueueState& inoutState,
+	const SubmissionFrontier& inSubmissionFrontier,
+	uint64_t inConsumerVersion,
+	const std::vector<PreparedDependency>& inDependencies,
+	DependencySemaphoreMap& inoutStagedDependencySemaphores,
+	HostFence* inCompletionFence,
+	VkFence inCompletionVkFence) noexcept
 {
-	CHECK_TRUE(inSemaphore != VK_NULL_HANDLE, "Cannot store a null queue dependency semaphore!");
-	CHECK_TRUE(
-		m_dependencySemaphores.find(&inDependency) == m_dependencySemaphores.end(),
-		"Queue dependency already has a semaphore in this manager!");
-	const auto [iter, inserted] = m_dependencySemaphores.emplace(&inDependency, inSemaphore);
-	(void)iter;
-	CHECK_TRUE(inserted, "Failed to store queue dependency semaphore!");
-	try
+	inoutState.tailFrontier = inSubmissionFrontier;
+	for (const PreparedDependency& prepared : inDependencies)
 	{
-		inDependency._Store(inFrontier);
+		assert(prepared.dependency != nullptr);
+		assert(prepared.useWait || prepared.useSignal);
+		if (prepared.useWait)
+		{
+			auto mappingIter = m_dependencySemaphores.find(prepared.dependency);
+			assert(mappingIter != m_dependencySemaphores.end());
+			assert(mappingIter->second == prepared.waitSemaphore);
+			if (prepared.useSignal)
+			{
+				mappingIter->second = prepared.signalSemaphore;
+			}
+			else
+			{
+				m_dependencySemaphores.erase(mappingIter);
+			}
+
+			prepared.dependency->_CommitWait();
+			inoutState.retiredSemaphores.push_back({
+				prepared.waitSemaphore,
+				inConsumerVersion });
+		}
+		else
+		{
+			assert(prepared.useSignal);
+			auto node = inoutStagedDependencySemaphores.extract(prepared.dependency);
+			assert(!node.empty());
+			const auto insertResult = m_dependencySemaphores.insert(std::move(node));
+			assert(insertResult.inserted);
+		}
+
+		if (prepared.useSignal)
+		{
+			prepared.dependency->_CommitSignal(inSubmissionFrontier);
+		}
 	}
-	catch (...)
+
+	if (inCompletionFence != nullptr)
 	{
-		m_dependencySemaphores.erase(&inDependency);
-		throw;
+		assert(inCompletionVkFence != VK_NULL_HANDLE);
+		inoutState.pendingHostFences.push_back({
+			inCompletionVkFence,
+			inSubmissionFrontier,
+			{} });
+		HostFenceRecord& record = inoutState.pendingHostFences.back();
+		record.callbacks = inCompletionFence->_CommitSubmit(
+			inQueueStateIndex,
+			inSubmissionFrontier);
 	}
 }
 
@@ -401,7 +425,7 @@ auto CommandQueueManager::_AdvanceCompletion(
 	size_t completedCallbackCount = 0;
 	for (size_t queueIndex = 0; queueIndex < m_queueStateCount; ++queueIndex)
 	{
-		QueueState& state = _GetQueueState(queueIndex);
+		QueueState& state = m_queueStates[queueIndex];
 		for (const HostFenceRecord& record : state.pendingHostFences)
 		{
 			if (!completedFrontier.Covers(record.submissionFrontier))
@@ -419,7 +443,7 @@ auto CommandQueueManager::_AdvanceCompletion(
 	completedCallbacks.reserve(completedCallbackCount);
 	for (size_t queueIndex = 0; queueIndex < m_queueStateCount; ++queueIndex)
 	{
-		QueueState& state = _GetQueueState(queueIndex);
+		QueueState& state = m_queueStates[queueIndex];
 		size_t completedRecordCount = 0;
 		while (
 			completedRecordCount < state.pendingHostFences.size() &&
@@ -455,7 +479,7 @@ auto CommandQueueManager::_FindHostFenceVkFence(const HostFence& inFence)->VkFen
 	CHECK_TRUE(
 		inFence.m_queueStateIndex < m_queueStateCount,
 		"Host fence queue state is not available in this manager!");
-	QueueState& state = _GetQueueState(inFence.m_queueStateIndex);
+	QueueState& state = m_queueStates[inFence.m_queueStateIndex];
 	const uint64_t targetVersion =
 		inFence.m_submissionFrontier.GetVersion(inFence.m_queueStateIndex);
 	for (const HostFenceRecord& record : state.pendingHostFences)
@@ -522,29 +546,20 @@ auto CommandQueueManager::Poll(HostFence& inFence)->bool
 	return _ConsumeHostFence(inFence, 0);
 }
 
-auto CommandQueueManager::_GetRetiredSemaphoreReclaimCount(
-	const QueueState& inState,
-	size_t inQueueStateIndex,
-	const SubmissionFrontier& inCompletedFrontier)->size_t
-{
-	size_t reclaimCount = 0;
-	while (
-		reclaimCount < inState.retiredSemaphores.size() &&
-		inCompletedFrontier.Covers(
-			inQueueStateIndex,
-			inState.retiredSemaphores[reclaimCount].consumerVersion))
-	{
-		++reclaimCount;
-	}
-	return reclaimCount;
-}
-
 void CommandQueueManager::_CollectRetiredSemaphores(const SubmissionFrontier& inCompletedFrontier)
 {
 	for (size_t queueIndex = 0; queueIndex < m_queueStateCount; ++queueIndex)
 	{
-		QueueState& state = _GetQueueState(queueIndex);
-		const size_t reclaimCount = _GetRetiredSemaphoreReclaimCount(state, queueIndex, inCompletedFrontier);
+		QueueState& state = m_queueStates[queueIndex];
+		size_t reclaimCount = 0;
+		while (
+			reclaimCount < state.retiredSemaphores.size() &&
+			inCompletedFrontier.Covers(
+				queueIndex,
+				state.retiredSemaphores[reclaimCount].consumerVersion))
+		{
+			++reclaimCount;
+		}
 		for (size_t retiredIndex = 0; retiredIndex < reclaimCount; ++retiredIndex)
 		{
 			m_semaphoreAllocator.Free(state.retiredSemaphores[retiredIndex].semaphore);
@@ -554,21 +569,9 @@ void CommandQueueManager::_CollectRetiredSemaphores(const SubmissionFrontier& in
 			state.retiredSemaphores.begin() + static_cast<std::ptrdiff_t>(reclaimCount));
 	}
 
-	const auto abandonedPartition = std::stable_partition(
-		m_abandonedSemaphores.begin(),
-		m_abandonedSemaphores.end(),
-		[&inCompletedFrontier](const AbandonedSemaphore& abandoned)
-		{
-			return !inCompletedFrontier.Covers(abandoned.producerFrontier);
-		});
-	for (auto iter = abandonedPartition; iter != m_abandonedSemaphores.end(); ++iter)
-	{
-		m_semaphoreAllocator.Discard(iter->semaphore);
-	}
-	m_abandonedSemaphores.erase(abandonedPartition, m_abandonedSemaphores.end());
 }
 
-void CommandQueueManager::_Destroy()
+CommandQueueManager::~CommandQueueManager()
 {
 	if (!m_created)
 	{
@@ -579,7 +582,7 @@ void CommandQueueManager::_Destroy()
 	SubmissionFrontier idleFrontier;
 	for (size_t queueIndex = 0; queueIndex < m_queueStateCount; ++queueIndex)
 	{
-		idleFrontier.Merge(_GetQueueState(queueIndex).tailFrontier);
+		idleFrontier.Merge(m_queueStates[queueIndex].tailFrontier);
 	}
 	std::vector<HostFence::Callback> completedCallbacks;
 	completedCallbacks = _AdvanceCompletion(idleFrontier);
@@ -587,10 +590,4 @@ void CommandQueueManager::_Destroy()
 	m_dependencySemaphores.clear();
 	m_semaphoreAllocator.Destroy();
 	m_fenceAllocator.Destroy();
-	m_created = false;
-}
-
-CommandQueueManager::~CommandQueueManager()
-{
-	_Destroy();
 }

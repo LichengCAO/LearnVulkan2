@@ -1,8 +1,7 @@
 #pragma once
 
+#include "command/command_queue.h"
 #include "common_enums.h"
-#include "completion_fence.h"
-#include "submission_frontier.h"
 #include "command_pool.h"
 #include "utility/task_scheduler.h"
 

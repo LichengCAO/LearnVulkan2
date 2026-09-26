@@ -4,10 +4,10 @@
 #if MY_VULKAN_ENABLE_RENDER_GRAPH
 
 #include "render_graph.h"
-#include "my_vulkan/command/queue_dependency.h"
 
 class GraphicsPipelineStateInfo;
 class HostFence;
+class QueueDependency;
 
 class RenderGraphInstance
 {

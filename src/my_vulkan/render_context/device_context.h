@@ -1,10 +1,8 @@
 #include "common.h"
 #include "common_enums.h"
 #include "command/command_buffer.h"
-#include "command/queue_dependency.h"
+#include "command/command_queue.h"
 #include "render_context/frame_context.h"
-
-class CommandQueueManager;
 
 struct QueueSubmitInfo
 {
@@ -48,9 +46,7 @@ public:
 
 	// Records, submits, and waits until the specified queue completes the commands.
 	// This operation is independent of the active frame lifecycle.
-	void ExecuteCommandsAndWait(
-		QueueFamilyType inQueue,
-		std::vector<CommandBuffer> inBuffers);
+	void ExecuteCommandsAndWait(QueueFamilyType inQueue, std::vector<CommandBuffer> inBuffers);
 
 	// Consumes the fence's current logical submission. A fence whose Vulkan
 	// resource was already reclaimed by a later wait completes immediately.

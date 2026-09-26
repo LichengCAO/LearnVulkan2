@@ -408,6 +408,27 @@ struct RenderGraphTestProbe
 };
 #endif // MY_VULKAN_ENABLE_RENDER_GRAPH
 
+namespace
+{
+	VKAPI_ATTR auto VKAPI_CALL _FailQueueSubmit2(
+		VkQueue,
+		uint32_t,
+		const VkSubmitInfo2*,
+		VkFence)->VkResult
+	{
+		return VK_ERROR_DEVICE_LOST;
+	}
+
+	VKAPI_ATTR auto VKAPI_CALL _SucceedQueueSubmit2(
+		VkQueue,
+		uint32_t,
+		const VkSubmitInfo2*,
+		VkFence)->VkResult
+	{
+		return VK_SUCCESS;
+	}
+}
+
 struct CommandQueueManagerTestProbe
 {
 	static auto DeduplicatesAliasedQueueRoles()->bool
@@ -415,9 +436,9 @@ struct CommandQueueManagerTestProbe
 		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
 		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
 		const VkQueue transferHandle = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(2));
-		const size_t graphicsQueue = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue, 4, 0);
-		const size_t computeQueue = manager._RegisterQueue(QueueFamilyType::COMPUTE, queue, 4, 0);
-		const size_t transferQueue = manager._RegisterQueue(QueueFamilyType::TRANSFER, transferHandle, 7, 0);
+		const size_t graphicsQueue = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
+		const size_t computeQueue = manager._RegisterQueue(QueueFamilyType::COMPUTE, queue);
+		const size_t transferQueue = manager._RegisterQueue(QueueFamilyType::TRANSFER, transferHandle);
 		return graphicsQueue == computeQueue &&
 			transferQueue != graphicsQueue &&
 			manager.m_queueStateCount == 2;
@@ -427,33 +448,253 @@ struct CommandQueueManagerTestProbe
 	{
 		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
 		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
-		manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue, 4, 0);
-		manager._RegisterQueue(QueueFamilyType::COMPUTE, queue, 4, 0);
-		const size_t queueStateIndex = manager._GetQueueStateIndex(QueueFamilyType::GRAPHICS);
-		CommandQueueManager::QueueState& state = manager._GetQueueState(queueStateIndex);
+		manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
+		manager._RegisterQueue(QueueFamilyType::COMPUTE, queue);
+		auto [queueStateIndex, state] = manager._GetQueueState(QueueFamilyType::GRAPHICS);
 		state.tailFrontier.Advance(queueStateIndex);
 		state.tailFrontier.Advance(queueStateIndex);
+		const auto [computeQueueStateIndex, computeState] =
+			manager._GetQueueState(QueueFamilyType::COMPUTE);
+		(void)computeState;
 		return state.tailFrontier.GetVersion(queueStateIndex) == 2 &&
-			manager._GetQueueStateIndex(QueueFamilyType::COMPUTE) == queueStateIndex;
+			computeQueueStateIndex == queueStateIndex;
 	}
 
-	static auto RetiredSemaphoreReclamationStopsAtIncompleteVersion()->bool
+	static auto FailedWaitSubmitPreservesDependency()->bool
 	{
 		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
 		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
-		const size_t queueStateIndex = manager._RegisterQueue(
-			QueueFamilyType::GRAPHICS,
-			queue,
-			4,
-			0);
-		CommandQueueManager::QueueState& state = manager._GetQueueState(queueStateIndex);
-		state.retiredSemaphores.push_back({ reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(11)), 1 });
-		state.retiredSemaphores.push_back({ reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(12)), 2 });
-		state.retiredSemaphores.push_back({ reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(13)), 3 });
-		SubmissionFrontier completed;
-		completed.Advance(queueStateIndex);
-		completed.Advance(queueStateIndex);
-		return manager._GetRetiredSemaphoreReclaimCount(state, queueStateIndex, completed) == 2;
+		const VkSemaphore semaphore = reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(11));
+		const size_t queueStateIndex = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
+		CommandQueueManager::QueueState& state = manager.m_queueStates[queueStateIndex];
+		QueueDependency dependency;
+
+		SubmissionFrontier producerFrontier;
+		producerFrontier.Advance(queueStateIndex);
+		manager.m_dependencySemaphores.reserve(1);
+		CommandQueueManager::DependencySemaphoreMap stagedSemaphores;
+		stagedSemaphores.reserve(1);
+		stagedSemaphores.emplace(&dependency, semaphore);
+		const std::vector<CommandQueueManager::PreparedDependency> producerDependencies
+		{
+			{ &dependency, VK_NULL_HANDLE, semaphore, false, true }
+		};
+		manager._CommitPreparedSubmission(
+			queueStateIndex,
+			state,
+			producerFrontier,
+			producerFrontier.GetVersion(queueStateIndex),
+			producerDependencies,
+			stagedSemaphores,
+			nullptr,
+			VK_NULL_HANDLE);
+
+		const SubmissionFrontier originalTail = state.tailFrontier;
+		const CommandQueueManager::DependencySignal originalSignal =
+			manager._PeekDependencySignal(dependency);
+		const PFN_vkQueueSubmit2 previousQueueSubmit2 = vkQueueSubmit2;
+		vkQueueSubmit2 = _FailQueueSubmit2;
+		bool submitFailed = false;
+		try
+		{
+			CommandQueueManager::SubmitInfo submitInfo;
+			submitInfo.AddWaitQueueDependency(dependency);
+			manager.Submit(QueueFamilyType::GRAPHICS, std::move(submitInfo));
+		}
+		catch (...)
+		{
+			submitFailed = true;
+		}
+		vkQueueSubmit2 = previousQueueSubmit2;
+
+		const CommandQueueManager::DependencySignal remainingSignal =
+			manager._PeekDependencySignal(dependency);
+		const bool unchanged = submitFailed &&
+			remainingSignal.semaphore == originalSignal.semaphore &&
+			remainingSignal.frontier.Covers(originalSignal.frontier) &&
+			originalSignal.frontier.Covers(remainingSignal.frontier) &&
+			state.tailFrontier.Covers(originalTail) &&
+			originalTail.Covers(state.tailFrontier) &&
+			state.retiredSemaphores.empty();
+
+		state.retiredSemaphores.reserve(1);
+		SubmissionFrontier cleanupFrontier = producerFrontier;
+		cleanupFrontier.Advance(queueStateIndex);
+		CommandQueueManager::DependencySemaphoreMap emptyStagedSemaphores;
+		const std::vector<CommandQueueManager::PreparedDependency> cleanupDependencies
+		{
+			{ &dependency, semaphore, VK_NULL_HANDLE, true, false }
+		};
+		manager._CommitPreparedSubmission(
+			queueStateIndex,
+			state,
+			cleanupFrontier,
+			cleanupFrontier.GetVersion(queueStateIndex),
+			cleanupDependencies,
+			emptyStagedSemaphores,
+			nullptr,
+			VK_NULL_HANDLE);
+		return unchanged;
+	}
+
+	static auto SuccessfulWaitSubmitCommitsDependency()->bool
+	{
+		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
+		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
+		const VkSemaphore semaphore = reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(21));
+		const size_t queueStateIndex = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
+		CommandQueueManager::QueueState& state = manager.m_queueStates[queueStateIndex];
+		QueueDependency dependency;
+
+		SubmissionFrontier producerFrontier;
+		producerFrontier.Advance(queueStateIndex);
+		manager.m_dependencySemaphores.reserve(1);
+		CommandQueueManager::DependencySemaphoreMap stagedSemaphores;
+		stagedSemaphores.reserve(1);
+		stagedSemaphores.emplace(&dependency, semaphore);
+		const std::vector<CommandQueueManager::PreparedDependency> producerDependencies
+		{
+			{ &dependency, VK_NULL_HANDLE, semaphore, false, true }
+		};
+		manager._CommitPreparedSubmission(
+			queueStateIndex,
+			state,
+			producerFrontier,
+			producerFrontier.GetVersion(queueStateIndex),
+			producerDependencies,
+			stagedSemaphores,
+			nullptr,
+			VK_NULL_HANDLE);
+
+		const PFN_vkQueueSubmit2 previousQueueSubmit2 = vkQueueSubmit2;
+		vkQueueSubmit2 = _SucceedQueueSubmit2;
+		CommandQueueManager::SubmitInfo submitInfo;
+		submitInfo.AddWaitQueueDependency(dependency);
+		manager.Submit(QueueFamilyType::GRAPHICS, std::move(submitInfo));
+		vkQueueSubmit2 = previousQueueSubmit2;
+
+		return manager.m_dependencySemaphores.empty() &&
+			state.tailFrontier.GetVersion(queueStateIndex) == 2 &&
+			state.retiredSemaphores.size() == 1 &&
+			state.retiredSemaphores.front().semaphore == semaphore &&
+			state.retiredSemaphores.front().consumerVersion == 2;
+	}
+
+	static auto WaitAndSignalCommitReplacesMapping()->bool
+	{
+		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
+		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
+		const VkSemaphore firstSemaphore = reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(31));
+		const VkSemaphore secondSemaphore = reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(32));
+		const size_t queueStateIndex = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
+		CommandQueueManager::QueueState& state = manager.m_queueStates[queueStateIndex];
+		QueueDependency dependency;
+
+		manager.m_dependencySemaphores.reserve(1);
+		state.retiredSemaphores.reserve(2);
+		SubmissionFrontier firstFrontier;
+		firstFrontier.Advance(queueStateIndex);
+		CommandQueueManager::DependencySemaphoreMap stagedSemaphores;
+		stagedSemaphores.reserve(1);
+		stagedSemaphores.emplace(&dependency, firstSemaphore);
+		const std::vector<CommandQueueManager::PreparedDependency> firstDependencies
+		{
+			{ &dependency, VK_NULL_HANDLE, firstSemaphore, false, true }
+		};
+		manager._CommitPreparedSubmission(
+			queueStateIndex,
+			state,
+			firstFrontier,
+			firstFrontier.GetVersion(queueStateIndex),
+			firstDependencies,
+			stagedSemaphores,
+			nullptr,
+			VK_NULL_HANDLE);
+
+		SubmissionFrontier secondFrontier = firstFrontier;
+		secondFrontier.Advance(queueStateIndex);
+		CommandQueueManager::DependencySemaphoreMap emptyStagedSemaphores;
+		const std::vector<CommandQueueManager::PreparedDependency> replaceDependencies
+		{
+			{ &dependency, firstSemaphore, secondSemaphore, true, true }
+		};
+		manager._CommitPreparedSubmission(
+			queueStateIndex,
+			state,
+			secondFrontier,
+			secondFrontier.GetVersion(queueStateIndex),
+			replaceDependencies,
+			emptyStagedSemaphores,
+			nullptr,
+			VK_NULL_HANDLE);
+
+		const CommandQueueManager::DependencySignal replacedSignal =
+			manager._PeekDependencySignal(dependency);
+		const bool replaced = replacedSignal.semaphore == secondSemaphore &&
+			replacedSignal.frontier.Covers(secondFrontier) &&
+			secondFrontier.Covers(replacedSignal.frontier) &&
+			state.retiredSemaphores.size() == 1 &&
+			state.retiredSemaphores.front().semaphore == firstSemaphore;
+
+		SubmissionFrontier finalFrontier = secondFrontier;
+		finalFrontier.Advance(queueStateIndex);
+		const std::vector<CommandQueueManager::PreparedDependency> consumeDependencies
+		{
+			{ &dependency, secondSemaphore, VK_NULL_HANDLE, true, false }
+		};
+		manager._CommitPreparedSubmission(
+			queueStateIndex,
+			state,
+			finalFrontier,
+			finalFrontier.GetVersion(queueStateIndex),
+			consumeDependencies,
+			emptyStagedSemaphores,
+			nullptr,
+			VK_NULL_HANDLE);
+		return replaced && manager.m_dependencySemaphores.empty();
+	}
+
+	static auto HostFenceCommitMovesCallbacks()->bool
+	{
+		CommandQueueManager manager(CommandQueueManager::UninitializedTag{});
+		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
+		const VkFence vkFence = reinterpret_cast<VkFence>(static_cast<uintptr_t>(41));
+		const size_t queueStateIndex = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
+		CommandQueueManager::QueueState& state = manager.m_queueStates[queueStateIndex];
+		state.pendingHostFences.reserve(1);
+		HostFence hostFence;
+		bool callbackRan = false;
+		hostFence.AddCallback([&callbackRan]() { callbackRan = true; });
+
+		SubmissionFrontier submissionFrontier;
+		submissionFrontier.Advance(queueStateIndex);
+		const std::vector<CommandQueueManager::PreparedDependency> dependencies;
+		CommandQueueManager::DependencySemaphoreMap stagedSemaphores;
+		manager._CommitPreparedSubmission(
+			queueStateIndex,
+			state,
+			submissionFrontier,
+			submissionFrontier.GetVersion(queueStateIndex),
+			dependencies,
+			stagedSemaphores,
+			&hostFence,
+			vkFence);
+
+		bool callbackRegistrationRejected = false;
+		try
+		{
+			hostFence.AddCallback([]() {});
+		}
+		catch (...)
+		{
+			callbackRegistrationRejected = true;
+		}
+		state.pendingHostFences.front().callbacks.front()();
+		return callbackRegistrationRejected &&
+			callbackRan &&
+			state.pendingHostFences.size() == 1 &&
+			state.pendingHostFences.front().callbacks.size() == 1 &&
+			manager._FindHostFenceVkFence(hostFence) == vkFence;
 	}
 };
 
@@ -491,8 +732,6 @@ namespace
 			"Logical queue roles sharing one Vulkan queue must share one queue state!");
 		CHECK_TRUE(CommandQueueManagerTestProbe::AliasedRolesShareSubmissionVersions(),
 			"Aliased queue roles must share one submission version sequence!");
-		CHECK_TRUE(CommandQueueManagerTestProbe::RetiredSemaphoreReclamationStopsAtIncompleteVersion(),
-			"Retired semaphore reclamation must stop at the first incomplete version!");
 	}
 
 #if MY_VULKAN_ENABLE_RENDER_GRAPH
