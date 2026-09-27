@@ -72,7 +72,7 @@ struct FrameSlot::RecordingTask final
         dispatched = true;
     }
 
-    auto WaitAndTakePayload() -> RecordedPayload
+    auto WaitAndTakePayload() -> RecordingResult
     {
         _Wait();
         if (error != nullptr)
@@ -80,7 +80,7 @@ struct FrameSlot::RecordingTask final
             std::rethrow_exception(error);
         }
 
-        RecordedPayload payload;
+        RecordingResult payload;
         payload.queue = queue;
         payload.vkCommandBuffers.reserve(batches.size());
         for (const RecordBatch& batch : batches)

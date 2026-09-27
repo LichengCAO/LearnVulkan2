@@ -1,3 +1,5 @@
+#pragma once
+
 #include "common.h"
 #include "common_enums.h"
 #include "command_buffer.h"
