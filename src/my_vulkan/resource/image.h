@@ -202,3 +202,29 @@ public:
 
 	VkImage GetVkImage() const;
 };
+
+class SwapchainImage final : public Image
+{
+	friend class MyDevice;
+	friend class DeviceContext;
+
+private:
+	uint32_t m_index;
+	// Borrowed from the acquire call; the swapchain image does not own it.
+	VkSemaphore m_acquireSemaphore = VK_NULL_HANDLE;
+	VkSemaphore m_renderFinishedSemaphore = VK_NULL_HANDLE;
+	bool m_acquireWaitSubmitted = false;
+
+	void _SetAcquireSemaphore(VkSemaphore inSemaphore);
+	void _CreateRenderFinishedSemaphore();
+	void _CommitAcquireWait();
+	void _MarkPresented();
+
+public:
+	explicit SwapchainImage(uint32_t inIndex);
+	~SwapchainImage();
+
+	auto GetIndex() const -> uint32_t;
+	auto GetAcquireSemaphore() const -> VkSemaphore;
+	auto GetRenderFinishedSemaphore() const -> VkSemaphore;
+};

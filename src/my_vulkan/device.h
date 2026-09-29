@@ -70,7 +70,7 @@ private:
 	bool				m_needRecreate = false;
 	bool				m_initialized = false;
 	UserInput			m_userInput{};
-	std::vector<std::unique_ptr<Image>> m_uptrSwapchainImages;
+	std::vector<std::unique_ptr<SwapchainImage>> m_uptrSwapchainImages;
 	std::unique_ptr<MemoryAllocator> m_uptrMemoryAllocator;
 	std::unique_ptr<DescriptorSetAllocator> descriptorAllocator;
 	std::unique_ptr<FramebufferAllocator> m_uptrFramebufferAllocator;
@@ -147,11 +147,8 @@ public:
 	
 	void RecreateSwapchain();
 	
-	void GetSwapchainImagePointers(std::vector<Image*>& _output) const;
-	
-	std::optional<uint32_t> AquireAvailableSwapchainImageIndex(VkSemaphore finishSignal);
-	
-	void PresentSwapchainImage(const std::vector<VkSemaphore>& waitSemaphores, uint32_t imageIdx);
+	auto GetNextAvailableSwapchainImage(VkSemaphore acquireSemaphore) -> SwapchainImage*;
+	void PresentSwapchainImage(const SwapchainImage* image);
 	
 	bool NeedRecreateSwapchain() const;
 	

@@ -83,7 +83,7 @@ public:
 	QueueDependency& operator=(const QueueDependency&) = delete;
 	QueueDependency(QueueDependency&&) = delete;
 	QueueDependency& operator=(QueueDependency&&) = delete;
-	~QueueDependency() noexcept(false);
+	~QueueDependency() noexcept;
 
 private:
 	auto _HasPendingSignal() const->bool { return m_hasPendingSignal; }
@@ -149,9 +149,16 @@ public:
 			bool useWait = false;
 			bool useSignal = false;
 		};
+		struct ExternalSemaphoreEntry final
+		{
+			VkSemaphore semaphore = VK_NULL_HANDLE;
+			VkPipelineStageFlags2 stage = 0;
+		};
 
 		std::vector<VkCommandBuffer> m_commandBuffers;
 		std::vector<DependencyEntry> m_dependencyEntries;
+		std::vector<ExternalSemaphoreEntry> m_externalWaits;
+		std::vector<ExternalSemaphoreEntry> m_externalSignals;
 		HostFence* m_completionFence = nullptr;
 
 	public:
@@ -160,6 +167,8 @@ public:
 			QueueDependency& inDependency,
 			VkPipelineStageFlags2 inWaitStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)->SubmitInfo&;
 		auto AddSignalQueueDependency(QueueDependency& inDependency)->SubmitInfo&;
+		auto AddExternalBinaryWait(VkSemaphore inSemaphore, VkPipelineStageFlags2 inWaitStage)->SubmitInfo&;
+		auto AddExternalBinarySignal(VkSemaphore inSemaphore)->SubmitInfo&;
 		auto SetFence(HostFence& inFence)->SubmitInfo&;
 	};
 

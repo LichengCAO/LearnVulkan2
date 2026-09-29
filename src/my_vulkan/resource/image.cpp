@@ -133,6 +133,69 @@ VkImage Image::GetVkImage() const
 	return m_vkImage;
 }
 
+SwapchainImage::SwapchainImage(uint32_t inIndex)
+	: m_index(inIndex)
+{
+}
+
+SwapchainImage::~SwapchainImage()
+{
+	if (m_renderFinishedSemaphore != VK_NULL_HANDLE)
+	{
+		vkDestroySemaphore(MyDevice::GetInstance().vkDevice, m_renderFinishedSemaphore, nullptr);
+	}
+}
+
+void SwapchainImage::_CreateRenderFinishedSemaphore()
+{
+	CHECK_TRUE(m_renderFinishedSemaphore == VK_NULL_HANDLE, "Render-finished semaphore already exists!");
+	VkSemaphoreCreateInfo createInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+	VK_CHECK(vkCreateSemaphore(MyDevice::GetInstance().vkDevice, &createInfo, nullptr, &m_renderFinishedSemaphore),
+		"Failed to create render-finished semaphore!");
+}
+
+void SwapchainImage::_SetAcquireSemaphore(VkSemaphore inSemaphore)
+{
+	CHECK_TRUE(inSemaphore != VK_NULL_HANDLE, "Swapchain acquire semaphore is invalid!");
+	CHECK_TRUE(m_acquireSemaphore == VK_NULL_HANDLE, "Swapchain image is already acquired!");
+	CHECK_TRUE(m_renderFinishedSemaphore != VK_NULL_HANDLE, "Render-finished semaphore is missing!");
+	m_acquireSemaphore = inSemaphore;
+	m_acquireWaitSubmitted = false;
+}
+
+void SwapchainImage::_CommitAcquireWait()
+{
+	CHECK_TRUE(m_acquireSemaphore != VK_NULL_HANDLE, "Swapchain image is not acquired!");
+	CHECK_TRUE(!m_acquireWaitSubmitted, "Swapchain acquire wait was already submitted!");
+	m_acquireWaitSubmitted = true;
+}
+
+void SwapchainImage::_MarkPresented()
+{
+	CHECK_TRUE(m_acquireSemaphore != VK_NULL_HANDLE, "Swapchain image is not acquired!");
+	CHECK_TRUE(m_acquireWaitSubmitted, "Swapchain acquire wait was not submitted!");
+	m_acquireSemaphore = VK_NULL_HANDLE;
+	m_acquireWaitSubmitted = false;
+}
+
+auto SwapchainImage::GetIndex() const -> uint32_t
+{
+	return m_index;
+}
+
+auto SwapchainImage::GetAcquireSemaphore() const -> VkSemaphore
+{
+	CHECK_TRUE(m_acquireSemaphore != VK_NULL_HANDLE, "Swapchain image has not been acquired!");
+	CHECK_TRUE(!m_acquireWaitSubmitted, "Swapchain acquire semaphore was already consumed!");
+	return m_acquireSemaphore;
+}
+
+auto SwapchainImage::GetRenderFinishedSemaphore() const -> VkSemaphore
+{
+	CHECK_TRUE(m_renderFinishedSemaphore != VK_NULL_HANDLE, "Render-finished semaphore is missing!");
+	return m_renderFinishedSemaphore;
+}
+
 ImageView* Image::_FindView(const ImageViewInfo& inCreateInfo) const
 {
 	CHECK_TRUE(m_vkImage != VK_NULL_HANDLE, "Image must be created before requesting an image view!");

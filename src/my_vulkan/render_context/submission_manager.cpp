@@ -6,7 +6,7 @@
 #include <cassert>
 #include <utility>
 
-QueueDependency::~QueueDependency() noexcept(false)
+QueueDependency::~QueueDependency() noexcept
 {
 	CHECK_TRUE(!m_hasPendingSignal,
 		"Queue dependency must be consumed before destruction!");
@@ -103,6 +103,32 @@ auto SubmissionManager::SubmitInfo::AddSignalQueueDependency(QueueDependency& in
 	}
 
 	m_dependencyEntries.push_back({ &inDependency, 0, false, true });
+	return *this;
+}
+
+auto SubmissionManager::SubmitInfo::AddExternalBinaryWait(
+	VkSemaphore inSemaphore, VkPipelineStageFlags2 inWaitStage)->SubmitInfo&
+{
+	CHECK_TRUE(inSemaphore != VK_NULL_HANDLE, "External wait semaphore is null!");
+	CHECK_TRUE(inWaitStage != 0, "External wait stage cannot be zero!");
+	const auto matches = [inSemaphore](const ExternalSemaphoreEntry& entry)
+		{ return entry.semaphore == inSemaphore; };
+	CHECK_TRUE(std::none_of(m_externalWaits.begin(), m_externalWaits.end(), matches) &&
+		std::none_of(m_externalSignals.begin(), m_externalSignals.end(), matches),
+		"External semaphore is duplicated in the submission!");
+	m_externalWaits.push_back({ inSemaphore, inWaitStage });
+	return *this;
+}
+
+auto SubmissionManager::SubmitInfo::AddExternalBinarySignal(VkSemaphore inSemaphore)->SubmitInfo&
+{
+	CHECK_TRUE(inSemaphore != VK_NULL_HANDLE, "External signal semaphore is null!");
+	const auto matches = [inSemaphore](const ExternalSemaphoreEntry& entry)
+		{ return entry.semaphore == inSemaphore; };
+	CHECK_TRUE(std::none_of(m_externalWaits.begin(), m_externalWaits.end(), matches) &&
+		std::none_of(m_externalSignals.begin(), m_externalSignals.end(), matches),
+		"External semaphore is duplicated in the submission!");
+	m_externalSignals.push_back({ inSemaphore, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT });
 	return *this;
 }
 
@@ -255,8 +281,8 @@ void SubmissionManager::Submit(
 
 	std::vector<VkSemaphoreSubmitInfo> waitInfos;
 	std::vector<VkSemaphoreSubmitInfo> signalInfos;
-	waitInfos.reserve(waitCount);
-	signalInfos.reserve(signalCount);
+	waitInfos.reserve(waitCount + inSubmitInfo.m_externalWaits.size());
+	signalInfos.reserve(signalCount + inSubmitInfo.m_externalSignals.size());
 	DependencySemaphoreMap stagedDependencySemaphores;
 	stagedDependencySemaphores.reserve(signalOnlyCount);
 	VkFence completionVkFence = VK_NULL_HANDLE;
@@ -294,6 +320,20 @@ void SubmissionManager::Submit(
 				signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 				signalInfos.push_back(signalInfo);
 			}
+		}
+		for (const SubmitInfo::ExternalSemaphoreEntry& entry : inSubmitInfo.m_externalWaits)
+		{
+			VkSemaphoreSubmitInfo waitInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+			waitInfo.semaphore = entry.semaphore;
+			waitInfo.stageMask = entry.stage;
+			waitInfos.push_back(waitInfo);
+		}
+		for (const SubmitInfo::ExternalSemaphoreEntry& entry : inSubmitInfo.m_externalSignals)
+		{
+			VkSemaphoreSubmitInfo signalInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+			signalInfo.semaphore = entry.semaphore;
+			signalInfo.stageMask = entry.stage;
+			signalInfos.push_back(signalInfo);
 		}
 
 		if (inSubmitInfo.m_completionFence != nullptr)

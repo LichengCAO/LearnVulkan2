@@ -4,9 +4,7 @@
 #include "command/command.h"
 #include "render_context/device_context.h"
 
-#include <atomic>
 #include <limits>
-#include <mutex>
 
 namespace
 {
@@ -26,9 +24,6 @@ struct FrameSlot::RecordingTask final
     std::vector<CommandBuffer> sourceBuffers;
     std::vector<RecordBatch> batches;
     std::unique_ptr<MyMultiThreadTask> task;
-    std::mutex errorMutex;
-    std::exception_ptr error;
-    std::atomic_bool failed = false;
     bool dispatched = false;
     bool waited = false;
 
@@ -48,7 +43,7 @@ struct FrameSlot::RecordingTask final
     RecordingTask& operator=(const RecordingTask&) = delete;
     ~RecordingTask()
     {
-        _WaitNoThrow();
+        _Wait();
     }
 
     void Dispatch()
@@ -75,10 +70,6 @@ struct FrameSlot::RecordingTask final
     auto WaitAndTakePayload() -> RecordingResult
     {
         _Wait();
-        if (error != nullptr)
-        {
-            std::rethrow_exception(error);
-        }
 
         RecordingResult payload;
         payload.queue = queue;
@@ -93,53 +84,36 @@ struct FrameSlot::RecordingTask final
         return payload;
     }
 
-    void WaitNoThrow() noexcept
+    void Wait()
     {
-        _WaitNoThrow();
+        _Wait();
     }
 
 private:
     void _RecordRange(uint32_t inStart, uint32_t inEnd, uint32_t inThreadIndex)
     {
-        if (failed.load(std::memory_order_acquire))
-        {
-            return;
-        }
+        CHECK_TRUE(owner != nullptr, "Recording task has no owning frame context!");
+        CHECK_TRUE(inStart <= inEnd && inEnd <= batches.size(), "Invalid recording task range!");
+        CommandPool& commandPool = owner->_GetCommandPool(queue, inThreadIndex);
 
-        try
+        for (uint32_t batchIndex = inStart; batchIndex < inEnd; ++batchIndex)
         {
-            CHECK_TRUE(owner != nullptr, "Recording task has no owning frame context!");
-            CHECK_TRUE(inStart <= inEnd && inEnd <= batches.size(), "Invalid recording task range!");
-            CommandPool& commandPool = owner->_GetCommandPool(queue, inThreadIndex);
+            RecordBatch& batch = batches[batchIndex];
+            batch.vkCommandBuffer =
+                commandPool.AllocateOrGetCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 
-            for (uint32_t batchIndex = inStart; batchIndex < inEnd; ++batchIndex)
+            VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+            VK_CHECK(
+                vkBeginCommandBuffer(batch.vkCommandBuffer, &beginInfo),
+                "Failed to begin command buffer recording!");
+            for (const Command* command : batch.commands)
             {
-                RecordBatch& batch = batches[batchIndex];
-                batch.vkCommandBuffer =
-                    commandPool.AllocateOrGetCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
-
-                VkCommandBufferBeginInfo beginInfo{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-                VK_CHECK(
-                    vkBeginCommandBuffer(batch.vkCommandBuffer, &beginInfo),
-                    "Failed to begin command buffer recording!");
-                for (const Command* command : batch.commands)
-                {
-                    CHECK_TRUE(command != nullptr, "Recording batch contains an invalid command!");
-                    command->Record(batch.vkCommandBuffer);
-                }
-                VK_CHECK(
-                    vkEndCommandBuffer(batch.vkCommandBuffer),
-                    "Failed to end command buffer recording!");
+                CHECK_TRUE(command != nullptr, "Recording batch contains an invalid command!");
+                command->Record(batch.vkCommandBuffer);
             }
-        }
-        catch (...)
-        {
-            std::lock_guard<std::mutex> lock(errorMutex);
-            if (error == nullptr)
-            {
-                error = std::current_exception();
-            }
-            failed.store(true, std::memory_order_release);
+            VK_CHECK(
+                vkEndCommandBuffer(batch.vkCommandBuffer),
+                "Failed to end command buffer recording!");
         }
     }
 
@@ -152,17 +126,6 @@ private:
 
         MyTaskScheduler::GetInstance().WaitForTask(task.get());
         waited = true;
-    }
-
-    void _WaitNoThrow() noexcept
-    {
-        try
-        {
-            _Wait();
-        }
-        catch (...)
-        {
-        }
     }
 };
 
@@ -214,7 +177,7 @@ void FrameSlot::_WaitForRecordingTasks() noexcept
     for (auto& [serial, recordContext] : m_recordTasks)
     {
         (void)serial;
-        recordContext->WaitNoThrow();
+        recordContext->Wait();
     }
 }
 
@@ -335,18 +298,9 @@ auto FrameSlot::DispatchRecording(
         std::move(inBuffers),
         std::move(batches));
     RecordingTask* recordContextPtr = recordContext.get();
-    const auto [iter, inserted] = m_recordTasks.emplace(serial, std::move(recordContext));
+    const bool inserted = m_recordTasks.emplace(serial, std::move(recordContext)).second;
     CHECK_TRUE(inserted, "Recording ticket already exists!");
-
-    try
-    {
-        recordContextPtr->Dispatch();
-    }
-    catch (...)
-    {
-        m_recordTasks.erase(iter);
-        throw;
-    }
+    recordContextPtr->Dispatch();
 
     RecordingTicket ticket;
     ticket.m_serial = serial;

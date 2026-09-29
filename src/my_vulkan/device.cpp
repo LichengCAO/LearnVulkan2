@@ -307,46 +307,50 @@ void MyDevice::RecreateSwapchain()
 		glfwGetFramebufferSize(pWindow, &width, &height);
 		glfwWaitEvents();
 	}
-	vkDeviceWaitIdle(vkDevice);
+	WaitIdle();
 	_DestroySwapchain();
 	_CreateSwapchain();
 }
 
-void MyDevice::GetSwapchainImagePointers(std::vector<Image*>& outImages) const
+auto MyDevice::GetNextAvailableSwapchainImage(VkSemaphore acquireSemaphore) -> SwapchainImage*
 {
-	outImages.resize(m_uptrSwapchainImages.size(), nullptr);
-	for (size_t i = 0; i < m_uptrSwapchainImages.size(); ++i)
-	{
-		outImages[i] = m_uptrSwapchainImages[i].get();
-	}
-}
-
-std::optional<uint32_t> MyDevice::AquireAvailableSwapchainImageIndex(VkSemaphore finishSignal)
-{
+	CHECK_TRUE(acquireSemaphore != VK_NULL_HANDLE, "Swapchain acquire semaphore is invalid!");
 	uint32_t imageIndex = 0;
-	std::optional<uint32_t> ret;
-	VkResult result = vkAcquireNextImageKHR(vkDevice, vkSwapchain, UINT64_MAX, finishSignal, VK_NULL_HANDLE, &imageIndex);
-	if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) 
+	const VkResult result = vkAcquireNextImageKHR(
+		vkDevice, vkSwapchain, UINT64_MAX, acquireSemaphore, VK_NULL_HANDLE, &imageIndex);
+	if (result == VK_ERROR_OUT_OF_DATE_KHR)
+	{
+		m_needRecreate = true;
+		return nullptr;
+	}
+	if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
 	{
 		throw std::runtime_error("Failed to acquire swap chain image!");
 	}
-	else if (result != VK_ERROR_OUT_OF_DATE_KHR)
-	{
-		ret = imageIndex;
-	}
-	else
+	if (result == VK_SUBOPTIMAL_KHR)
 	{
 		m_needRecreate = true;
 	}
-	return ret;
+	CHECK_TRUE(imageIndex < m_uptrSwapchainImages.size(), "Acquired swapchain image index is out of range!");
+	SwapchainImage* image = m_uptrSwapchainImages[imageIndex].get();
+	image->_SetAcquireSemaphore(acquireSemaphore);
+	return image;
 }
 
-void MyDevice::PresentSwapchainImage(const std::vector<VkSemaphore>& waitSemaphores, uint32_t imageIdx)
+void MyDevice::PresentSwapchainImage(const SwapchainImage* image)
 {
+	CHECK_TRUE(image != nullptr, "Presented swapchain image is null!");
+	const auto iter = std::find_if(m_uptrSwapchainImages.begin(), m_uptrSwapchainImages.end(),
+		[image](const std::unique_ptr<SwapchainImage>& current) { return current.get() == image; });
+	CHECK_TRUE(iter != m_uptrSwapchainImages.end(), "Presented image is not in the current swapchain!");
+	CHECK_TRUE(image->m_acquireSemaphore != VK_NULL_HANDLE && image->m_acquireWaitSubmitted,
+		"Swapchain acquire wait must be submitted before present!");
+	const uint32_t imageIdx = image->GetIndex();
+	const VkSemaphore renderFinished = image->GetRenderFinishedSemaphore();
 	VkSwapchainKHR swapChains[] = { vkSwapchain };
 	VkPresentInfoKHR presentInfo{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-	presentInfo.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
-	presentInfo.pWaitSemaphores = waitSemaphores.data();
+	presentInfo.waitSemaphoreCount = 1;
+	presentInfo.pWaitSemaphores = &renderFinished;
 	presentInfo.swapchainCount = 1;
 	presentInfo.pSwapchains = swapChains;
 	presentInfo.pImageIndices = &imageIdx;
@@ -361,6 +365,7 @@ void MyDevice::PresentSwapchainImage(const std::vector<VkSemaphore>& waitSemapho
 	{
 		throw std::runtime_error("Failed to present swapchain!");
 	}
+	const_cast<SwapchainImage*>(image)->_MarkPresented();
 }
 
 bool MyDevice::NeedRecreateSwapchain() const
@@ -534,7 +539,7 @@ void MyDevice::_GetVkSwapchainImages(std::vector<VkImage>& _vkImages) const
 void MyDevice::_UpdateSwapchainImages()
 {
 	std::vector<VkImage> vkImages;
-	for (std::unique_ptr<Image>& uptrImage : m_uptrSwapchainImages)
+	for (std::unique_ptr<SwapchainImage>& uptrImage : m_uptrSwapchainImages)
 	{
 		if (uptrImage.get() != nullptr)
 		{
@@ -547,12 +552,13 @@ void MyDevice::_UpdateSwapchainImages()
 	m_uptrSwapchainImages.resize(vkImages.size());
 	for (size_t i = 0; i < vkImages.size(); ++i)
 	{
-		std::unique_ptr<Image>& uptrImage = m_uptrSwapchainImages[i];
+		std::unique_ptr<SwapchainImage>& uptrImage = m_uptrSwapchainImages[i];
 		SwapchainImageCreateInfo swapchainCreateInfo{};
 
-		uptrImage = std::make_unique<Image>();
+		uptrImage = std::make_unique<SwapchainImage>(static_cast<uint32_t>(i));
 		swapchainCreateInfo.SetUp(vkImages[i], m_swapchain.image_usage_flags, m_swapchain.image_format);
 		uptrImage->Create(&swapchainCreateInfo);
+		uptrImage->_CreateRenderFinishedSemaphore();
 	}
 }
 
@@ -760,7 +766,7 @@ UserInput MyDevice::GetUserInput() const
 
 void MyDevice::WaitIdle() const
 {
-	vkDeviceWaitIdle(vkDevice);
+	VK_CHECK(vkDeviceWaitIdle(vkDevice), "Failed to wait for device idle!");
 }
 
 double MyDevice::GetTime() const

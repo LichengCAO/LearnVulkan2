@@ -127,14 +127,6 @@ void DescriptorSetAllocator::Destroy()
 {
 	auto& device = MyDevice::GetInstance();
 
-	for (auto& p : m_candidatePool)
-	{
-		if (p.second != VK_NULL_HANDLE)
-		{
-			device.DestroyDescriptorPool(p.second);
-		}
-	}
-
 	for (auto& p : m_usedPools)
 	{
 		for (VkDescriptorPool pool : p.second)

@@ -5,6 +5,9 @@
 #include "command_buffer.h"
 #include "render_context/submission_manager.h"
 #include "render_context/frame_slot.h"
+#include <span>
+
+class SwapchainImage;
 
 class SubmissionSyncInfo final
 {
@@ -12,12 +15,14 @@ class SubmissionSyncInfo final
 
 private:
 	SubmissionManager::SubmitInfo m_submitInfo;
+	std::vector<const SwapchainImage*> m_acquireWaitImages;
 
 public:
 	auto AddWaitQueueDependency(
 		QueueDependency& inDependency,
 		VkPipelineStageFlags2 inWaitStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)->SubmissionSyncInfo&;
 	auto AddSignalQueueDependency(QueueDependency& inDependency)->SubmissionSyncInfo&;
+	auto WaitSwapchainImage(const SwapchainImage* inImage)->SubmissionSyncInfo&;
 	auto SetFence(HostFence& inFence)->SubmissionSyncInfo&;
 };
 
@@ -34,6 +39,9 @@ private:
 	auto _GetCurrentFrameContext() -> FrameSlot&;
 	std::unique_ptr<SubmissionManager> m_uptrCommandQueueManager;
 	std::vector<std::unique_ptr<FrameSlot>> m_frameContexts;
+	std::vector<std::vector<VkSemaphore>> m_acquireSemaphores;
+	std::vector<size_t> m_acquireSemaphoreUsedCounts;
+	std::vector<const SwapchainImage*> m_acquiredImages;
 	size_t m_currentFrameIndex = SIZE_MAX;
 	bool m_frameActive = false;
 	std::array<QueueRecordingState, SubmissionFrontier::MAX_QUEUE_COUNT> m_queueRecordingStates;
@@ -42,9 +50,12 @@ public:
 	explicit DeviceContext(size_t inFrameCount);
 	DeviceContext(const DeviceContext&) = delete;
 	DeviceContext& operator=(const DeviceContext&) = delete;
-	~DeviceContext() noexcept(false);
+	~DeviceContext() noexcept;
 
 	void StartFrame();
+	auto GetNextAvailableSwapchainImage() -> SwapchainImage*;
+	void PresentSwapchainImage(
+		const SwapchainImage* inImage, std::span<QueueDependency* const> inWaits);
 
 	void EndFrame();
 

@@ -1,6 +1,9 @@
 #include "render_context/device_context.h"
 
 #include "render_context/submission_manager.h"
+#include "device.h"
+
+#include <algorithm>
 
 auto SubmissionSyncInfo::AddWaitQueueDependency(
 	QueueDependency& inDependency,
@@ -14,6 +17,17 @@ auto SubmissionSyncInfo::AddSignalQueueDependency(
 	QueueDependency& inDependency)->SubmissionSyncInfo&
 {
 	m_submitInfo.AddSignalQueueDependency(inDependency);
+	return *this;
+}
+
+auto SubmissionSyncInfo::WaitSwapchainImage(const SwapchainImage* inImage)->SubmissionSyncInfo&
+{
+	CHECK_TRUE(inImage != nullptr, "Swapchain wait image is null!");
+	CHECK_TRUE(std::find(m_acquireWaitImages.begin(), m_acquireWaitImages.end(), inImage) ==
+		m_acquireWaitImages.end(), "Swapchain image has a duplicate acquire wait!");
+	m_submitInfo.AddExternalBinaryWait(
+		inImage->GetAcquireSemaphore(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+	m_acquireWaitImages.push_back(inImage);
 	return *this;
 }
 
@@ -45,6 +59,8 @@ DeviceContext::DeviceContext(size_t inFrameCount)
 	m_uptrCommandQueueManager = std::make_unique<SubmissionManager>();
 
 	m_frameContexts.reserve(inFrameCount);
+	m_acquireSemaphores.resize(inFrameCount);
+	m_acquireSemaphoreUsedCounts.resize(inFrameCount);
 	while (m_frameContexts.size() < inFrameCount)
 	{
 		m_frameContexts.push_back(
@@ -52,7 +68,7 @@ DeviceContext::DeviceContext(size_t inFrameCount)
 	}
 }
 
-DeviceContext::~DeviceContext() noexcept(false)
+DeviceContext::~DeviceContext() noexcept
 {
 	for (const QueueRecordingState& recordingState : m_queueRecordingStates)
 	{
@@ -60,6 +76,7 @@ DeviceContext::~DeviceContext() noexcept(false)
 			recordingState.pendingTickets.empty(),
 			"Cannot destroy a device context with pending recording tickets!");
 	}
+	MyDevice::GetInstance().WaitIdle();
 	for (const std::unique_ptr<FrameSlot>& frameContext : m_frameContexts)
 	{
 		if (frameContext != nullptr)
@@ -70,6 +87,13 @@ DeviceContext::~DeviceContext() noexcept(false)
 	if (m_uptrCommandQueueManager != nullptr)
 	{
 		m_uptrCommandQueueManager.reset();
+	}
+	for (const std::vector<VkSemaphore>& semaphores : m_acquireSemaphores)
+	{
+		for (VkSemaphore semaphore : semaphores)
+		{
+			vkDestroySemaphore(MyDevice::GetInstance().vkDevice, semaphore, nullptr);
+		}
 	}
 }
 
@@ -95,6 +119,7 @@ void DeviceContext::StartFrame()
 		: (m_currentFrameIndex + 1) % m_frameContexts.size();
 	FrameSlot& frameContext = *m_frameContexts[nextFrameIndex];
 	frameContext.ResetForReuse(*this);
+	m_acquireSemaphoreUsedCounts[nextFrameIndex] = 0;
 
 	for (QueueRecordingState& recordingState : m_queueRecordingStates)
 	{
@@ -105,6 +130,66 @@ void DeviceContext::StartFrame()
 
 	m_currentFrameIndex = nextFrameIndex;
 	m_frameActive = true;
+}
+
+auto DeviceContext::GetNextAvailableSwapchainImage() -> SwapchainImage*
+{
+	_GetCurrentFrameContext();
+	std::vector<VkSemaphore>& pool = m_acquireSemaphores[m_currentFrameIndex];
+	size_t& usedCount = m_acquireSemaphoreUsedCounts[m_currentFrameIndex];
+	if (usedCount == pool.size())
+	{
+		VkSemaphore semaphore = VK_NULL_HANDLE;
+		VkSemaphoreCreateInfo createInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+		VK_CHECK(vkCreateSemaphore(MyDevice::GetInstance().vkDevice, &createInfo, nullptr, &semaphore),
+			"Failed to create swapchain acquire semaphore!");
+		try
+		{
+			pool.push_back(semaphore);
+		}
+		catch (...)
+		{
+			vkDestroySemaphore(MyDevice::GetInstance().vkDevice, semaphore, nullptr);
+			throw;
+		}
+	}
+	SwapchainImage* image = MyDevice::GetInstance().GetNextAvailableSwapchainImage(pool[usedCount]);
+	if (image != nullptr)
+	{
+		try
+		{
+			m_acquiredImages.push_back(image);
+		}
+		catch (...)
+		{
+			// A successful Vulkan acquire cannot be rolled back.
+			std::terminate();
+		}
+		++usedCount;
+	}
+	return image;
+}
+
+void DeviceContext::PresentSwapchainImage(
+	const SwapchainImage* inImage, std::span<QueueDependency* const> inWaits)
+{
+	_GetCurrentFrameContext();
+	const auto imageIter = std::find(m_acquiredImages.begin(), m_acquiredImages.end(), inImage);
+	CHECK_TRUE(inImage != nullptr && imageIter != m_acquiredImages.end(),
+		"Presented image was not acquired in the current frame!");
+	CHECK_TRUE(inImage->m_acquireWaitSubmitted, "Swapchain acquire wait was not submitted!");
+	CHECK_TRUE(m_queueRecordingStates[_GetQueueIndex(QueueFamilyType::GRAPHICS)].pendingTickets.empty(),
+		"Cannot present while graphics recording tickets remain pending!");
+	SubmissionManager::SubmitInfo bridge;
+	for (QueueDependency* dependency : inWaits)
+	{
+		CHECK_TRUE(dependency != nullptr, "Present queue dependency is null!");
+		bridge.AddWaitQueueDependency(*dependency);
+	}
+	bridge.AddExternalBinarySignal(inImage->GetRenderFinishedSemaphore());
+	m_uptrCommandQueueManager->Submit(QueueFamilyType::GRAPHICS, std::move(bridge));
+	MyDevice::GetInstance().PresentSwapchainImage(inImage);
+	m_acquiredImages.erase(imageIter);
 }
 
 void DeviceContext::CommitCommandsToQueue(
@@ -121,6 +206,7 @@ void DeviceContext::CommitCommandsToQueue(
 void DeviceContext::EndFrame()
 {
 	FrameSlot& frameContext = _GetCurrentFrameContext();
+	CHECK_TRUE(m_acquiredImages.empty(), "Cannot end frame with unpresented swapchain images!");
 	for (const QueueRecordingState& recordingState : m_queueRecordingStates)
 	{
 		CHECK_TRUE(
@@ -149,6 +235,14 @@ void DeviceContext::SubmitQueue(
 {
 	const size_t queueIndex = _GetQueueIndex(inQueue);
 	FrameSlot& frameContext = _GetCurrentFrameContext();
+	CHECK_TRUE(inQueue == QueueFamilyType::GRAPHICS || inSubmitInfo.m_acquireWaitImages.empty(),
+		"Swapchain acquire waits must be submitted to the graphics queue!");
+	for (const SwapchainImage* image : inSubmitInfo.m_acquireWaitImages)
+	{
+		CHECK_TRUE(std::find(m_acquiredImages.begin(), m_acquiredImages.end(), image) !=
+			m_acquiredImages.end(), "Swapchain wait image was not acquired in this frame!");
+		CHECK_TRUE(!image->m_acquireWaitSubmitted, "Swapchain acquire wait was already submitted!");
+	}
 	QueueRecordingState& recordingState = m_queueRecordingStates[queueIndex];
 	std::vector<VkCommandBuffer> commandBuffers;
 
@@ -168,6 +262,10 @@ void DeviceContext::SubmitQueue(
 	SubmissionManager::SubmitInfo submitInfo = inSubmitInfo.m_submitInfo;
 	submitInfo.SetCommandBuffers(std::move(commandBuffers));
 	m_uptrCommandQueueManager->Submit(inQueue, std::move(submitInfo));
+	for (const SwapchainImage* image : inSubmitInfo.m_acquireWaitImages)
+	{
+		const_cast<SwapchainImage*>(image)->_CommitAcquireWait();
+	}
 }
 
 void DeviceContext::ExecuteCommandsAndWait(
