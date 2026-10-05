@@ -27,9 +27,9 @@ class ComputeShaderProgram final
 private:
 	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
 	std::unique_ptr<ShaderModule> m_uptrShaderModule;
-	std::vector<std::unique_ptr<DescriptorSetLayout>> m_descriptorSetLayouts;
+	std::vector<DescriptorSetLayout> m_descriptorSetLayouts;
 	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> m_nameToSetBinding;
-	std::unique_ptr<PipelineLayout> m_pipelineLayout;
+	PipelineLayout m_pipelineLayout;
 	VkPipeline m_vkPipeline = VK_NULL_HANDLE;
 
 private:
@@ -46,6 +46,8 @@ public:
 	void Destroy();
 
 	auto GetNameToSetBinding() const->const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>& ;
+	
+	auto GetLayout() const -> const PipelineLayout&;
 	
 	VkPipeline GetVkPipeline() const;
 };

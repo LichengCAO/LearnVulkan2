@@ -1,6 +1,7 @@
 #include "pipeline_layout_allocator.h"
 #include "utility/hash_util.h"
 
+#include <algorithm>
 #include <type_traits>
 
 namespace
@@ -13,13 +14,8 @@ namespace
 
 	void HashPipelineLayoutCreateInfoPNext(size_t& seed, const void* pNext)
 	{
-		const auto* current = static_cast<const VkBaseInStructure*>(pNext);
-		while (current != nullptr)
-		{
-			HashEnum(seed, current->sType);
-			CHECK_TRUE(false, "Unsupported pipeline layout create info pNext!");
-			current = current->pNext;
-		}
+		CHECK_TRUE(pNext == nullptr, "Unsupported pipeline layout create info pNext!");
+		hash_combine(seed, static_cast<uint32_t>(pNext != nullptr));
 	}
 
 	void HashPushConstantRange(size_t& seed, const VkPushConstantRange& range)
@@ -73,10 +69,40 @@ auto PipelineLayoutAllocator::AllocatePipelineLayoutWithResult(
 	CHECK_TRUE(inCreateInfo != nullptr, "Missing pipeline layout create info!");
 
 	const uint64_t hash = HashPipelineLayoutCreateInfo(*inCreateInfo);
-	const auto iter = m_mapHashToVkPipelineLayout.find(hash);
-	if (iter != m_mapHashToVkPipelineLayout.end())
+	std::vector<CacheEntry>& entries = m_mapHashToVkPipelineLayout[hash];
+	for (const CacheEntry& entry : entries)
 	{
-		return { iter->second, VK_SUCCESS };
+		if (entry.structureType != inCreateInfo->sType ||
+			entry.flags != inCreateInfo->flags ||
+			entry.descriptorSetLayouts.size() != inCreateInfo->setLayoutCount ||
+			entry.pushConstantRanges.size() != inCreateInfo->pushConstantRangeCount)
+		{
+			continue;
+		}
+
+		if (!std::equal(
+			entry.descriptorSetLayouts.begin(),
+			entry.descriptorSetLayouts.end(),
+			inCreateInfo->pSetLayouts))
+		{
+			continue;
+		}
+
+		if (!std::equal(
+			entry.pushConstantRanges.begin(),
+			entry.pushConstantRanges.end(),
+			inCreateInfo->pPushConstantRanges,
+			[](const VkPushConstantRange& lhs, const VkPushConstantRange& rhs)
+			{
+				return lhs.stageFlags == rhs.stageFlags &&
+					lhs.offset == rhs.offset &&
+					lhs.size == rhs.size;
+			}))
+		{
+			continue;
+		}
+
+		return { entry.pipelineLayout, VK_SUCCESS };
 	}
 
 	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
@@ -86,7 +112,23 @@ auto PipelineLayoutAllocator::AllocatePipelineLayoutWithResult(
 		return { VK_NULL_HANDLE, result };
 	}
 
-	m_mapHashToVkPipelineLayout.emplace(hash, pipelineLayout);
+	CacheEntry entry{};
+	entry.structureType = inCreateInfo->sType;
+	entry.flags = inCreateInfo->flags;
+	if (inCreateInfo->setLayoutCount > 0)
+	{
+		entry.descriptorSetLayouts.assign(
+			inCreateInfo->pSetLayouts,
+			inCreateInfo->pSetLayouts + inCreateInfo->setLayoutCount);
+	}
+	if (inCreateInfo->pushConstantRangeCount > 0)
+	{
+		entry.pushConstantRanges.assign(
+			inCreateInfo->pPushConstantRanges,
+			inCreateInfo->pPushConstantRanges + inCreateInfo->pushConstantRangeCount);
+	}
+	entry.pipelineLayout = pipelineLayout;
+	entries.push_back(std::move(entry));
 	return { pipelineLayout, VK_SUCCESS };
 }
 
@@ -107,11 +149,16 @@ void PipelineLayoutAllocator::Destroy()
 {
 	if (m_vkDevice != VK_NULL_HANDLE)
 	{
-		for (auto& [hash, pipelineLayout] : m_mapHashToVkPipelineLayout)
+		for (auto& [hash, entries] : m_mapHashToVkPipelineLayout)
 		{
-			if (pipelineLayout != VK_NULL_HANDLE)
+			(void)hash;
+			for (CacheEntry& entry : entries)
 			{
-				vkDestroyPipelineLayout(m_vkDevice, pipelineLayout, nullptr);
+				if (entry.pipelineLayout != VK_NULL_HANDLE)
+				{
+					vkDestroyPipelineLayout(m_vkDevice, entry.pipelineLayout, nullptr);
+					entry.pipelineLayout = VK_NULL_HANDLE;
+				}
 			}
 		}
 	}

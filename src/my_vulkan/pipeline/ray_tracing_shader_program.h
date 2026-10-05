@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include "pipeline_layout.h"
 
 class Buffer;
 class RayTracingShaderProgram;
@@ -122,7 +123,7 @@ public:
 		std::vector<VkPushConstantRange> m_pushConstants;
 		uint32_t m_maxRayRecursionDepth = 1u;
 		VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;
-		VkPipelineLayout m_vkPipelineLayout = VK_NULL_HANDLE;
+		PipelineLayout m_pipelineLayout;
 
 	public:
 		virtual void InitRayTracingShaderProgram(RayTracingShaderProgram* pPipeline) const override;
@@ -133,7 +134,7 @@ public:
 		// Optional, default: VK_NULL_HANDLE
 		RayTracingShaderProgram::Builder& CustomizePipelineCache(VkPipelineCache inCache);
 
-		RayTracingShaderProgram::Builder& SetPipelineLayout(VkPipelineLayout inPipelineLayout);
+		auto SetPipelineLayout(PipelineLayout inPipelineLayout) -> RayTracingShaderProgram::Builder&;
 
 		RayTracingShaderProgram::Builder& AddPushConstant(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size);
 
@@ -168,7 +169,7 @@ public:
 
 private:
 	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
-	VkPipelineLayout m_vkPipelineLayout = VK_NULL_HANDLE;
+	PipelineLayout m_pipelineLayout;
 	VkPipeline m_vkPipeline = VK_NULL_HANDLE;
 	uint32_t m_shaderGroupCount = 0;
 	RayTracingShaderGroupSet m_groupSet;
@@ -186,6 +187,8 @@ public:
 	uint32_t GetShaderGroupCount() const;
 
 	VkPipeline GetVkPipeline() const;
+
+	auto GetLayout() const -> const PipelineLayout&;
 
 	auto GetShaderGroupSet() const -> const RayTracingShaderGroupSet& { return m_groupSet; }
 

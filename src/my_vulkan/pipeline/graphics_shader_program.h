@@ -49,9 +49,9 @@ class GraphicsShaderProgram final
 private:
 	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
 	std::vector<std::unique_ptr<ShaderModule>> m_shaderModules;
-	std::vector<std::unique_ptr<DescriptorSetLayout>> m_descriptorSetLayouts;
+	std::vector<DescriptorSetLayout> m_descriptorSetLayouts;
 	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> m_nameToSetBinding;
-	std::unique_ptr<PipelineLayout> m_pipelineLayout;
+	PipelineLayout m_pipelineLayout;
 	std::unordered_map<size_t, VkPipeline> m_cachedGraphicsPipelines;
 
 private:
@@ -60,7 +60,6 @@ private:
 	void _CreatePushConstantManager(const std::vector<VkPushConstantRange>& inPushConstantRanges);
 	VkPipeline _CreateVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) const;
 	size_t _HashGraphicsPipelineStateInfo(const GraphicsPipelineStateInfo& inStateInfo) const;
-	VkPipelineLayout _GetVkPipelineLayout() const;
 
 public:
 	~GraphicsShaderProgram();
@@ -70,6 +69,8 @@ public:
 	void Destroy();
 
 	auto GetNameToSetBinding() const->const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&;
+	
+	auto GetLayout() const -> const PipelineLayout&;
 	
 	auto GetVkPipeline(const GraphicsPipelineStateInfo& inStateInfo)->VkPipeline;
 };

@@ -6,6 +6,7 @@
 #include "sampler.h"
 
 class MemoryAllocator;
+class DescriptorSetLayoutAllocator;
 class DescriptorSetAllocator;
 class FramebufferAllocator;
 class RenderPassAllocator;
@@ -72,6 +73,7 @@ private:
 	UserInput			m_userInput{};
 	std::vector<std::unique_ptr<SwapchainImage>> m_uptrSwapchainImages;
 	std::unique_ptr<MemoryAllocator> m_uptrMemoryAllocator;
+	std::unique_ptr<DescriptorSetLayoutAllocator> m_uptrDescriptorSetLayoutAllocator;
 	std::unique_ptr<DescriptorSetAllocator> descriptorAllocator;
 	std::unique_ptr<FramebufferAllocator> m_uptrFramebufferAllocator;
 	std::unique_ptr<RenderPassAllocator> m_uptrRenderPassAllocator;
@@ -101,6 +103,8 @@ private:
 	void _CreateLogicalDevice();
 	void _CreateDescriptorSetAllocator();
 	void _DestroyDescriptorSetAllocator();
+	void _CreateDescriptorSetLayoutAllocator();
+	void _DestroyDescriptorSetLayoutAllocator();
 	void _CreateFramebufferAllocator();
 	void _DestroyFramebufferAllocator();
 	void _ResetFramebufferAllocator();
@@ -172,6 +176,8 @@ public:
 	double GetTime() const;
 
 	MemoryAllocator* GetMemoryAllocator();
+
+	auto GetDescriptorSetLayoutAllocator() -> DescriptorSetLayoutAllocator*;
 
 	DescriptorSetAllocator* GetDescriptorSetAllocator();
 

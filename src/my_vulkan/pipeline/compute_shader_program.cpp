@@ -33,7 +33,7 @@ ComputeShaderProgramCreateInfo& ComputeShaderProgramCreateInfo::CustomizePipelin
 ComputeShaderProgram::~ComputeShaderProgram()
 {
 	assert(m_vkPipeline == VK_NULL_HANDLE);
-	assert(m_pipelineLayout == nullptr);
+	assert(m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE);
 	assert(m_uptrShaderModule == nullptr);
 	assert(m_descriptorSetLayouts.empty());
 }
@@ -43,7 +43,7 @@ void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo* inCreate
 	CHECK_TRUE(inCreateInfo != nullptr, "No compute shader program create info!");
 	CHECK_TRUE(!inCreateInfo->m_spirvFile.empty(), "Compute shader SPIR-V file is unset!");
 	CHECK_TRUE(m_vkPipeline == VK_NULL_HANDLE, "Compute shader program already created!");
-	CHECK_TRUE(m_pipelineLayout == nullptr, "Compute shader program already created!");
+	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE, "Compute shader program already created!");
 
 	ShaderReflector reflector{};
 	std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>> descriptorSetData;
@@ -81,8 +81,7 @@ void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo* inCreate
 	reflector.Destroy();
 
 	CHECK_TRUE(m_vkPipeline != VK_NULL_HANDLE);
-	CHECK_TRUE(m_pipelineLayout != nullptr);
-	CHECK_TRUE(m_pipelineLayout->GetVkPipelineLayout() != VK_NULL_HANDLE);
+	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() != VK_NULL_HANDLE);
 	CHECK_TRUE(m_uptrPushConstant != nullptr);
 }
 
@@ -91,35 +90,20 @@ void ComputeShaderProgram::_CreateDescriptorSetLayouts(
 {
 	for (const auto& descriptorSetBindings : inDescriptorSetData)
 	{
-		auto descriptorSetLayout = std::make_unique<DescriptorSetLayout>();
-		DescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo{};
+		DescriptorSetLayout descriptorSetLayout;
 
 		for (const auto& [bindingIndex, layoutBinding] : descriptorSetBindings)
 		{
 			CHECK_TRUE(
 				layoutBinding.pImmutableSamplers == nullptr,
-				"Immutable samplers are not supported by DescriptorSetLayoutCreateInfo::SetBinding yet!");
-
-			if (layoutBinding.descriptorCount > 1)
-			{
-				DescriptorSetLayoutCreateInfo::ArraySizeInfo arraySizeInfo{};
-				arraySizeInfo.size = layoutBinding.descriptorCount;
-				descriptorSetLayoutCreateInfo.SetBinding(
-					layoutBinding.binding,
-					layoutBinding.descriptorType,
-					layoutBinding.stageFlags,
-					&arraySizeInfo);
-			}
-			else
-			{
-				descriptorSetLayoutCreateInfo.SetBinding(
-					layoutBinding.binding,
-					layoutBinding.descriptorType,
-					layoutBinding.stageFlags);
-			}
+				"Immutable samplers are not supported by DescriptorSetLayout::SetBinding yet!");
+			descriptorSetLayout.SetBinding(
+				layoutBinding.binding,
+				layoutBinding.descriptorType,
+				layoutBinding.stageFlags,
+				layoutBinding.descriptorCount);
 		}
 
-		descriptorSetLayout->Create(descriptorSetLayoutCreateInfo);
 		m_descriptorSetLayouts.push_back(std::move(descriptorSetLayout));
 	}
 }
@@ -130,7 +114,7 @@ void ComputeShaderProgram::_CreatePipelineLayout(const std::vector<VkPushConstan
 
 	for (const auto& descriptorSetLayout : m_descriptorSetLayouts)
 	{
-		pipelineLayoutCreateInfo.AddDescriptorSetLayout(descriptorSetLayout->GetVkDescriptorSetLayout());
+		pipelineLayoutCreateInfo.AddDescriptorSetLayout(descriptorSetLayout);
 	}
 
 	for (const auto& pushConstantRange : inPushConstantRanges)
@@ -141,8 +125,7 @@ void ComputeShaderProgram::_CreatePipelineLayout(const std::vector<VkPushConstan
 			pushConstantRange.size);
 	}
 
-	m_pipelineLayout = std::make_unique<PipelineLayout>();
-	m_pipelineLayout->Create(&pipelineLayoutCreateInfo);
+	m_pipelineLayout.Create(pipelineLayoutCreateInfo);
 }
 
 void ComputeShaderProgram::_CreateVkPipeline(
@@ -151,8 +134,8 @@ void ComputeShaderProgram::_CreateVkPipeline(
 {
 	VkComputePipelineCreateInfo pipelineInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
 	pipelineInfo.stage = inShaderStageInfo;
-	CHECK_TRUE(m_pipelineLayout != nullptr, "Compute shader program needs a pipeline layout!");
-	pipelineInfo.layout = m_pipelineLayout->GetVkPipelineLayout();
+	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() != VK_NULL_HANDLE, "Compute shader program needs a pipeline layout!");
+	pipelineInfo.layout = m_pipelineLayout.GetVkPipelineLayout();
 	m_vkPipeline = MyDevice::GetInstance().CreateComputePipeline(pipelineInfo, inPipelineCache);
 }
 
@@ -181,15 +164,7 @@ void ComputeShaderProgram::Destroy()
 		m_uptrShaderModule->Destroy();
 		m_uptrShaderModule.reset();
 	}
-	if (m_pipelineLayout != nullptr)
-	{
-		m_pipelineLayout->Destroy();
-		m_pipelineLayout.reset();
-	}
-	for (auto& descriptorSetLayout : m_descriptorSetLayouts)
-	{
-		descriptorSetLayout->Destroy();
-	}
+	m_pipelineLayout.Destroy();
 	m_descriptorSetLayouts.clear();
 	m_nameToSetBinding.clear();
 	m_uptrPushConstant.reset();
@@ -198,6 +173,11 @@ void ComputeShaderProgram::Destroy()
 const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>& ComputeShaderProgram::GetNameToSetBinding() const
 {
 	return m_nameToSetBinding;
+}
+
+auto ComputeShaderProgram::GetLayout() const -> const PipelineLayout&
+{
+	return m_pipelineLayout;
 }
 
 VkPipeline ComputeShaderProgram::GetVkPipeline() const

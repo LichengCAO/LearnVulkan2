@@ -1,55 +1,21 @@
 #include "descriptor_set.h"
-#include "allocator/descriptor_set_allocator.h"
-#include "device.h"
+
+#include "../allocator/descriptor_set_allocator.h"
+#include "../allocator/descriptor_set_layout_allocator.h"
+#include "../device.h"
+#include "acceleration_structure.h"
 #include "buffer.h"
-#include "utility/hash_util.h"
+#include "image.h"
+#include "sampler.h"
+#include "../utility/hash_util.h"
+
 #include <algorithm>
+#include <cstdint>
 #include <stdexcept>
 #include <type_traits>
 
 namespace
 {
-	bool _IsEqual(const VkDescriptorBufferInfo& lhs, const VkDescriptorBufferInfo& rhs)
-	{
-		return lhs.buffer == rhs.buffer
-			&& lhs.offset == rhs.offset
-			&& lhs.range == rhs.range;
-	}
-
-	bool _IsEqual(const VkDescriptorImageInfo& lhs, const VkDescriptorImageInfo& rhs)
-	{
-		return lhs.sampler == rhs.sampler
-			&& lhs.imageView == rhs.imageView
-			&& lhs.imageLayout == rhs.imageLayout;
-	}
-
-	bool _IsEqual(const DescriptorState::DescriptorBindingInfo& lhs, const DescriptorState::DescriptorBindingInfo& rhs)
-	{
-		if (lhs.index() != rhs.index())
-		{
-			return false;
-		}
-
-		if (const auto* pLhs = std::get_if<VkDescriptorBufferInfo>(&lhs))
-		{
-			return _IsEqual(*pLhs, std::get<VkDescriptorBufferInfo>(rhs));
-		}
-		if (const auto* pLhs = std::get_if<VkDescriptorImageInfo>(&lhs))
-		{
-			return _IsEqual(*pLhs, std::get<VkDescriptorImageInfo>(rhs));
-		}
-		if (const auto* pLhs = std::get_if<VkBufferView>(&lhs))
-		{
-			return *pLhs == std::get<VkBufferView>(rhs);
-		}
-		if (const auto* pLhs = std::get_if<VkAccelerationStructureKHR>(&lhs))
-		{
-			return *pLhs == std::get<VkAccelerationStructureKHR>(rhs);
-		}
-
-		return false;
-	}
-
 	bool _IsImageDescriptorType(VkDescriptorType inType)
 	{
 		switch (inType)
@@ -81,234 +47,161 @@ namespace
 
 	bool _IsTexelBufferDescriptorType(VkDescriptorType inType)
 	{
-		switch (inType)
-		{
-		case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-		case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-			return true;
-		default:
-			return false;
-		}
+		return inType == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER
+			|| inType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
 	}
 
-	struct DescriptorWriteBundle
+	struct DescriptorWriteBundle final
 	{
-		struct BindingLayoutMetadata
-		{
-			VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_MAX_ENUM;
-			uint32_t descriptorCount = 0;
-		};
-
-		std::unordered_map<uint32_t, BindingLayoutMetadata> layoutMetadata;
 		std::vector<VkWriteDescriptorSet> writes;
-		std::vector<std::vector<VkDescriptorBufferInfo>> bufferInfoStorage;
-		std::vector<std::vector<VkDescriptorImageInfo>> imageInfoStorage;
-		std::vector<std::vector<VkBufferView>> bufferViewStorage;
-		std::vector<std::vector<VkAccelerationStructureKHR>> accelerationStructureStorage;
-		std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationStructureWriteStorage;
+		std::vector<VkDescriptorBufferInfo> bufferInfos;
+		std::vector<VkDescriptorImageInfo> imageInfos;
+		std::vector<VkBufferView> bufferViews;
+		std::vector<VkAccelerationStructureKHR> accelerationStructures;
+		std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accelerationWrites;
+
+		void Reserve(size_t inCount)
+		{
+			writes.reserve(inCount);
+			bufferInfos.reserve(inCount);
+			imageInfos.reserve(inCount);
+			bufferViews.reserve(inCount);
+			accelerationStructures.reserve(inCount);
+			accelerationWrites.reserve(inCount);
+		}
 	};
 
-	static void _FillDescriptorWrite(
-		VkDescriptorSet inDescriptorSet,
-		const DescriptorSetState& inDescriptorSetState,
-		DescriptorWriteBundle& inOutWriteBundle)
+	void _CheckResource(const DescriptorSetDesc::DescriptorBindingInfo& inResource)
 	{
-		const auto& mapBindingToDescriptor = inDescriptorSetState.GetMapBindingToDescriptor();
+		std::visit(
+			[](const auto& resource)
+			{
+				using ResourceType = std::decay_t<decltype(resource)>;
+				if constexpr (std::is_same_v<ResourceType, DescriptorBufferBinding>)
+				{
+					CHECK_TRUE(resource.buffer != nullptr, "Descriptor buffer resource cannot be null!");
+				}
+				else if constexpr (std::is_same_v<ResourceType, DescriptorImageBinding>)
+				{
+					CHECK_TRUE(resource.imageView != nullptr, "Descriptor image view cannot be null!");
+				}
+				else
+				{
+					CHECK_TRUE(resource != nullptr, "Descriptor resource cannot be null!");
+				}
+			},
+			inResource);
+	}
 
-		inOutWriteBundle.writes.clear();
-		inOutWriteBundle.bufferInfoStorage.clear();
-		inOutWriteBundle.imageInfoStorage.clear();
-		inOutWriteBundle.bufferViewStorage.clear();
-		inOutWriteBundle.accelerationStructureStorage.clear();
-		inOutWriteBundle.accelerationStructureWriteStorage.clear();
+	void _AppendWrite(
+		VkDescriptorSet inDescriptorSet,
+		const DescriptorSetDesc::Item& inItem,
+		VkDescriptorType inDescriptorType,
+		DescriptorWriteBundle& inOutBundle)
+	{
+		_CheckResource(inItem.resource);
 
-		inOutWriteBundle.writes.reserve(mapBindingToDescriptor.size());
-		inOutWriteBundle.bufferInfoStorage.reserve(mapBindingToDescriptor.size());
-		inOutWriteBundle.imageInfoStorage.reserve(mapBindingToDescriptor.size());
-		inOutWriteBundle.bufferViewStorage.reserve(mapBindingToDescriptor.size());
-		inOutWriteBundle.accelerationStructureStorage.reserve(mapBindingToDescriptor.size());
-		inOutWriteBundle.accelerationStructureWriteStorage.reserve(mapBindingToDescriptor.size());
+		VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+		write.dstSet = inDescriptorSet;
+		write.dstBinding = inItem.binding;
+		write.dstArrayElement = inItem.arrayElement;
+		write.descriptorCount = 1;
+		write.descriptorType = inDescriptorType;
 
-		for (const auto& [bindingId, descriptorState] : mapBindingToDescriptor)
+		if (_IsBufferDescriptorType(inDescriptorType))
 		{
-			const auto& bindingInfoList = descriptorState.GetBindingInfo();
-			if (bindingInfoList.empty())
+			const auto* bufferBinding = std::get_if<DescriptorBufferBinding>(&inItem.resource);
+			CHECK_TRUE(bufferBinding != nullptr, "Descriptor resource does not match buffer descriptor type!");
+			VkDescriptorBufferInfo& bufferInfo = inOutBundle.bufferInfos.emplace_back();
+			bufferInfo.buffer = bufferBinding->buffer->GetVkBuffer();
+			bufferInfo.offset = bufferBinding->offset;
+			bufferInfo.range = bufferBinding->range;
+			write.pBufferInfo = &bufferInfo;
+		}
+		else if (inDescriptorType == VK_DESCRIPTOR_TYPE_SAMPLER)
+		{
+			const auto* sampler = std::get_if<const Sampler*>(&inItem.resource);
+			CHECK_TRUE(sampler != nullptr && *sampler != nullptr, "Sampler descriptor requires a sampler!");
+			VkDescriptorImageInfo& imageInfo = inOutBundle.imageInfos.emplace_back();
+			imageInfo.sampler = (*sampler)->GetVkSampler();
+			write.pImageInfo = &imageInfo;
+		}
+		else if (_IsImageDescriptorType(inDescriptorType))
+		{
+			const auto* imageBinding = std::get_if<DescriptorImageBinding>(&inItem.resource);
+			CHECK_TRUE(imageBinding != nullptr, "Descriptor resource does not match image descriptor type!");
+			if (inDescriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
 			{
-				continue;
-			}
-
-			const auto metadataIt = inOutWriteBundle.layoutMetadata.find(bindingId);
-			CHECK_TRUE(metadataIt != inOutWriteBundle.layoutMetadata.end(), "DescriptorState contains a binding not present in the descriptor set layout!");
-			const auto& layoutMetadataEntry = metadataIt->second;
-			CHECK_TRUE(
-				descriptorState.GetDstArrayElement() + bindingInfoList.size() <= layoutMetadataEntry.descriptorCount,
-				"DescriptorState has more bindings than the descriptor set layout allows!");
-
-			VkWriteDescriptorSet write{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-			write.dstSet = inDescriptorSet;
-			write.dstBinding = bindingId;
-			write.dstArrayElement = descriptorState.GetDstArrayElement();
-			write.descriptorType = layoutMetadataEntry.descriptorType;
-			write.descriptorCount = static_cast<uint32_t>(bindingInfoList.size());
-
-			if (_IsBufferDescriptorType(layoutMetadataEntry.descriptorType))
-			{
-				auto& currentStorage = inOutWriteBundle.bufferInfoStorage.emplace_back();
-				currentStorage.reserve(bindingInfoList.size());
-				for (const auto& bindingInfo : bindingInfoList)
-				{
-					const auto* pBufferInfo = std::get_if<VkDescriptorBufferInfo>(&bindingInfo);
-					CHECK_TRUE(pBufferInfo != nullptr, "DescriptorState binding info does not match buffer descriptor type!");
-					currentStorage.push_back(*pBufferInfo);
-				}
-				write.pBufferInfo = currentStorage.data();
-			}
-			else if (_IsImageDescriptorType(layoutMetadataEntry.descriptorType))
-			{
-				auto& currentStorage = inOutWriteBundle.imageInfoStorage.emplace_back();
-				currentStorage.reserve(bindingInfoList.size());
-				for (const auto& bindingInfo : bindingInfoList)
-				{
-					const auto* pImageInfo = std::get_if<VkDescriptorImageInfo>(&bindingInfo);
-					CHECK_TRUE(pImageInfo != nullptr, "DescriptorState binding info does not match image descriptor type!");
-					currentStorage.push_back(*pImageInfo);
-				}
-				write.pImageInfo = currentStorage.data();
-			}
-			else if (_IsTexelBufferDescriptorType(layoutMetadataEntry.descriptorType))
-			{
-				auto& currentStorage = inOutWriteBundle.bufferViewStorage.emplace_back();
-				currentStorage.reserve(bindingInfoList.size());
-				for (const auto& bindingInfo : bindingInfoList)
-				{
-					const auto* pBufferView = std::get_if<VkBufferView>(&bindingInfo);
-					CHECK_TRUE(pBufferView != nullptr, "DescriptorState binding info does not match texel buffer descriptor type!");
-					currentStorage.push_back(*pBufferView);
-				}
-				write.pTexelBufferView = currentStorage.data();
-			}
-			else if (layoutMetadataEntry.descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
-			{
-				auto& currentStorage = inOutWriteBundle.accelerationStructureStorage.emplace_back();
-				currentStorage.reserve(bindingInfoList.size());
-				for (const auto& bindingInfo : bindingInfoList)
-				{
-					const auto* pAccelerationStructure = std::get_if<VkAccelerationStructureKHR>(&bindingInfo);
-					CHECK_TRUE(pAccelerationStructure != nullptr, "DescriptorState binding info does not match acceleration structure descriptor type!");
-					currentStorage.push_back(*pAccelerationStructure);
-				}
-
-				auto& accelerationStructureWrite = inOutWriteBundle.accelerationStructureWriteStorage.emplace_back();
-				accelerationStructureWrite = {};
-				accelerationStructureWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
-				accelerationStructureWrite.accelerationStructureCount = static_cast<uint32_t>(currentStorage.size());
-				accelerationStructureWrite.pAccelerationStructures = currentStorage.data();
-				write.pNext = &accelerationStructureWrite;
+				CHECK_TRUE(imageBinding->sampler != nullptr, "Combined image sampler requires a sampler!");
 			}
 			else
 			{
-				throw std::runtime_error("Unsupported descriptor type!");
+				CHECK_TRUE(imageBinding->sampler == nullptr, "Image descriptor must not include a sampler!");
 			}
-
-			inOutWriteBundle.writes.push_back(write);
+			VkDescriptorImageInfo& imageInfo = inOutBundle.imageInfos.emplace_back();
+			imageInfo.imageView = imageBinding->imageView->GetVkImageView();
+			imageInfo.imageLayout = imageBinding->imageLayout;
+			imageInfo.sampler = imageBinding->sampler != nullptr
+				? imageBinding->sampler->GetVkSampler()
+				: VK_NULL_HANDLE;
+			write.pImageInfo = &imageInfo;
 		}
-	}
-
-	DescriptorState _MakeNullDescriptorState(const VkDescriptorSetLayoutBinding& inLayoutBinding)
-	{
-		DescriptorState state{};
-		const uint32_t descriptorCount = inLayoutBinding.descriptorCount;
-
-		if (_IsBufferDescriptorType(inLayoutBinding.descriptorType))
+		else if (_IsTexelBufferDescriptorType(inDescriptorType))
 		{
-			for (uint32_t i = 0; i < descriptorCount; ++i)
-			{
-				state.SetBinding(VkDescriptorBufferInfo{}, i);
-			}
+			const auto* bufferView = std::get_if<const BufferView*>(&inItem.resource);
+			CHECK_TRUE(bufferView != nullptr && *bufferView != nullptr, "Texel buffer descriptor requires a buffer view!");
+			VkBufferView& view = inOutBundle.bufferViews.emplace_back((*bufferView)->GetVkBufferView());
+			write.pTexelBufferView = &view;
 		}
-		else if (_IsImageDescriptorType(inLayoutBinding.descriptorType))
+		else if (inDescriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
 		{
-			for (uint32_t i = 0; i < descriptorCount; ++i)
-			{
-				state.SetBinding(VkDescriptorImageInfo{}, i);
-			}
-		}
-		else if (_IsTexelBufferDescriptorType(inLayoutBinding.descriptorType))
-		{
-			for (uint32_t i = 0; i < descriptorCount; ++i)
-			{
-				state.SetBinding(VkBufferView{}, i);
-			}
-		}
-		else if (inLayoutBinding.descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR)
-		{
-			for (uint32_t i = 0; i < descriptorCount; ++i)
-			{
-				state.SetBinding(VkAccelerationStructureKHR{}, i);
-			}
+			const auto* accelerationStructure = std::get_if<const TopLevelAccelStruct*>(&inItem.resource);
+			CHECK_TRUE(
+				accelerationStructure != nullptr && *accelerationStructure != nullptr,
+				"Acceleration structure descriptor requires a top-level acceleration structure!");
+			VkAccelerationStructureKHR& handle = inOutBundle.accelerationStructures.emplace_back(
+				(*accelerationStructure)->GetVkAccelerationStructure());
+			VkWriteDescriptorSetAccelerationStructureKHR& accelerationWrite =
+				inOutBundle.accelerationWrites.emplace_back();
+			accelerationWrite = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+			accelerationWrite.accelerationStructureCount = 1;
+			accelerationWrite.pAccelerationStructures = &handle;
+			write.pNext = &accelerationWrite;
 		}
 		else
 		{
 			throw std::runtime_error("Unsupported descriptor type!");
 		}
 
-		return state;
+		inOutBundle.writes.push_back(write);
 	}
-}
 
-void DynamicDescriptorSetAllocator::AllocateInfo::SetLayout(const DescriptorSetLayout* inLayout)
-{
-	m_descriptorSetLayout = inLayout;
-	m_vkDescriptorSetLayout = inLayout != nullptr ? inLayout->GetVkDescriptorSetLayout() : VK_NULL_HANDLE;
-}
-
-DescriptorSet::~DescriptorSet()
-{
-	// Do nothing, descriptor pool will do this for us when destroyed
-	m_vkDescriptorSet = VK_NULL_HANDLE;
-}
-
-void DescriptorSetCreateInfo::Reset()
-{
-	*this = DescriptorSetCreateInfo{};
-}
-
-void DescriptorSet::Create(const DescriptorSetCreateInfo& inCreateInfo)
-{
-	CHECK_TRUE(inCreateInfo.m_descriptorSetLayout != nullptr, "DescriptorSetCreateInfo must have a descriptor set layout!");
-	auto pAllocator = MyDevice::GetInstance().GetDescriptorSetAllocator();
-	const DescriptorSetLayout& descriptorSetLayout = *inCreateInfo.m_descriptorSetLayout;
-	const VkDescriptorPoolCreateFlags poolFlags = descriptorSetLayout.GetRequiredPoolCreateFlags();
-
-	m_vkDescriptorSet = pAllocator->AllocateDescriptorSet(descriptorSetLayout.GetVkDescriptorSetLayout(), poolFlags);
-	m_bindingLayoutMetadata.clear();
-	m_cachedState.Reset();
-	for (const auto& [bindingId, layoutBinding] : descriptorSetLayout.m_descriptorBindings)
+	void _ValidateAndBuildWrites(
+		VkDescriptorSet inDescriptorSet,
+		const DescriptorSetLayout& inLayout,
+		const DescriptorSetDesc& inDesc,
+		DescriptorWriteBundle& outBundle)
 	{
-		BindingLayoutMetadata metadata{};
-		metadata.descriptorType = layoutBinding.descriptorType;
-		metadata.descriptorCount = layoutBinding.descriptorCount;
-		m_bindingLayoutMetadata[bindingId] = metadata;
-		m_cachedState.SetBinding(_MakeNullDescriptorState(layoutBinding), bindingId);
+		outBundle.Reserve(inDesc.GetItems().size());
+		std::set<std::pair<uint32_t, uint32_t>> writtenElements;
+		for (const DescriptorSetDesc::Item& item : inDesc.GetItems())
+		{
+			const auto& layoutBindings = inLayout.GetDescriptorSetLayoutBindings();
+			const auto bindingIt = layoutBindings.find(item.binding);
+			CHECK_TRUE(bindingIt != layoutBindings.end(), "Descriptor binding is not present in the layout!");
+			const VkDescriptorSetLayoutBinding& layoutBinding = bindingIt->second;
+			CHECK_TRUE(item.arrayElement < layoutBinding.descriptorCount, "Descriptor array element is out of range!");
+			CHECK_TRUE(
+				writtenElements.emplace(item.binding, item.arrayElement).second,
+				"Descriptor binding array element was specified more than once!");
+			_AppendWrite(inDescriptorSet, item, layoutBinding.descriptorType, outBundle);
+		}
 	}
-}
 
-void DescriptorSet::Destroy()
-{
-	// Do nothing, descriptor pool will do this for us when destroyed
-	m_vkDescriptorSet = VK_NULL_HANDLE;
-	m_bindingLayoutMetadata.clear();
-	m_cachedState.Reset();
-}
-
-VkDescriptorSet DescriptorSet::GetVkDescriptorSet() const
-{
-	return m_vkDescriptorSet;
-}
-
-DescriptorSetLayout::~DescriptorSetLayout()
-{
-	assert(m_vkDescriptorSetLayout == VK_NULL_HANDLE);
+	void _HashPointer(size_t& ioSeed, const void* inPointer)
+	{
+		hash_combine(ioSeed, reinterpret_cast<std::uintptr_t>(inPointer));
+	}
 }
 
 void DescriptorSetLayoutCreateInfo::Reset()
@@ -316,378 +209,300 @@ void DescriptorSetLayoutCreateInfo::Reset()
 	*this = DescriptorSetLayoutCreateInfo{};
 }
 
-void DescriptorSetLayoutCreateInfo::SetBinding(
+auto DescriptorSetLayoutCreateInfo::SetBinding(
 	uint32_t inBinding,
 	VkDescriptorType inType,
 	VkShaderStageFlags inStages,
-	const DescriptorSetLayoutCreateInfo::ExtraInfo* inExtraInfo)
+	uint32_t inDescriptorCount) -> DescriptorSetLayoutCreateInfo&
 {
-	uint32_t descriptorCount = 1;
-	VkDescriptorBindingFlags bindingFlags = 0;
-	for (const ExtraInfo* currentExtraInfo = inExtraInfo; currentExtraInfo != nullptr; currentExtraInfo = currentExtraInfo->extraInfo)
-	{
-		switch (currentExtraInfo->type)
-		{
-		case ExtraInfoType::UNSET:
-			break;
-		case ExtraInfoType::ARRAY_SIZE:
-		{
-			const ArraySizeInfo& arraySizeInfo = static_cast<const ArraySizeInfo&>(*currentExtraInfo);
-			CHECK_TRUE(arraySizeInfo.size > 0, "Descriptor array size must be greater than zero!");
-			descriptorCount = arraySizeInfo.size;
-		}
-		break;
-		case ExtraInfoType::BINDLESS:
-			bindingFlags |= (VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT_EXT);
-			m_poolFlags |= VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT_EXT;
-			break;
-		default:
-			throw std::runtime_error("Unsupported descriptor set layout create info extra type!");
-		}
-	}
-
-	VkDescriptorSetLayoutBinding layoutBinding{};
-	layoutBinding.binding = inBinding;
-	layoutBinding.descriptorCount = descriptorCount;
-	layoutBinding.descriptorType = inType;
-	layoutBinding.stageFlags = inStages;
-
-	auto bindingIt = std::find_if(
-		m_layoutBindings.begin(),
-		m_layoutBindings.end(),
-		[inBinding](const VkDescriptorSetLayoutBinding& binding)
-		{
-			return binding.binding == inBinding;
-		});
-
-	if (bindingIt != m_layoutBindings.end())
-	{
-		const size_t bindingIndex = static_cast<size_t>(std::distance(m_layoutBindings.begin(), bindingIt));
-		*bindingIt = layoutBinding;
-		m_bindingFlags[bindingIndex] = bindingFlags;
-	}
-	else
-	{
-		m_layoutBindings.push_back(layoutBinding);
-		m_bindingFlags.push_back(bindingFlags);
-	}
+	CHECK_TRUE(inDescriptorCount > 0, "Descriptor count must be greater than zero!");
+	VkDescriptorSetLayoutBinding binding{};
+	binding.binding = inBinding;
+	binding.descriptorType = inType;
+	binding.stageFlags = inStages;
+	binding.descriptorCount = inDescriptorCount;
+	m_descriptorBindings[inBinding] = binding;
+	return *this;
 }
+
+DescriptorSetLayout::~DescriptorSetLayout() = default;
 
 void DescriptorSetLayout::Create(const DescriptorSetLayoutCreateInfo& inCreateInfo)
 {
-	VkDescriptorSetLayoutCreateInfo createInfo{};
-	VkDescriptorSetLayoutBindingFlagsCreateInfo flagInfo{};
-	auto& device = MyDevice::GetInstance();
-
-	createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	createInfo.bindingCount = static_cast<uint32_t>(inCreateInfo.m_layoutBindings.size());
-	createInfo.pBindings = inCreateInfo.m_layoutBindings.data();
-
-	m_descriptorBindings.clear();
-	m_descriptorBindings.reserve(inCreateInfo.m_layoutBindings.size());
-	m_requiredPoolFlags = inCreateInfo.m_poolFlags;
-	for (const VkDescriptorSetLayoutBinding& currentBinding : inCreateInfo.m_layoutBindings)
-	{
-		m_descriptorBindings[currentBinding.binding] = currentBinding;
-	}
-
-	const bool hasBindingFlags = std::any_of(
-		inCreateInfo.m_bindingFlags.begin(),
-		inCreateInfo.m_bindingFlags.end(),
-		[](VkDescriptorBindingFlags flags)
-		{
-			return flags != 0;
-		});
-
-	if (hasBindingFlags)
-	{
-		CHECK_TRUE(inCreateInfo.m_bindingFlags.size() == inCreateInfo.m_layoutBindings.size());
-		flagInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-		flagInfo.pBindingFlags = inCreateInfo.m_bindingFlags.data();
-		flagInfo.bindingCount = static_cast<uint32_t>(inCreateInfo.m_bindingFlags.size());
-		createInfo.pNext = &flagInfo;
-	}
-
-	m_vkDescriptorSetLayout = device.CreateDescriptorSetLayout(createInfo);
-}
-
-VkDescriptorSetLayout DescriptorSetLayout::GetVkDescriptorSetLayout() const
-{
-	return m_vkDescriptorSetLayout;
-}
-
-VkDescriptorPoolCreateFlags DescriptorSetLayout::GetRequiredPoolCreateFlags() const
-{
-	return m_requiredPoolFlags;
-}
-
-const VkDescriptorSetLayoutBinding& DescriptorSetLayout::GetDescriptorSetLayoutBinding(uint32_t inBinding) const
-{
-	return m_descriptorBindings.at(inBinding);
+	CHECK_TRUE(m_vkDescriptorSetLayout == VK_NULL_HANDLE, "Descriptor set layout is already created!");
+	m_descriptorBindings = inCreateInfo.m_descriptorBindings;
+	DescriptorSetLayoutAllocator* allocator = MyDevice::GetInstance().GetDescriptorSetLayoutAllocator();
+	CHECK_TRUE(allocator != nullptr, "Descriptor set layout allocator is not created!");
+	m_vkDescriptorSetLayout = allocator->Allocate(*this);
 }
 
 void DescriptorSetLayout::Destroy()
 {
-	if (m_vkDescriptorSetLayout != VK_NULL_HANDLE)
-	{
-		MyDevice::GetInstance().DestroyDescriptorSetLayout(m_vkDescriptorSetLayout);
-		m_vkDescriptorSetLayout = VK_NULL_HANDLE;
-	}
+	m_vkDescriptorSetLayout = VK_NULL_HANDLE;
 	m_descriptorBindings.clear();
 }
 
-void DescriptorState::Reset()
+auto DescriptorSetLayout::GetVkDescriptorSetLayout() const -> VkDescriptorSetLayout
 {
-	m_bindingInfo.clear();
-	m_writeInfo = {};
+	return m_vkDescriptorSetLayout;
 }
 
-void DescriptorState::SetBinding(const VkDescriptorBufferInfo& inBindingInfo, uint32_t inIndex)
+auto DescriptorSetLayout::GetDescriptorSetLayoutBinding(uint32_t inBinding) const
+	-> const VkDescriptorSetLayoutBinding&
 {
-	while (m_bindingInfo.size() <= inIndex)
-	{
-		m_bindingInfo.push_back(VkDescriptorBufferInfo{});
-	}
-	m_bindingInfo[inIndex] = inBindingInfo;
+	return m_descriptorBindings.at(inBinding);
 }
 
-void DescriptorState::SetBinding(const VkDescriptorImageInfo& inBindingInfo, uint32_t inIndex)
+auto DescriptorSetLayout::GetDescriptorSetLayoutBindings() const
+	-> const std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding>&
 {
-	while (m_bindingInfo.size() <= inIndex)
-	{
-		m_bindingInfo.push_back(VkDescriptorImageInfo{});
-	}
-	m_bindingInfo[inIndex] = inBindingInfo;
+	return m_descriptorBindings;
 }
 
-void DescriptorState::SetBinding(const VkBufferView& inBindingInfo, uint32_t inIndex)
+void DescriptorSetDesc::Reset()
 {
-	while (m_bindingInfo.size() <= inIndex)
-	{
-		m_bindingInfo.push_back(VkBufferView{});
-	}
-	m_bindingInfo[inIndex] = inBindingInfo;
+	m_items.clear();
 }
 
-void DescriptorState::SetBinding(const VkAccelerationStructureKHR& inBindingInfo, uint32_t inIndex)
+void DescriptorSetDesc::_SetBinding(
+	uint32_t inBinding,
+	DescriptorBindingInfo inBindingInfo,
+	uint32_t inArrayElement)
 {
-	while (m_bindingInfo.size() <= inIndex)
+	for (Item& item : m_items)
 	{
-		m_bindingInfo.push_back(VkAccelerationStructureKHR{});
-	}
-	m_bindingInfo[inIndex] = inBindingInfo;
-}
-
-bool operator==(const DescriptorState& lhs, const DescriptorState& rhs)
-{
-	if (lhs.m_writeInfo.dstArrayElement != rhs.m_writeInfo.dstArrayElement
-		|| lhs.m_bindingInfo.size() != rhs.m_bindingInfo.size())
-	{
-		return false;
-	}
-
-	for (size_t i = 0; i < lhs.m_bindingInfo.size(); ++i)
-	{
-		if (!_IsEqual(lhs.m_bindingInfo[i], rhs.m_bindingInfo[i]))
+		if (item.binding == inBinding && item.arrayElement == inArrayElement)
 		{
-			return false;
+			item.resource = std::move(inBindingInfo);
+			return;
 		}
 	}
-
-	return true;
+	m_items.push_back(Item{ inBinding, inArrayElement, std::move(inBindingInfo) });
 }
 
-bool operator!=(const DescriptorState& lhs, const DescriptorState& rhs)
+void DescriptorSetDesc::SetBuffer(
+	uint32_t inBinding,
+	const Buffer* inBuffer,
+	VkDeviceSize inOffset,
+	VkDeviceSize inRange,
+	uint32_t inArrayElement)
 {
-	return !(lhs == rhs);
+	_SetBinding(inBinding, DescriptorBufferBinding{ inBuffer, inOffset, inRange }, inArrayElement);
 }
 
-void DescriptorSetState::Reset()
+void DescriptorSetDesc::SetImage(
+	uint32_t inBinding,
+	const ImageView* inImageView,
+	VkImageLayout inImageLayout,
+	uint32_t inArrayElement)
 {
-	m_mapBindingToDescriptor.clear();
+	_SetBinding(inBinding, DescriptorImageBinding{ inImageView, nullptr, inImageLayout }, inArrayElement);
 }
 
-void DescriptorSetState::SetBinding(DescriptorState inBindingInfo, uint32_t inBinding)
+void DescriptorSetDesc::SetCombinedImageSampler(
+	uint32_t inBinding,
+	const ImageView* inImageView,
+	const Sampler* inSampler,
+	VkImageLayout inImageLayout,
+	uint32_t inArrayElement)
 {
-	m_mapBindingToDescriptor[inBinding] = std::move(inBindingInfo);
+	_SetBinding(inBinding, DescriptorImageBinding{ inImageView, inSampler, inImageLayout }, inArrayElement);
 }
 
-void DescriptorSet::WriteBindings(const DescriptorSetState& inBinding)
+void DescriptorSetDesc::SetSampler(uint32_t inBinding, const Sampler* inSampler, uint32_t inArrayElement)
 {
-	CHECK_TRUE(m_vkDescriptorSet != VK_NULL_HANDLE, "DescriptorSet must be created before writing bindings!");
+	_SetBinding(inBinding, inSampler, inArrayElement);
+}
 
-	DescriptorSetState changedBindingState;
+void DescriptorSetDesc::SetBufferView(uint32_t inBinding, const BufferView* inBufferView, uint32_t inArrayElement)
+{
+	_SetBinding(inBinding, inBufferView, inArrayElement);
+}
+
+void DescriptorSetDesc::SetAccelerationStructure(
+	uint32_t inBinding,
+	const TopLevelAccelStruct* inAccelerationStructure,
+	uint32_t inArrayElement)
+{
+	_SetBinding(inBinding, inAccelerationStructure, inArrayElement);
+}
+
+void DescriptorSetDesc::Merge(const DescriptorSetDesc& inOther)
+{
+	for (const Item& item : inOther.m_items)
+	{
+		_SetBinding(item.binding, item.resource, item.arrayElement);
+	}
+}
+
+auto DescriptorSetDesc::GetItems() const -> const std::vector<Item>&
+{
+	return m_items;
+}
+
+void DescriptorSetCreateInfo::Reset()
+{
+	*this = DescriptorSetCreateInfo{};
+}
+
+DescriptorSet::~DescriptorSet()
+{
+	Destroy();
+}
+
+void DescriptorSet::Create(const DescriptorSetCreateInfo& inCreateInfo)
+{
+	CHECK_TRUE(
+		inCreateInfo.m_descriptorSetLayout.GetVkDescriptorSetLayout() != VK_NULL_HANDLE,
+		"Descriptor set create info must contain a valid layout!");
+	CHECK_TRUE(m_vkDescriptorSet == VK_NULL_HANDLE, "Descriptor set is already created!");
+
 	DescriptorWriteBundle writeBundle;
-
-	writeBundle.layoutMetadata.reserve(inBinding.m_mapBindingToDescriptor.size());
-
-	for (const auto& [bindingId, descriptorState] : inBinding.m_mapBindingToDescriptor)
-	{
-		if (descriptorState.m_bindingInfo.empty())
-		{
-			continue;
-		}
-
-		const auto metadataIt = m_bindingLayoutMetadata.find(bindingId);
-		CHECK_TRUE(metadataIt != m_bindingLayoutMetadata.end(), "DescriptorState contains a binding not present in the descriptor set layout!");
-		const BindingLayoutMetadata& layoutMetadata = metadataIt->second;
-		CHECK_TRUE(
-			descriptorState.m_writeInfo.dstArrayElement + descriptorState.m_bindingInfo.size() <= layoutMetadata.descriptorCount,
-			"DescriptorState has more bindings than the descriptor set layout allows!");
-
-		auto cachedIt = m_cachedState.m_mapBindingToDescriptor.find(bindingId);
-		CHECK_TRUE(cachedIt != m_cachedState.m_mapBindingToDescriptor.end(), "DescriptorSet cache is missing a layout binding!");
-		CHECK_TRUE(
-			cachedIt->second.m_bindingInfo.size() >= descriptorState.m_writeInfo.dstArrayElement + descriptorState.m_bindingInfo.size(),
-			"DescriptorSet cached state is smaller than the update range!");
-
-		bool isStateChanged = false;
-		for (size_t i = 0; i < descriptorState.m_bindingInfo.size(); ++i)
-		{
-			const size_t cachedIndex = descriptorState.m_writeInfo.dstArrayElement + i;
-			if (!_IsEqual(cachedIt->second.m_bindingInfo[cachedIndex], descriptorState.m_bindingInfo[i]))
-			{
-				isStateChanged = true;
-				break;
-			}
-		}
-		if (!isStateChanged)
-		{
-			continue;
-		}
-
-		changedBindingState.SetBinding(descriptorState, bindingId);
-		writeBundle.layoutMetadata[bindingId] = { layoutMetadata.descriptorType, layoutMetadata.descriptorCount };
-		for (size_t i = 0; i < descriptorState.m_bindingInfo.size(); ++i)
-		{
-			cachedIt->second.m_bindingInfo[descriptorState.m_writeInfo.dstArrayElement + i] = descriptorState.m_bindingInfo[i];
-		}
-	}
-
-	_FillDescriptorWrite(m_vkDescriptorSet, changedBindingState, writeBundle);
+	const VkDescriptorSet descriptorSet = MyDevice::GetInstance().GetDescriptorSetAllocator()->AllocateDescriptorSet(
+		inCreateInfo.m_descriptorSetLayout.GetVkDescriptorSetLayout());
+	_ValidateAndBuildWrites(descriptorSet, inCreateInfo.m_descriptorSetLayout, inCreateInfo.m_descriptorSetDesc, writeBundle);
 	if (!writeBundle.writes.empty())
 	{
 		MyDevice::GetInstance().UpdateDescriptorSets(writeBundle.writes);
 	}
+
+	m_vkDescriptorSet = descriptorSet;
+	m_descriptorSetLayout = inCreateInfo.m_descriptorSetLayout;
+	m_descriptorSetDesc = inCreateInfo.m_descriptorSetDesc;
 }
 
-auto DynamicDescriptorSetAllocator::_HashDescriptorBindingInfo(const DescriptorState::DescriptorBindingInfo& inInfo) const -> size_t
+void DescriptorSet::Destroy()
+{
+	m_vkDescriptorSet = VK_NULL_HANDLE;
+	m_descriptorSetLayout = {};
+	m_descriptorSetDesc.Reset();
+}
+
+auto DescriptorSet::GetVkDescriptorSet() const -> VkDescriptorSet
+{
+	return m_vkDescriptorSet;
+}
+
+void DynamicDescriptorSetAllocator::AllocateInfo::SetLayout(DescriptorSetLayout inLayout)
+{
+	m_descriptorSetLayout = std::move(inLayout);
+	m_vkDescriptorSetLayout = m_descriptorSetLayout.GetVkDescriptorSetLayout();
+}
+
+auto DynamicDescriptorSetAllocator::_HashDescriptorBindingInfo(
+	const DescriptorSetDesc::DescriptorBindingInfo& inInfo) const -> size_t
 {
 	size_t result = 0;
-	::hash_combine(result, inInfo.index());
-
-	if (const auto* pBufferInfo = std::get_if<VkDescriptorBufferInfo>(&inInfo))
-	{
-		::hash_combine(result, *pBufferInfo);
-	}
-	else if (const auto* pImageInfo = std::get_if<VkDescriptorImageInfo>(&inInfo))
-	{
-		::hash_combine(result, *pImageInfo);
-	}
-	else if (const auto* pBufferView = std::get_if<VkBufferView>(&inInfo))
-	{
-		::hash_combine(result, *pBufferView);
-	}
-	else if (const auto* pAccel = std::get_if<VkAccelerationStructureKHR>(&inInfo))
-	{
-		::hash_combine(result, *pAccel);
-	}
-
+	std::visit(
+		[&result](const auto& resource)
+		{
+			using ResourceType = std::decay_t<decltype(resource)>;
+			if constexpr (std::is_same_v<ResourceType, DescriptorBufferBinding>)
+			{
+				_HashPointer(result, resource.buffer);
+				hash_combine(result, resource.offset);
+				hash_combine(result, resource.range);
+			}
+			else if constexpr (std::is_same_v<ResourceType, DescriptorImageBinding>)
+			{
+				_HashPointer(result, resource.imageView);
+				_HashPointer(result, resource.sampler);
+				hash_combine(result, static_cast<std::underlying_type_t<VkImageLayout>>(resource.imageLayout));
+			}
+			else
+			{
+				_HashPointer(result, resource);
+			}
+		},
+		inInfo);
 	return result;
 }
 
-auto DynamicDescriptorSetAllocator::_HashDescriptorState(const DescriptorState& inState) const -> size_t
+auto DynamicDescriptorSetAllocator::_HashDescriptorSetDesc(const DescriptorSetDesc& inDesc) const -> size_t
 {
-	size_t result = 0;
-	::hash_combine(result, inState.m_writeInfo.dstArrayElement);
-	::hash_combine(result, inState.m_bindingInfo.size());
-	for (const auto& bindingInfo : inState.m_bindingInfo)
+	std::vector<const DescriptorSetDesc::Item*> sortedItems;
+	sortedItems.reserve(inDesc.m_items.size());
+	for (const DescriptorSetDesc::Item& item : inDesc.m_items)
 	{
-		::hash_combine(result, _HashDescriptorBindingInfo(bindingInfo));
+		sortedItems.push_back(&item);
+	}
+	std::sort(
+		sortedItems.begin(),
+		sortedItems.end(),
+		[](const auto* lhs, const auto* rhs)
+		{
+			return lhs->binding != rhs->binding
+				? lhs->binding < rhs->binding
+				: lhs->arrayElement < rhs->arrayElement;
+		});
+
+	size_t result = 0;
+	hash_combine(result, sortedItems.size());
+	for (const DescriptorSetDesc::Item* item : sortedItems)
+	{
+		hash_combine(result, item->binding);
+		hash_combine(result, item->arrayElement);
+		hash_combine(result, item->resource.index());
+		hash_combine(result, _HashDescriptorBindingInfo(item->resource));
 	}
 	return result;
 }
 
-auto DynamicDescriptorSetAllocator::_HashDescriptorSetState(const DescriptorSetState& inState) const -> size_t
-{
-	size_t result = 0;
-	std::vector<uint32_t> sortedBindings;
-
-	::hash_combine(result, inState.m_mapBindingToDescriptor.size());
-	sortedBindings.reserve(inState.m_mapBindingToDescriptor.size());
-	for (const auto& [bindingId, descriptorState] : inState.m_mapBindingToDescriptor)
-	{
-		sortedBindings.push_back(bindingId);
-	}
-	std::sort(sortedBindings.begin(), sortedBindings.end());
-
-	for (uint32_t bindingId : sortedBindings)
-	{
-		::hash_combine(result, bindingId);
-		::hash_combine(result, _HashDescriptorState(inState.m_mapBindingToDescriptor.at(bindingId)));
-	}
-	return result;
-}
-
-void DynamicDescriptorSetAllocator::_WriteDescriptorSet(VkDescriptorSet inDescriptorSet, const AllocateInfo& inAllocateInfo)
+void DynamicDescriptorSetAllocator::_WriteDescriptorSet(
+	VkDescriptorSet inDescriptorSet,
+	const AllocateInfo& inAllocateInfo)
 {
 	CHECK_TRUE(inDescriptorSet != VK_NULL_HANDLE, "Invalid descriptor set!");
-	if (inAllocateInfo.m_state.m_mapBindingToDescriptor.empty())
-	{
-		return;
-	}
-	CHECK_TRUE(inAllocateInfo.m_descriptorSetLayout != nullptr, "Dynamic descriptor allocation requires a DescriptorSetLayout for writes!");
-
+	CHECK_TRUE(
+		inAllocateInfo.m_descriptorSetLayout.GetVkDescriptorSetLayout() != VK_NULL_HANDLE,
+		"Dynamic descriptor allocation requires a descriptor set layout for writes!");
 	DescriptorWriteBundle writeBundle;
-	for (const auto& [bindingId, layoutBinding] : inAllocateInfo.m_descriptorSetLayout->m_descriptorBindings)
-	{
-		writeBundle.layoutMetadata[bindingId] = { layoutBinding.descriptorType, layoutBinding.descriptorCount };
-	}
-
-	_FillDescriptorWrite(inDescriptorSet, inAllocateInfo.m_state, writeBundle);
+	_ValidateAndBuildWrites(
+		inDescriptorSet,
+		inAllocateInfo.m_descriptorSetLayout,
+		inAllocateInfo.m_descriptorSetDesc,
+		writeBundle);
 	if (!writeBundle.writes.empty())
 	{
 		MyDevice::GetInstance().UpdateDescriptorSets(writeBundle.writes);
 	}
 }
 
-auto DynamicDescriptorSetAllocator::_GetCachedDescriptorSet(const AllocateInfo& inAllocateInfo) -> std::optional<VkDescriptorSet>
+auto DynamicDescriptorSetAllocator::_GetCachedDescriptorSet(
+	const AllocateInfo& inAllocateInfo) -> std::optional<VkDescriptorSet>
 {
 	const auto layoutIt = m_cachedDescriptorSets.find(inAllocateInfo.m_vkDescriptorSetLayout);
 	if (layoutIt == m_cachedDescriptorSets.end())
 	{
 		return std::nullopt;
 	}
-
-	const size_t stateHash = _HashDescriptorSetState(inAllocateInfo.m_state);
-	const auto cachedIt = layoutIt->second.mapHashToDescriptorSet.find(stateHash);
-	if (cachedIt == layoutIt->second.mapHashToDescriptorSet.end())
-	{
-		return std::nullopt;
-	}
-
-	return cachedIt->second;
+	const size_t hash = _HashDescriptorSetDesc(inAllocateInfo.m_descriptorSetDesc);
+	const auto cachedIt = layoutIt->second.mapHashToDescriptorSet.find(hash);
+	return cachedIt == layoutIt->second.mapHashToDescriptorSet.end()
+		? std::nullopt
+		: std::optional<VkDescriptorSet>{ cachedIt->second };
 }
 
 auto DynamicDescriptorSetAllocator::_AllocateDescriptorSet(const AllocateInfo& inAllocateInfo) -> VkDescriptorSet
 {
 	CHECK_TRUE(inAllocateInfo.m_vkDescriptorSetLayout != VK_NULL_HANDLE, "Dynamic descriptor allocator requires a descriptor set layout!");
 	CHECK_TRUE(m_uptrDescriptorSetAllocator != nullptr, "Dynamic descriptor allocator must be created before allocation!");
-
-	auto [descriptorSet, allocResult] = m_uptrDescriptorSetAllocator->AllocateDescriptorSetWithResult(inAllocateInfo.m_vkDescriptorSetLayout);
-
-	VK_CHECK(allocResult, "Failed to allocate dynamic descriptor set!");
+	auto [descriptorSet, result] = m_uptrDescriptorSetAllocator->AllocateDescriptorSetWithResult(
+		inAllocateInfo.m_vkDescriptorSetLayout);
+	VK_CHECK(result, "Failed to allocate dynamic descriptor set!");
 	_WriteDescriptorSet(descriptorSet, inAllocateInfo);
-
-	const size_t stateHash = _HashDescriptorSetState(inAllocateInfo.m_state);
-	m_cachedDescriptorSets[inAllocateInfo.m_vkDescriptorSetLayout].mapHashToDescriptorSet[stateHash] = descriptorSet;
+	m_cachedDescriptorSets[inAllocateInfo.m_vkDescriptorSetLayout].mapHashToDescriptorSet[
+		_HashDescriptorSetDesc(inAllocateInfo.m_descriptorSetDesc)] = descriptorSet;
 	return descriptorSet;
 }
 
 void DynamicDescriptorSetAllocator::Create()
 {
-	m_uptrDescriptorSetAllocator = std::make_unique<DescriptorSetAllocator>();
-	m_uptrDescriptorSetAllocator->Create();
+	if (m_uptrDescriptorSetAllocator == nullptr)
+	{
+		m_uptrDescriptorSetAllocator = std::make_unique<DescriptorSetAllocator>();
+		m_uptrDescriptorSetAllocator->Create();
+	}
 }
 
 void DynamicDescriptorSetAllocator::Reset()
@@ -700,22 +515,19 @@ void DynamicDescriptorSetAllocator::Reset()
 auto DynamicDescriptorSetAllocator::GetOrAllocateDescriptorSet(const AllocateInfo& inAllocateInfo) -> VkDescriptorSet
 {
 	CHECK_TRUE(inAllocateInfo.m_vkDescriptorSetLayout != VK_NULL_HANDLE, "Dynamic descriptor allocator requires a descriptor set layout!");
-
-	if (auto cached = _GetCachedDescriptorSet(inAllocateInfo); cached.has_value())
+	if (const auto cached = _GetCachedDescriptorSet(inAllocateInfo); cached.has_value())
 	{
-		return cached.value();
+		return *cached;
 	}
-
 	return _AllocateDescriptorSet(inAllocateInfo);
 }
 
 void DynamicDescriptorSetAllocator::Destroy()
 {
+	m_cachedDescriptorSets.clear();
 	if (m_uptrDescriptorSetAllocator != nullptr)
 	{
 		m_uptrDescriptorSetAllocator->Destroy();
 		m_uptrDescriptorSetAllocator.reset();
 	}
-
-	m_cachedDescriptorSets.clear();
 }

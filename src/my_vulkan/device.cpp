@@ -6,6 +6,7 @@
 #include <limits>
 #include "image.h"
 #include "memory_allocator.h"
+#include "allocator/descriptor_set_layout_allocator.h"
 #include "allocator/descriptor_set_allocator.h"
 #include "framebuffer_allocator.h"
 #include "render_pass_allocator.h"
@@ -611,6 +612,21 @@ void MyDevice::_DestroyDescriptorSetAllocator()
 	descriptorAllocator.reset();
 }
 
+void MyDevice::_CreateDescriptorSetLayoutAllocator()
+{
+	m_uptrDescriptorSetLayoutAllocator = std::make_unique<DescriptorSetLayoutAllocator>();
+	m_uptrDescriptorSetLayoutAllocator->Create(vkDevice);
+}
+
+void MyDevice::_DestroyDescriptorSetLayoutAllocator()
+{
+	if (m_uptrDescriptorSetLayoutAllocator != nullptr)
+	{
+		m_uptrDescriptorSetLayoutAllocator->Destroy();
+		m_uptrDescriptorSetLayoutAllocator.reset();
+	}
+}
+
 void MyDevice::_CreateFramebufferAllocator()
 {
 	m_uptrFramebufferAllocator = std::make_unique<FramebufferAllocator>();
@@ -728,6 +744,7 @@ void MyDevice::Create()
 	_CreatePipelineAllocators();
 	_CreateFramebufferAllocator();
 	_CreateSwapchain();
+	_CreateDescriptorSetLayoutAllocator();
 	_CreateDescriptorSetAllocator();
 	m_initialized = true;
 }
@@ -735,6 +752,7 @@ void MyDevice::Create()
 void MyDevice::Destroy()
 {
 	_DestroyDescriptorSetAllocator();
+	_DestroyDescriptorSetLayoutAllocator();
 	_DestroySwapchain();
 	_DestroyFramebufferAllocator();
 	_DestroyPipelineAllocators();
@@ -777,6 +795,11 @@ double MyDevice::GetTime() const
 MemoryAllocator* MyDevice::GetMemoryAllocator()
 {
 	return m_uptrMemoryAllocator.get();
+}
+
+auto MyDevice::GetDescriptorSetLayoutAllocator() -> DescriptorSetLayoutAllocator*
+{
+	return m_uptrDescriptorSetLayoutAllocator.get();
 }
 
 DescriptorSetAllocator* MyDevice::GetDescriptorSetAllocator()

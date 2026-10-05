@@ -1,23 +1,24 @@
 #pragma once
 #include "common.h"
+#include "resource/descriptor_set.h"
 
 class PipelineLayoutCreateInfo final
 {
 public:
 	PipelineLayoutCreateInfo() = default;
-	PipelineLayoutCreateInfo(const PipelineLayoutCreateInfo&) = delete;
-	PipelineLayoutCreateInfo(PipelineLayoutCreateInfo&&) = delete;
-	PipelineLayoutCreateInfo& operator=(const PipelineLayoutCreateInfo&) = delete;
-	PipelineLayoutCreateInfo& operator=(PipelineLayoutCreateInfo&&) = delete;
+	PipelineLayoutCreateInfo(const PipelineLayoutCreateInfo&) = default;
+	PipelineLayoutCreateInfo(PipelineLayoutCreateInfo&&) noexcept = default;
+	PipelineLayoutCreateInfo& operator=(const PipelineLayoutCreateInfo&) = default;
+	PipelineLayoutCreateInfo& operator=(PipelineLayoutCreateInfo&&) noexcept = default;
 	~PipelineLayoutCreateInfo() = default;
 
-	void AddDescriptorSetLayout(VkDescriptorSetLayout inLayout);
-	void AddPushConstantRange(VkShaderStageFlags inStages, uint32_t inOffset, uint32_t inSize);
+	auto AddDescriptorSetLayout(DescriptorSetLayout inLayout) -> PipelineLayoutCreateInfo&;
+	auto AddPushConstantRange(VkShaderStageFlags inStages, uint32_t inOffset, uint32_t inSize) -> PipelineLayoutCreateInfo&;
 
 private:
 	friend class PipelineLayout;
 
-	std::vector<VkDescriptorSetLayout> m_descriptorSetLayouts;
+	std::vector<DescriptorSetLayout> m_descriptorSetLayouts;
 	std::vector<VkPushConstantRange> m_pushConstantRanges;
 };
 
@@ -25,14 +26,19 @@ class PipelineLayout final
 {
 private:
 	VkPipelineLayout m_vkPipelineLayout = VK_NULL_HANDLE;
+	std::vector<DescriptorSetLayout> m_descriptorSetLayouts;
+	std::vector<VkPushConstantRange> m_pushConstantRanges;
 
 public:
 	PipelineLayout() = default;
-	PipelineLayout(const PipelineLayout&) = delete;
-	PipelineLayout& operator=(const PipelineLayout&) = delete;
+	PipelineLayout(const PipelineLayout&) = default;
+	PipelineLayout& operator=(const PipelineLayout&) = default;
+	PipelineLayout(PipelineLayout&&) noexcept = default;
+	PipelineLayout& operator=(PipelineLayout&&) noexcept = default;
 	~PipelineLayout();
 
-	void Create(const PipelineLayoutCreateInfo* inCreateInfo);
+	void Create(const PipelineLayoutCreateInfo& inCreateInfo);
 	void Destroy();
 	auto GetVkPipelineLayout() const -> VkPipelineLayout { return m_vkPipelineLayout; };
+	auto GetDescriptorSetLayout(uint32_t inSet) const -> const DescriptorSetLayout&;
 };
