@@ -1,8 +1,7 @@
 #pragma once
 #include "common.h"
-#include "pipeline_layout.h"
+#include "shader_program_layout.h"
 #include "shader.h"
-#include "resource/descriptor_set.h"
 
 class PushConstantManager;
 
@@ -16,10 +15,10 @@ private:
 	VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;
 
 public:
-	ComputeShaderProgramCreateInfo& Reset();
-	ComputeShaderProgramCreateInfo& SetSpirvFile(std::string inFile);
-	ComputeShaderProgramCreateInfo& SetEntry(std::string inEntry);
-	ComputeShaderProgramCreateInfo& CustomizePipelineCache(VkPipelineCache inCache);
+	auto Reset() -> ComputeShaderProgramCreateInfo&;
+	auto SetSpirvFile(std::string inFile) -> ComputeShaderProgramCreateInfo&;
+	auto SetEntry(std::string inEntry) -> ComputeShaderProgramCreateInfo&;
+	auto CustomizePipelineCache(VkPipelineCache inCache) -> ComputeShaderProgramCreateInfo&;
 };
 
 class ComputeShaderProgram final
@@ -27,14 +26,10 @@ class ComputeShaderProgram final
 private:
 	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
 	std::unique_ptr<ShaderModule> m_uptrShaderModule;
-	std::vector<DescriptorSetLayout> m_descriptorSetLayouts;
-	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> m_nameToSetBinding;
-	PipelineLayout m_pipelineLayout;
+	ShaderProgramLayout m_shaderProgramLayout;
 	VkPipeline m_vkPipeline = VK_NULL_HANDLE;
 
 private:
-	void _CreateDescriptorSetLayouts(const std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>>& inDescriptorSetData);
-	void _CreatePipelineLayout(const std::vector<VkPushConstantRange>& inPushConstantRanges);
 	void _CreateVkPipeline(const VkPipelineShaderStageCreateInfo& inShaderStageInfo, VkPipelineCache inPipelineCache);
 	void _CreatePushConstantManager(const std::vector<VkPushConstantRange>& inPushConstantRanges);
 
@@ -45,9 +40,9 @@ public:
 	
 	void Destroy();
 
-	auto GetNameToSetBinding() const->const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>& ;
+	auto GetNameToSetBinding() const -> const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&;
 	
 	auto GetLayout() const -> const PipelineLayout&;
 	
-	VkPipeline GetVkPipeline() const;
+	auto GetVkPipeline() const -> VkPipeline;
 };

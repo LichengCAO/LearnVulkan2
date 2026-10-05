@@ -1,10 +1,8 @@
 #pragma once
 #include "pipeline_common.h"
-#include "pipeline_layout.h"
+#include "shader_program_layout.h"
 #include "shader.h"
-#include "resource/descriptor_set.h"
 #include <pipeline_state.h>
-#include <map>
 class RenderPass;
 class Framebuffer;
 class ImageView;
@@ -12,7 +10,6 @@ class GraphicsShaderProgram;
 class PushConstantManager;
 class CommandSubmission;
 class CommandBuffer;
-class DescriptorSetLayout;
 
 class GraphicsPipelineStateInfo final
 {
@@ -25,11 +22,11 @@ private:
 	uint32_t m_subpassIndex = 0;
 
 public:
-	GraphicsPipelineStateInfo& Reset();
-	GraphicsPipelineStateInfo& AddVertexInputDescription(
+	auto Reset() -> GraphicsPipelineStateInfo&;
+	auto AddVertexInputDescription(
 		const VkVertexInputBindingDescription& inBindingDescription,
-		const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions);
-	GraphicsPipelineStateInfo& SetRenderPassSubpass(const RenderPass* inRenderPassPtr, uint32_t inSubpassIndex = 0);
+		const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions) -> GraphicsPipelineStateInfo&;
+	auto SetRenderPassSubpass(const RenderPass* inRenderPassPtr, uint32_t inSubpassIndex = 0) -> GraphicsPipelineStateInfo&;
 };
 
 class GraphicsShaderProgramCreateInfo final
@@ -40,8 +37,8 @@ private:
 	std::vector<ShaderModuleCreateInfo> m_shaderModuleInfos;
 
 public:
-	GraphicsShaderProgramCreateInfo& Reset();
-	GraphicsShaderProgramCreateInfo& AddShaderModuleInfo(ShaderModuleCreateInfo inShaderModule);
+	auto Reset() -> GraphicsShaderProgramCreateInfo&;
+	auto AddShaderModuleInfo(ShaderModuleCreateInfo inShaderModule) -> GraphicsShaderProgramCreateInfo&;
 };
 
 class GraphicsShaderProgram final
@@ -49,17 +46,13 @@ class GraphicsShaderProgram final
 private:
 	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
 	std::vector<std::unique_ptr<ShaderModule>> m_shaderModules;
-	std::vector<DescriptorSetLayout> m_descriptorSetLayouts;
-	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> m_nameToSetBinding;
-	PipelineLayout m_pipelineLayout;
+	ShaderProgramLayout m_shaderProgramLayout;
 	std::unordered_map<size_t, VkPipeline> m_cachedGraphicsPipelines;
 
 private:
-	void _CreateDescriptorSetLayouts(const std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>>& inDescriptorSetData);
-	void _CreatePipelineLayout(const std::vector<VkPushConstantRange>& inPushConstantRanges);
 	void _CreatePushConstantManager(const std::vector<VkPushConstantRange>& inPushConstantRanges);
-	VkPipeline _CreateVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) const;
-	size_t _HashGraphicsPipelineStateInfo(const GraphicsPipelineStateInfo& inStateInfo) const;
+	auto _CreateVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) const -> VkPipeline;
+	auto _HashGraphicsPipelineStateInfo(const GraphicsPipelineStateInfo& inStateInfo) const -> size_t;
 
 public:
 	~GraphicsShaderProgram();
@@ -68,7 +61,7 @@ public:
 	
 	void Destroy();
 
-	auto GetNameToSetBinding() const->const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&;
+	auto GetNameToSetBinding() const -> const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&;
 	
 	auto GetLayout() const -> const PipelineLayout&;
 	

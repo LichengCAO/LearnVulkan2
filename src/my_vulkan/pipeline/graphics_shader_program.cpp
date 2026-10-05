@@ -3,7 +3,6 @@
 #include "push_constant_manager.h"
 #include "command_buffer.h"
 #include "render_pass.h"
-#include "shader_reflect.h"
 #include "utility/hash_util.h"
 
 #if 0
@@ -392,13 +391,13 @@ VkAttachmentDescription AttachmentDescriptionBuilder::Build() const
 }
 #endif
 
-GraphicsShaderProgramCreateInfo& GraphicsShaderProgramCreateInfo::Reset()
+auto GraphicsShaderProgramCreateInfo::Reset() -> GraphicsShaderProgramCreateInfo&
 {
 	m_shaderModuleInfos.clear();
 	return *this;
 }
 
-GraphicsShaderProgramCreateInfo& GraphicsShaderProgramCreateInfo::AddShaderModuleInfo(ShaderModuleCreateInfo inShaderModule)
+auto GraphicsShaderProgramCreateInfo::AddShaderModuleInfo(ShaderModuleCreateInfo inShaderModule) -> GraphicsShaderProgramCreateInfo&
 {
 	CHECK_TRUE(!inShaderModule.m_spirvFile.empty(), "Graphics shader SPIR-V file is unset!");
 	CHECK_TRUE(!inShaderModule.m_entries.empty(), "Graphics shader module needs at least one entry!");
@@ -407,7 +406,7 @@ GraphicsShaderProgramCreateInfo& GraphicsShaderProgramCreateInfo::AddShaderModul
 	return *this;
 }
 
-GraphicsPipelineStateInfo& GraphicsPipelineStateInfo::Reset()
+auto GraphicsPipelineStateInfo::Reset() -> GraphicsPipelineStateInfo&
 {
 	m_vertexBindingDescriptions.clear();
 	m_vertexAttributeDescriptions.clear();
@@ -416,9 +415,9 @@ GraphicsPipelineStateInfo& GraphicsPipelineStateInfo::Reset()
 	return *this;
 }
 
-GraphicsPipelineStateInfo& GraphicsPipelineStateInfo::AddVertexInputDescription(
+auto GraphicsPipelineStateInfo::AddVertexInputDescription(
 	const VkVertexInputBindingDescription& inBindingDescription,
-	const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions)
+	const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions) -> GraphicsPipelineStateInfo&
 {
 	m_vertexBindingDescriptions.push_back(inBindingDescription);
 	m_vertexAttributeDescriptions.insert(
@@ -429,7 +428,7 @@ GraphicsPipelineStateInfo& GraphicsPipelineStateInfo::AddVertexInputDescription(
 	return *this;
 }
 
-GraphicsPipelineStateInfo& GraphicsPipelineStateInfo::SetRenderPassSubpass(const RenderPass* inRenderPassPtr, uint32_t inSubpassIndex)
+auto GraphicsPipelineStateInfo::SetRenderPassSubpass(const RenderPass* inRenderPassPtr, uint32_t inSubpassIndex) -> GraphicsPipelineStateInfo&
 {
 	CHECK_TRUE(inRenderPassPtr != nullptr, "Graphics pipeline state info needs a render pass!");
 
@@ -440,9 +439,8 @@ GraphicsPipelineStateInfo& GraphicsPipelineStateInfo::SetRenderPassSubpass(const
 
 GraphicsShaderProgram::~GraphicsShaderProgram()
 {
-	assert(m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE);
+	assert(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE);
 	assert(m_shaderModules.empty());
-	assert(m_descriptorSetLayouts.empty());
 }
 
 void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo* inCreateInfo)
@@ -450,14 +448,9 @@ void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo* inCrea
 	CHECK_TRUE(inCreateInfo != nullptr, "No graphics shader program create info!");
 	CHECK_TRUE(!inCreateInfo->m_shaderModuleInfos.empty(), "Graphics shader program needs shaders!");
 	CHECK_TRUE(m_cachedGraphicsPipelines.empty(), "Graphics shader program already has cached pipelines!");
-	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE, "Graphics shader program already created!");
+	CHECK_TRUE(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE, "Graphics shader program already created!");
 
 	std::vector<std::string> spirvFiles;
-	std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>> descriptorSetData;
-	std::unordered_map<std::string, uint32_t> pushConstantIndex;
-	std::vector<std::pair<VkShaderStageFlags, std::pair<uint32_t, uint32_t>>> reflectedPushConstants;
-	std::vector<VkPushConstantRange> pushConstantRanges;
-	ShaderReflector reflector{};
 
 	for (const auto& shaderModuleInfo : inCreateInfo->m_shaderModuleInfos)
 	{
@@ -466,22 +459,8 @@ void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo* inCrea
 		spirvFiles.push_back(shaderModuleInfo.m_spirvFile);
 	}
 
-	reflector.Create(spirvFiles);
-	reflector.ReflectDescriptorSets(m_nameToSetBinding, descriptorSetData);
-	reflector.ReflectPushConst(pushConstantIndex, reflectedPushConstants);
-
-	for (const auto& reflectedPushConstant : reflectedPushConstants)
-	{
-		VkPushConstantRange range{};
-		range.stageFlags = reflectedPushConstant.first;
-		range.offset = reflectedPushConstant.second.first;
-		range.size = reflectedPushConstant.second.second;
-		pushConstantRanges.push_back(range);
-	}
-
-	_CreateDescriptorSetLayouts(descriptorSetData);
-	_CreatePipelineLayout(pushConstantRanges);
-	_CreatePushConstantManager(pushConstantRanges);
+	m_shaderProgramLayout.Create(spirvFiles);
+	_CreatePushConstantManager(m_shaderProgramLayout.GetPushConstantRanges());
 
 	m_shaderModules.reserve(inCreateInfo->m_shaderModuleInfos.size());
 	for (const auto& shaderModuleInfo : inCreateInfo->m_shaderModuleInfos)
@@ -492,56 +471,9 @@ void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo* inCrea
 		m_shaderModules.push_back(std::move(shaderModule));
 	}
 
-	reflector.Destroy();
-
-	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() != VK_NULL_HANDLE);
+	CHECK_TRUE(GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE);
 	CHECK_TRUE(m_uptrPushConstant != nullptr);
 	CHECK_TRUE(!m_shaderModules.empty());
-}
-
-void GraphicsShaderProgram::_CreateDescriptorSetLayouts(
-	const std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>>& inDescriptorSetData)
-{
-	for (const auto& descriptorSetBindings : inDescriptorSetData)
-	{
-		DescriptorSetLayoutCreateInfo layoutCreateInfo;
-
-		for (const auto& [bindingIndex, layoutBinding] : descriptorSetBindings)
-		{
-			CHECK_TRUE(
-				layoutBinding.pImmutableSamplers == nullptr,
-				"Immutable samplers are not supported by DescriptorSetLayout::SetBinding yet!");
-			layoutCreateInfo.SetBinding(
-				layoutBinding.binding,
-				layoutBinding.descriptorType,
-				layoutBinding.stageFlags,
-				layoutBinding.descriptorCount);
-		}
-
-		DescriptorSetLayout descriptorSetLayout;
-		descriptorSetLayout.Create(layoutCreateInfo);
-		m_descriptorSetLayouts.push_back(std::move(descriptorSetLayout));
-	}
-}
-
-void GraphicsShaderProgram::_CreatePipelineLayout(const std::vector<VkPushConstantRange>& inPushConstantRanges)
-{
-	PipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
-
-	for (const auto& descriptorSetLayout : m_descriptorSetLayouts)
-	{
-		pipelineLayoutCreateInfo.AddDescriptorSetLayout(descriptorSetLayout);
-	}
-
-	for (const auto& pushConstantRange : inPushConstantRanges)
-	{
-		pipelineLayoutCreateInfo.AddPushConstantRange(
-			pushConstantRange.stageFlags,
-			pushConstantRange.offset,
-			pushConstantRange.size);
-	}
-
-	m_pipelineLayout.Create(pipelineLayoutCreateInfo);
 }
 
 void GraphicsShaderProgram::_CreatePushConstantManager(const std::vector<VkPushConstantRange>& inPushConstantRanges)
@@ -556,7 +488,7 @@ void GraphicsShaderProgram::_CreatePushConstantManager(const std::vector<VkPushC
 	}
 }
 
-size_t GraphicsShaderProgram::_HashGraphicsPipelineStateInfo(const GraphicsPipelineStateInfo& inStateInfo) const
+auto GraphicsShaderProgram::_HashGraphicsPipelineStateInfo(const GraphicsPipelineStateInfo& inStateInfo) const -> size_t
 {
 	size_t result = 0;
 
@@ -576,9 +508,9 @@ size_t GraphicsShaderProgram::_HashGraphicsPipelineStateInfo(const GraphicsPipel
 	return result;
 }
 
-VkPipeline GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) const
+auto GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) const -> VkPipeline
 {
-	const VkPipelineLayout pipelineLayout = m_pipelineLayout.GetVkPipelineLayout();
+	const VkPipelineLayout pipelineLayout = GetLayout().GetVkPipelineLayout();
 	CHECK_TRUE(pipelineLayout != VK_NULL_HANDLE, "Graphics shader program needs a pipeline layout!");
 	CHECK_TRUE(!m_shaderModules.empty(), "Graphics shader program needs shader stages!");
 	CHECK_TRUE(inStateInfo.m_renderPassPtr != nullptr, "Graphics pipeline state info needs a render pass!");
@@ -703,23 +635,22 @@ void GraphicsShaderProgram::Destroy()
 		shaderModule->Destroy();
 	}
 	m_shaderModules.clear();
-	m_descriptorSetLayouts.clear();
-	m_pipelineLayout.Destroy();
-	m_nameToSetBinding.clear();
+	m_shaderProgramLayout.Destroy();
 	m_uptrPushConstant.reset();
 }
 
-const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>& GraphicsShaderProgram::GetNameToSetBinding() const
+auto GraphicsShaderProgram::GetNameToSetBinding() const
+	-> const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&
 {
-	return m_nameToSetBinding;
+	return m_shaderProgramLayout.GetNameToSetBinding();
 }
 
 auto GraphicsShaderProgram::GetLayout() const -> const PipelineLayout&
 {
-	return m_pipelineLayout;
+	return m_shaderProgramLayout.GetLayout();
 }
 
-VkPipeline GraphicsShaderProgram::GetVkPipeline(const GraphicsPipelineStateInfo& inStateInfo)
+auto GraphicsShaderProgram::GetVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) -> VkPipeline
 {
 	const size_t stateHash = _HashGraphicsPipelineStateInfo(inStateInfo);
 	if (const auto cacheIt = m_cachedGraphicsPipelines.find(stateHash); cacheIt != m_cachedGraphicsPipelines.end())

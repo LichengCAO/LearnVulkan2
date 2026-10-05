@@ -8,8 +8,8 @@ public:
 	PipelineLayoutCreateInfo() = default;
 	PipelineLayoutCreateInfo(const PipelineLayoutCreateInfo&) = default;
 	PipelineLayoutCreateInfo(PipelineLayoutCreateInfo&&) noexcept = default;
-	PipelineLayoutCreateInfo& operator=(const PipelineLayoutCreateInfo&) = default;
-	PipelineLayoutCreateInfo& operator=(PipelineLayoutCreateInfo&&) noexcept = default;
+	auto operator=(const PipelineLayoutCreateInfo&) -> PipelineLayoutCreateInfo& = default;
+	auto operator=(PipelineLayoutCreateInfo&&) noexcept -> PipelineLayoutCreateInfo& = default;
 	~PipelineLayoutCreateInfo() = default;
 
 	auto AddDescriptorSetLayout(DescriptorSetLayout inLayout) -> PipelineLayoutCreateInfo&;
@@ -32,13 +32,14 @@ private:
 public:
 	PipelineLayout() = default;
 	PipelineLayout(const PipelineLayout&) = default;
-	PipelineLayout& operator=(const PipelineLayout&) = default;
+	auto operator=(const PipelineLayout&) -> PipelineLayout& = default;
 	PipelineLayout(PipelineLayout&&) noexcept = default;
-	PipelineLayout& operator=(PipelineLayout&&) noexcept = default;
+	auto operator=(PipelineLayout&&) noexcept -> PipelineLayout& = default;
 	~PipelineLayout();
 
 	void Create(const PipelineLayoutCreateInfo& inCreateInfo);
 	void Destroy();
 	auto GetVkPipelineLayout() const -> VkPipelineLayout { return m_vkPipelineLayout; };
 	auto GetDescriptorSetLayout(uint32_t inSet) const -> const DescriptorSetLayout&;
+	auto GetPushConstantRanges() const -> const std::vector<VkPushConstantRange>& { return m_pushConstantRanges; }
 };

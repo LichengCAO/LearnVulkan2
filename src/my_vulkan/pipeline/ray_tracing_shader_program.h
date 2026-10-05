@@ -1,6 +1,6 @@
 #pragma once
 #include "common.h"
-#include "pipeline_layout.h"
+#include "shader_program_layout.h"
 
 class Buffer;
 class RayTracingShaderProgram;
@@ -169,7 +169,7 @@ public:
 
 private:
 	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
-	PipelineLayout m_pipelineLayout;
+	ShaderProgramLayout m_shaderProgramLayout;
 	VkPipeline m_vkPipeline = VK_NULL_HANDLE;
 	uint32_t m_shaderGroupCount = 0;
 	RayTracingShaderGroupSet m_groupSet;

@@ -12,7 +12,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <stdexcept>
-#include <type_traits>
 
 namespace
 {
@@ -76,12 +75,11 @@ namespace
 		std::visit(
 			[](const auto& resource)
 			{
-				using ResourceType = std::decay_t<decltype(resource)>;
-				if constexpr (std::is_same_v<ResourceType, DescriptorBufferBinding>)
+				if constexpr (requires { resource.buffer; })
 				{
 					CHECK_TRUE(resource.buffer != nullptr, "Descriptor buffer resource cannot be null!");
 				}
-				else if constexpr (std::is_same_v<ResourceType, DescriptorImageBinding>)
+				else if constexpr (requires { resource.imageView; })
 				{
 					CHECK_TRUE(resource.imageView != nullptr, "Descriptor image view cannot be null!");
 				}
@@ -93,9 +91,10 @@ namespace
 			inResource);
 	}
 
+	template <typename ItemType>
 	void _AppendWrite(
 		VkDescriptorSet inDescriptorSet,
-		const DescriptorSetDesc::Item& inItem,
+		const ItemType& inItem,
 		VkDescriptorType inDescriptorType,
 		DescriptorWriteBundle& inOutBundle)
 	{
@@ -110,7 +109,7 @@ namespace
 
 		if (_IsBufferDescriptorType(inDescriptorType))
 		{
-			const auto* bufferBinding = std::get_if<DescriptorBufferBinding>(&inItem.resource);
+			const auto* bufferBinding = std::get_if<0>(&inItem.resource);
 			CHECK_TRUE(bufferBinding != nullptr, "Descriptor resource does not match buffer descriptor type!");
 			VkDescriptorBufferInfo& bufferInfo = inOutBundle.bufferInfos.emplace_back();
 			bufferInfo.buffer = bufferBinding->buffer->GetVkBuffer();
@@ -128,7 +127,7 @@ namespace
 		}
 		else if (_IsImageDescriptorType(inDescriptorType))
 		{
-			const auto* imageBinding = std::get_if<DescriptorImageBinding>(&inItem.resource);
+			const auto* imageBinding = std::get_if<1>(&inItem.resource);
 			CHECK_TRUE(imageBinding != nullptr, "Descriptor resource does not match image descriptor type!");
 			if (inDescriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
 			{
@@ -176,19 +175,19 @@ namespace
 		inOutBundle.writes.push_back(write);
 	}
 
+	template <typename ItemType>
 	void _ValidateAndBuildWrites(
 		VkDescriptorSet inDescriptorSet,
-		const DescriptorSetLayout& inLayout,
-		const DescriptorSetDesc& inDesc,
+		const std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding>& inLayoutBindings,
+		const std::vector<ItemType>& inItems,
 		DescriptorWriteBundle& outBundle)
 	{
-		outBundle.Reserve(inDesc.GetItems().size());
+		outBundle.Reserve(inItems.size());
 		std::set<std::pair<uint32_t, uint32_t>> writtenElements;
-		for (const DescriptorSetDesc::Item& item : inDesc.GetItems())
+		for (const ItemType& item : inItems)
 		{
-			const auto& layoutBindings = inLayout.GetDescriptorSetLayoutBindings();
-			const auto bindingIt = layoutBindings.find(item.binding);
-			CHECK_TRUE(bindingIt != layoutBindings.end(), "Descriptor binding is not present in the layout!");
+			const auto bindingIt = inLayoutBindings.find(item.binding);
+			CHECK_TRUE(bindingIt != inLayoutBindings.end(), "Descriptor binding is not present in the layout!");
 			const VkDescriptorSetLayoutBinding& layoutBinding = bindingIt->second;
 			CHECK_TRUE(item.arrayElement < layoutBinding.descriptorCount, "Descriptor array element is out of range!");
 			CHECK_TRUE(
@@ -202,11 +201,6 @@ namespace
 	{
 		hash_combine(ioSeed, reinterpret_cast<std::uintptr_t>(inPointer));
 	}
-}
-
-void DescriptorSetLayoutCreateInfo::Reset()
-{
-	*this = DescriptorSetLayoutCreateInfo{};
 }
 
 auto DescriptorSetLayoutCreateInfo::SetBinding(
@@ -253,17 +247,6 @@ auto DescriptorSetLayout::GetDescriptorSetLayoutBinding(uint32_t inBinding) cons
 	return m_descriptorBindings.at(inBinding);
 }
 
-auto DescriptorSetLayout::GetDescriptorSetLayoutBindings() const
-	-> const std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding>&
-{
-	return m_descriptorBindings;
-}
-
-void DescriptorSetDesc::Reset()
-{
-	m_items.clear();
-}
-
 void DescriptorSetDesc::_SetBinding(
 	uint32_t inBinding,
 	DescriptorBindingInfo inBindingInfo,
@@ -287,7 +270,7 @@ void DescriptorSetDesc::SetBuffer(
 	VkDeviceSize inRange,
 	uint32_t inArrayElement)
 {
-	_SetBinding(inBinding, DescriptorBufferBinding{ inBuffer, inOffset, inRange }, inArrayElement);
+	_SetBinding(inBinding, BufferBinding{ inBuffer, inOffset, inRange }, inArrayElement);
 }
 
 void DescriptorSetDesc::SetImage(
@@ -296,7 +279,7 @@ void DescriptorSetDesc::SetImage(
 	VkImageLayout inImageLayout,
 	uint32_t inArrayElement)
 {
-	_SetBinding(inBinding, DescriptorImageBinding{ inImageView, nullptr, inImageLayout }, inArrayElement);
+	_SetBinding(inBinding, ImageBinding{ inImageView, nullptr, inImageLayout }, inArrayElement);
 }
 
 void DescriptorSetDesc::SetCombinedImageSampler(
@@ -306,7 +289,7 @@ void DescriptorSetDesc::SetCombinedImageSampler(
 	VkImageLayout inImageLayout,
 	uint32_t inArrayElement)
 {
-	_SetBinding(inBinding, DescriptorImageBinding{ inImageView, inSampler, inImageLayout }, inArrayElement);
+	_SetBinding(inBinding, ImageBinding{ inImageView, inSampler, inImageLayout }, inArrayElement);
 }
 
 void DescriptorSetDesc::SetSampler(uint32_t inBinding, const Sampler* inSampler, uint32_t inArrayElement)
@@ -327,24 +310,6 @@ void DescriptorSetDesc::SetAccelerationStructure(
 	_SetBinding(inBinding, inAccelerationStructure, inArrayElement);
 }
 
-void DescriptorSetDesc::Merge(const DescriptorSetDesc& inOther)
-{
-	for (const Item& item : inOther.m_items)
-	{
-		_SetBinding(item.binding, item.resource, item.arrayElement);
-	}
-}
-
-auto DescriptorSetDesc::GetItems() const -> const std::vector<Item>&
-{
-	return m_items;
-}
-
-void DescriptorSetCreateInfo::Reset()
-{
-	*this = DescriptorSetCreateInfo{};
-}
-
 DescriptorSet::~DescriptorSet()
 {
 	Destroy();
@@ -360,7 +325,11 @@ void DescriptorSet::Create(const DescriptorSetCreateInfo& inCreateInfo)
 	DescriptorWriteBundle writeBundle;
 	const VkDescriptorSet descriptorSet = MyDevice::GetInstance().GetDescriptorSetAllocator()->AllocateDescriptorSet(
 		inCreateInfo.m_descriptorSetLayout.GetVkDescriptorSetLayout());
-	_ValidateAndBuildWrites(descriptorSet, inCreateInfo.m_descriptorSetLayout, inCreateInfo.m_descriptorSetDesc, writeBundle);
+	_ValidateAndBuildWrites(
+		descriptorSet,
+		inCreateInfo.m_descriptorSetLayout.m_descriptorBindings,
+		inCreateInfo.m_descriptorSetDesc.m_items,
+		writeBundle);
 	if (!writeBundle.writes.empty())
 	{
 		MyDevice::GetInstance().UpdateDescriptorSets(writeBundle.writes);
@@ -375,7 +344,7 @@ void DescriptorSet::Destroy()
 {
 	m_vkDescriptorSet = VK_NULL_HANDLE;
 	m_descriptorSetLayout = {};
-	m_descriptorSetDesc.Reset();
+	m_descriptorSetDesc = {};
 }
 
 auto DescriptorSet::GetVkDescriptorSet() const -> VkDescriptorSet
@@ -393,17 +362,16 @@ auto DynamicDescriptorSetAllocator::_HashDescriptorBindingInfo(
 	const DescriptorSetDesc::DescriptorBindingInfo& inInfo) const -> size_t
 {
 	size_t result = 0;
-	std::visit(
-		[&result](const auto& resource)
-		{
-			using ResourceType = std::decay_t<decltype(resource)>;
-			if constexpr (std::is_same_v<ResourceType, DescriptorBufferBinding>)
+		std::visit(
+			[&result](const auto& resource)
+			{
+			if constexpr (requires { resource.buffer; })
 			{
 				_HashPointer(result, resource.buffer);
 				hash_combine(result, resource.offset);
 				hash_combine(result, resource.range);
 			}
-			else if constexpr (std::is_same_v<ResourceType, DescriptorImageBinding>)
+			else if constexpr (requires { resource.imageView; })
 			{
 				_HashPointer(result, resource.imageView);
 				_HashPointer(result, resource.sampler);
@@ -459,8 +427,8 @@ void DynamicDescriptorSetAllocator::_WriteDescriptorSet(
 	DescriptorWriteBundle writeBundle;
 	_ValidateAndBuildWrites(
 		inDescriptorSet,
-		inAllocateInfo.m_descriptorSetLayout,
-		inAllocateInfo.m_descriptorSetDesc,
+		inAllocateInfo.m_descriptorSetLayout.m_descriptorBindings,
+		inAllocateInfo.m_descriptorSetDesc.m_items,
 		writeBundle);
 	if (!writeBundle.writes.empty())
 	{

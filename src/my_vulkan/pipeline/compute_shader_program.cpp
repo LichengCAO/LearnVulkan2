@@ -1,9 +1,8 @@
 #include "compute_shader_program.h"
 #include "push_constant_manager.h"
 #include "device.h"
-#include "shader_reflect.h"
 
-ComputeShaderProgramCreateInfo& ComputeShaderProgramCreateInfo::Reset()
+auto ComputeShaderProgramCreateInfo::Reset() -> ComputeShaderProgramCreateInfo&
 {
 	m_spirvFile.clear();
 	m_entry = "main";
@@ -11,20 +10,20 @@ ComputeShaderProgramCreateInfo& ComputeShaderProgramCreateInfo::Reset()
 	return *this;
 }
 
-ComputeShaderProgramCreateInfo& ComputeShaderProgramCreateInfo::SetSpirvFile(std::string inFile)
+auto ComputeShaderProgramCreateInfo::SetSpirvFile(std::string inFile) -> ComputeShaderProgramCreateInfo&
 {
 	m_spirvFile = std::move(inFile);
 	return *this;
 }
 
-ComputeShaderProgramCreateInfo& ComputeShaderProgramCreateInfo::SetEntry(std::string inEntry)
+auto ComputeShaderProgramCreateInfo::SetEntry(std::string inEntry) -> ComputeShaderProgramCreateInfo&
 {
 	CHECK_TRUE(!inEntry.empty(), "Compute shader entry cannot be empty!");
 	m_entry = std::move(inEntry);
 	return *this;
 }
 
-ComputeShaderProgramCreateInfo& ComputeShaderProgramCreateInfo::CustomizePipelineCache(VkPipelineCache inCache)
+auto ComputeShaderProgramCreateInfo::CustomizePipelineCache(VkPipelineCache inCache) -> ComputeShaderProgramCreateInfo&
 {
 	m_vkPipelineCache = inCache;
 	return *this;
@@ -33,9 +32,8 @@ ComputeShaderProgramCreateInfo& ComputeShaderProgramCreateInfo::CustomizePipelin
 ComputeShaderProgram::~ComputeShaderProgram()
 {
 	assert(m_vkPipeline == VK_NULL_HANDLE);
-	assert(m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE);
+	assert(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE);
 	assert(m_uptrShaderModule == nullptr);
-	assert(m_descriptorSetLayouts.empty());
 }
 
 void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo* inCreateInfo)
@@ -43,30 +41,10 @@ void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo* inCreate
 	CHECK_TRUE(inCreateInfo != nullptr, "No compute shader program create info!");
 	CHECK_TRUE(!inCreateInfo->m_spirvFile.empty(), "Compute shader SPIR-V file is unset!");
 	CHECK_TRUE(m_vkPipeline == VK_NULL_HANDLE, "Compute shader program already created!");
-	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE, "Compute shader program already created!");
+	CHECK_TRUE(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE, "Compute shader program already created!");
 
-	ShaderReflector reflector{};
-	std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>> descriptorSetData;
-	std::unordered_map<std::string, uint32_t> pushConstantIndex;
-	std::vector<std::pair<VkShaderStageFlags, std::pair<uint32_t, uint32_t>>> reflectedPushConstants;
-	std::vector<VkPushConstantRange> pushConstantRanges;
-
-	reflector.Create({ inCreateInfo->m_spirvFile });
-	reflector.ReflectDescriptorSets(m_nameToSetBinding, descriptorSetData);
-	reflector.ReflectPushConst(pushConstantIndex, reflectedPushConstants);
-
-	for (const auto& reflectedPushConstant : reflectedPushConstants)
-	{
-		VkPushConstantRange range{};
-		range.stageFlags = reflectedPushConstant.first;
-		range.offset = reflectedPushConstant.second.first;
-		range.size = reflectedPushConstant.second.second;
-		pushConstantRanges.push_back(range);
-	}
-
-	_CreateDescriptorSetLayouts(descriptorSetData);
-	_CreatePipelineLayout(pushConstantRanges);
-	_CreatePushConstantManager(pushConstantRanges);
+	m_shaderProgramLayout.Create(std::vector<std::string>{ inCreateInfo->m_spirvFile });
+	_CreatePushConstantManager(m_shaderProgramLayout.GetPushConstantRanges());
 
 	ShaderModuleCreateInfo shaderModuleCreateInfo{};
 	shaderModuleCreateInfo.SetSpirvFile(inCreateInfo->m_spirvFile);
@@ -78,54 +56,9 @@ void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo* inCreate
 		m_uptrShaderModule->GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT),
 		inCreateInfo->m_vkPipelineCache);
 
-	reflector.Destroy();
-
 	CHECK_TRUE(m_vkPipeline != VK_NULL_HANDLE);
-	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() != VK_NULL_HANDLE);
+	CHECK_TRUE(GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE);
 	CHECK_TRUE(m_uptrPushConstant != nullptr);
-}
-
-void ComputeShaderProgram::_CreateDescriptorSetLayouts(
-	const std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>>& inDescriptorSetData)
-{
-	for (const auto& descriptorSetBindings : inDescriptorSetData)
-	{
-		DescriptorSetLayout descriptorSetLayout;
-
-		for (const auto& [bindingIndex, layoutBinding] : descriptorSetBindings)
-		{
-			CHECK_TRUE(
-				layoutBinding.pImmutableSamplers == nullptr,
-				"Immutable samplers are not supported by DescriptorSetLayout::SetBinding yet!");
-			descriptorSetLayout.SetBinding(
-				layoutBinding.binding,
-				layoutBinding.descriptorType,
-				layoutBinding.stageFlags,
-				layoutBinding.descriptorCount);
-		}
-
-		m_descriptorSetLayouts.push_back(std::move(descriptorSetLayout));
-	}
-}
-
-void ComputeShaderProgram::_CreatePipelineLayout(const std::vector<VkPushConstantRange>& inPushConstantRanges)
-{
-	PipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
-
-	for (const auto& descriptorSetLayout : m_descriptorSetLayouts)
-	{
-		pipelineLayoutCreateInfo.AddDescriptorSetLayout(descriptorSetLayout);
-	}
-
-	for (const auto& pushConstantRange : inPushConstantRanges)
-	{
-		pipelineLayoutCreateInfo.AddPushConstantRange(
-			pushConstantRange.stageFlags,
-			pushConstantRange.offset,
-			pushConstantRange.size);
-	}
-
-	m_pipelineLayout.Create(pipelineLayoutCreateInfo);
 }
 
 void ComputeShaderProgram::_CreateVkPipeline(
@@ -134,8 +67,8 @@ void ComputeShaderProgram::_CreateVkPipeline(
 {
 	VkComputePipelineCreateInfo pipelineInfo{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
 	pipelineInfo.stage = inShaderStageInfo;
-	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() != VK_NULL_HANDLE, "Compute shader program needs a pipeline layout!");
-	pipelineInfo.layout = m_pipelineLayout.GetVkPipelineLayout();
+	CHECK_TRUE(GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE, "Compute shader program needs a pipeline layout!");
+	pipelineInfo.layout = GetLayout().GetVkPipelineLayout();
 	m_vkPipeline = MyDevice::GetInstance().CreateComputePipeline(pipelineInfo, inPipelineCache);
 }
 
@@ -164,23 +97,22 @@ void ComputeShaderProgram::Destroy()
 		m_uptrShaderModule->Destroy();
 		m_uptrShaderModule.reset();
 	}
-	m_pipelineLayout.Destroy();
-	m_descriptorSetLayouts.clear();
-	m_nameToSetBinding.clear();
+	m_shaderProgramLayout.Destroy();
 	m_uptrPushConstant.reset();
 }
 
-const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>& ComputeShaderProgram::GetNameToSetBinding() const
+auto ComputeShaderProgram::GetNameToSetBinding() const
+	-> const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&
 {
-	return m_nameToSetBinding;
+	return m_shaderProgramLayout.GetNameToSetBinding();
 }
 
 auto ComputeShaderProgram::GetLayout() const -> const PipelineLayout&
 {
-	return m_pipelineLayout;
+	return m_shaderProgramLayout.GetLayout();
 }
 
-VkPipeline ComputeShaderProgram::GetVkPipeline() const
+auto ComputeShaderProgram::GetVkPipeline() const -> VkPipeline
 {
 	return m_vkPipeline;
 }

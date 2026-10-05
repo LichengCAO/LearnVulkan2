@@ -74,7 +74,7 @@ void RayTracingShaderGroupSet::GetShaderGroupHandlesData(ShaderTableType inShade
 RayTracingShaderProgram::~RayTracingShaderProgram()
 {
 	assert(m_vkPipeline == VK_NULL_HANDLE);
-	assert(m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE);
+	assert(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE);
 }
 
 void RayTracingShaderProgram::Create(const IRayTracingShaderProgramInitializer* pInitializer)
@@ -82,7 +82,7 @@ void RayTracingShaderProgram::Create(const IRayTracingShaderProgramInitializer* 
 	pInitializer->InitRayTracingShaderProgram(this);
 
 	CHECK_TRUE(m_vkPipeline != VK_NULL_HANDLE);
-	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() != VK_NULL_HANDLE);
+	CHECK_TRUE(GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE);
 	CHECK_TRUE(m_uptrPushConstant != nullptr);
 	CHECK_TRUE(m_shaderGroupCount != 0);
 }
@@ -95,7 +95,7 @@ void RayTracingShaderProgram::Destroy()
 		device.DestroyPipeline(m_vkPipeline);
 		m_vkPipeline = VK_NULL_HANDLE;
 	}
-	m_pipelineLayout.Destroy();
+	m_shaderProgramLayout.Destroy();
 	m_uptrPushConstant.reset();
 }
 
@@ -129,7 +129,7 @@ void RayTracingShaderProgram::Do(VkCommandBuffer commandBuffer, const PipelineIn
 		vkCmdBindDescriptorSets(
 			commandBuffer,
 			VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
-			m_pipelineLayout.GetVkPipelineLayout(),
+			GetLayout().GetVkPipelineLayout(),
 			0,
 			static_cast<uint32_t>(pSets.size()),
 			pSets.data(),
@@ -139,7 +139,7 @@ void RayTracingShaderProgram::Do(VkCommandBuffer commandBuffer, const PipelineIn
 
 	for (const auto& _pushConst : input.pushConstants)
 	{
-		m_uptrPushConstant->PushConstant(commandBuffer, m_pipelineLayout.GetVkPipelineLayout(), _pushConst.first, _pushConst.second);
+		m_uptrPushConstant->PushConstant(commandBuffer, GetLayout().GetVkPipelineLayout(), _pushConst.first, _pushConst.second);
 	}
 
 	vkCmdTraceRaysKHR(
@@ -406,8 +406,8 @@ void RayTracingShaderProgram::Builder::InitRayTracingShaderProgram(RayTracingSha
 	{
 		uptrToInit->AddConstantRange(pushConstant.stageFlags, pushConstant.offset, pushConstant.size);
 	}
-	pPipeline->m_pipelineLayout = m_pipelineLayout;
-	const VkPipelineLayout layoutToInit = pPipeline->m_pipelineLayout.GetVkPipelineLayout();
+	pPipeline->m_shaderProgramLayout.Create(m_pipelineLayout);
+	const VkPipelineLayout layoutToInit = pPipeline->GetLayout().GetVkPipelineLayout();
 
 	pipelineInfo.pNext = nullptr;
 	pipelineInfo.flags = 0;
@@ -535,7 +535,7 @@ auto RayTracingShaderProgram::Builder::SetPipelineLayout(PipelineLayout inPipeli
 
 auto RayTracingShaderProgram::GetLayout() const -> const PipelineLayout&
 {
-	return m_pipelineLayout;
+	return m_shaderProgramLayout.GetLayout();
 }
 
 RayTracingShaderProgram::Builder& RayTracingShaderProgram::Builder::AddPushConstant(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size)

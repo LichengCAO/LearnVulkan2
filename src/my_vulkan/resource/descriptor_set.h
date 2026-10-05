@@ -22,8 +22,6 @@ private:
 	friend class DescriptorSetLayout;
 
 public:
-	void Reset();
-
 	auto SetBinding(
 		uint32_t inBinding,
 		VkDescriptorType inType,
@@ -57,22 +55,6 @@ public:
 	auto GetVkDescriptorSetLayout() const -> VkDescriptorSetLayout;
 
 	auto GetDescriptorSetLayoutBinding(uint32_t inBinding) const -> const VkDescriptorSetLayoutBinding&;
-	auto GetDescriptorSetLayoutBindings() const
-		-> const std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding>&;
-};
-
-struct DescriptorBufferBinding final
-{
-	const Buffer* buffer = nullptr;
-	VkDeviceSize offset = 0;
-	VkDeviceSize range = VK_WHOLE_SIZE;
-};
-
-struct DescriptorImageBinding final
-{
-	const ImageView* imageView = nullptr;
-	const Sampler* sampler = nullptr;
-	VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 };
 
 class DescriptorSetDesc final
@@ -80,14 +62,29 @@ class DescriptorSetDesc final
 	friend class DescriptorSet;
 	friend class DynamicDescriptorSetAllocator;
 
+	struct BufferBinding final
+	{
+		const Buffer* buffer = nullptr;
+		VkDeviceSize offset = 0;
+		VkDeviceSize range = VK_WHOLE_SIZE;
+	};
+
+	struct ImageBinding final
+	{
+		const ImageView* imageView = nullptr;
+		const Sampler* sampler = nullptr;
+		VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	};
+
 public:
 	using DescriptorBindingInfo = std::variant<
-		DescriptorBufferBinding,
-		DescriptorImageBinding,
+		BufferBinding,
+		ImageBinding,
 		const Sampler*,
 		const BufferView*,
 		const TopLevelAccelStruct*>;
 
+private:
 	struct Item final
 	{
 		uint32_t binding = 0;
@@ -95,7 +92,6 @@ public:
 		DescriptorBindingInfo resource{};
 	};
 
-private:
 	std::vector<Item> m_items;
 
 	void _SetBinding(uint32_t inBinding, DescriptorBindingInfo inBindingInfo, uint32_t inArrayElement);
@@ -108,7 +104,6 @@ public:
 	DescriptorSetDesc(DescriptorSetDesc&& inOther) noexcept = default;
 	DescriptorSetDesc& operator=(DescriptorSetDesc&&) noexcept = default;
 
-	void Reset();
 	void SetBuffer(
 		uint32_t inBinding,
 		const Buffer* inBuffer,
@@ -132,9 +127,6 @@ public:
 		uint32_t inBinding,
 		const TopLevelAccelStruct* inAccelerationStructure,
 		uint32_t inArrayElement = 0);
-	void Merge(const DescriptorSetDesc& inOther);
-
-	auto GetItems() const -> const std::vector<Item>&;
 };
 
 class DescriptorSetCreateInfo final
@@ -145,7 +137,6 @@ private:
 	DescriptorSetDesc m_descriptorSetDesc{};
 
 public:
-	void Reset();
 	void SetDescriptorSetLayout(DescriptorSetLayout inLayout) { m_descriptorSetLayout = std::move(inLayout); }
 	void SetDescriptorSetDesc(DescriptorSetDesc inDesc) { m_descriptorSetDesc = std::move(inDesc); }
 };
