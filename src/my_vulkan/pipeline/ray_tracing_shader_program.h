@@ -147,24 +147,16 @@ public:
 		// Optional, default: VK_NULL_HANDLE
 		auto CustomizePipelineCache(VkPipelineCache inCache) -> Builder&;
 
-		auto AddRayGenerationShaderGroup(std::string_view inName, std::string_view inSpirv,
-		    std::optional<std::string_view> inEntry = std::nullopt) -> Builder&;
-		auto AddMissShaderGroup(std::string_view inName, std::string_view inSpirv,
-		    std::optional<std::string_view> inEntry = std::nullopt) -> Builder&;
-		auto AddCallableShaderGroup(std::string_view inName, std::string_view inSpirv,
-		    std::optional<std::string_view> inEntry = std::nullopt) -> Builder&;
+		auto AddRayGenerationShaderGroup(std::string_view inName, std::string_view inSpirv) -> Builder&;
+		auto AddMissShaderGroup(std::string_view inName, std::string_view inSpirv) -> Builder&;
+		auto AddCallableShaderGroup(std::string_view inName, std::string_view inSpirv) -> Builder&;
 		auto AddTriangleHitShaderGroup(std::string_view inName,
 		    std::optional<std::string_view> inClosestHitSpirv = std::nullopt,
-		    std::optional<std::string_view> inClosestHitEntry = std::nullopt,
-		    std::optional<std::string_view> inAnyHitSpirv = std::nullopt,
-		    std::optional<std::string_view> inAnyHitEntry = std::nullopt) -> Builder&;
+		    std::optional<std::string_view> inAnyHitSpirv = std::nullopt) -> Builder&;
 		auto AddProceduralHitShaderGroup(std::string_view inName,
 		    std::optional<std::string_view> inClosestHitSpirv,
-		    std::optional<std::string_view> inClosestHitEntry,
 		    std::string_view inIntersectionSpirv,
-		    std::optional<std::string_view> inIntersectionEntry = std::nullopt,
-		    std::optional<std::string_view> inAnyHitSpirv = std::nullopt,
-		    std::optional<std::string_view> inAnyHitEntry = std::nullopt) -> Builder&;
+		    std::optional<std::string_view> inAnyHitSpirv = std::nullopt) -> Builder&;
 	};
 
 private:

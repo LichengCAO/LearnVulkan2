@@ -4,7 +4,6 @@
 #include "private/shader.h"
 #include "shader_resources.h"
 #include <map>
-#include "pipeline_state.h"
 class RenderPass;
 class Framebuffer;
 class ImageView;
@@ -44,7 +43,7 @@ private:
 		VkImageLayout finalLayout;
 	};
 	std::vector<ShaderDetail::Request> m_shaders;
-	auto _AddShader(std::string_view inSpirv, VkShaderStageFlagBits inStage, std::optional<std::string_view> inEntry) -> GraphicsShaderProgramCreateInfo&;
+	auto _AddShader(std::string_view inSpirv, VkShaderStageFlagBits inStage) -> GraphicsShaderProgramCreateInfo&;
 	std::map<uint32_t, ColorAttachment> m_defaultColors;
 	std::optional<VkFormat> m_defaultDepth;
 
@@ -53,11 +52,11 @@ public:
 		VkImageLayout inFinalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) -> GraphicsShaderProgramCreateInfo&;
 	auto SetDefaultDepthAttachment(VkFormat inFormat) -> GraphicsShaderProgramCreateInfo&;
 	auto Reset() -> GraphicsShaderProgramCreateInfo&;
-	auto AddVertexShader(std::string_view inSpirv, std::optional<std::string_view> inEntry = std::nullopt) -> GraphicsShaderProgramCreateInfo&;
-	auto AddFragmentShader(std::string_view inSpirv, std::optional<std::string_view> inEntry = std::nullopt) -> GraphicsShaderProgramCreateInfo&;
-	auto AddGeometryShader(std::string_view inSpirv, std::optional<std::string_view> inEntry = std::nullopt) -> GraphicsShaderProgramCreateInfo&;
-	auto AddTaskShader(std::string_view inSpirv, std::optional<std::string_view> inEntry = std::nullopt) -> GraphicsShaderProgramCreateInfo&;
-	auto AddMeshShader(std::string_view inSpirv, std::optional<std::string_view> inEntry = std::nullopt) -> GraphicsShaderProgramCreateInfo&;
+	auto AddVertexShader(std::string_view inSpirv) -> GraphicsShaderProgramCreateInfo&;
+	auto AddFragmentShader(std::string_view inSpirv) -> GraphicsShaderProgramCreateInfo&;
+	auto AddGeometryShader(std::string_view inSpirv) -> GraphicsShaderProgramCreateInfo&;
+	auto AddTaskShader(std::string_view inSpirv) -> GraphicsShaderProgramCreateInfo&;
+	auto AddMeshShader(std::string_view inSpirv) -> GraphicsShaderProgramCreateInfo&;
 };
 
 class GraphicsShaderProgram final
@@ -74,7 +73,7 @@ private:
 	bool m_automaticVertexInputSupported = true;
 
 private:
-	void _CreateDefaults(const GraphicsShaderProgramCreateInfo& inInfo, const std::vector<ShaderEntryReflection>& inEntries);
+	void _CreateDefaults(const GraphicsShaderProgramCreateInfo& inInfo, const ShaderProgramReflection& inReflection);
 	auto _ResolveState(const GraphicsPipelineStateInfo& inState) const -> GraphicsPipelineStateInfo;
 	void _CreatePushConstantManager(const std::vector<VkPushConstantRange>& inPushConstantRanges);
 	auto _CreateVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) const -> VkPipeline;

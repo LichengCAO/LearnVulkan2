@@ -511,39 +511,37 @@ auto RayTracingShaderProgram::Builder::_AddHitShaderGroup(std::string_view inNam
 }
 
 auto RayTracingShaderProgram::Builder::AddRayGenerationShaderGroup(
-    std::string_view name, std::string_view file, std::optional<std::string_view> entry) -> Builder&
+    std::string_view name, std::string_view file) -> Builder&
 {
-	return _AddGeneralShaderGroup(name, ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_RAYGEN_BIT_KHR, entry), ShaderTableType::RayGeneration);
+	return _AddGeneralShaderGroup(name, ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_RAYGEN_BIT_KHR), ShaderTableType::RayGeneration);
 }
 
 auto RayTracingShaderProgram::Builder::AddMissShaderGroup(
-    std::string_view name, std::string_view file, std::optional<std::string_view> entry) -> Builder&
+    std::string_view name, std::string_view file) -> Builder&
 {
-	return _AddGeneralShaderGroup(name, ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_MISS_BIT_KHR, entry), ShaderTableType::Miss);
+	return _AddGeneralShaderGroup(name, ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_MISS_BIT_KHR), ShaderTableType::Miss);
 }
 
 auto RayTracingShaderProgram::Builder::AddCallableShaderGroup(
-    std::string_view name, std::string_view file, std::optional<std::string_view> entry) -> Builder&
+    std::string_view name, std::string_view file) -> Builder&
 {
-	return _AddGeneralShaderGroup(name, ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_CALLABLE_BIT_KHR, entry), ShaderTableType::Callable);
+	return _AddGeneralShaderGroup(name, ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_CALLABLE_BIT_KHR), ShaderTableType::Callable);
 }
 
 auto RayTracingShaderProgram::Builder::AddTriangleHitShaderGroup(std::string_view name,
-    std::optional<std::string_view> closestFile, std::optional<std::string_view> closestEntry,
-    std::optional<std::string_view> anyFile, std::optional<std::string_view> anyEntry) -> Builder&
+    std::optional<std::string_view> closestFile, std::optional<std::string_view> anyFile) -> Builder&
 {
-	const auto closest = ShaderDetail::MakeOptionalRequest(closestFile, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, closestEntry);
-	const auto any = ShaderDetail::MakeOptionalRequest(anyFile, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, anyEntry);
+	const auto closest = ShaderDetail::MakeOptionalRequest(closestFile, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
+	const auto any = ShaderDetail::MakeOptionalRequest(anyFile, VK_SHADER_STAGE_ANY_HIT_BIT_KHR);
 	return _AddHitShaderGroup(name, closest, nullptr, any);
 }
 
 auto RayTracingShaderProgram::Builder::AddProceduralHitShaderGroup(std::string_view name,
-    std::optional<std::string_view> closestFile, std::optional<std::string_view> closestEntry,
-    std::string_view intersectionFile, std::optional<std::string_view> intersectionEntry,
-    std::optional<std::string_view> anyFile, std::optional<std::string_view> anyEntry) -> Builder&
+    std::optional<std::string_view> closestFile, std::string_view intersectionFile,
+    std::optional<std::string_view> anyFile) -> Builder&
 {
-	const auto closest = ShaderDetail::MakeOptionalRequest(closestFile, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, closestEntry);
-	const auto intersection = ShaderDetail::MakeRequest(intersectionFile, VK_SHADER_STAGE_INTERSECTION_BIT_KHR, intersectionEntry);
-	const auto any = ShaderDetail::MakeOptionalRequest(anyFile, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, anyEntry);
+	const auto closest = ShaderDetail::MakeOptionalRequest(closestFile, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
+	const auto intersection = ShaderDetail::MakeRequest(intersectionFile, VK_SHADER_STAGE_INTERSECTION_BIT_KHR);
+	const auto any = ShaderDetail::MakeOptionalRequest(anyFile, VK_SHADER_STAGE_ANY_HIT_BIT_KHR);
 	return _AddHitShaderGroup(name, closest, &intersection, any);
 }

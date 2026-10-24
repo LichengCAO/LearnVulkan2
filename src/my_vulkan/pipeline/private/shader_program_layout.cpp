@@ -1,39 +1,20 @@
 #include "shader_program_layout.h"
-#include "shader_reflect.h"
 #include "device.h"
 
-void ShaderProgramLayout::Create(const std::vector<std::string>& inSpirvFiles)
-{
-	ShaderReflector reflector;
-	reflector.Create(inSpirvFiles);
-	_Create(reflector);
-}
-
-void ShaderProgramLayout::Create(const std::vector<ShaderEntryReflection>& entries)
-{
-	ShaderReflector reflector;
-	reflector.Create(entries);
-	_Create(reflector);
-}
-
-void ShaderProgramLayout::_Create(const ShaderReflector& reflector)
+void ShaderProgramLayout::Create(const ShaderProgramReflection& reflection)
 {
 	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE, "Shader program layout already created!");
-	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> nameToSetBinding;
-	std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>> descriptorSetData;
-	std::unordered_map<std::string, uint32_t> pushConstantIndex;
-	std::vector<std::pair<VkShaderStageFlags, std::pair<uint32_t, uint32_t>>> reflectedPushConstants;
-
-	std::set<std::string> ambiguousNames;
-	reflector.ReflectDescriptorSets(nameToSetBinding, descriptorSetData, &ambiguousNames);
-	reflector.ReflectPushConst(pushConstantIndex, reflectedPushConstants);
+	auto nameToSetBinding = reflection.GetNameToSetBinding();
+	auto descriptorSetData = reflection.GetDescriptorBindings();
+	auto ambiguousNames = reflection.GetAmbiguousNames();
+	const auto& reflectedPushConstants = reflection.GetPushConstantRanges();
 	if (!reflectedPushConstants.empty())
 	{
 		VkPhysicalDeviceProperties properties{};
 		vkGetPhysicalDeviceProperties(MyDevice::GetInstance().vkPhysicalDevice, &properties);
-		for (const auto& [stages, range] : reflectedPushConstants)
-			CHECK_TRUE(range.first <= properties.limits.maxPushConstantsSize &&
-			    range.second <= properties.limits.maxPushConstantsSize - range.first,
+		for (const auto& range : reflectedPushConstants)
+			CHECK_TRUE(range.offset <= properties.limits.maxPushConstantsSize &&
+			    range.size <= properties.limits.maxPushConstantsSize - range.offset,
 			    "Reflected push constant range exceeds device limits!");
 	}
 
@@ -57,9 +38,9 @@ void ShaderProgramLayout::_Create(const ShaderReflector& reflector)
 		pipelineLayoutCreateInfo.AddDescriptorSetLayout(std::move(descriptorSetLayout));
 	}
 
-	for (const auto& [stages, range] : reflectedPushConstants)
+	for (const auto& range : reflectedPushConstants)
 	{
-		pipelineLayoutCreateInfo.AddPushConstantRange(stages, range.first, range.second);
+		pipelineLayoutCreateInfo.AddPushConstantRange(range.stageFlags, range.offset, range.size);
 	}
 
 	PipelineLayout pipelineLayout;
@@ -68,14 +49,6 @@ void ShaderProgramLayout::_Create(const ShaderReflector& reflector)
 	m_nameToSetBinding = std::move(nameToSetBinding);
 	m_ambiguousNames = std::move(ambiguousNames);
 	m_descriptorBindings = std::move(descriptorSetData);
-}
-
-void ShaderProgramLayout::Create(const PipelineLayout& inPipelineLayout)
-{
-	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE, "Shader program layout already created!");
-	CHECK_TRUE(inPipelineLayout.GetVkPipelineLayout() != VK_NULL_HANDLE, "Invalid shader program pipeline layout!");
-
-	m_pipelineLayout = inPipelineLayout;
 }
 
 void ShaderProgramLayout::Destroy()

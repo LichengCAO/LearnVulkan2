@@ -56,7 +56,7 @@ public:
 
 	auto GetVkDescriptorSetLayout() const -> VkDescriptorSetLayout;
 
-	auto GetDescriptorSetLayoutBinding(uint32_t inBinding) const -> const VkDescriptorSetLayoutBinding&;
+	auto GetVkDescriptorSetLayoutBinding(uint32_t inBinding) const -> const VkDescriptorSetLayoutBinding&;
 };
 
 class DescriptorSetDesc final

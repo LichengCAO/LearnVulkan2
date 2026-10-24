@@ -1,5 +1,4 @@
 #include <algorithm>
-#include "shader_reflect.h"
 #include <limits>
 #include "../graphics_shader_program.h"
 #include "device.h"
@@ -402,43 +401,37 @@ auto GraphicsShaderProgramCreateInfo::Reset() -> GraphicsShaderProgramCreateInfo
 	return *this;
 }
 
-auto GraphicsShaderProgramCreateInfo::_AddShader(std::string_view file, VkShaderStageFlagBits stage,
-    std::optional<std::string_view> entry) -> GraphicsShaderProgramCreateInfo&
+auto GraphicsShaderProgramCreateInfo::_AddShader(std::string_view file, VkShaderStageFlagBits stage) -> GraphicsShaderProgramCreateInfo&
 {
 	CHECK_TRUE(std::none_of(m_shaders.begin(), m_shaders.end(), [stage](const auto& shader) -> bool
 	    { return shader.stage == stage; }), "Duplicate graphics shader stage!");
-	m_shaders.push_back(ShaderDetail::MakeRequest(file, stage, entry));
+	m_shaders.push_back(ShaderDetail::MakeRequest(file, stage));
 	return *this;
 }
 
-auto GraphicsShaderProgramCreateInfo::AddVertexShader(std::string_view file,
-    std::optional<std::string_view> entry) -> GraphicsShaderProgramCreateInfo&
+auto GraphicsShaderProgramCreateInfo::AddVertexShader(std::string_view file) -> GraphicsShaderProgramCreateInfo&
 {
-	return _AddShader(file, VK_SHADER_STAGE_VERTEX_BIT, entry);
+	return _AddShader(file, VK_SHADER_STAGE_VERTEX_BIT);
 }
 
-auto GraphicsShaderProgramCreateInfo::AddFragmentShader(std::string_view file,
-    std::optional<std::string_view> entry) -> GraphicsShaderProgramCreateInfo&
+auto GraphicsShaderProgramCreateInfo::AddFragmentShader(std::string_view file) -> GraphicsShaderProgramCreateInfo&
 {
-	return _AddShader(file, VK_SHADER_STAGE_FRAGMENT_BIT, entry);
+	return _AddShader(file, VK_SHADER_STAGE_FRAGMENT_BIT);
 }
 
-auto GraphicsShaderProgramCreateInfo::AddGeometryShader(std::string_view file,
-    std::optional<std::string_view> entry) -> GraphicsShaderProgramCreateInfo&
+auto GraphicsShaderProgramCreateInfo::AddGeometryShader(std::string_view file) -> GraphicsShaderProgramCreateInfo&
 {
-	return _AddShader(file, VK_SHADER_STAGE_GEOMETRY_BIT, entry);
+	return _AddShader(file, VK_SHADER_STAGE_GEOMETRY_BIT);
 }
 
-auto GraphicsShaderProgramCreateInfo::AddTaskShader(std::string_view file,
-    std::optional<std::string_view> entry) -> GraphicsShaderProgramCreateInfo&
+auto GraphicsShaderProgramCreateInfo::AddTaskShader(std::string_view file) -> GraphicsShaderProgramCreateInfo&
 {
-	return _AddShader(file, VK_SHADER_STAGE_TASK_BIT_EXT, entry);
+	return _AddShader(file, VK_SHADER_STAGE_TASK_BIT_EXT);
 }
 
-auto GraphicsShaderProgramCreateInfo::AddMeshShader(std::string_view file,
-    std::optional<std::string_view> entry) -> GraphicsShaderProgramCreateInfo&
+auto GraphicsShaderProgramCreateInfo::AddMeshShader(std::string_view file) -> GraphicsShaderProgramCreateInfo&
 {
-	return _AddShader(file, VK_SHADER_STAGE_MESH_BIT_EXT, entry);
+	return _AddShader(file, VK_SHADER_STAGE_MESH_BIT_EXT);
 }
 
 auto GraphicsPipelineStateInfo::Reset() -> GraphicsPipelineStateInfo&
@@ -795,18 +788,17 @@ auto GraphicsShaderProgramCreateInfo::SetDefaultDepthAttachment(VkFormat format)
 	return *this;
 }
 void GraphicsShaderProgram::_CreateDefaults(const GraphicsShaderProgramCreateInfo& info,
-    const std::vector<ShaderEntryReflection>& entries)
+    const ShaderProgramReflection& reflection)
 {
-	ShaderReflector reflector;
-	reflector.Create(entries);
-	std::unordered_map<std::string, uint32_t> names;
-	std::map<uint32_t, VkFormat> inputs;
-	reflector.ReflectInput(VK_SHADER_STAGE_VERTEX_BIT, names, inputs);
+	const auto byLocation = [](const auto& left, const auto& right) -> bool { return left.location < right.location; };
+	auto inputs = reflection.GetInput(VK_SHADER_STAGE_VERTEX_BIT);
+	std::sort(inputs.begin(), inputs.end(), byLocation);
 	uint32_t stride = 0;
-	for (const auto& [location, format] : inputs)
+	for (size_t i = 0; i < inputs.size(); ++i)
 	{
+		const auto& [name, location, format] = inputs[i];
 		const uint32_t size = VertexFormatSize(format);
-		if (!size)
+		if (!size || (i > 0 && inputs[i - 1].location == location))
 		{
 			m_automaticVertexInputSupported = false;
 			break;
@@ -819,26 +811,25 @@ void GraphicsShaderProgram::_CreateDefaults(const GraphicsShaderProgramCreateInf
 	if (info.m_defaultColors.empty() && !info.m_defaultDepth)
 		return;
 
-	std::map<uint32_t, VkFormat> outputs;
-	reflector.ReflectOutput(VK_SHADER_STAGE_FRAGMENT_BIT, names, outputs);
+	auto outputs = reflection.GetOutput(VK_SHADER_STAGE_FRAGMENT_BIT);
+	std::sort(outputs.begin(), outputs.end(), byLocation);
+	CHECK_TRUE(std::adjacent_find(outputs.begin(), outputs.end(),
+	    [](const auto& left, const auto& right) -> bool { return left.location == right.location; }) == outputs.end(),
+	    "Default render pass requires unique fragment output locations!");
 	CHECK_TRUE(
 	    outputs.size() == info.m_defaultColors.size(), "Default color attachments must cover all fragment outputs!");
 	RenderPassCreateInfo passInfo;
 	SubpassDescription subpass;
-	for (const auto& [location, format] : outputs)
+	for (const auto& output : outputs)
 	{
+		const auto location = output.location;
+		const auto format = output.format;
 		const auto it = info.m_defaultColors.find(location);
 		CHECK_TRUE(it != info.m_defaultColors.end(), "Missing default color attachment location!");
 		CHECK_TRUE(format != VK_FORMAT_UNDEFINED, "Default render pass requires simple fragment outputs!");
 		CHECK_TRUE(NumericCategory(format) == NumericCategory(it->second.format),
 		    "Fragment output and attachment numeric types differ!");
-		std::string name = "color" + std::to_string(location);
-		for (const auto& [outputName, outputLocation] : names)
-			if (outputLocation == location)
-			{
-				name = outputName;
-				break;
-			}
+		const std::string name = output.name.empty() ? "color" + std::to_string(location) : output.name;
 		AttachmentDescription attachment;
 		VkClearValue clear{};
 		attachment.CustomizeFormat(it->second.format, clear);

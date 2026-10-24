@@ -1,6 +1,6 @@
 #pragma once
 #include "../pipeline_layout.h"
-#include "shader_reflect.h"
+#include "shader_program_reflection.h"
 
 class ShaderProgramLayout final
 {
@@ -11,12 +11,8 @@ private:
 	std::set<std::string> m_ambiguousNames;
 	std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>> m_descriptorBindings;
 
-	void _Create(const ShaderReflector& inReflector);
-
 public:
-	void Create(const std::vector<std::string>& inSpirvFiles);
-	void Create(const std::vector<ShaderEntryReflection>& inEntries);
-	void Create(const PipelineLayout& inPipelineLayout);
+	void Create(const ShaderProgramReflection& inReflection);
 	void Destroy();
 	auto GetDescriptorBindings() const -> const std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>>& { return m_descriptorBindings; }
 	auto GetAmbiguousNames() const -> const std::set<std::string>& { return m_ambiguousNames; }

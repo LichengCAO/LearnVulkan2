@@ -241,7 +241,7 @@ auto DescriptorSetLayout::GetVkDescriptorSetLayout() const -> VkDescriptorSetLay
 	return m_vkDescriptorSetLayout;
 }
 
-auto DescriptorSetLayout::GetDescriptorSetLayoutBinding(uint32_t inBinding) const
+auto DescriptorSetLayout::GetVkDescriptorSetLayoutBinding(uint32_t inBinding) const
 	-> const VkDescriptorSetLayoutBinding&
 {
 	return m_descriptorBindings.at(inBinding);
