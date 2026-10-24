@@ -1833,13 +1833,17 @@ namespace
 #endif // MY_VULKAN_ENABLE_RENDER_GRAPH
 }
 
+#ifdef LEARN_VULKAN_HAS_SHADER_BINDING_TESTS
 void RunShaderBindingTests();
+#endif
 
 auto main() -> int
 {
 	try
 	{
+#ifdef LEARN_VULKAN_HAS_SHADER_BINDING_TESTS
 		RunShaderBindingTests();
+#endif
 		TestSubmissionFrontierPropagation();
 		TestCommandQueueRoleDeduplication();
 

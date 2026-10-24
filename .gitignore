@@ -1,7 +1,12 @@
-/.vs
-/out
-/build 
-/bin 
-CMakeSetting.json
-build_codex_check/
-src/build_codex_vs2022/
+# Local IDE settings and generated build output
+/.vs/
+/out/
+/bin/
+/build*/
+/src/build*/
+/CMakeSetting.json
+/CMakeSettings.json
+/CMakeUserPresets.json
+
+# Local verification code (optional; not required to build the project)
+/src/shader_binding_tests.cpp
