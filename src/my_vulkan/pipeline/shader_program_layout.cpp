@@ -1,5 +1,6 @@
 #include "shader_program_layout.h"
 #include "shader_reflect.h"
+#include "device.h"
 
 void ShaderProgramLayout::Create(const std::vector<std::string>& inSpirvFiles)
 {
@@ -20,6 +21,15 @@ void ShaderProgramLayout::Create(const std::vector<std::string>& inSpirvFiles)
 	std::set<std::string> ambiguousNames;
 	reflector.ReflectDescriptorSets(nameToSetBinding, descriptorSetData, &ambiguousNames);
 	reflector.ReflectPushConst(pushConstantIndex, reflectedPushConstants);
+	if (!reflectedPushConstants.empty())
+	{
+		VkPhysicalDeviceProperties properties{};
+		vkGetPhysicalDeviceProperties(MyDevice::GetInstance().vkPhysicalDevice, &properties);
+		for (const auto& [stages, range] : reflectedPushConstants)
+			CHECK_TRUE(range.first <= properties.limits.maxPushConstantsSize &&
+			    range.second <= properties.limits.maxPushConstantsSize - range.first,
+			    "Reflected push constant range exceeds device limits!");
+	}
 
 	PipelineLayoutCreateInfo pipelineLayoutCreateInfo;
 	for (const auto& descriptorSetBindings : descriptorSetData)

@@ -1,6 +1,7 @@
 #pragma once
 #include "common.h"
 #include "shader_program_layout.h"
+#include "shader.h"
 
 class Buffer;
 class RayTracingShaderProgram;
@@ -37,6 +38,7 @@ class RayTracingShaderGroupSet
 private:
 	std::vector<std::vector<uint8_t>> m_shaderGroupData; // Each inner vector corresponds to a shader group type (raygen, miss, hit, callable) and contains the group data for that type
 	std::vector<size_t> m_shaderGroupStride;
+	std::vector<std::vector<ShaderGroupIndex>> m_groupIndices;
 	void _SetShaderGroupHandlesData(ShaderTableType inShaderTableType, const uint8_t* inData, size_t inSize, size_t inStride);
 	friend class RayTracingShaderProgram;
 
@@ -89,6 +91,8 @@ public:
 	};
 
 public:
+	ShaderBindingTable();
+	~ShaderBindingTable();
 	ShaderBindingTable(const ShaderBindingTable& _other) = delete;
 	ShaderBindingTable& operator=(const ShaderBindingTable& _other) = delete;
 
@@ -99,7 +103,9 @@ public:
 
 class RayTracingShaderProgram
 {
+	friend class CommandBuffer;
 public:
+	RayTracingShaderProgram();
 	using ShaderIndex = uint32_t;
 
 	struct PipelineInput
@@ -119,6 +125,7 @@ public:
 	{
 	private:
 		std::vector<VkPipelineShaderStageCreateInfo> m_shaderStageInfos;
+		std::vector<ShaderModuleCreateInfo> m_shaderModuleInfos;
 		std::vector<VkRayTracingShaderGroupCreateInfoKHR> m_shaderRecords;
 		std::vector<VkPushConstantRange> m_pushConstants;
 		uint32_t m_maxRayRecursionDepth = 1u;
@@ -129,17 +136,18 @@ public:
 		virtual void InitRayTracingShaderProgram(RayTracingShaderProgram* pPipeline) const override;
 
 		// Optional, default: 1
-		RayTracingShaderProgram::Builder& CustomizeMaxRecursionDepth(uint32_t inMaxDepth);
+		auto CustomizeMaxRecursionDepth(uint32_t inMaxDepth) -> Builder&;
 
 		// Optional, default: VK_NULL_HANDLE
-		RayTracingShaderProgram::Builder& CustomizePipelineCache(VkPipelineCache inCache);
+		auto CustomizePipelineCache(VkPipelineCache inCache) -> Builder&;
 
 		auto SetPipelineLayout(PipelineLayout inPipelineLayout) -> RayTracingShaderProgram::Builder&;
 
-		RayTracingShaderProgram::Builder& AddPushConstant(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size);
+		auto AddPushConstant(VkShaderStageFlags inStages, uint32_t inOffset, uint32_t inSize) -> Builder&;
 
 		// Add shader to pipeline, return shader index for shader group build
 		auto AddShader(const VkPipelineShaderStageCreateInfo& shaderInfo)->ShaderIndex;
+		auto AddShader(const ShaderModuleCreateInfo& inShaderInfo) -> ShaderIndex;
 
 		// Set ray generation shader group record, 
 		// return shader group index for shader binding table build.
@@ -169,6 +177,8 @@ public:
 
 private:
 	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
+	std::vector<std::unique_ptr<ShaderModule>> m_shaderModules;
+	bool m_hasReflection = false;
 	ShaderProgramLayout m_shaderProgramLayout;
 	VkPipeline m_vkPipeline = VK_NULL_HANDLE;
 	uint32_t m_shaderGroupCount = 0;
@@ -184,9 +194,11 @@ public:
 
 	// Size of total shader group stored in this pipeline;
 	// This may not equal to number of shaders we add to this pipeline.
-	uint32_t GetShaderGroupCount() const;
+	auto GetShaderGroupCount() const -> uint32_t;
 
-	VkPipeline GetVkPipeline() const;
+	auto GetVkPipeline() const -> VkPipeline;
+	auto GetNameToSetBinding() const
+	    -> const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&;
 
 	auto GetLayout() const -> const PipelineLayout&;
 

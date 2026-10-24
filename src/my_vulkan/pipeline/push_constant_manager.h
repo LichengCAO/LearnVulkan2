@@ -4,15 +4,15 @@
 class PushConstantManager
 {
 private:
-	uint32_t m_currentSize = 0u;
+	uint32_t m_maxSize = 128;
 	std::unordered_map<VkShaderStageFlags, std::pair<uint32_t, uint32_t>> m_mapRange;
 	VkShaderStageFlags m_usedStages = 0;
 
 private:
-	static std::vector<VkShaderStageFlagBits> _GetBitsFromStageFlags(VkShaderStageFlags _flags);
+	static auto _GetBitsFromStageFlags(VkShaderStageFlags _flags) -> std::vector<VkShaderStageFlagBits>;
 
 public:
-	PushConstantManager();
+	explicit PushConstantManager(uint32_t inMaxSize = 128);
 
 	// Add a push constant in the input stage, the stage is not allowed to assigned twice
 	void AddConstantRange(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size);

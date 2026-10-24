@@ -1,11 +1,11 @@
 #include "push_constant_manager.h"
 #include "utils.h"
 
-PushConstantManager::PushConstantManager()
+PushConstantManager::PushConstantManager(uint32_t inMaxSize) : m_maxSize(inMaxSize)
 {
 }
 
-std::vector<VkShaderStageFlagBits> PushConstantManager::_GetBitsFromStageFlags(VkShaderStageFlags _flags)
+auto PushConstantManager::_GetBitsFromStageFlags(VkShaderStageFlags _flags) -> std::vector<VkShaderStageFlagBits>
 {
 	std::vector<VkShaderStageFlagBits> result;
 	constexpr VkShaderStageFlagBits stagesToCheck[] =
@@ -53,11 +53,12 @@ std::vector<VkShaderStageFlagBits> PushConstantManager::_GetBitsFromStageFlags(V
 
 void PushConstantManager::AddConstantRange(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size)
 {
-	uint32_t sizeAligned = common_utils::AlignUp(_size, 4); // Both offset and size are in units of bytes and must be a multiple of 4.
+	CHECK_TRUE(_stages != 0 && _size > 0 && _offset % 4 == 0 && _size % 4 == 0,
+	    "Invalid push constant range!");
 	CHECK_TRUE((m_usedStages & _stages) == 0, "Some stage already used!");
+	CHECK_TRUE(_offset <= m_maxSize && _size <= m_maxSize - _offset,
+	    "Push constant range exceeds device limits!");
 	m_usedStages = m_usedStages | _stages;
-	m_currentSize += sizeAligned;
-	CHECK_TRUE(m_currentSize <= 128, "Push constant cannot be larger than 128 bytes!");
 	m_mapRange.insert({ _stages, { _offset, _size } });
 }
 

@@ -4,6 +4,7 @@
 #include <variant>
 #include "pipeline/graphics_shader_program.h"
 #include "pipeline/compute_shader_program.h"
+#include "pipeline/ray_tracing_shader_program.h"
 #include "common_enums.h"
 
 class CommandBuffer final
@@ -40,8 +41,11 @@ private:
 	bool m_hasProgramBindings = false;
 	GraphicsShaderProgram* m_graphicsProgram = nullptr;
 	ComputeShaderProgram* m_computeProgram = nullptr;
+	RayTracingShaderProgram* m_rayTracingProgram = nullptr;
 	struct BindingCommand;
 	void _PrepareCommands(DynamicDescriptorSetAllocator& inAllocator, QueueFamilyType inQueue);
+	auto _BindShaderResources(const ShaderProgramLayout& inLayout, VkPipelineBindPoint inBindPoint,
+	    const ShaderResources& inResources) -> CommandBuffer&;
 
 private:
 	auto _AppendCommand(const Command* inCommand)->void;
@@ -63,10 +67,12 @@ public:
 		VkSubpassContents inContents = VK_SUBPASS_CONTENTS_INLINE)->CommandBuffer&;
 	auto EndRenderPass()->CommandBuffer&;
 
-	auto BindGraphicsProgram(GraphicsShaderProgram& inProgram,
-		const GraphicsPipelineStateInfo& inStateInfo = {}) -> CommandBuffer&;
+	auto BindGraphicsProgram(GraphicsShaderProgram& inProgram, const GraphicsPipelineStateInfo& inStateInfo = {}) -> CommandBuffer&;
 	auto BindComputeProgram(ComputeShaderProgram& inProgram) -> CommandBuffer&;
-	auto BindShaderResources(const ShaderResources& inResources) -> CommandBuffer&;
+	auto BindRayTracingProgram(RayTracingShaderProgram& inProgram) -> CommandBuffer&;
+	auto BindGraphicsShaderResource(const ShaderResources& inResources) -> CommandBuffer&;
+	auto BindComputeShaderResource(const ShaderResources& inResources) -> CommandBuffer&;
+	auto BindRayTracingShaderResource(const ShaderResources& inResources) -> CommandBuffer&;
 
 	// Commands are borrowed and must remain alive until asynchronous recording completes.
 	auto AddCommands(const Command* const* inCommands, size_t inCount)->CommandBuffer&;
