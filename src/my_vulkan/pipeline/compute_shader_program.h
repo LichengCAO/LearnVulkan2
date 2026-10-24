@@ -12,13 +12,12 @@ private:
 	friend class ComputeShaderProgram;
 
 	std::string m_spirvFile;
-	std::string m_entry = "main";
+	std::optional<std::string> m_entry;
 	VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;
 
 public:
 	auto Reset() -> ComputeShaderProgramCreateInfo&;
-	auto SetSpirvFile(std::string inFile) -> ComputeShaderProgramCreateInfo&;
-	auto SetEntry(std::string inEntry) -> ComputeShaderProgramCreateInfo&;
+	auto SetShader(std::string_view inSpirv, std::optional<std::string_view> inEntry = std::nullopt) -> ComputeShaderProgramCreateInfo&;
 	auto CustomizePipelineCache(VkPipelineCache inCache) -> ComputeShaderProgramCreateInfo&;
 };
 

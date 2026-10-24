@@ -2,15 +2,13 @@
 #include "common.h"
 #include "shader_program_layout.h"
 #include "shader.h"
+#include <string_view>
 
 class Buffer;
 class RayTracingShaderProgram;
 class PushConstantManager;
-class RayTracingShaderProgram;
 class ShaderBindingTable;
 class CommandBuffer;
-
-using ShaderGroupIndex = uint32_t;
 
 class IRayTracingShaderProgramInitializer
 {
@@ -35,18 +33,20 @@ enum class ShaderTableType : uint8_t
 
 class RayTracingShaderGroupSet
 {
+public:
+	struct GroupData
+	{
+		ShaderTableType type;
+		std::vector<uint8_t> handle;
+	};
+
 private:
-	std::vector<std::vector<uint8_t>> m_shaderGroupData; // Each inner vector corresponds to a shader group type (raygen, miss, hit, callable) and contains the group data for that type
-	std::vector<size_t> m_shaderGroupStride;
-	std::vector<std::vector<ShaderGroupIndex>> m_groupIndices;
-	void _SetShaderGroupHandlesData(ShaderTableType inShaderTableType, const uint8_t* inData, size_t inSize, size_t inStride);
+	std::unordered_map<std::string, GroupData> m_groups;
 	friend class RayTracingShaderProgram;
 
 public:
-	RayTracingShaderGroupSet();
 	void Reset();
-	void GetShaderGroupHandleData(ShaderTableType inShaderTableType, ShaderGroupIndex inGroupIndex, const uint8_t*& outData, size_t& outSize) const;
-	void GetShaderGroupHandlesData(ShaderTableType inShaderTableType, const uint8_t*& outData, size_t& outSize, size_t& outStride) const;
+	auto GetGroupData(std::string_view inName) const -> const GroupData&;
 };
 
 // https://www.willusher.io/graphics/2019/11/20/the-sbt-three-ways/
@@ -69,22 +69,20 @@ public:
 		Descriptor(RayTracingShaderGroupSet inGroupSet);
 		
 		template<typename T>
-		auto SetShaderTableBinding(ShaderTableType inType, uint32_t inBinding, ShaderGroupIndex inGroupIndex, const T* inData) -> Descriptor&
+		auto SetShaderTableBinding(uint32_t inBinding, std::string_view inGroupName, const T* inData) -> Descriptor&
 		{
-			CHECK_TRUE(inType >= ShaderTableType::RayGeneration && inType <= ShaderTableType::Callable);
-			return SetShaderTableBinding(inType, inBinding, inGroupIndex, reinterpret_cast<const uint8_t*>(inData), sizeof(T));
+			return SetShaderTableBinding(inBinding, inGroupName, reinterpret_cast<const uint8_t*>(inData), sizeof(T));
 		}
-		auto SetShaderTableBinding(ShaderTableType inType, uint32_t inBinding, ShaderGroupIndex inGroupIndex, const uint8_t* inData, size_t inDataSize) -> Descriptor&;
-		auto SetShaderTableBinding(ShaderTableType inType, uint32_t inBinding, ShaderGroupIndex inGroupIndex) -> Descriptor&;
+		auto SetShaderTableBinding(uint32_t inBinding, std::string_view inGroupName, const uint8_t* inData, size_t inDataSize) -> Descriptor&;
+		auto SetShaderTableBinding(uint32_t inBinding, std::string_view inGroupName) -> Descriptor&;
 
 		template<typename T>
-		auto UpdateShaderTableBinding(ShaderTableType inType, uint32_t inBinding, ShaderGroupIndex inGroupIndex, const T* inData) -> Descriptor&
+		auto UpdateShaderTableBinding(uint32_t inBinding, std::string_view inGroupName, const T* inData) -> Descriptor&
 		{
-			CHECK_TRUE(inType >= ShaderTableType::RayGeneration && inType <= ShaderTableType::Callable);
-			return UpdateShaderTableBinding(inType, inBinding, inGroupIndex, reinterpret_cast<const uint8_t*>(inData), sizeof(T));
+			return UpdateShaderTableBinding(inBinding, inGroupName, reinterpret_cast<const uint8_t*>(inData), sizeof(T));
 		}
-		auto UpdateShaderTableBinding(ShaderTableType inType, uint32_t inBinding, ShaderGroupIndex inGroupIndex, const uint8_t* inData, size_t inDataSize) -> Descriptor&;
-		auto UpdateShaderTableBinding(ShaderTableType inType, uint32_t inBinding, ShaderGroupIndex inGroupIndex) -> Descriptor&;
+		auto UpdateShaderTableBinding(uint32_t inBinding, std::string_view inGroupName, const uint8_t* inData, size_t inDataSize) -> Descriptor&;
+		auto UpdateShaderTableBinding(uint32_t inBinding, std::string_view inGroupName) -> Descriptor&;
 
 		void GetShaderTableData(ShaderTableType inType, std::vector<uint8_t>& outData, size_t& outStride) const;
 		virtual void InitShaderBindingTable(ShaderBindingTable* pShaderBindingTable) const override;
@@ -94,7 +92,7 @@ public:
 	ShaderBindingTable();
 	~ShaderBindingTable();
 	ShaderBindingTable(const ShaderBindingTable& _other) = delete;
-	ShaderBindingTable& operator=(const ShaderBindingTable& _other) = delete;
+	auto operator=(const ShaderBindingTable& _other) -> ShaderBindingTable& = delete;
 
 	void Create(const IShaderBindingTableInitializer* pInit);
 	auto GetShaderTableRegion(ShaderTableType inType) const -> VkStridedDeviceAddressRegionKHR;
@@ -106,7 +104,6 @@ class RayTracingShaderProgram
 	friend class CommandBuffer;
 public:
 	RayTracingShaderProgram();
-	using ShaderIndex = uint32_t;
 
 	struct PipelineInput
 	{
@@ -124,13 +121,22 @@ public:
 	class Builder : public IRayTracingShaderProgramInitializer
 	{
 	private:
-		std::vector<VkPipelineShaderStageCreateInfo> m_shaderStageInfos;
-		std::vector<ShaderModuleCreateInfo> m_shaderModuleInfos;
-		std::vector<VkRayTracingShaderGroupCreateInfoKHR> m_shaderRecords;
-		std::vector<VkPushConstantRange> m_pushConstants;
+		struct ShaderGroup
+		{
+			std::string name;
+			ShaderTableType type;
+			VkRayTracingShaderGroupCreateInfoKHR record;
+		};
+		std::vector<ShaderDetail::Request> m_shaders;
+		std::vector<ShaderGroup> m_shaderGroups;
 		uint32_t m_maxRayRecursionDepth = 1u;
 		VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;
-		PipelineLayout m_pipelineLayout;
+
+		void _ValidateGroupName(std::string_view inName) const;
+		auto _RegisterShader(const ShaderDetail::Request& inShader) -> uint32_t;
+		auto _AddGeneralShaderGroup(std::string_view inName, const ShaderDetail::Request& inShader, ShaderTableType inType) -> Builder&;
+		auto _AddHitShaderGroup(std::string_view inName, const std::optional<ShaderDetail::Request>& inClosestHit,
+		    const ShaderDetail::Request* inIntersection, const std::optional<ShaderDetail::Request>& inAnyHit) -> Builder&;
 
 	public:
 		virtual void InitRayTracingShaderProgram(RayTracingShaderProgram* pPipeline) const override;
@@ -141,49 +147,33 @@ public:
 		// Optional, default: VK_NULL_HANDLE
 		auto CustomizePipelineCache(VkPipelineCache inCache) -> Builder&;
 
-		auto SetPipelineLayout(PipelineLayout inPipelineLayout) -> RayTracingShaderProgram::Builder&;
-
-		auto AddPushConstant(VkShaderStageFlags inStages, uint32_t inOffset, uint32_t inSize) -> Builder&;
-
-		// Add shader to pipeline, return shader index for shader group build
-		auto AddShader(const VkPipelineShaderStageCreateInfo& shaderInfo)->ShaderIndex;
-		auto AddShader(const ShaderModuleCreateInfo& inShaderInfo) -> ShaderIndex;
-
-		// Set ray generation shader group record, 
-		// return shader group index for shader binding table build.
-		auto AddRayGenerationShaderGroup(ShaderIndex inRayGenShaderIndex)->ShaderGroupIndex;
-
-		// Add hit shader group record for triangle-based geometries, 
-		// return shader group index for shader binding table build.
-		auto AddTriangleHitShaderGroup(
-			ShaderIndex inClosestHitShaderIndex, 
-			ShaderIndex inAnyHitShaderIndex = VK_SHADER_UNUSED_KHR)->ShaderGroupIndex;
-
-		// Add hit shader group record for AABB geometries, 
-		// return shader group index for shader binding table build.
-		auto AddProceduralHitShaderGroup(
-			ShaderIndex inClosestHitShaderIndex, 
-			ShaderIndex inIntersectionShaderIndex, 
-			ShaderIndex inAnyHitShaderIndex = VK_SHADER_UNUSED_KHR)->ShaderGroupIndex;
-
-		// Add miss shader group record, 
-		// return shader group index for shader binding table build.
-		auto AddMissShaderGroup(ShaderIndex inMissShaderIndex)->ShaderGroupIndex;
-
-		// Add callable shader group record, 
-		// return shader group index for shader binding table build.
-		auto AddCallableShaderGroup(ShaderIndex inCallableShaderIndex)->ShaderGroupIndex;
+		auto AddRayGenerationShaderGroup(std::string_view inName, std::string_view inSpirv,
+		    std::optional<std::string_view> inEntry = std::nullopt) -> Builder&;
+		auto AddMissShaderGroup(std::string_view inName, std::string_view inSpirv,
+		    std::optional<std::string_view> inEntry = std::nullopt) -> Builder&;
+		auto AddCallableShaderGroup(std::string_view inName, std::string_view inSpirv,
+		    std::optional<std::string_view> inEntry = std::nullopt) -> Builder&;
+		auto AddTriangleHitShaderGroup(std::string_view inName,
+		    std::optional<std::string_view> inClosestHitSpirv = std::nullopt,
+		    std::optional<std::string_view> inClosestHitEntry = std::nullopt,
+		    std::optional<std::string_view> inAnyHitSpirv = std::nullopt,
+		    std::optional<std::string_view> inAnyHitEntry = std::nullopt) -> Builder&;
+		auto AddProceduralHitShaderGroup(std::string_view inName,
+		    std::optional<std::string_view> inClosestHitSpirv,
+		    std::optional<std::string_view> inClosestHitEntry,
+		    std::string_view inIntersectionSpirv,
+		    std::optional<std::string_view> inIntersectionEntry = std::nullopt,
+		    std::optional<std::string_view> inAnyHitSpirv = std::nullopt,
+		    std::optional<std::string_view> inAnyHitEntry = std::nullopt) -> Builder&;
 	};
 
 private:
 	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
 	std::vector<std::unique_ptr<ShaderModule>> m_shaderModules;
-	bool m_hasReflection = false;
 	ShaderProgramLayout m_shaderProgramLayout;
 	VkPipeline m_vkPipeline = VK_NULL_HANDLE;
 	uint32_t m_shaderGroupCount = 0;
 	RayTracingShaderGroupSet m_groupSet;
-	void _SetShaderGroupHandlesData(ShaderTableType inType, const uint8_t* inData, size_t inSize, size_t inStride);
 
 public:
 	~RayTracingShaderProgram();

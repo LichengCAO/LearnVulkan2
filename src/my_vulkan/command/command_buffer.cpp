@@ -266,7 +266,6 @@ auto CommandBuffer::BindRayTracingShaderResource(const ShaderResources& resource
 	CHECK_TRUE(m_rayTracingProgram, "Bind a ray tracing program before shader resources!");
 	CHECK_TRUE(std::holds_alternative<std::monostate>(m_renderingScopeState),
 	    "Ray tracing resources require no active render pass!");
-	CHECK_TRUE(m_rayTracingProgram->m_hasReflection, "Ray tracing program has no reflection metadata!");
 	return _BindShaderResources(m_rayTracingProgram->m_shaderProgramLayout, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, resources);
 }
 

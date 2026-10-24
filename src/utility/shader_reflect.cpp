@@ -119,16 +119,22 @@ namespace
 			CheckReflect(function(module, &count, result.data()), "Enumerate reflection data");
 		return result;
 	}
-	void ReflectInterface(const SpvReflectShaderModule* module, bool input,
+	auto IsUsed(const uint32_t* ids, uint32_t count, uint32_t id) -> bool
+	{
+		return count > 0 && std::find(ids, ids + count, id) != ids + count;
+	}
+	void ReflectInterface(const SpvReflectEntryPoint* entry, bool input,
 	    std::unordered_map<std::string, uint32_t>& names, std::map<uint32_t, VkFormat>& formats)
 	{
 		names.clear();
 		formats.clear();
-		if (!module)
+		if (!entry)
 			return;
-		for (const auto* variable : Enumerate<SpvReflectInterfaceVariable>(
-		         module, input ? spvReflectEnumerateInputVariables : spvReflectEnumerateOutputVariables))
+		const auto count = input ? entry->input_variable_count : entry->output_variable_count;
+		const auto variables = input ? entry->input_variables : entry->output_variables;
+		for (uint32_t i = 0; i < count; ++i)
 		{
+			const auto* variable = variables[i];
 			if (variable->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN)
 				continue;
 			const bool simple = variable->member_count == 0 && variable->array.dims_count == 0 &&
@@ -151,14 +157,14 @@ void ShaderReflector::ModuleDeleter::operator()(SpvReflectShaderModule* module) 
 		delete module;
 	}
 }
-auto ShaderReflector::_FindShaderModule(VkShaderStageFlagBits stage) const -> const SpvReflectShaderModule*
+auto ShaderReflector::_FindEntry(VkShaderStageFlagBits stage) const -> const SpvReflectEntryPoint*
 {
-	const SpvReflectShaderModule* result = nullptr;
-	for (const auto& module : m_vecReflectModule)
-		if (static_cast<VkShaderStageFlagBits>(module->shader_stage) == stage)
+	const SpvReflectEntryPoint* result = nullptr;
+	for (const auto& selected : m_entries)
+		if (static_cast<VkShaderStageFlagBits>(selected.entry->shader_stage) == stage)
 		{
-			CHECK_TRUE(result == nullptr, "Multiple modules for interface stage are ambiguous!");
-			result = module.get();
+			CHECK_TRUE(result == nullptr, "Multiple entries for interface stage are ambiguous!");
+			result = selected.entry;
 		}
 	return result;
 }
@@ -179,10 +185,22 @@ void ShaderReflector::Create(const std::vector<std::string>& files)
 		    static_cast<bool>(file.read(reinterpret_cast<char*>(code.data()), size)), "Cannot read SPIR-V: " + name);
 		std::unique_ptr<SpvReflectShaderModule, ModuleDeleter> module(new SpvReflectShaderModule{});
 		CheckReflect(spvReflectCreateShaderModule(static_cast<size_t>(size), code.data(), module.get()), name);
-		CHECK_TRUE(module->entry_point_count == 1, "Reflection requires one entry point per SPIR-V module: " + name);
+		CHECK_TRUE(module->entry_point_count > 0, "SPIR-V module has no entry points: " + name);
 		modules.push_back(std::move(module));
 	}
+	std::vector<ShaderEntryReflection> entries;
+	for (const auto& module : modules)
+		for (uint32_t i = 0; i < module->entry_point_count; ++i)
+			entries.push_back({module.get(), &module->entry_points[i]});
 	m_vecReflectModule.swap(modules);
+	m_entries.swap(entries);
+}
+void ShaderReflector::Create(const std::vector<ShaderEntryReflection>& entries)
+{
+	CHECK_TRUE(!entries.empty(), "Shader reflection needs selected entries!");
+	// Retain owned modules when selecting a subset of this reflector's entries.
+	auto copy = entries;
+	m_entries.swap(copy);
 }
 void ShaderReflector::ReflectDescriptorSets(std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>& outNames,
     std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>>& outSets,
@@ -191,10 +209,13 @@ void ShaderReflector::ReflectDescriptorSets(std::unordered_map<std::string, std:
 	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> names;
 	std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>> sets;
 	std::set<std::string> ambiguous;
-	for (const auto& module : m_vecReflectModule)
+	for (const auto& selected : m_entries)
 		for (const auto* descriptor :
-		    Enumerate<SpvReflectDescriptorBinding>(module.get(), spvReflectEnumerateDescriptorBindings))
+		    Enumerate<SpvReflectDescriptorBinding>(selected.module, spvReflectEnumerateDescriptorBindings))
 		{
+			const auto* entry = selected.entry;
+			if (!IsUsed(entry->used_uniforms, entry->used_uniform_count, descriptor->spirv_id))
+				continue;
 			CHECK_TRUE(descriptor->count > 0, "Runtime descriptor arrays unsupported: set " +
 			                                      std::to_string(descriptor->set) + " binding " +
 			                                      std::to_string(descriptor->binding));
@@ -204,7 +225,7 @@ void ShaderReflector::ReflectDescriptorSets(std::unordered_map<std::string, std:
 			binding.binding = descriptor->binding;
 			binding.descriptorType = static_cast<VkDescriptorType>(descriptor->descriptor_type);
 			binding.descriptorCount = descriptor->count;
-			binding.stageFlags = static_cast<VkShaderStageFlags>(module->shader_stage);
+			binding.stageFlags = static_cast<VkShaderStageFlags>(selected.entry->shader_stage);
 			auto [it, inserted] = sets[descriptor->set].emplace(binding.binding, binding);
 			CHECK_TRUE(inserted || (it->second.descriptorType == binding.descriptorType &&
 			                           it->second.descriptorCount == binding.descriptorCount),
@@ -232,12 +253,12 @@ void ShaderReflector::ReflectDescriptorSets(std::unordered_map<std::string, std:
 void ShaderReflector::ReflectInput(VkShaderStageFlagBits stage, std::unordered_map<std::string, uint32_t>& names,
     std::map<uint32_t, VkFormat>& formats) const
 {
-	ReflectInterface(_FindShaderModule(stage), true, names, formats);
+	ReflectInterface(_FindEntry(stage), true, names, formats);
 }
 void ShaderReflector::ReflectOutput(VkShaderStageFlagBits stage, std::unordered_map<std::string, uint32_t>& names,
     std::map<uint32_t, VkFormat>& formats) const
 {
-	ReflectInterface(_FindShaderModule(stage), false, names, formats);
+	ReflectInterface(_FindEntry(stage), false, names, formats);
 }
 void ShaderReflector::ReflectPushConst(std::unordered_map<std::string, uint32_t>& names,
     std::vector<std::pair<VkShaderStageFlags, std::pair<uint32_t, uint32_t>>>& ranges) const
@@ -246,12 +267,15 @@ void ShaderReflector::ReflectPushConst(std::unordered_map<std::string, uint32_t>
 	ranges.clear();
 	std::map<VkShaderStageFlagBits, std::pair<uint32_t, uint32_t>> bounds;
 	std::vector<std::pair<std::string, VkShaderStageFlagBits>> blockNames;
-	for (const auto& module : m_vecReflectModule)
+	for (const auto& selected : m_entries)
 	{
-		const auto stage = static_cast<VkShaderStageFlagBits>(module->shader_stage);
+		const auto* entry = selected.entry;
+		const auto stage = static_cast<VkShaderStageFlagBits>(entry->shader_stage);
 		for (const auto* block :
-		    Enumerate<SpvReflectBlockVariable>(module.get(), spvReflectEnumeratePushConstantBlocks))
+		    Enumerate<SpvReflectBlockVariable>(selected.module, spvReflectEnumeratePushConstantBlocks))
 		{
+			if (!IsUsed(entry->used_push_constants, entry->used_push_constant_count, block->spirv_id))
+				continue;
 			CHECK_TRUE(block->size > block->offset && block->offset % 4 == 0 && block->size % 4 == 0,
 			    "Invalid push constant range!");
 			auto [it, inserted] = bounds.emplace(stage, std::make_pair(block->offset, block->size));
@@ -293,22 +317,27 @@ void ShaderReflector::ReflectPushConst(std::unordered_map<std::string, uint32_t>
 }
 void ShaderReflector::PrintReflectResult() const
 {
-	for (const auto& module : m_vecReflectModule)
+	for (const auto& selected : m_entries)
 	{
-		_PrintStage(std::cout, static_cast<VkShaderStageFlags>(module->shader_stage));
-		std::cout << " entry: " << module->entry_point_name << '\n';
-		for (const auto* binding :
-		    Enumerate<SpvReflectDescriptorBinding>(module.get(), spvReflectEnumerateDescriptorBindings))
+		const auto* entry = selected.entry;
+		_PrintStage(std::cout, static_cast<VkShaderStageFlags>(entry->shader_stage));
+		std::cout << " entry: " << entry->name << '\n';
+		for (const auto* binding : Enumerate<SpvReflectDescriptorBinding>(selected.module, spvReflectEnumerateDescriptorBindings))
 		{
+			if (!IsUsed(entry->used_uniforms, entry->used_uniform_count, binding->spirv_id))
+				continue;
 			std::cout << "  " << (binding->name ? binding->name : "") << " set=" << binding->set
 			          << " binding=" << binding->binding << " count=" << binding->count << " ";
 			_PrintDescriptorType(std::cout, static_cast<VkDescriptorType>(binding->descriptor_type));
 			std::cout << '\n';
 		}
 		for (bool input : {true, false})
-			for (const auto* variable : Enumerate<SpvReflectInterfaceVariable>(
-			         module.get(), input ? spvReflectEnumerateInputVariables : spvReflectEnumerateOutputVariables))
+		{
+			const auto count = input ? entry->input_variable_count : entry->output_variable_count;
+			const auto variables = input ? entry->input_variables : entry->output_variables;
+			for (uint32_t i = 0; i < count; ++i)
 			{
+				const auto* variable = variables[i];
 				if (variable->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN)
 					continue;
 				std::cout << (input ? "  input " : "  output ") << (variable->name ? variable->name : "")
@@ -316,13 +345,15 @@ void ShaderReflector::PrintReflectResult() const
 				_PrintVkFormat(std::cout, static_cast<VkFormat>(variable->format));
 				std::cout << '\n';
 			}
-		for (const auto* block :
-		    Enumerate<SpvReflectBlockVariable>(module.get(), spvReflectEnumeratePushConstantBlocks))
-			std::cout << "  push constant " << (block->name ? block->name : "") << " offset=" << block->offset
-			          << " size=" << block->size - block->offset << '\n';
+		}
+		for (const auto* block : Enumerate<SpvReflectBlockVariable>(selected.module, spvReflectEnumeratePushConstantBlocks))
+			if (IsUsed(entry->used_push_constants, entry->used_push_constant_count, block->spirv_id))
+				std::cout << "  push constant " << (block->name ? block->name : "") << " offset=" << block->offset
+				          << " size=" << block->size - block->offset << '\n';
 	}
 }
 void ShaderReflector::Destroy()
 {
+	m_entries.clear();
 	m_vecReflectModule.clear();
 }

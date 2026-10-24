@@ -43,7 +43,8 @@ private:
 		VkFormat format;
 		VkImageLayout finalLayout;
 	};
-	std::vector<ShaderModuleCreateInfo> m_shaderModuleInfos;
+	std::vector<ShaderDetail::Request> m_shaders;
+	auto _AddShader(std::string_view inSpirv, VkShaderStageFlagBits inStage, std::optional<std::string_view> inEntry) -> GraphicsShaderProgramCreateInfo&;
 	std::map<uint32_t, ColorAttachment> m_defaultColors;
 	std::optional<VkFormat> m_defaultDepth;
 
@@ -52,7 +53,11 @@ public:
 		VkImageLayout inFinalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) -> GraphicsShaderProgramCreateInfo&;
 	auto SetDefaultDepthAttachment(VkFormat inFormat) -> GraphicsShaderProgramCreateInfo&;
 	auto Reset() -> GraphicsShaderProgramCreateInfo&;
-	auto AddShaderModuleInfo(ShaderModuleCreateInfo inShaderModule) -> GraphicsShaderProgramCreateInfo&;
+	auto AddVertexShader(std::string_view inSpirv, std::optional<std::string_view> inEntry = std::nullopt) -> GraphicsShaderProgramCreateInfo&;
+	auto AddFragmentShader(std::string_view inSpirv, std::optional<std::string_view> inEntry = std::nullopt) -> GraphicsShaderProgramCreateInfo&;
+	auto AddGeometryShader(std::string_view inSpirv, std::optional<std::string_view> inEntry = std::nullopt) -> GraphicsShaderProgramCreateInfo&;
+	auto AddTaskShader(std::string_view inSpirv, std::optional<std::string_view> inEntry = std::nullopt) -> GraphicsShaderProgramCreateInfo&;
+	auto AddMeshShader(std::string_view inSpirv, std::optional<std::string_view> inEntry = std::nullopt) -> GraphicsShaderProgramCreateInfo&;
 };
 
 class GraphicsShaderProgram final
@@ -61,6 +66,7 @@ class GraphicsShaderProgram final
 private:
 	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
 	std::vector<std::unique_ptr<ShaderModule>> m_shaderModules;
+	std::vector<VkPipelineShaderStageCreateInfo> m_shaderStages;
 	ShaderProgramLayout m_shaderProgramLayout;
 	std::unordered_map<size_t, VkPipeline> m_cachedGraphicsPipelines;
 	std::unique_ptr<RenderPass> m_defaultRenderPass;
@@ -68,7 +74,7 @@ private:
 	bool m_automaticVertexInputSupported = true;
 
 private:
-	void _CreateDefaults(const GraphicsShaderProgramCreateInfo& inInfo);
+	void _CreateDefaults(const GraphicsShaderProgramCreateInfo& inInfo, const std::vector<ShaderEntryReflection>& inEntries);
 	auto _ResolveState(const GraphicsPipelineStateInfo& inState) const -> GraphicsPipelineStateInfo;
 	void _CreatePushConstantManager(const std::vector<VkPushConstantRange>& inPushConstantRanges);
 	auto _CreateVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) const -> VkPipeline;

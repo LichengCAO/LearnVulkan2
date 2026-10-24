@@ -3,77 +3,18 @@
 #include "device.h"
 #include "push_constant_manager.h"
 #include "command_buffer.h"
-
-// RayTracingShaderGroupSet implementation
-RayTracingShaderGroupSet::RayTracingShaderGroupSet()
-{
-	m_shaderGroupData.resize(static_cast<size_t>(ShaderTableType::Max));
-	m_shaderGroupStride.resize(static_cast<size_t>(ShaderTableType::Max), 0u);
-	m_groupIndices.resize(static_cast<size_t>(ShaderTableType::Max));
-}
+#include <algorithm>
 
 void RayTracingShaderGroupSet::Reset()
 {
-	for (auto& indices : m_groupIndices)
-		indices.clear();
-	for (auto& data : m_shaderGroupData)
-	{
-		data.clear();
-	}
-	for (auto& stride : m_shaderGroupStride)
-	{
-		stride = 0;
-	}
+	m_groups.clear();
 }
 
-void RayTracingShaderGroupSet::_SetShaderGroupHandlesData(ShaderTableType inShaderTableType, const uint8_t* inData, size_t inSize, size_t inStride)
+auto RayTracingShaderGroupSet::GetGroupData(std::string_view inName) const -> const GroupData&
 {
-	size_t idx = static_cast<size_t>(inShaderTableType);
-	CHECK_TRUE(idx < m_shaderGroupData.size());
-	CHECK_TRUE(idx < m_shaderGroupStride.size());
-	CHECK_TRUE(inStride > 0);
-	CHECK_TRUE((inSize % inStride) == 0);
-	if (inSize > 0)
-	{
-		CHECK_TRUE(inData != nullptr);
-		m_shaderGroupData[idx].assign(inData, inData + inSize);
-	}
-	else
-	{
-		m_shaderGroupData[idx].clear();
-	}
-	m_shaderGroupStride[idx] = inStride;
-}
-
-void RayTracingShaderGroupSet::GetShaderGroupHandleData(ShaderTableType inShaderTableType, ShaderGroupIndex inGroupIndex, const uint8_t*& outData, size_t& outSize) const
-{
-	size_t idx = static_cast<size_t>(inShaderTableType);
-	CHECK_TRUE(idx < m_shaderGroupData.size());
-
-	const auto& buffer = m_shaderGroupData[idx];
-	size_t stride = (idx < m_shaderGroupStride.size()) ? m_shaderGroupStride[idx] : 0;
-	CHECK_TRUE(!(stride == 0 || buffer.empty()));
-
-	const auto& indices = m_groupIndices[idx];
-	const auto found = std::find(indices.begin(), indices.end(), inGroupIndex);
-	CHECK_TRUE(found != indices.end(), "Shader group does not belong to this SBT table!");
-	const auto localIndex = static_cast<size_t>(found - indices.begin());
-
-	outData = buffer.data() + localIndex * stride;
-	outSize = stride;
-}
-
-void RayTracingShaderGroupSet::GetShaderGroupHandlesData(ShaderTableType inShaderTableType, const uint8_t*& outData, size_t& outSize, size_t& outStride) const
-{
-	size_t idx = static_cast<size_t>(inShaderTableType);
-	CHECK_TRUE(idx < m_shaderGroupData.size());
-	CHECK_TRUE(idx < m_shaderGroupStride.size());
-	CHECK_TRUE(!m_shaderGroupData[idx].empty());
-
-	const auto& buffer = m_shaderGroupData[idx];
-	outData = buffer.data();
-	outSize = buffer.size();
-	outStride = m_shaderGroupStride[idx];
+	const auto found = m_groups.find(std::string(inName));
+	CHECK_TRUE(found != m_groups.end(), "Unknown ray tracing shader group: " + std::string(inName));
+	return found->second;
 }
 
 RayTracingShaderProgram::RayTracingShaderProgram() = default;
@@ -117,7 +58,6 @@ void RayTracingShaderProgram::Destroy()
 	m_shaderModules.clear();
 	m_shaderGroupCount = 0;
 	m_groupSet.Reset();
-	m_hasReflection = false;
 }
 
 auto RayTracingShaderProgram::GetShaderGroupCount() const -> uint32_t
@@ -128,11 +68,6 @@ auto RayTracingShaderProgram::GetShaderGroupCount() const -> uint32_t
 auto RayTracingShaderProgram::GetVkPipeline() const -> VkPipeline
 {
 	return m_vkPipeline;
-}
-
-void RayTracingShaderProgram::_SetShaderGroupHandlesData(ShaderTableType inType, const uint8_t* inData, size_t inSize, size_t inStride)
-{
-	m_groupSet._SetShaderGroupHandlesData(inType, inData, inSize, inStride);
 }
 
 void RayTracingShaderProgram::Do(VkCommandBuffer commandBuffer, const PipelineInput& input)
@@ -216,37 +151,30 @@ ShaderBindingTable::Descriptor::Descriptor(RayTracingShaderGroupSet inGroupSet)
 }
 
 auto ShaderBindingTable::Descriptor::SetShaderTableBinding(
-	ShaderTableType inType, 
-	uint32_t inBinding, 
-	ShaderGroupIndex inGroupIndex, 
+	uint32_t inBinding,
+	std::string_view inGroupName,
 	const uint8_t* inData, 
 	size_t inDataSize) -> Descriptor&
 {
-	size_t idx = static_cast<size_t>(inType);
-	const uint8_t* handlePtr = nullptr;
-	size_t handleSize = 0;
-	static const size_t sShaderGroupHandleAlignment = []() -> size_t
-	{
-		VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
-		MyDevice::GetInstance().GetPhysicalDeviceRayTracingProperties(rtProps);
-		return static_cast<size_t>(rtProps.shaderGroupHandleAlignment);
-	}();
-	static const size_t sShaderGroupBaseAlignment = []() -> size_t
-	{
-		VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
-		MyDevice::GetInstance().GetPhysicalDeviceRayTracingProperties(rtProps);
-		return static_cast<size_t>(rtProps.shaderGroupBaseAlignment);
-	}();
-	auto alignUp = [](size_t v, size_t a) { return (v + a - 1) & ~(a - 1); };
-	m_groupSet.GetShaderGroupHandleData(inType, inGroupIndex, handlePtr, handleSize);
+	const auto& group = m_groupSet.GetGroupData(inGroupName);
+	const auto inType = group.type;
+	const size_t idx = static_cast<size_t>(inType);
+	const auto* handlePtr = group.handle.data();
+	const size_t handleSize = group.handle.size();
+	CHECK_TRUE(inDataSize == 0 || inData != nullptr, "Shader record payload is null!");
+	VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
+	MyDevice::GetInstance().GetPhysicalDeviceRayTracingProperties(rtProps);
+	const size_t handleAlignment = rtProps.shaderGroupHandleAlignment;
+	const size_t baseAlignment = rtProps.shaderGroupBaseAlignment;
+	auto alignUp = [](size_t v, size_t a) -> size_t { return (v + a - 1) & ~(a - 1); };
 	CHECK_TRUE(handlePtr != nullptr && handleSize != 0);
-	CHECK_TRUE(sShaderGroupHandleAlignment > 0);
-	CHECK_TRUE(sShaderGroupBaseAlignment > 0);
+	CHECK_TRUE(handleAlignment > 0);
+	CHECK_TRUE(baseAlignment > 0);
 
-	size_t totalSize = alignUp(handleSize + inDataSize, sShaderGroupHandleAlignment);
+	size_t totalSize = alignUp(handleSize + inDataSize, handleAlignment);
 	if (inType == ShaderTableType::RayGeneration)
 	{
-		totalSize = alignUp(totalSize, sShaderGroupBaseAlignment);
+		totalSize = alignUp(totalSize, baseAlignment);
 	}
 	size_t oldStride = m_recordStrides[idx];
 	size_t newStride = std::max(oldStride, totalSize);
@@ -261,6 +189,7 @@ auto ShaderBindingTable::Descriptor::SetShaderTableBinding(
 			m_shaderRecordData[idx].resize(requiredSize, 0u);
 		}
 		uint8_t* dst = m_shaderRecordData[idx].data() + static_cast<size_t>(inBinding) * oldStride;
+		std::fill_n(dst, newStride, uint8_t{0});
 		memcpy(dst, handlePtr, handleSize);
 		if (inData != nullptr && inDataSize > 0)
 		{
@@ -277,6 +206,7 @@ auto ShaderBindingTable::Descriptor::SetShaderTableBinding(
 		}
 
 		uint8_t* dst = newBuffer.data() + static_cast<size_t>(inBinding) * newStride;
+		std::fill_n(dst, newStride, uint8_t{0});
 		memcpy(dst, handlePtr, handleSize);
 		if (inData != nullptr && inDataSize > 0)
 		{
@@ -291,65 +221,55 @@ auto ShaderBindingTable::Descriptor::SetShaderTableBinding(
 }
 
 auto ShaderBindingTable::Descriptor::SetShaderTableBinding(
-	ShaderTableType inType, 
-	uint32_t inBinding, 
-	ShaderGroupIndex inGroupIndex) -> Descriptor&
+	uint32_t inBinding,
+	std::string_view inGroupName) -> Descriptor&
 {
-	return SetShaderTableBinding(inType, inBinding, inGroupIndex, nullptr, 0);
+	return SetShaderTableBinding(inBinding, inGroupName, nullptr, 0);
 }
 
 auto ShaderBindingTable::Descriptor::UpdateShaderTableBinding(
-	ShaderTableType inType,
 	uint32_t inBinding,
-	ShaderGroupIndex inGroupIndex,
+	std::string_view inGroupName,
 	const uint8_t* inData,
 	size_t inDataSize) -> Descriptor&
 {
-	CHECK_TRUE(inType >= ShaderTableType::RayGeneration && inType <= ShaderTableType::Callable);
+	const auto& group = m_groupSet.GetGroupData(inGroupName);
+	const auto inType = group.type;
+	CHECK_TRUE(inDataSize == 0 || inData != nullptr, "Shader record payload is null!");
 
 	const size_t idx = static_cast<size_t>(inType);
 	CHECK_TRUE(idx < m_recordStrides.size());
 	const size_t stride = m_recordStrides[idx];
 	CHECK_TRUE(stride > 0, "Cannot update shader table binding before its stride is initialized.");
 
-	const uint8_t* handlePtr = nullptr;
-	size_t handleSize = 0;
-	m_groupSet.GetShaderGroupHandleData(inType, inGroupIndex, handlePtr, handleSize);
+	const auto* handlePtr = group.handle.data();
+	const size_t handleSize = group.handle.size();
 	CHECK_TRUE(handlePtr != nullptr && handleSize != 0);
 
-	static const size_t sShaderGroupHandleAlignment = []() -> size_t
-	{
-		VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
-		MyDevice::GetInstance().GetPhysicalDeviceRayTracingProperties(rtProps);
-		return static_cast<size_t>(rtProps.shaderGroupHandleAlignment);
-	}();
-	static const size_t sShaderGroupBaseAlignment = []() -> size_t
-	{
-		VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
-		MyDevice::GetInstance().GetPhysicalDeviceRayTracingProperties(rtProps);
-		return static_cast<size_t>(rtProps.shaderGroupBaseAlignment);
-	}();
-	auto alignUp = [](size_t v, size_t a) { return (v + a - 1) & ~(a - 1); };
+	VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
+	MyDevice::GetInstance().GetPhysicalDeviceRayTracingProperties(rtProps);
+	const size_t handleAlignment = rtProps.shaderGroupHandleAlignment;
+	const size_t baseAlignment = rtProps.shaderGroupBaseAlignment;
+	auto alignUp = [](size_t v, size_t a) -> size_t { return (v + a - 1) & ~(a - 1); };
 
-	CHECK_TRUE(sShaderGroupHandleAlignment > 0);
-	CHECK_TRUE(sShaderGroupBaseAlignment > 0);
+	CHECK_TRUE(handleAlignment > 0);
+	CHECK_TRUE(baseAlignment > 0);
 
-	size_t packedSize = alignUp(handleSize + inDataSize, sShaderGroupHandleAlignment);
+	size_t packedSize = alignUp(handleSize + inDataSize, handleAlignment);
 	if (inType == ShaderTableType::RayGeneration)
 	{
-		packedSize = alignUp(packedSize, sShaderGroupBaseAlignment);
+		packedSize = alignUp(packedSize, baseAlignment);
 	}
 	CHECK_TRUE(packedSize <= stride, "Updated shader table binding data exceeds the current stride.");
 
-	return SetShaderTableBinding(inType, inBinding, inGroupIndex, inData, inDataSize);
+	return SetShaderTableBinding(inBinding, inGroupName, inData, inDataSize);
 }
 
 auto ShaderBindingTable::Descriptor::UpdateShaderTableBinding(
-	ShaderTableType inType,
 	uint32_t inBinding,
-	ShaderGroupIndex inGroupIndex) -> Descriptor&
+	std::string_view inGroupName) -> Descriptor&
 {
-	return UpdateShaderTableBinding(inType, inBinding, inGroupIndex, nullptr, 0);
+	return UpdateShaderTableBinding(inBinding, inGroupName, nullptr, 0);
 }
 
 void ShaderBindingTable::Descriptor::GetShaderTableData(
@@ -367,7 +287,7 @@ void ShaderBindingTable::Descriptor::InitShaderBindingTable(ShaderBindingTable* 
 	auto& device = MyDevice::GetInstance();
 	VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
 	device.GetPhysicalDeviceRayTracingProperties(rtProps);
-	auto alignUp = [&](size_t v, size_t a) { return (v + a - 1) & ~(a - 1); };
+	auto alignUp = [](size_t v, size_t a) -> size_t { return (v + a - 1) & ~(a - 1); };
 
 	// Compute total SBT buffer size directly from record data.
 	size_t totalSize = 0;
@@ -424,66 +344,22 @@ void RayTracingShaderProgram::Builder::InitRayTracingShaderProgram(RayTracingSha
 	VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingProperties{};
 	CHECK_TRUE(vkCreateRayTracingPipelinesKHR && vkGetRayTracingShaderGroupHandlesKHR,
 	    "Ray tracing pipeline extension is unavailable!");
-	CHECK_TRUE(!m_shaderRecords.empty(), "Ray tracing pipeline needs shader groups!");
-	const bool reflected = !m_shaderModuleInfos.empty();
-	CHECK_TRUE(!reflected || (m_shaderStageInfos.empty() && m_pushConstants.empty() &&
-	    m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE), "Cannot mix reflected and explicit ray tracing setup!");
-	std::vector<VkPipelineShaderStageCreateInfo> stages = m_shaderStageInfos;
-	if (reflected)
+	CHECK_TRUE(!m_shaderGroups.empty(), "Ray tracing pipeline needs shader groups!");
+	CHECK_TRUE(std::any_of(m_shaderGroups.begin(), m_shaderGroups.end(), [](const auto& group) -> bool
+	    { return group.type == ShaderTableType::RayGeneration; }),
+	    "Ray tracing pipeline needs a ray generation group!");
+	auto resolved = ShaderDetail::Resolve(m_shaders, pPipeline->m_shaderModules);
+	pPipeline->m_shaderProgramLayout.Create(resolved.reflection);
+	const auto& stages = resolved.stages;
+	std::vector<VkRayTracingShaderGroupCreateInfoKHR> records;
+	for (const auto& group : m_shaderGroups)
 	{
-		std::vector<std::string> files;
-		for (const auto& info : m_shaderModuleInfos)
-		{
-			CHECK_TRUE(info.m_entries.size() == 1, "Ray tracing shader needs exactly one stage/entry!");
-			files.push_back(info.m_spirvFile);
-		}
-		pPipeline->m_shaderProgramLayout.Create(files);
-		for (const auto& info : m_shaderModuleInfos)
-		{
-			auto& module = pPipeline->m_shaderModules.emplace_back(std::make_unique<ShaderModule>());
-			module->Create(info);
-			stages.push_back(module->GetShaderStageInfo(info.m_entries.begin()->first));
-		}
+		auto record = group.record;
+		for (auto* index : {&record.generalShader, &record.closestHitShader, &record.intersectionShader, &record.anyHitShader})
+			if (*index != VK_SHADER_UNUSED_KHR)
+				*index = resolved.indices.at(*index);
+		records.push_back(record);
 	}
-	else
-	{
-		CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() != VK_NULL_HANDLE, "Ray tracing pipeline needs a pipeline layout!");
-		pPipeline->m_shaderProgramLayout.Create(m_pipelineLayout);
-	}
-	CHECK_TRUE(!stages.empty(), "Ray tracing pipeline needs shaders!");
-	constexpr VkShaderStageFlags rayStages = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR |
-	    VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
-	    VK_SHADER_STAGE_INTERSECTION_BIT_KHR | VK_SHADER_STAGE_CALLABLE_BIT_KHR;
-	for (const auto& stage : stages)
-		CHECK_TRUE((stage.stage & rayStages) && !(stage.stage & ~rayStages) && stage.module && stage.pName,
-		    "Invalid ray tracing shader stage!");
-	auto checkShader = [&](uint32_t index, VkShaderStageFlagBits expected, bool optional)
-	{
-		if (optional && index == VK_SHADER_UNUSED_KHR)
-			return;
-		CHECK_TRUE(index < stages.size() && stages[index].stage == expected,
-		    "Shader group index/stage mismatch!");
-	};
-	bool hasRaygen = false;
-	for (const auto& group : m_shaderRecords)
-	{
-		if (group.type == VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR)
-		{
-			CHECK_TRUE(group.generalShader < stages.size(), "Shader group index out of range!");
-			const auto stage = stages[group.generalShader].stage;
-			CHECK_TRUE(stage == VK_SHADER_STAGE_RAYGEN_BIT_KHR || stage == VK_SHADER_STAGE_MISS_BIT_KHR ||
-			    stage == VK_SHADER_STAGE_CALLABLE_BIT_KHR, "Invalid general shader group stage!");
-			hasRaygen = hasRaygen || stage == VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-		}
-		else
-		{
-			checkShader(group.closestHitShader, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, true);
-			checkShader(group.anyHitShader, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, true);
-			if (group.type == VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR)
-				checkShader(group.intersectionShader, VK_SHADER_STAGE_INTERSECTION_BIT_KHR, false);
-		}
-	}
-	CHECK_TRUE(hasRaygen, "Ray tracing pipeline needs a ray generation group!");
 	device.GetPhysicalDeviceRayTracingProperties(rayTracingProperties);
 	CHECK_TRUE(m_maxRayRecursionDepth > 0 && m_maxRayRecursionDepth <= rayTracingProperties.maxRayRecursionDepth,
 	    "Ray tracing recursion depth exceeds device limits!");
@@ -494,22 +370,21 @@ void RayTracingShaderProgram::Builder::InitRayTracingShaderProgram(RayTracingSha
 	VkPipeline& pipelineToInit = pPipeline->m_vkPipeline;
 	uint32_t& countToInit = pPipeline->m_shaderGroupCount;
 
-	countToInit = static_cast<uint32_t>(m_shaderRecords.size());
+	countToInit = static_cast<uint32_t>(m_shaderGroups.size());
 	uptrToInit = std::make_unique<PushConstantManager>(properties.limits.maxPushConstantsSize);
-	const auto& ranges = reflected ? pPipeline->m_shaderProgramLayout.GetPushConstantRanges() : m_pushConstants;
+	const auto& ranges = pPipeline->m_shaderProgramLayout.GetPushConstantRanges();
 	for (const auto& pushConstant : ranges)
 	{
 		uptrToInit->AddConstantRange(pushConstant.stageFlags, pushConstant.offset, pushConstant.size);
 	}
 	const VkPipelineLayout layoutToInit = pPipeline->GetLayout().GetVkPipelineLayout();
-	pPipeline->m_hasReflection = reflected;
 
 	pipelineInfo.pNext = nullptr;
 	pipelineInfo.flags = 0;
 	pipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
 	pipelineInfo.pStages = stages.data();
-	pipelineInfo.groupCount = static_cast<uint32_t>(m_shaderRecords.size());
-	pipelineInfo.pGroups = m_shaderRecords.data();
+	pipelineInfo.groupCount = static_cast<uint32_t>(m_shaderGroups.size());
+	pipelineInfo.pGroups = records.data();
 	pipelineInfo.maxPipelineRayRecursionDepth = m_maxRayRecursionDepth;
 	pipelineInfo.pLibraryInfo = nullptr;
 	pipelineInfo.pLibraryInterface = nullptr;
@@ -538,72 +413,14 @@ void RayTracingShaderProgram::Builder::InitRayTracingShaderProgram(RayTracingSha
 			groupData.data()),
 		"Failed to get group handle data!");
 
-	std::vector<uint32_t> raygenIndices;
-	std::vector<uint32_t> missIndices;
-	std::vector<uint32_t> hitIndices;
-	std::vector<uint32_t> callableIndices;
-	raygenIndices.reserve(countToInit);
-	missIndices.reserve(countToInit);
-	hitIndices.reserve(countToInit);
-	callableIndices.reserve(countToInit);
-
-	for (uint32_t i = 0; i < countToInit; ++i)
-	{
-		const auto& shaderGroup = m_shaderRecords[i];
-		if (shaderGroup.type == VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR
-			|| shaderGroup.type == VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR)
-		{
-			hitIndices.push_back(i);
-			continue;
-		}
-
-		CHECK_TRUE(shaderGroup.type == VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR);
-		CHECK_TRUE(shaderGroup.generalShader != VK_SHADER_UNUSED_KHR);
-		CHECK_TRUE(shaderGroup.generalShader < stages.size());
-
-		VkShaderStageFlagBits stage = stages[shaderGroup.generalShader].stage;
-		switch (stage)
-		{
-		case VK_SHADER_STAGE_RAYGEN_BIT_KHR:
-			raygenIndices.push_back(i);
-			break;
-		case VK_SHADER_STAGE_MISS_BIT_KHR:
-			missIndices.push_back(i);
-			break;
-		case VK_SHADER_STAGE_CALLABLE_BIT_KHR:
-			callableIndices.push_back(i);
-			break;
-		default:
-			CHECK_TRUE(false, "Unsupported shader stage for general ray tracing shader group.");
-			break;
-		}
-	}
-
-	auto fillGroupSetData = [&](ShaderTableType inType, const std::vector<uint32_t>& inIndices)
-	{
-		if (inIndices.empty())
-		{
-			return;
-		}
-
-		std::vector<uint8_t> packedData(static_cast<size_t>(inIndices.size()) * static_cast<size_t>(uHandleSizeDevice), 0u);
-		for (size_t i = 0; i < inIndices.size(); ++i)
-		{
-			const uint32_t groupIndex = inIndices[i];
-			const uint8_t* src = groupData.data() + static_cast<size_t>(groupIndex) * static_cast<size_t>(uHandleSizeHost);
-			uint8_t* dst = packedData.data() + i * static_cast<size_t>(uHandleSizeDevice);
-			memcpy(dst, src, static_cast<size_t>(uHandleSizeHost));
-		}
-
-		pPipeline->_SetShaderGroupHandlesData(inType, packedData.data(), packedData.size(), uHandleSizeDevice);
-		pPipeline->m_groupSet.m_groupIndices[static_cast<size_t>(inType)] = inIndices;
-	};
-
 	pPipeline->m_groupSet.Reset();
-	fillGroupSetData(ShaderTableType::RayGeneration, raygenIndices);
-	fillGroupSetData(ShaderTableType::Miss, missIndices);
-	fillGroupSetData(ShaderTableType::Hit, hitIndices);
-	fillGroupSetData(ShaderTableType::Callable, callableIndices);
+	for (size_t i = 0; i < m_shaderGroups.size(); ++i)
+	{
+		const auto& group = m_shaderGroups[i];
+		RayTracingShaderGroupSet::GroupData data{group.type, std::vector<uint8_t>(uHandleSizeDevice, 0u)};
+		memcpy(data.handle.data(), groupData.data() + i * uHandleSizeHost, uHandleSizeHost);
+		pPipeline->m_groupSet.m_groups.emplace(group.name, std::move(data));
+	}
 }
 
 auto RayTracingShaderProgram::Builder::CustomizeMaxRecursionDepth(uint32_t inMaxDepth) -> Builder&
@@ -620,16 +437,6 @@ auto RayTracingShaderProgram::Builder::CustomizePipelineCache(VkPipelineCache in
 	return *this;
 }
 
-auto RayTracingShaderProgram::Builder::SetPipelineLayout(PipelineLayout inPipelineLayout)
-	-> RayTracingShaderProgram::Builder&
-{
-	CHECK_TRUE(inPipelineLayout.GetVkPipelineLayout() != VK_NULL_HANDLE, "Invalid ray tracing pipeline layout!");
-
-	m_pipelineLayout = std::move(inPipelineLayout);
-
-	return *this;
-}
-
 auto RayTracingShaderProgram::GetLayout() const -> const PipelineLayout&
 {
 	return m_shaderProgramLayout.GetLayout();
@@ -641,129 +448,102 @@ auto RayTracingShaderProgram::GetNameToSetBinding() const
 	return m_shaderProgramLayout.GetNameToSetBinding();
 }
 
-auto RayTracingShaderProgram::Builder::AddPushConstant(VkShaderStageFlags _stages, uint32_t _offset, uint32_t _size) -> Builder&
+void RayTracingShaderProgram::Builder::_ValidateGroupName(std::string_view inName) const
 {
-	VkPushConstantRange pushConstant{};
-
-	pushConstant.stageFlags = _stages;
-	pushConstant.offset = _offset;
-	pushConstant.size = _size;
-
-	m_pushConstants.push_back(pushConstant);
-
-	return *this;
+	CHECK_TRUE(!inName.empty(), "Ray tracing shader group name is empty!");
+	CHECK_TRUE(std::none_of(m_shaderGroups.begin(), m_shaderGroups.end(), [&](const auto& group) -> bool
+	    { return group.name == inName; }), "Duplicate ray tracing shader group name: " + std::string(inName));
 }
 
-auto RayTracingShaderProgram::Builder::AddShader(const ShaderModuleCreateInfo& inShaderInfo) -> ShaderIndex
+auto RayTracingShaderProgram::Builder::_RegisterShader(const ShaderDetail::Request& shader) -> uint32_t
 {
-	CHECK_TRUE(m_shaderStageInfos.empty(), "Cannot mix reflected and explicit ray tracing shaders!");
-	CHECK_TRUE(inShaderInfo.m_entries.size() == 1, "Ray tracing shader needs exactly one stage/entry!");
-	const auto stage = inShaderInfo.m_entries.begin()->first;
-	CHECK_TRUE(stage == VK_SHADER_STAGE_RAYGEN_BIT_KHR || stage == VK_SHADER_STAGE_MISS_BIT_KHR ||
-	    stage == VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR || stage == VK_SHADER_STAGE_ANY_HIT_BIT_KHR ||
-	    stage == VK_SHADER_STAGE_INTERSECTION_BIT_KHR || stage == VK_SHADER_STAGE_CALLABLE_BIT_KHR,
-	    "Invalid ray tracing shader stage!");
-	const auto index = static_cast<ShaderIndex>(m_shaderModuleInfos.size());
-	m_shaderModuleInfos.push_back(inShaderInfo);
+	const auto index = static_cast<uint32_t>(m_shaders.size());
+	m_shaders.push_back(shader);
 	return index;
 }
 
-auto RayTracingShaderProgram::Builder::AddShader(const VkPipelineShaderStageCreateInfo& shaderInfo) -> ShaderIndex
+auto RayTracingShaderProgram::Builder::_AddGeneralShaderGroup(std::string_view inName,
+    const ShaderDetail::Request& inInfo, ShaderTableType inType) -> Builder&
 {
-	CHECK_TRUE(m_shaderModuleInfos.empty(), "Cannot mix reflected and explicit ray tracing shaders!");
-	uint32_t uIndex = static_cast<uint32_t>(m_shaderStageInfos.size());
-	m_shaderStageInfos.push_back(shaderInfo);
-	return uIndex;
+	_ValidateGroupName(inName);
+	const auto previousShaderCount = m_shaders.size();
+	try
+	{
+		VkRayTracingShaderGroupCreateInfoKHR record{VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR};
+		record.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+		record.generalShader = _RegisterShader(inInfo);
+		record.closestHitShader = VK_SHADER_UNUSED_KHR;
+		record.anyHitShader = VK_SHADER_UNUSED_KHR;
+		record.intersectionShader = VK_SHADER_UNUSED_KHR;
+		m_shaderGroups.push_back({std::string(inName), inType, record});
+	}
+	catch (...)
+	{
+		m_shaders.resize(previousShaderCount);
+		throw;
+	}
+	return *this;
 }
 
-auto RayTracingShaderProgram::Builder::AddRayGenerationShaderGroup(uint32_t inRayGenShaderIndex) -> ShaderGroupIndex
+auto RayTracingShaderProgram::Builder::_AddHitShaderGroup(std::string_view inName,
+    const std::optional<ShaderDetail::Request>& inClosestHit, const ShaderDetail::Request* inIntersection,
+    const std::optional<ShaderDetail::Request>& inAnyHit) -> Builder&
 {
-	VkRayTracingShaderGroupCreateInfoKHR shaderRecord{ VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR };
-	uint32_t uRet = static_cast<uint32_t>(m_shaderRecords.size());
-
-	shaderRecord.pNext = nullptr;
-	shaderRecord.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-	shaderRecord.generalShader = inRayGenShaderIndex;
-	shaderRecord.closestHitShader = VK_SHADER_UNUSED_KHR;
-	shaderRecord.anyHitShader = VK_SHADER_UNUSED_KHR;
-	shaderRecord.intersectionShader = VK_SHADER_UNUSED_KHR;
-	shaderRecord.pShaderGroupCaptureReplayHandle = nullptr;
-
-	m_shaderRecords.push_back(shaderRecord);
-	return uRet;
+	_ValidateGroupName(inName);
+	const auto previousShaderCount = m_shaders.size();
+	try
+	{
+		VkRayTracingShaderGroupCreateInfoKHR record{VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR};
+		record.type = inIntersection ? VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR :
+		    VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+		record.generalShader = VK_SHADER_UNUSED_KHR;
+		record.closestHitShader = inClosestHit ? _RegisterShader(*inClosestHit) : VK_SHADER_UNUSED_KHR;
+		record.intersectionShader = inIntersection ? _RegisterShader(*inIntersection) : VK_SHADER_UNUSED_KHR;
+		record.anyHitShader = inAnyHit ? _RegisterShader(*inAnyHit) : VK_SHADER_UNUSED_KHR;
+		m_shaderGroups.push_back({std::string(inName), ShaderTableType::Hit, record});
+	}
+	catch (...)
+	{
+		m_shaders.resize(previousShaderCount);
+		throw;
+	}
+	return *this;
 }
 
-auto RayTracingShaderProgram::Builder::AddTriangleHitShaderGroup(uint32_t inClosestHitShaderIndex, uint32_t inAnyHitShaderIndex) -> ShaderGroupIndex
+auto RayTracingShaderProgram::Builder::AddRayGenerationShaderGroup(
+    std::string_view name, std::string_view file, std::optional<std::string_view> entry) -> Builder&
 {
-	VkRayTracingShaderGroupCreateInfoKHR shaderRecord{ VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR };
-	uint32_t uRet = static_cast<uint32_t>(m_shaderRecords.size());
-
-	shaderRecord.pNext = nullptr;
-	shaderRecord.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-	shaderRecord.generalShader = VK_SHADER_UNUSED_KHR;
-	shaderRecord.closestHitShader = inClosestHitShaderIndex;
-	shaderRecord.anyHitShader = inAnyHitShaderIndex;
-	shaderRecord.intersectionShader = VK_SHADER_UNUSED_KHR;
-	shaderRecord.pShaderGroupCaptureReplayHandle = nullptr;
-
-	m_shaderRecords.push_back(shaderRecord);
-
-	return uRet;
+	return _AddGeneralShaderGroup(name, ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_RAYGEN_BIT_KHR, entry), ShaderTableType::RayGeneration);
 }
 
-auto RayTracingShaderProgram::Builder::AddProceduralHitShaderGroup(
-	uint32_t inClosestHitShaderIndex, 
-	uint32_t inIntersectionShaderIndex, 
-	uint32_t inAnyHitShaderIndex) -> ShaderGroupIndex
+auto RayTracingShaderProgram::Builder::AddMissShaderGroup(
+    std::string_view name, std::string_view file, std::optional<std::string_view> entry) -> Builder&
 {
-	VkRayTracingShaderGroupCreateInfoKHR shaderRecord{ VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR };
-	uint32_t uRet = static_cast<uint32_t>(m_shaderRecords.size());
-
-	shaderRecord.pNext = nullptr;
-	shaderRecord.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR;
-	shaderRecord.generalShader = VK_SHADER_UNUSED_KHR;
-	shaderRecord.closestHitShader = inClosestHitShaderIndex;
-	shaderRecord.anyHitShader = inAnyHitShaderIndex;
-	shaderRecord.intersectionShader = inIntersectionShaderIndex;
-	shaderRecord.pShaderGroupCaptureReplayHandle = nullptr;
-
-	m_shaderRecords.push_back(shaderRecord);
-
-	return uRet;
+	return _AddGeneralShaderGroup(name, ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_MISS_BIT_KHR, entry), ShaderTableType::Miss);
 }
 
-auto RayTracingShaderProgram::Builder::AddMissShaderGroup(uint32_t inMissShaderIndex) -> ShaderGroupIndex
+auto RayTracingShaderProgram::Builder::AddCallableShaderGroup(
+    std::string_view name, std::string_view file, std::optional<std::string_view> entry) -> Builder&
 {
-	VkRayTracingShaderGroupCreateInfoKHR shaderRecord{ VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR };
-	uint32_t uRet = static_cast<uint32_t>(m_shaderRecords.size());
-
-	shaderRecord.pNext = nullptr;
-	shaderRecord.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-	shaderRecord.generalShader = inMissShaderIndex;
-	shaderRecord.closestHitShader = VK_SHADER_UNUSED_KHR;
-	shaderRecord.anyHitShader = VK_SHADER_UNUSED_KHR;
-	shaderRecord.intersectionShader = VK_SHADER_UNUSED_KHR;
-	shaderRecord.pShaderGroupCaptureReplayHandle = nullptr;
-
-	m_shaderRecords.push_back(shaderRecord);
-
-	return uRet;
+	return _AddGeneralShaderGroup(name, ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_CALLABLE_BIT_KHR, entry), ShaderTableType::Callable);
 }
 
-auto RayTracingShaderProgram::Builder::AddCallableShaderGroup(uint32_t inCallableShaderIndex) -> ShaderGroupIndex
+auto RayTracingShaderProgram::Builder::AddTriangleHitShaderGroup(std::string_view name,
+    std::optional<std::string_view> closestFile, std::optional<std::string_view> closestEntry,
+    std::optional<std::string_view> anyFile, std::optional<std::string_view> anyEntry) -> Builder&
 {
-	VkRayTracingShaderGroupCreateInfoKHR shaderRecord{ VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR };
-	uint32_t uRet = static_cast<uint32_t>(m_shaderRecords.size());
+	const auto closest = ShaderDetail::MakeOptionalRequest(closestFile, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, closestEntry);
+	const auto any = ShaderDetail::MakeOptionalRequest(anyFile, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, anyEntry);
+	return _AddHitShaderGroup(name, closest, nullptr, any);
+}
 
-	shaderRecord.pNext = nullptr;
-	shaderRecord.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-	shaderRecord.generalShader = inCallableShaderIndex;
-	shaderRecord.closestHitShader = VK_SHADER_UNUSED_KHR;
-	shaderRecord.anyHitShader = VK_SHADER_UNUSED_KHR;
-	shaderRecord.intersectionShader = VK_SHADER_UNUSED_KHR;
-	shaderRecord.pShaderGroupCaptureReplayHandle = nullptr;
-
-	m_shaderRecords.push_back(shaderRecord);
-
-	return uRet;
+auto RayTracingShaderProgram::Builder::AddProceduralHitShaderGroup(std::string_view name,
+    std::optional<std::string_view> closestFile, std::optional<std::string_view> closestEntry,
+    std::string_view intersectionFile, std::optional<std::string_view> intersectionEntry,
+    std::optional<std::string_view> anyFile, std::optional<std::string_view> anyEntry) -> Builder&
+{
+	const auto closest = ShaderDetail::MakeOptionalRequest(closestFile, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, closestEntry);
+	const auto intersection = ShaderDetail::MakeRequest(intersectionFile, VK_SHADER_STAGE_INTERSECTION_BIT_KHR, intersectionEntry);
+	const auto any = ShaderDetail::MakeOptionalRequest(anyFile, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, anyEntry);
+	return _AddHitShaderGroup(name, closest, &intersection, any);
 }

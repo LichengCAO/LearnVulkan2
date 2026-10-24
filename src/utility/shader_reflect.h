@@ -3,6 +3,13 @@
 #include <spirv_reflect.h>
 #include <map>
 
+// A borrowed view of one exact entry record; its module must outlive the view.
+struct ShaderEntryReflection
+{
+	const SpvReflectShaderModule* module;
+	const SpvReflectEntryPoint* entry;
+};
+
 class ShaderReflector final
 {
 private:
@@ -11,9 +18,10 @@ private:
 		void operator()(SpvReflectShaderModule* inModule) const;
 	};
 	std::vector<std::unique_ptr<SpvReflectShaderModule, ModuleDeleter>> m_vecReflectModule;
+	std::vector<ShaderEntryReflection> m_entries;
 
 private:
-	auto _FindShaderModule(VkShaderStageFlagBits inStage) const -> const SpvReflectShaderModule*;
+	auto _FindEntry(VkShaderStageFlagBits inStage) const -> const SpvReflectEntryPoint*;
 
 public:
 	ShaderReflector() = default;
@@ -23,6 +31,8 @@ public:
 
 	// start reflect shaders of the same pipeline
 	void Create(const std::vector<std::string>& _spirvFiles);
+	void Create(const std::vector<ShaderEntryReflection>& inEntries);
+	auto GetEntries() const -> const std::vector<ShaderEntryReflection>& { return m_entries; }
 
 	// reflect descriptor sets of the pipeline,
 	// _mapSetBinding: output, map descriptor set name to {set, binding}, some descriptor sets may not have name

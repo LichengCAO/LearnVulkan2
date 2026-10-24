@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "shader_reflect.h"
 #include <limits>
 #include "graphics_shader_program.h"
@@ -395,19 +396,49 @@ VkAttachmentDescription AttachmentDescriptionBuilder::Build() const
 
 auto GraphicsShaderProgramCreateInfo::Reset() -> GraphicsShaderProgramCreateInfo&
 {
-	m_shaderModuleInfos.clear();
+	m_shaders.clear();
 	m_defaultColors.clear();
 	m_defaultDepth.reset();
 	return *this;
 }
 
-auto GraphicsShaderProgramCreateInfo::AddShaderModuleInfo(ShaderModuleCreateInfo inShaderModule) -> GraphicsShaderProgramCreateInfo&
+auto GraphicsShaderProgramCreateInfo::_AddShader(std::string_view file, VkShaderStageFlagBits stage,
+    std::optional<std::string_view> entry) -> GraphicsShaderProgramCreateInfo&
 {
-	CHECK_TRUE(!inShaderModule.m_spirvFile.empty(), "Graphics shader SPIR-V file is unset!");
-	CHECK_TRUE(!inShaderModule.m_entries.empty(), "Graphics shader module needs at least one entry!");
-
-	m_shaderModuleInfos.push_back(std::move(inShaderModule));
+	CHECK_TRUE(std::none_of(m_shaders.begin(), m_shaders.end(), [stage](const auto& shader) -> bool
+	    { return shader.stage == stage; }), "Duplicate graphics shader stage!");
+	m_shaders.push_back(ShaderDetail::MakeRequest(file, stage, entry));
 	return *this;
+}
+
+auto GraphicsShaderProgramCreateInfo::AddVertexShader(std::string_view file,
+    std::optional<std::string_view> entry) -> GraphicsShaderProgramCreateInfo&
+{
+	return _AddShader(file, VK_SHADER_STAGE_VERTEX_BIT, entry);
+}
+
+auto GraphicsShaderProgramCreateInfo::AddFragmentShader(std::string_view file,
+    std::optional<std::string_view> entry) -> GraphicsShaderProgramCreateInfo&
+{
+	return _AddShader(file, VK_SHADER_STAGE_FRAGMENT_BIT, entry);
+}
+
+auto GraphicsShaderProgramCreateInfo::AddGeometryShader(std::string_view file,
+    std::optional<std::string_view> entry) -> GraphicsShaderProgramCreateInfo&
+{
+	return _AddShader(file, VK_SHADER_STAGE_GEOMETRY_BIT, entry);
+}
+
+auto GraphicsShaderProgramCreateInfo::AddTaskShader(std::string_view file,
+    std::optional<std::string_view> entry) -> GraphicsShaderProgramCreateInfo&
+{
+	return _AddShader(file, VK_SHADER_STAGE_TASK_BIT_EXT, entry);
+}
+
+auto GraphicsShaderProgramCreateInfo::AddMeshShader(std::string_view file,
+    std::optional<std::string_view> entry) -> GraphicsShaderProgramCreateInfo&
+{
+	return _AddShader(file, VK_SHADER_STAGE_MESH_BIT_EXT, entry);
 }
 
 auto GraphicsPipelineStateInfo::Reset() -> GraphicsPipelineStateInfo&
@@ -452,34 +483,29 @@ GraphicsShaderProgram::~GraphicsShaderProgram()
 void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo* inCreateInfo)
 {
 	CHECK_TRUE(inCreateInfo != nullptr, "No graphics shader program create info!");
-	CHECK_TRUE(!inCreateInfo->m_shaderModuleInfos.empty(), "Graphics shader program needs shaders!");
+	CHECK_TRUE(!inCreateInfo->m_shaders.empty(), "Graphics shader program needs shaders!");
 	CHECK_TRUE(m_cachedGraphicsPipelines.empty(), "Graphics shader program already has cached pipelines!");
 	CHECK_TRUE(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE, "Graphics shader program already created!");
 
-	std::vector<std::string> spirvFiles;
-
-	for (const auto& shaderModuleInfo : inCreateInfo->m_shaderModuleInfos)
+	auto hasStage = [&](VkShaderStageFlagBits stage) -> bool
 	{
-		CHECK_TRUE(!shaderModuleInfo.m_spirvFile.empty(), "Graphics shader SPIR-V file is unset!");
-		CHECK_TRUE(!shaderModuleInfo.m_entries.empty(), "Graphics shader module needs at least one entry!");
-		spirvFiles.push_back(shaderModuleInfo.m_spirvFile);
-	}
-
+		return std::any_of(inCreateInfo->m_shaders.begin(), inCreateInfo->m_shaders.end(),
+		    [stage](const auto& shader) -> bool { return shader.stage == stage; });
+	};
+	const bool vertex = hasStage(VK_SHADER_STAGE_VERTEX_BIT);
+	const bool geometry = hasStage(VK_SHADER_STAGE_GEOMETRY_BIT);
+	const bool mesh = hasStage(VK_SHADER_STAGE_MESH_BIT_EXT);
+	const bool task = hasStage(VK_SHADER_STAGE_TASK_BIT_EXT);
+	CHECK_TRUE(!(vertex || geometry) || !(mesh || task), "Traditional and mesh graphics stages cannot be mixed!");
+	CHECK_TRUE(!task || mesh, "Task shader requires a mesh shader!");
+	CHECK_TRUE(vertex || mesh, "Graphics program requires a vertex or mesh shader!");
 	try
 	{
-		m_shaderProgramLayout.Create(spirvFiles);
+		auto resolved = ShaderDetail::Resolve(inCreateInfo->m_shaders, m_shaderModules);
+		m_shaderStages = std::move(resolved.stages);
+		m_shaderProgramLayout.Create(resolved.reflection);
 		_CreatePushConstantManager(m_shaderProgramLayout.GetPushConstantRanges());
-
-		m_shaderModules.reserve(inCreateInfo->m_shaderModuleInfos.size());
-		for (const auto& shaderModuleInfo : inCreateInfo->m_shaderModuleInfos)
-		{
-			auto shaderModule = std::make_unique<ShaderModule>();
-			shaderModule->Create(shaderModuleInfo);
-
-			m_shaderModules.push_back(std::move(shaderModule));
-		}
-
-		_CreateDefaults(*inCreateInfo);
+		_CreateDefaults(*inCreateInfo, resolved.reflection);
 	}
 	catch (...)
 	{
@@ -532,15 +558,7 @@ auto GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& i
     CHECK_TRUE(inStateInfo.m_subpassIndex < inStateInfo.m_renderPassPtr->m_subpassInfos.size(), "Invalid graphics subpass index!");
     const auto& subpass = inStateInfo.m_renderPassPtr->m_subpassInfos[inStateInfo.m_subpassIndex];
 
-	std::vector<VkPipelineShaderStageCreateInfo> shaderStageInfos;
-	for (const auto& shaderModule : m_shaderModules)
-	{
-		auto moduleStageInfos = shaderModule->GetAllShaderStageInfos();
-		shaderStageInfos.insert(
-			shaderStageInfos.end(),
-			moduleStageInfos.begin(),
-			moduleStageInfos.end());
-	}
+	const auto& shaderStageInfos = m_shaderStages;
 	CHECK_TRUE(!shaderStageInfos.empty(), "Graphics shader program needs shader stages!");
 
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
@@ -622,8 +640,10 @@ auto GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& i
 	VkGraphicsPipelineCreateInfo pipelineInfo{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
 	pipelineInfo.stageCount = static_cast<uint32_t>(shaderStageInfos.size());
 	pipelineInfo.pStages = shaderStageInfos.data();
-	pipelineInfo.pVertexInputState = &vertexInputInfo;
-	pipelineInfo.pInputAssemblyState = &inputAssemblyStateInfo;
+	const bool mesh = std::any_of(m_shaderStages.begin(), m_shaderStages.end(), [](const auto& stage) -> bool
+	    { return stage.stage == VK_SHADER_STAGE_MESH_BIT_EXT; });
+	pipelineInfo.pVertexInputState = mesh ? nullptr : &vertexInputInfo;
+	pipelineInfo.pInputAssemblyState = mesh ? nullptr : &inputAssemblyStateInfo;
 	pipelineInfo.pViewportState = &viewportStateInfo;
 	pipelineInfo.pRasterizationState = &rasterizerStateInfo;
 	pipelineInfo.pMultisampleState = &multisampleStateInfo;
@@ -657,6 +677,7 @@ void GraphicsShaderProgram::Destroy()
 	{
 		shaderModule->Destroy();
 	}
+	m_shaderStages.clear();
 	m_shaderModules.clear();
 	m_shaderProgramLayout.Destroy();
 	m_uptrPushConstant.reset();
@@ -773,13 +794,11 @@ auto GraphicsShaderProgramCreateInfo::SetDefaultDepthAttachment(VkFormat format)
 	m_defaultDepth = format;
 	return *this;
 }
-void GraphicsShaderProgram::_CreateDefaults(const GraphicsShaderProgramCreateInfo& info)
+void GraphicsShaderProgram::_CreateDefaults(const GraphicsShaderProgramCreateInfo& info,
+    const std::vector<ShaderEntryReflection>& entries)
 {
-	std::vector<std::string> files;
-	for (const auto& module : info.m_shaderModuleInfos)
-		files.push_back(module.m_spirvFile);
 	ShaderReflector reflector;
-	reflector.Create(files);
+	reflector.Create(entries);
 	std::unordered_map<std::string, uint32_t> names;
 	std::map<uint32_t, VkFormat> inputs;
 	reflector.ReflectInput(VK_SHADER_STAGE_VERTEX_BIT, names, inputs);

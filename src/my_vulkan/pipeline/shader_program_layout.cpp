@@ -4,20 +4,26 @@
 
 void ShaderProgramLayout::Create(const std::vector<std::string>& inSpirvFiles)
 {
-	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE, "Shader program layout already created!");
-	CHECK_TRUE(!inSpirvFiles.empty(), "Shader program layout needs shaders!");
-	for (const auto& spirvFile : inSpirvFiles)
-	{
-		CHECK_TRUE(!spirvFile.empty(), "Shader SPIR-V file is unset!");
-	}
-
 	ShaderReflector reflector;
+	reflector.Create(inSpirvFiles);
+	_Create(reflector);
+}
+
+void ShaderProgramLayout::Create(const std::vector<ShaderEntryReflection>& entries)
+{
+	ShaderReflector reflector;
+	reflector.Create(entries);
+	_Create(reflector);
+}
+
+void ShaderProgramLayout::_Create(const ShaderReflector& reflector)
+{
+	CHECK_TRUE(m_pipelineLayout.GetVkPipelineLayout() == VK_NULL_HANDLE, "Shader program layout already created!");
 	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> nameToSetBinding;
 	std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>> descriptorSetData;
 	std::unordered_map<std::string, uint32_t> pushConstantIndex;
 	std::vector<std::pair<VkShaderStageFlags, std::pair<uint32_t, uint32_t>>> reflectedPushConstants;
 
-	reflector.Create(inSpirvFiles);
 	std::set<std::string> ambiguousNames;
 	reflector.ReflectDescriptorSets(nameToSetBinding, descriptorSetData, &ambiguousNames);
 	reflector.ReflectPushConst(pushConstantIndex, reflectedPushConstants);

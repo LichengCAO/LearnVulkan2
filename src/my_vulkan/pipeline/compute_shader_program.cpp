@@ -5,21 +5,16 @@
 auto ComputeShaderProgramCreateInfo::Reset() -> ComputeShaderProgramCreateInfo&
 {
 	m_spirvFile.clear();
-	m_entry = "main";
+	m_entry.reset();
 	m_vkPipelineCache = VK_NULL_HANDLE;
 	return *this;
 }
 
-auto ComputeShaderProgramCreateInfo::SetSpirvFile(std::string inFile) -> ComputeShaderProgramCreateInfo&
+auto ComputeShaderProgramCreateInfo::SetShader(std::string_view file, std::optional<std::string_view> entry) -> ComputeShaderProgramCreateInfo&
 {
-	m_spirvFile = std::move(inFile);
-	return *this;
-}
-
-auto ComputeShaderProgramCreateInfo::SetEntry(std::string inEntry) -> ComputeShaderProgramCreateInfo&
-{
-	CHECK_TRUE(!inEntry.empty(), "Compute shader entry cannot be empty!");
-	m_entry = std::move(inEntry);
+	auto request = ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_COMPUTE_BIT, entry);
+	m_spirvFile = std::move(request.file);
+	m_entry = std::move(request.entry);
 	return *this;
 }
 
@@ -47,18 +42,14 @@ void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo* inCreate
 
 	try
 	{
-		m_shaderProgramLayout.Create(std::vector<std::string>{ inCreateInfo->m_spirvFile });
-		_CreatePushConstantManager(m_shaderProgramLayout.GetPushConstantRanges());
-
-		ShaderModuleCreateInfo shaderModuleCreateInfo{};
-		shaderModuleCreateInfo.SetSpirvFile(inCreateInfo->m_spirvFile);
-		shaderModuleCreateInfo.AddEntry(VK_SHADER_STAGE_COMPUTE_BIT, inCreateInfo->m_entry);
-
 		m_uptrShaderModule = std::make_unique<ShaderModule>();
-		m_uptrShaderModule->Create(shaderModuleCreateInfo);
-		_CreateVkPipeline(
-			m_uptrShaderModule->GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT),
-			inCreateInfo->m_vkPipelineCache);
+		m_uptrShaderModule->Create(inCreateInfo->m_spirvFile);
+		const auto& entry = m_uptrShaderModule->SelectEntry(VK_SHADER_STAGE_COMPUTE_BIT,
+		    inCreateInfo->m_entry ? std::make_optional<std::string_view>(*inCreateInfo->m_entry) : std::nullopt);
+		m_shaderProgramLayout.Create(std::vector<ShaderEntryReflection>{
+		    m_uptrShaderModule->GetEntryReflection(entry.stage, entry.name)});
+		_CreatePushConstantManager(m_shaderProgramLayout.GetPushConstantRanges());
+		_CreateVkPipeline(m_uptrShaderModule->GetShaderStageInfo(entry.stage, entry.name), inCreateInfo->m_vkPipelineCache);
 	}
 	catch (...)
 	{
