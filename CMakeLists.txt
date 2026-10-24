@@ -62,6 +62,17 @@ set(ALL_FILES ${HEADERS} ${SOURCES})
 source_group_by_dir(ALL_FILES)
 
 add_executable(${CMAKE_PROJECT_NAME} ${ALL_FILES})
+if(MSVC)
+    target_compile_options(learn_vulkan PRIVATE /EHsc /utf-8)
+endif()
+enable_testing()
+add_test(NAME learn_vulkan_tests COMMAND $<TARGET_FILE:learn_vulkan>)
+option(LEARN_VULKAN_GPU_TESTS "Enable headless Vulkan 1.3 shader binding smoke tests" OFF)
+if(LEARN_VULKAN_GPU_TESTS)
+    add_test(NAME learn_vulkan_gpu_tests
+        COMMAND ${CMAKE_COMMAND} -E env LEARN_VULKAN_GPU_TESTS=1 $<TARGET_FILE:learn_vulkan>)
+    set_tests_properties(learn_vulkan_gpu_tests PROPERTIES RUN_SERIAL TRUE)
+endif()
 
 find_path(SHADERC_INCLUDE_DIR
     NAMES shaderc/shaderc.hpp
@@ -86,6 +97,16 @@ endif()
 
 # Set the startup project for Visual Studio
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${CMAKE_PROJECT_NAME})
+
+# Prefer local SDK headers; keep the existing FetchContent fallback when unavailable.
+find_path(LEARN_VULKAN_INCLUDE_DIR NAMES vulkan/vk_platform.h
+    HINTS "${SHADERC_INCLUDE_DIR}" "$ENV{VULKAN_SDK}/Include" "$ENV{VK_SDK_PATH}/Include")
+if(LEARN_VULKAN_INCLUDE_DIR AND NOT TARGET Vulkan::Headers)
+    add_library(Vulkan::Headers INTERFACE IMPORTED)
+    set_target_properties(Vulkan::Headers PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${LEARN_VULKAN_INCLUDE_DIR}")
+    get_filename_component(VULKAN_HEADERS_INSTALL_DIR "${LEARN_VULKAN_INCLUDE_DIR}" DIRECTORY)
+endif()
 
 add_subdirectory(external)
 add_subdirectory(res)

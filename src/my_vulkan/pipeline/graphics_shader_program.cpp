@@ -1,3 +1,5 @@
+#include "shader_reflect.h"
+#include <limits>
 #include "graphics_shader_program.h"
 #include "device.h"
 #include "push_constant_manager.h"
@@ -394,6 +396,8 @@ VkAttachmentDescription AttachmentDescriptionBuilder::Build() const
 auto GraphicsShaderProgramCreateInfo::Reset() -> GraphicsShaderProgramCreateInfo&
 {
 	m_shaderModuleInfos.clear();
+	m_defaultColors.clear();
+	m_defaultDepth.reset();
 	return *this;
 }
 
@@ -437,6 +441,8 @@ auto GraphicsPipelineStateInfo::SetRenderPassSubpass(const RenderPass* inRenderP
 	return *this;
 }
 
+GraphicsShaderProgram::GraphicsShaderProgram() = default;
+
 GraphicsShaderProgram::~GraphicsShaderProgram()
 {
 	assert(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE);
@@ -459,18 +465,27 @@ void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo* inCrea
 		spirvFiles.push_back(shaderModuleInfo.m_spirvFile);
 	}
 
-	m_shaderProgramLayout.Create(spirvFiles);
-	_CreatePushConstantManager(m_shaderProgramLayout.GetPushConstantRanges());
-
-	m_shaderModules.reserve(inCreateInfo->m_shaderModuleInfos.size());
-	for (const auto& shaderModuleInfo : inCreateInfo->m_shaderModuleInfos)
+	try
 	{
-		auto shaderModule = std::make_unique<ShaderModule>();
-		shaderModule->Create(shaderModuleInfo);
+		m_shaderProgramLayout.Create(spirvFiles);
+		_CreatePushConstantManager(m_shaderProgramLayout.GetPushConstantRanges());
 
-		m_shaderModules.push_back(std::move(shaderModule));
+		m_shaderModules.reserve(inCreateInfo->m_shaderModuleInfos.size());
+		for (const auto& shaderModuleInfo : inCreateInfo->m_shaderModuleInfos)
+		{
+			auto shaderModule = std::make_unique<ShaderModule>();
+			shaderModule->Create(shaderModuleInfo);
+
+			m_shaderModules.push_back(std::move(shaderModule));
+		}
+
+		_CreateDefaults(*inCreateInfo);
 	}
-
+	catch (...)
+	{
+		Destroy();
+		throw;
+	}
 	CHECK_TRUE(GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE);
 	CHECK_TRUE(m_uptrPushConstant != nullptr);
 	CHECK_TRUE(!m_shaderModules.empty());
@@ -514,6 +529,8 @@ auto GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& i
 	CHECK_TRUE(pipelineLayout != VK_NULL_HANDLE, "Graphics shader program needs a pipeline layout!");
 	CHECK_TRUE(!m_shaderModules.empty(), "Graphics shader program needs shader stages!");
 	CHECK_TRUE(inStateInfo.m_renderPassPtr != nullptr, "Graphics pipeline state info needs a render pass!");
+    CHECK_TRUE(inStateInfo.m_subpassIndex < inStateInfo.m_renderPassPtr->m_subpassInfos.size(), "Invalid graphics subpass index!");
+    const auto& subpass = inStateInfo.m_renderPassPtr->m_subpassInfos[inStateInfo.m_subpassIndex];
 
 	std::vector<VkPipelineShaderStageCreateInfo> shaderStageInfos;
 	for (const auto& shaderModule : m_shaderModules)
@@ -554,8 +571,8 @@ auto GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& i
 	rasterizerStateInfo.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
 	VkPipelineMultisampleStateCreateInfo multisampleStateInfo{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
-	multisampleStateInfo.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-	multisampleStateInfo.sampleShadingEnable = VK_TRUE;
+	multisampleStateInfo.rasterizationSamples = subpass.samples;
+	multisampleStateInfo.sampleShadingEnable = VK_FALSE;
 	multisampleStateInfo.minSampleShading = .2f;
 	multisampleStateInfo.pSampleMask = nullptr;
 	multisampleStateInfo.alphaToCoverageEnable = VK_FALSE;
@@ -565,14 +582,17 @@ auto GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& i
 	viewportStateInfo.viewportCount = 1;
 	viewportStateInfo.scissorCount = 1;
 
-	VkPipelineDepthStencilStateCreateInfo depthStencilInfo{};
+	VkPipelineDepthStencilStateCreateInfo depthStencilInfo{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depthStencilInfo.depthTestEnable = subpass.hasDepth;
+    depthStencilInfo.depthWriteEnable = subpass.hasDepth;
+    depthStencilInfo.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 
 	std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachmentStates;
 	auto getDefaultColorBlendAttachmentState = []()
 	{
 		VkPipelineColorBlendAttachmentState colorBlendAttachmentState{};
 
-		colorBlendAttachmentState.blendEnable = VK_TRUE;
+		colorBlendAttachmentState.blendEnable = VK_FALSE;
 		colorBlendAttachmentState.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
 		colorBlendAttachmentState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
 		colorBlendAttachmentState.colorBlendOp = VK_BLEND_OP_ADD;
@@ -587,7 +607,7 @@ auto GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& i
 
 		return colorBlendAttachmentState;
 	};
-	colorBlendAttachmentStates.resize(1, getDefaultColorBlendAttachmentState());
+	colorBlendAttachmentStates.resize(subpass.colorSlotCount, getDefaultColorBlendAttachmentState());
 
 	VkPipelineColorBlendStateCreateInfo colorBlendStateInfo{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
 	colorBlendStateInfo.logicOpEnable = VK_FALSE;
@@ -614,7 +634,7 @@ auto GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& i
 	pipelineInfo.subpass = inStateInfo.m_subpassIndex;
 	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 	pipelineInfo.basePipelineIndex = -1;
-	pipelineInfo.pDepthStencilState = nullptr;
+	pipelineInfo.pDepthStencilState = subpass.hasDepth ? &depthStencilInfo : nullptr;
 
 	return MyDevice::GetInstance().CreateGraphicsPipeline(pipelineInfo, VK_NULL_HANDLE);
 }
@@ -630,6 +650,9 @@ void GraphicsShaderProgram::Destroy()
 		}
 	}
 	m_cachedGraphicsPipelines.clear();
+    if (m_defaultRenderPass) { m_defaultRenderPass->Destroy(); m_defaultRenderPass.reset(); }
+    m_defaultState.Reset();
+    m_automaticVertexInputSupported = true;
 	for (auto& shaderModule : m_shaderModules)
 	{
 		shaderModule->Destroy();
@@ -652,13 +675,201 @@ auto GraphicsShaderProgram::GetLayout() const -> const PipelineLayout&
 
 auto GraphicsShaderProgram::GetVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) -> VkPipeline
 {
-	const size_t stateHash = _HashGraphicsPipelineStateInfo(inStateInfo);
+	const auto state = _ResolveState(inStateInfo);
+	const size_t stateHash = _HashGraphicsPipelineStateInfo(state);
 	if (const auto cacheIt = m_cachedGraphicsPipelines.find(stateHash); cacheIt != m_cachedGraphicsPipelines.end())
 	{
 		return cacheIt->second;
 	}
 
-	VkPipeline pipeline = _CreateVkPipeline(inStateInfo);
+	VkPipeline pipeline = _CreateVkPipeline(state);
 	m_cachedGraphicsPipelines[stateHash] = pipeline;
 	return pipeline;
+}
+
+namespace
+{
+	auto VertexFormatSize(VkFormat format) -> uint32_t
+	{
+		if (format >= VK_FORMAT_R16_UINT && format <= VK_FORMAT_R16_SFLOAT)
+			return 2;
+		if (format >= VK_FORMAT_R16G16_UINT && format <= VK_FORMAT_R16G16_SFLOAT)
+			return 4;
+		if (format >= VK_FORMAT_R16G16B16_UINT && format <= VK_FORMAT_R16G16B16_SFLOAT)
+			return 6;
+		if (format >= VK_FORMAT_R16G16B16A16_UINT && format <= VK_FORMAT_R16G16B16A16_SFLOAT)
+			return 8;
+		if (format >= VK_FORMAT_R32_UINT && format <= VK_FORMAT_R32G32B32A32_SFLOAT)
+			return 4 * (1 + (static_cast<uint32_t>(format) - VK_FORMAT_R32_UINT) / 3);
+		// 64-bit inputs have extra location rules: use an explicit vertex layout.
+		return 0;
+	}
+	auto IsDepthFormat(VkFormat format) -> bool
+	{
+		return format >= VK_FORMAT_D16_UNORM && format <= VK_FORMAT_D32_SFLOAT_S8_UINT && format != VK_FORMAT_S8_UINT;
+	}
+	auto NumericCategory(VkFormat format) -> uint32_t
+	{
+		switch (format)
+		{
+		case VK_FORMAT_R8_UINT:
+		case VK_FORMAT_R8G8_UINT:
+		case VK_FORMAT_R8G8B8_UINT:
+		case VK_FORMAT_B8G8R8_UINT:
+		case VK_FORMAT_R8G8B8A8_UINT:
+		case VK_FORMAT_B8G8R8A8_UINT:
+		case VK_FORMAT_A8B8G8R8_UINT_PACK32:
+		case VK_FORMAT_A2R10G10B10_UINT_PACK32:
+		case VK_FORMAT_A2B10G10R10_UINT_PACK32:
+		case VK_FORMAT_R16_UINT:
+		case VK_FORMAT_R16G16_UINT:
+		case VK_FORMAT_R16G16B16_UINT:
+		case VK_FORMAT_R16G16B16A16_UINT:
+		case VK_FORMAT_R32_UINT:
+		case VK_FORMAT_R32G32_UINT:
+		case VK_FORMAT_R32G32B32_UINT:
+		case VK_FORMAT_R32G32B32A32_UINT:
+			return 1;
+		case VK_FORMAT_R8_SINT:
+		case VK_FORMAT_R8G8_SINT:
+		case VK_FORMAT_R8G8B8_SINT:
+		case VK_FORMAT_B8G8R8_SINT:
+		case VK_FORMAT_R8G8B8A8_SINT:
+		case VK_FORMAT_B8G8R8A8_SINT:
+		case VK_FORMAT_A8B8G8R8_SINT_PACK32:
+		case VK_FORMAT_A2R10G10B10_SINT_PACK32:
+		case VK_FORMAT_A2B10G10R10_SINT_PACK32:
+		case VK_FORMAT_R16_SINT:
+		case VK_FORMAT_R16G16_SINT:
+		case VK_FORMAT_R16G16B16_SINT:
+		case VK_FORMAT_R16G16B16A16_SINT:
+		case VK_FORMAT_R32_SINT:
+		case VK_FORMAT_R32G32_SINT:
+		case VK_FORMAT_R32G32B32_SINT:
+		case VK_FORMAT_R32G32B32A32_SINT:
+			return 2;
+		default:
+			return 0;
+		}
+	}
+} // namespace
+auto GraphicsShaderProgramCreateInfo::SetDefaultColorAttachment(
+    uint32_t location, VkFormat format, VkImageLayout finalLayout) -> GraphicsShaderProgramCreateInfo&
+{
+	CHECK_TRUE(format != VK_FORMAT_UNDEFINED && format != VK_FORMAT_MAX_ENUM && !IsDepthFormat(format) &&
+	               format != VK_FORMAT_S8_UINT,
+	    "Invalid color attachment format!");
+	CHECK_TRUE(finalLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ||
+	               finalLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR || finalLayout == VK_IMAGE_LAYOUT_GENERAL ||
+	               finalLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ||
+	               finalLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+	    "Unsupported default color final layout!");
+	m_defaultColors[location] = {format, finalLayout};
+	return *this;
+}
+auto GraphicsShaderProgramCreateInfo::SetDefaultDepthAttachment(VkFormat format) -> GraphicsShaderProgramCreateInfo&
+{
+	CHECK_TRUE(IsDepthFormat(format), "Invalid depth attachment format!");
+	m_defaultDepth = format;
+	return *this;
+}
+void GraphicsShaderProgram::_CreateDefaults(const GraphicsShaderProgramCreateInfo& info)
+{
+	std::vector<std::string> files;
+	for (const auto& module : info.m_shaderModuleInfos)
+		files.push_back(module.m_spirvFile);
+	ShaderReflector reflector;
+	reflector.Create(files);
+	std::unordered_map<std::string, uint32_t> names;
+	std::map<uint32_t, VkFormat> inputs;
+	reflector.ReflectInput(VK_SHADER_STAGE_VERTEX_BIT, names, inputs);
+	uint32_t stride = 0;
+	for (const auto& [location, format] : inputs)
+	{
+		const uint32_t size = VertexFormatSize(format);
+		if (!size)
+		{
+			m_automaticVertexInputSupported = false;
+			break;
+		}
+		m_defaultState.m_vertexAttributeDescriptions.push_back({location, 0, format, stride});
+		stride += size;
+	}
+	if (stride && m_automaticVertexInputSupported)
+		m_defaultState.m_vertexBindingDescriptions.push_back({0, stride, VK_VERTEX_INPUT_RATE_VERTEX});
+	if (info.m_defaultColors.empty() && !info.m_defaultDepth)
+		return;
+
+	std::map<uint32_t, VkFormat> outputs;
+	reflector.ReflectOutput(VK_SHADER_STAGE_FRAGMENT_BIT, names, outputs);
+	CHECK_TRUE(
+	    outputs.size() == info.m_defaultColors.size(), "Default color attachments must cover all fragment outputs!");
+	RenderPassCreateInfo passInfo;
+	SubpassDescription subpass;
+	for (const auto& [location, format] : outputs)
+	{
+		const auto it = info.m_defaultColors.find(location);
+		CHECK_TRUE(it != info.m_defaultColors.end(), "Missing default color attachment location!");
+		CHECK_TRUE(format != VK_FORMAT_UNDEFINED, "Default render pass requires simple fragment outputs!");
+		CHECK_TRUE(NumericCategory(format) == NumericCategory(it->second.format),
+		    "Fragment output and attachment numeric types differ!");
+		std::string name = "color" + std::to_string(location);
+		for (const auto& [outputName, outputLocation] : names)
+			if (outputLocation == location)
+			{
+				name = outputName;
+				break;
+			}
+		AttachmentDescription attachment;
+		VkClearValue clear{};
+		attachment.CustomizeFormat(it->second.format, clear);
+		attachment.CustomizeFinalLayout(it->second.finalLayout);
+		passInfo.AddAttachment(name, attachment);
+		subpass.AddColorAttachment(location, name);
+	}
+	if (info.m_defaultDepth)
+	{
+		AttachmentDescription attachment;
+		VkClearValue clear{};
+		clear.depthStencil = {1.0f, 0};
+		attachment.CustomizeFormat(*info.m_defaultDepth, clear);
+		attachment.CustomizeFinalLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+		passInfo.AddAttachment("__depth", attachment);
+		subpass.AddDepthStencilAttachment("__depth");
+	}
+	VkPipelineStageFlags stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	VkAccessFlags access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	if (info.m_defaultDepth)
+	{
+		stages |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		access |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	}
+	subpass.CustomizeAvailableState(stages, access);
+	subpass.AddExternalDependency(stages, access);
+	passInfo.AddSubpass("default", subpass);
+	m_defaultRenderPass = std::make_unique<RenderPass>();
+	m_defaultRenderPass->Create(&passInfo);
+	m_defaultState.m_renderPassPtr = m_defaultRenderPass.get();
+	// Complex vertex layouts remain available through the explicit pipeline-state path.
+	if (m_automaticVertexInputSupported)
+		GetVkPipeline({});
+}
+auto GraphicsShaderProgram::_ResolveState(const GraphicsPipelineStateInfo& input) const -> GraphicsPipelineStateInfo
+{
+	auto state = input;
+	if (!state.m_renderPassPtr)
+		state.m_renderPassPtr = m_defaultRenderPass.get();
+	CHECK_TRUE(state.m_renderPassPtr != nullptr, "Provide an explicit render pass or configure default attachments!");
+	if (state.m_vertexBindingDescriptions.empty() && state.m_vertexAttributeDescriptions.empty())
+	{
+		CHECK_TRUE(m_automaticVertexInputSupported, "Shader inputs require an explicit vertex layout!");
+		state.m_vertexBindingDescriptions = m_defaultState.m_vertexBindingDescriptions;
+		state.m_vertexAttributeDescriptions = m_defaultState.m_vertexAttributeDescriptions;
+	}
+	return state;
+}
+auto GraphicsShaderProgram::GetDefaultRenderPass() const -> const RenderPass&
+{
+	CHECK_TRUE(m_defaultRenderPass != nullptr, "No default render pass was configured!");
+	return *m_defaultRenderPass;
 }

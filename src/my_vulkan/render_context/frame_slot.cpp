@@ -187,6 +187,10 @@ void FrameSlot::ResetForReuse(DeviceContext& inDeviceContext)
         m_recordTasks.empty(),
         "Cannot reuse a frame context while recording tickets remain unconsumed!");
     _Wait(inDeviceContext);
+    if (m_descriptorAllocator)
+    {
+        m_descriptorAllocator->Reset();
+    }
 
     for (ThreadCommandPools& queuePools : m_commandPools)
     {
@@ -248,6 +252,18 @@ auto FrameSlot::DispatchRecording(
     std::vector<CommandBuffer> inBuffers) -> RecordingTicket
 {
     _GetQueueIndex(inQueue);
+    // Serial preparation keeps pools and pipeline caches out of recording workers.
+    for (auto& buffer : inBuffers)
+    {
+        CHECK_TRUE(std::holds_alternative<std::monostate>(buffer.m_renderingScopeState), "Command buffer has an active rendering scope!");
+        if (!buffer.m_hasProgramBindings) continue;
+        if (!m_descriptorAllocator)
+        {
+            m_descriptorAllocator = std::make_unique<DynamicDescriptorSetAllocator>();
+            m_descriptorAllocator->Create();
+        }
+        buffer._PrepareCommands(*m_descriptorAllocator, inQueue);
+    }
 
     std::vector<RecordingTask::RecordBatch> batches;
     RecordingTask::RecordBatch currentBatch;
@@ -257,7 +273,7 @@ auto FrameSlot::DispatchRecording(
             std::holds_alternative<std::monostate>(commandBuffer.m_renderingScopeState),
             "Command buffer has an active rendering scope!");
 
-        if (commandBuffer.m_hasRenderingCommands)
+        if (commandBuffer.m_hasRenderingCommands || commandBuffer.m_hasProgramBindings)
         {
             if (!currentBatch.commands.empty())
             {

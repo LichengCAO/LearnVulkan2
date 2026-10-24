@@ -32,6 +32,7 @@ struct UserInput
 
 class MyDevice final
 {
+	friend struct ShaderBindingTestProbe;
 private:
 	struct QueueFamilyIndices
 	{
@@ -372,9 +373,9 @@ public:
 		VkImage image,
 		const VkAllocationCallbacks* pAllocator = nullptr);
 
-	VkImageView CreateImageView(
+	auto CreateImageView(
 		const VkImageViewCreateInfo& inCreateInfo,
-		const VkAllocationCallbacks* pAllocator = nullptr);
+		const VkAllocationCallbacks* pAllocator = nullptr) -> VkImageView;
 
 	void DestroyImageView(
 		VkImageView inView, 

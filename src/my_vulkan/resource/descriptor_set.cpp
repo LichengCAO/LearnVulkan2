@@ -15,7 +15,7 @@
 
 namespace
 {
-	bool _IsImageDescriptorType(VkDescriptorType inType)
+	auto _IsImageDescriptorType(VkDescriptorType inType) -> bool
 	{
 		switch (inType)
 		{
@@ -30,7 +30,7 @@ namespace
 		}
 	}
 
-	bool _IsBufferDescriptorType(VkDescriptorType inType)
+	auto _IsBufferDescriptorType(VkDescriptorType inType) -> bool
 	{
 		switch (inType)
 		{
@@ -44,7 +44,7 @@ namespace
 		}
 	}
 
-	bool _IsTexelBufferDescriptorType(VkDescriptorType inType)
+	auto _IsTexelBufferDescriptorType(VkDescriptorType inType) -> bool
 	{
 		return inType == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER
 			|| inType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
@@ -436,8 +436,8 @@ void DynamicDescriptorSetAllocator::_WriteDescriptorSet(
 	}
 }
 
-auto DynamicDescriptorSetAllocator::_GetCachedDescriptorSet(
-	const AllocateInfo& inAllocateInfo) -> std::optional<VkDescriptorSet>
+auto DynamicDescriptorSetAllocator::_GetCachedDescriptorSet(const AllocateInfo& inAllocateInfo)
+    -> std::optional<VkDescriptorSet>
 {
 	const auto layoutIt = m_cachedDescriptorSets.find(inAllocateInfo.m_vkDescriptorSetLayout);
 	if (layoutIt == m_cachedDescriptorSets.end())
@@ -446,9 +446,28 @@ auto DynamicDescriptorSetAllocator::_GetCachedDescriptorSet(
 	}
 	const size_t hash = _HashDescriptorSetDesc(inAllocateInfo.m_descriptorSetDesc);
 	const auto cachedIt = layoutIt->second.mapHashToDescriptorSet.find(hash);
-	return cachedIt == layoutIt->second.mapHashToDescriptorSet.end()
-		? std::nullopt
-		: std::optional<VkDescriptorSet>{ cachedIt->second };
+	if (cachedIt == layoutIt->second.mapHashToDescriptorSet.end())
+		return std::nullopt;
+	for (const auto& entry : cachedIt->second)
+	{
+		const auto& lhs = entry.description.m_items;
+		const auto& rhs = inAllocateInfo.m_descriptorSetDesc.m_items;
+		if (lhs.size() != rhs.size())
+			continue;
+		const bool equal = std::all_of(lhs.begin(), lhs.end(),
+		    [&](const auto& item) -> bool
+		    {
+			    return std::any_of(rhs.begin(), rhs.end(),
+			        [&](const auto& other) -> bool
+			        {
+				        return item.binding == other.binding && item.arrayElement == other.arrayElement &&
+				               item.resource == other.resource;
+			        });
+		    });
+		if (equal)
+			return entry.descriptorSet;
+	}
+	return std::nullopt;
 }
 
 auto DynamicDescriptorSetAllocator::_AllocateDescriptorSet(const AllocateInfo& inAllocateInfo) -> VkDescriptorSet
@@ -460,7 +479,7 @@ auto DynamicDescriptorSetAllocator::_AllocateDescriptorSet(const AllocateInfo& i
 	VK_CHECK(result, "Failed to allocate dynamic descriptor set!");
 	_WriteDescriptorSet(descriptorSet, inAllocateInfo);
 	m_cachedDescriptorSets[inAllocateInfo.m_vkDescriptorSetLayout].mapHashToDescriptorSet[
-		_HashDescriptorSetDesc(inAllocateInfo.m_descriptorSetDesc)] = descriptorSet;
+		_HashDescriptorSetDesc(inAllocateInfo.m_descriptorSetDesc)].push_back({inAllocateInfo.m_descriptorSetDesc, descriptorSet});
 	return descriptorSet;
 }
 
@@ -498,4 +517,10 @@ void DynamicDescriptorSetAllocator::Destroy()
 		m_uptrDescriptorSetAllocator->Destroy();
 		m_uptrDescriptorSetAllocator.reset();
 	}
+}
+
+DynamicDescriptorSetAllocator::DynamicDescriptorSetAllocator() = default;
+DynamicDescriptorSetAllocator::~DynamicDescriptorSetAllocator()
+{
+	Destroy();
 }

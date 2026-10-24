@@ -2,6 +2,7 @@
 #include "common.h"
 #include "shader_program_layout.h"
 #include "shader.h"
+#include "shader_resources.h"
 
 class PushConstantManager;
 
@@ -23,6 +24,7 @@ public:
 
 class ComputeShaderProgram final
 {
+	friend class CommandBuffer;
 private:
 	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
 	std::unique_ptr<ShaderModule> m_uptrShaderModule;
@@ -34,6 +36,7 @@ private:
 	void _CreatePushConstantManager(const std::vector<VkPushConstantRange>& inPushConstantRanges);
 
 public:
+	ComputeShaderProgram();
 	~ComputeShaderProgram();
 
 	void Create(const ComputeShaderProgramCreateInfo* inCreateInfo);

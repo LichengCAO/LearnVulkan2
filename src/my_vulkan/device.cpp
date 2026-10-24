@@ -1335,11 +1335,11 @@ void MyDevice::DestroyImage(VkImage image, const VkAllocationCallbacks* pAllocat
 	vkDestroyImage(vkDevice, image, pAllocator);
 }
 
-VkImageView MyDevice::CreateImageView(const VkImageViewCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator)
+auto MyDevice::CreateImageView(const VkImageViewCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator) -> VkImageView
 {
 	VkImageView result = VK_NULL_HANDLE;
 
-	CHECK_TRUE(vkCreateImageView(vkDevice, &inCreateInfo, pAllocator, &result));
+	VK_CHECK(vkCreateImageView(vkDevice, &inCreateInfo, pAllocator, &result), "Failed to create image view!");
 
     return result;
 }

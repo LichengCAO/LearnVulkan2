@@ -7,6 +7,7 @@
 
 class CommandBuffer;
 class DeviceContext;
+class DynamicDescriptorSetAllocator;
 
 // Internal frame-slot implementation owned and coordinated by DeviceContext.
 // Other modules must not create, retain, or access FrameSlot directly;
@@ -14,6 +15,7 @@ class DeviceContext;
 class FrameSlot final
 {
     friend class DeviceContext;
+    friend struct ShaderBindingTestProbe;
 
 public:
     class RecordingTicket final
@@ -48,6 +50,7 @@ private:
     std::array<ThreadCommandPools, SubmissionFrontier::MAX_QUEUE_COUNT> m_commandPools;
     std::unordered_map<uint64_t, std::unique_ptr<RecordingTask>> m_recordTasks;
     uint64_t m_nextRecordingSerial = 1;
+    std::unique_ptr<DynamicDescriptorSetAllocator> m_descriptorAllocator;
 
 private:
     void _RunCompletionCallbacks();

@@ -2,12 +2,16 @@
 #include "common.h"
 #include "command.h"
 #include <variant>
+#include "pipeline/graphics_shader_program.h"
+#include "pipeline/compute_shader_program.h"
+#include "common_enums.h"
 
 class CommandBuffer final
 {
 	friend class RenderGraphInstance;
 	friend struct RenderGraphTestProbe;
 	friend class FrameSlot;
+	friend struct ShaderBindingTestProbe;
 
 private:
 	struct LegacyRenderPassState final
@@ -33,6 +37,11 @@ private:
 	std::vector<std::unique_ptr<Command>> m_ownedCommands;
 	RenderingScopeState m_renderingScopeState;
 	bool m_hasRenderingCommands = false;
+	bool m_hasProgramBindings = false;
+	GraphicsShaderProgram* m_graphicsProgram = nullptr;
+	ComputeShaderProgram* m_computeProgram = nullptr;
+	struct BindingCommand;
+	void _PrepareCommands(DynamicDescriptorSetAllocator& inAllocator, QueueFamilyType inQueue);
 
 private:
 	auto _AppendCommand(const Command* inCommand)->void;
@@ -53,6 +62,11 @@ public:
 	auto NextSubpass(
 		VkSubpassContents inContents = VK_SUBPASS_CONTENTS_INLINE)->CommandBuffer&;
 	auto EndRenderPass()->CommandBuffer&;
+
+	auto BindGraphicsProgram(GraphicsShaderProgram& inProgram,
+		const GraphicsPipelineStateInfo& inStateInfo = {}) -> CommandBuffer&;
+	auto BindComputeProgram(ComputeShaderProgram& inProgram) -> CommandBuffer&;
+	auto BindShaderResources(const ShaderResources& inResources) -> CommandBuffer&;
 
 	// Commands are borrowed and must remain alive until asynchronous recording completes.
 	auto AddCommands(const Command* const* inCommands, size_t inCount)->CommandBuffer&;

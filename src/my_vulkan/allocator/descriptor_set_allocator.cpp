@@ -1,7 +1,7 @@
 #include "descriptor_set_allocator.h"
 #include "../device.h"
 
-VkDescriptorPool DescriptorSetAllocator::_CreatePool(VkDescriptorPoolCreateFlags inPoolFlags)
+auto DescriptorSetAllocator::_CreatePool(VkDescriptorPoolCreateFlags inPoolFlags) -> VkDescriptorPool
 {
 	std::vector<VkDescriptorPoolSize> poolSizes;
 	VkDescriptorPoolCreateInfo createInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
@@ -10,6 +10,8 @@ VkDescriptorPool DescriptorSetAllocator::_CreatePool(VkDescriptorPoolCreateFlags
 	poolSizes.reserve(m_poolSizes.sizes.size());
 	for (auto sz : m_poolSizes.sizes)
 	{
+		// Extension descriptor types are legal only when enabled on this device.
+		if (sz.first == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR && vkCreateAccelerationStructureKHR == nullptr) continue;
 		poolSizes.push_back({ sz.first, sz.second });
 	}
 
@@ -24,7 +26,7 @@ VkDescriptorPool DescriptorSetAllocator::_CreatePool(VkDescriptorPoolCreateFlags
 	return descriptorPool;
 }
 
-VkDescriptorPool DescriptorSetAllocator::_GrabPool(VkDescriptorPoolCreateFlags inPoolFlags)
+auto DescriptorSetAllocator::_GrabPool(VkDescriptorPoolCreateFlags inPoolFlags) -> VkDescriptorPool
 {
 	bool hasThisTypeFreePool =
 		m_freePools.find(inPoolFlags) != m_freePools.end()

@@ -278,6 +278,7 @@ void RenderPass::Create(const RenderPassCreateInfo* inCreateInfo)
 
 	vkAttachments.reserve(inCreateInfo->m_attachments.size());
 	m_clearValues.clear();
+	m_subpassInfos.clear();
 	m_clearValues.reserve(inCreateInfo->m_attachments.size());
 	for (const auto& attachment : inCreateInfo->m_attachments)
 	{
@@ -402,7 +403,27 @@ void RenderPass::Create(const RenderPassCreateInfo* inCreateInfo)
 	renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
 	renderPassInfo.pDependencies = dependencies.data();
 
+    std::vector<SubpassInfo> subpassInfos;
+    for (const auto& subpass : vkSubpasses)
+    {
+        SubpassInfo info;
+        info.colorSlotCount = subpass.colorAttachmentCount;
+        std::optional<VkSampleCountFlagBits> samples;
+        const auto inspect = [&](const VkAttachmentReference& reference)
+        {
+            if (reference.attachment == VK_ATTACHMENT_UNUSED) return;
+            const auto value = vkAttachments.at(reference.attachment).samples;
+            CHECK_TRUE(!samples.has_value() || samples.value() == value, "Subpass attachment sample counts differ!");
+            samples = value;
+        };
+        for (uint32_t i = 0; i < subpass.colorAttachmentCount; ++i) inspect(subpass.pColorAttachments[i]);
+        info.hasDepth = subpass.pDepthStencilAttachment && subpass.pDepthStencilAttachment->attachment != VK_ATTACHMENT_UNUSED;
+        if (info.hasDepth) inspect(*subpass.pDepthStencilAttachment);
+        info.samples = samples.value_or(VK_SAMPLE_COUNT_1_BIT);
+        subpassInfos.push_back(info);
+    }
 	m_vkRenderPass = MyDevice::GetInstance().CreateRenderPass(renderPassInfo);
+    m_subpassInfos = std::move(subpassInfos);
 	m_attachmentNameToIndex = inCreateInfo->m_attachmentNameToIndex;
 }
 
@@ -414,6 +435,7 @@ void RenderPass::Destroy()
 		m_vkRenderPass = VK_NULL_HANDLE;
 	}
 	m_clearValues.clear();
+	m_subpassInfos.clear();
 	m_attachmentNameToIndex.clear();
 }
 

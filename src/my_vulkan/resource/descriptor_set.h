@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <variant>
+#include <string_view>
 class Buffer;
 class BufferView;
 class ImageView;
@@ -50,6 +51,7 @@ public:
 	~DescriptorSetLayout();
 
 	void Create(const DescriptorSetLayoutCreateInfo& inCreateInfo);
+
 	void Destroy();
 
 	auto GetVkDescriptorSetLayout() const -> VkDescriptorSetLayout;
@@ -59,6 +61,8 @@ public:
 
 class DescriptorSetDesc final
 {
+	friend struct ShaderBindingTestProbe;
+	friend class ShaderResources;
 	friend class DescriptorSet;
 	friend class DynamicDescriptorSetAllocator;
 
@@ -67,6 +71,7 @@ class DescriptorSetDesc final
 		const Buffer* buffer = nullptr;
 		VkDeviceSize offset = 0;
 		VkDeviceSize range = VK_WHOLE_SIZE;
+		auto operator==(const BufferBinding&) const -> bool = default;
 	};
 
 	struct ImageBinding final
@@ -74,6 +79,7 @@ class DescriptorSetDesc final
 		const ImageView* imageView = nullptr;
 		const Sampler* sampler = nullptr;
 		VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		auto operator==(const ImageBinding&) const -> bool = default;
 	};
 
 public:
@@ -123,10 +129,7 @@ public:
 		uint32_t inArrayElement = 0);
 	void SetSampler(uint32_t inBinding, const Sampler* inSampler, uint32_t inArrayElement = 0);
 	void SetBufferView(uint32_t inBinding, const BufferView* inBufferView, uint32_t inArrayElement = 0);
-	void SetAccelerationStructure(
-		uint32_t inBinding,
-		const TopLevelAccelStruct* inAccelerationStructure,
-		uint32_t inArrayElement = 0);
+	void SetAccelerationStructure(uint32_t inBinding, const TopLevelAccelStruct* inAccelerationStructure, uint32_t inArrayElement = 0);
 };
 
 class DescriptorSetCreateInfo final
@@ -163,10 +166,16 @@ public:
 
 class DynamicDescriptorSetAllocator final
 {
+	friend struct ShaderBindingTestProbe;
 private:
 	struct CachedDescriptorSetInfo
 	{
-		std::unordered_map<size_t, VkDescriptorSet> mapHashToDescriptorSet;
+		struct Entry
+		{
+			DescriptorSetDesc description;
+			VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+		};
+		std::unordered_map<size_t, std::vector<Entry>> mapHashToDescriptorSet;
 	};
 
 public:
@@ -197,6 +206,8 @@ private:
 	void _WriteDescriptorSet(VkDescriptorSet inDescriptorSet, const AllocateInfo& inAllocateInfo);
 
 public:
+	DynamicDescriptorSetAllocator();
+	~DynamicDescriptorSetAllocator();
 	void Create();
 	void Reset();
 	auto GetOrAllocateDescriptorSet(const AllocateInfo& inAllocateInfo) -> VkDescriptorSet;

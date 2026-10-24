@@ -1,6 +1,7 @@
 #include "shader.h"
 #include "device.h"
 #include <fstream>
+#include <spirv_reflect.h>
 
 namespace
 {
@@ -123,6 +124,20 @@ void ShaderModule::Create(const ShaderModuleCreateInfo& inCreateInfo)
 
 	auto code = ReadShaderFile(inCreateInfo.m_spirvFile);
 	CHECK_TRUE((code.size() % sizeof(uint32_t)) == 0, "SPIR-V bytecode size must be aligned to uint32_t.");
+	SpvReflectShaderModule reflection{};
+	const auto result = spvReflectCreateShaderModule(code.size(), code.data(), &reflection);
+	const auto destroyReflection = [](SpvReflectShaderModule* module) { spvReflectDestroyShaderModule(module); };
+	std::unique_ptr<SpvReflectShaderModule, decltype(destroyReflection)> guard(&reflection, destroyReflection);
+	CHECK_TRUE(result == SPV_REFLECT_RESULT_SUCCESS, "Invalid shader module SPIR-V!");
+	for (const auto& [stage, entry] : inCreateInfo.m_entries)
+	{
+		bool found = false;
+		for (uint32_t i = 0; i < reflection.entry_point_count; ++i)
+			if (entry == reflection.entry_points[i].name &&
+			    stage == static_cast<VkShaderStageFlagBits>(reflection.entry_points[i].shader_stage))
+				found = true;
+		CHECK_TRUE(found, "Shader entry name/stage does not match SPIR-V: " + entry);
+	}
 
 	VkShaderModuleCreateInfo createInfo{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
 	createInfo.codeSize = code.size();

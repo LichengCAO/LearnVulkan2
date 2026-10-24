@@ -17,7 +17,8 @@ void ShaderProgramLayout::Create(const std::vector<std::string>& inSpirvFiles)
 	std::vector<std::pair<VkShaderStageFlags, std::pair<uint32_t, uint32_t>>> reflectedPushConstants;
 
 	reflector.Create(inSpirvFiles);
-	reflector.ReflectDescriptorSets(nameToSetBinding, descriptorSetData);
+	std::set<std::string> ambiguousNames;
+	reflector.ReflectDescriptorSets(nameToSetBinding, descriptorSetData, &ambiguousNames);
 	reflector.ReflectPushConst(pushConstantIndex, reflectedPushConstants);
 
 	PipelineLayoutCreateInfo pipelineLayoutCreateInfo;
@@ -49,6 +50,8 @@ void ShaderProgramLayout::Create(const std::vector<std::string>& inSpirvFiles)
 	pipelineLayout.Create(pipelineLayoutCreateInfo);
 	m_pipelineLayout = std::move(pipelineLayout);
 	m_nameToSetBinding = std::move(nameToSetBinding);
+	m_ambiguousNames = std::move(ambiguousNames);
+	m_descriptorBindings = std::move(descriptorSetData);
 }
 
 void ShaderProgramLayout::Create(const PipelineLayout& inPipelineLayout)
@@ -63,6 +66,8 @@ void ShaderProgramLayout::Destroy()
 {
 	m_pipelineLayout.Destroy();
 	m_nameToSetBinding.clear();
+	m_ambiguousNames.clear();
+	m_descriptorBindings.clear();
 }
 
 auto ShaderProgramLayout::GetLayout() const -> const PipelineLayout&

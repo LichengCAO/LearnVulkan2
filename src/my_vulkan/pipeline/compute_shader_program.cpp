@@ -29,6 +29,8 @@ auto ComputeShaderProgramCreateInfo::CustomizePipelineCache(VkPipelineCache inCa
 	return *this;
 }
 
+ComputeShaderProgram::ComputeShaderProgram() = default;
+
 ComputeShaderProgram::~ComputeShaderProgram()
 {
 	assert(m_vkPipeline == VK_NULL_HANDLE);
@@ -43,18 +45,26 @@ void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo* inCreate
 	CHECK_TRUE(m_vkPipeline == VK_NULL_HANDLE, "Compute shader program already created!");
 	CHECK_TRUE(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE, "Compute shader program already created!");
 
-	m_shaderProgramLayout.Create(std::vector<std::string>{ inCreateInfo->m_spirvFile });
-	_CreatePushConstantManager(m_shaderProgramLayout.GetPushConstantRanges());
+	try
+	{
+		m_shaderProgramLayout.Create(std::vector<std::string>{ inCreateInfo->m_spirvFile });
+		_CreatePushConstantManager(m_shaderProgramLayout.GetPushConstantRanges());
 
-	ShaderModuleCreateInfo shaderModuleCreateInfo{};
-	shaderModuleCreateInfo.SetSpirvFile(inCreateInfo->m_spirvFile);
-	shaderModuleCreateInfo.AddEntry(VK_SHADER_STAGE_COMPUTE_BIT, inCreateInfo->m_entry);
+		ShaderModuleCreateInfo shaderModuleCreateInfo{};
+		shaderModuleCreateInfo.SetSpirvFile(inCreateInfo->m_spirvFile);
+		shaderModuleCreateInfo.AddEntry(VK_SHADER_STAGE_COMPUTE_BIT, inCreateInfo->m_entry);
 
-	m_uptrShaderModule = std::make_unique<ShaderModule>();
-	m_uptrShaderModule->Create(shaderModuleCreateInfo);
-	_CreateVkPipeline(
-		m_uptrShaderModule->GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT),
-		inCreateInfo->m_vkPipelineCache);
+		m_uptrShaderModule = std::make_unique<ShaderModule>();
+		m_uptrShaderModule->Create(shaderModuleCreateInfo);
+		_CreateVkPipeline(
+			m_uptrShaderModule->GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT),
+			inCreateInfo->m_vkPipelineCache);
+	}
+	catch (...)
+	{
+		Destroy();
+		throw;
+	}
 
 	CHECK_TRUE(m_vkPipeline != VK_NULL_HANDLE);
 	CHECK_TRUE(GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE);

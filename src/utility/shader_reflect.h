@@ -6,12 +6,19 @@
 class ShaderReflector final
 {
 private:
-	std::vector<std::unique_ptr<SpvReflectShaderModule>> m_vecReflectModule;
+	struct ModuleDeleter
+	{
+		void operator()(SpvReflectShaderModule* inModule) const;
+	};
+	std::vector<std::unique_ptr<SpvReflectShaderModule, ModuleDeleter>> m_vecReflectModule;
 
 private:
-	SpvReflectShaderModule* _FindShaderModule(VkShaderStageFlagBits _stage) const;
+	auto _FindShaderModule(VkShaderStageFlagBits inStage) const -> const SpvReflectShaderModule*;
 
 public:
+	ShaderReflector() = default;
+	ShaderReflector(const ShaderReflector&) = delete;
+	auto operator=(const ShaderReflector&) -> ShaderReflector& = delete;
 	~ShaderReflector();
 
 	// start reflect shaders of the same pipeline
@@ -22,7 +29,8 @@ public:
 	// _descriptorSetData: output, descriptor bindings of set0, set1, ..., the sets are presented by ascending order
 	void ReflectDescriptorSets(
 		std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>& _mapSetBinding,
-		std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>>& _descriptorSetData) const;
+		std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>>& _descriptorSetData,
+		std::set<std::string>* outAmbiguousNames = nullptr) const;
 
 	// reflect input of the pipeline stage,
 	// _mapLocation: output, map input name to location
@@ -35,7 +43,7 @@ public:
 	// reflect output of the pipeline stage,
 	// _mapLocation: output, map output name to location
 	// _mapFormat: output, map location to VkFormat, use map instead of unordered_map so that it can be accessed by ascending order
-	void ReflectOuput(
+	void ReflectOutput(
 		VkShaderStageFlagBits _stage, 
 		std::unordered_map<std::string, uint32_t>& _mapLocation,
 		std::map<uint32_t, VkFormat>& _mapFormat) const;

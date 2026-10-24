@@ -30,8 +30,8 @@ private:
 	std::map<VkDescriptorPoolCreateFlags, std::vector<VkDescriptorPool>> m_freePools;
 
 private:
-	VkDescriptorPool _CreatePool(VkDescriptorPoolCreateFlags inPoolFlags);
-	VkDescriptorPool _GrabPool(VkDescriptorPoolCreateFlags inPoolFlags);
+	auto _CreatePool(VkDescriptorPoolCreateFlags inPoolFlags) -> VkDescriptorPool;
+	auto _GrabPool(VkDescriptorPoolCreateFlags inPoolFlags) -> VkDescriptorPool;
 
 public:
 	void Create();

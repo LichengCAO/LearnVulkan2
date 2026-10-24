@@ -54,8 +54,7 @@ public:
 
 	void StartFrame();
 	auto GetNextAvailableSwapchainImage() -> SwapchainImage*;
-	void PresentSwapchainImage(
-		const SwapchainImage* inImage, std::span<QueueDependency* const> inWaits);
+	void PresentSwapchainImage(const SwapchainImage* inImage, std::span<QueueDependency* const> inWaits);
 
 	void EndFrame();
 

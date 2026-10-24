@@ -1833,10 +1833,13 @@ namespace
 #endif // MY_VULKAN_ENABLE_RENDER_GRAPH
 }
 
-int main()
+void RunShaderBindingTests();
+
+auto main() -> int
 {
 	try
 	{
+		RunShaderBindingTests();
 		TestSubmissionFrontierPropagation();
 		TestCommandQueueRoleDeduplication();
 

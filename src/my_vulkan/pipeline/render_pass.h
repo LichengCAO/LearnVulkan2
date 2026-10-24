@@ -140,7 +140,15 @@ private:
 
 class RenderPass final
 {
+	friend class GraphicsShaderProgram;
 private:
+	struct SubpassInfo
+	{
+		uint32_t colorSlotCount = 0;
+		bool hasDepth = false;
+		VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+	};
+	std::vector<SubpassInfo> m_subpassInfos;
 	VkRenderPass m_vkRenderPass = VK_NULL_HANDLE;
 	std::vector<VkClearValue> m_clearValues;
 	std::unordered_map<std::string, uint32_t> m_attachmentNameToIndex;
@@ -179,7 +187,7 @@ private:
 	VkFramebuffer m_vkFramebuffer = VK_NULL_HANDLE;
 
 public:
-    Framebuffer() = default;
+	Framebuffer() = default;
 	~Framebuffer();
 	void Create(const FramebufferCreateInfo* inCreateInfo);
 	void Destroy();

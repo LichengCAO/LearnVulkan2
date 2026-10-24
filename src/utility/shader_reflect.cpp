@@ -1,7 +1,7 @@
 #include "shader_reflect.h"
-#include "utils.h"
 #include <fstream>
 #include <algorithm>
+#include <stdexcept>
 
 namespace
 {
@@ -97,418 +97,232 @@ namespace
 		PRINT_TYPE(os, _format, VK_FORMAT_R64G64B64A64_SFLOAT);
 	}
 
-#undef PRINT_STAGE(os, stage, bit)
-#undef PRINT_TYPE(os, vkt, vkt2)
+#undef PRINT_STAGE
+#undef PRINT_TYPE
 }
 
-SpvReflectShaderModule* ShaderReflector::_FindShaderModule(VkShaderStageFlagBits _stage) const
-{
-	SpvReflectShaderModule* pShaderModule = nullptr;
 
-	for (auto& uptrShaderModule : m_vecReflectModule)
+namespace
+{
+	void CheckReflect(SpvReflectResult result, const std::string& operation)
 	{
-		CHECK_TRUE(uptrShaderModule.get() != nullptr, "unique_ptr<SpvReflectShaderModule> holds a nullptr!");
-		if (static_cast<VkShaderStageFlagBits>(uptrShaderModule->shader_stage) == _stage)
+		if (result != SPV_REFLECT_RESULT_SUCCESS)
+			throw std::runtime_error(operation + ": SPIRV-Reflect error " + std::to_string(result));
+	}
+	template <typename T, typename F>
+	auto Enumerate(const SpvReflectShaderModule* module, F function) -> std::vector<T*>
+	{
+		uint32_t count = 0;
+		CheckReflect(function(module, &count, nullptr), "Enumerate reflection count");
+		std::vector<T*> result(count);
+		if (count)
+			CheckReflect(function(module, &count, result.data()), "Enumerate reflection data");
+		return result;
+	}
+	void ReflectInterface(const SpvReflectShaderModule* module, bool input,
+	    std::unordered_map<std::string, uint32_t>& names, std::map<uint32_t, VkFormat>& formats)
+	{
+		names.clear();
+		formats.clear();
+		if (!module)
+			return;
+		for (const auto* variable : Enumerate<SpvReflectInterfaceVariable>(
+		         module, input ? spvReflectEnumerateInputVariables : spvReflectEnumerateOutputVariables))
 		{
-			pShaderModule = uptrShaderModule.get();
-			break;
+			if (variable->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN)
+				continue;
+			const bool simple = variable->member_count == 0 && variable->array.dims_count == 0 &&
+			                    variable->numeric.matrix.column_count == 0 &&
+			                    (variable->component == 0 || variable->component == UINT32_MAX);
+			const auto [position, inserted] = formats.emplace(
+			    variable->location, simple ? static_cast<VkFormat>(variable->format) : VK_FORMAT_UNDEFINED);
+			if (!inserted)
+				position->second = VK_FORMAT_UNDEFINED;
+			if (variable->name && *variable->name)
+				names[variable->name] = variable->location;
 		}
 	}
-
-	return pShaderModule;
-}
-
-ShaderReflector::~ShaderReflector()
+} // namespace
+void ShaderReflector::ModuleDeleter::operator()(SpvReflectShaderModule* module) const
 {
-	Destroy();
-}
-
-void ShaderReflector::Create(const std::vector<std::string>& _spirvFiles)
-{
-	for (const auto& _shader : _spirvFiles)
+	if (module)
 	{
-		std::unique_ptr<SpvReflectShaderModule> uptrReflectModule = std::make_unique<SpvReflectShaderModule>();
-		std::vector<uint8_t> spirvData;
-		auto eResult = SPV_REFLECT_RESULT_SUCCESS;
-
-		common_utils::ReadFile(_shader, spirvData);
-
-		eResult = spvReflectCreateShaderModule(spirvData.size(), spirvData.data(), uptrReflectModule.get());
-		assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-		m_vecReflectModule.push_back(std::move(uptrReflectModule));
+		spvReflectDestroyShaderModule(module);
+		delete module;
 	}
 }
-
-void ShaderReflector::ReflectDescriptorSets(
-	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>& _mapSetBinding, 
-	std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>>& _descriptorSetData) const
+auto ShaderReflector::_FindShaderModule(VkShaderStageFlagBits stage) const -> const SpvReflectShaderModule*
 {
-	struct DescriptorSetLayoutData {
-		std::vector<std::string> names;
-		std::vector<VkDescriptorSetLayoutBinding> bindings;
-	};
-
-	std::map<uint32_t, DescriptorSetLayoutData> mapDescriptorSets;
-
-	// fill mapDescriptorSets
-	for (auto& uptrReflectModule : m_vecReflectModule)
-	{
-		auto eResult = SPV_REFLECT_RESULT_SUCCESS;
-		uint32_t uSetCount = 0u;
-		std::vector<SpvReflectDescriptorSet*> pSets;
-
-		eResult = spvReflectEnumerateDescriptorSets(uptrReflectModule.get(), &uSetCount, nullptr);
-		assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-		pSets.resize(uSetCount);
-		eResult = spvReflectEnumerateDescriptorSets(uptrReflectModule.get(), &uSetCount, pSets.data());
-		assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-		// store descriptor set of this stage into map
-		for (auto _pSet : pSets)
+	const SpvReflectShaderModule* result = nullptr;
+	for (const auto& module : m_vecReflectModule)
+		if (static_cast<VkShaderStageFlagBits>(module->shader_stage) == stage)
 		{
-			const SpvReflectDescriptorSet& curSet = *_pSet;
-			std::vector<SpvReflectDescriptorBinding*> pBindings(_pSet->bindings, _pSet->bindings + static_cast<size_t>(_pSet->binding_count));
-			if (mapDescriptorSets.find(curSet.set) == mapDescriptorSets.end())
+			CHECK_TRUE(result == nullptr, "Multiple modules for interface stage are ambiguous!");
+			result = module.get();
+		}
+	return result;
+}
+ShaderReflector::~ShaderReflector() = default;
+void ShaderReflector::Create(const std::vector<std::string>& files)
+{
+	CHECK_TRUE(!files.empty(), "Shader reflection needs SPIR-V files!");
+	decltype(m_vecReflectModule) modules;
+	for (const auto& name : files)
+	{
+		std::ifstream file(name, std::ios::binary | std::ios::ate);
+		CHECK_TRUE(file.is_open(), "Cannot open SPIR-V: " + name);
+		const auto size = file.tellg();
+		CHECK_TRUE(size >= 20 && size % 4 == 0, "Invalid SPIR-V size: " + name);
+		std::vector<uint32_t> code(static_cast<size_t>(size) / 4);
+		file.seekg(0);
+		CHECK_TRUE(
+		    static_cast<bool>(file.read(reinterpret_cast<char*>(code.data()), size)), "Cannot read SPIR-V: " + name);
+		std::unique_ptr<SpvReflectShaderModule, ModuleDeleter> module(new SpvReflectShaderModule{});
+		CheckReflect(spvReflectCreateShaderModule(static_cast<size_t>(size), code.data(), module.get()), name);
+		CHECK_TRUE(module->entry_point_count == 1, "Reflection requires one entry point per SPIR-V module: " + name);
+		modules.push_back(std::move(module));
+	}
+	m_vecReflectModule.swap(modules);
+}
+void ShaderReflector::ReflectDescriptorSets(std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>& outNames,
+    std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>>& outSets,
+    std::set<std::string>* outAmbiguousNames) const
+{
+	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> names;
+	std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>> sets;
+	std::set<std::string> ambiguous;
+	for (const auto& module : m_vecReflectModule)
+		for (const auto* descriptor :
+		    Enumerate<SpvReflectDescriptorBinding>(module.get(), spvReflectEnumerateDescriptorBindings))
+		{
+			CHECK_TRUE(descriptor->count > 0, "Runtime descriptor arrays unsupported: set " +
+			                                      std::to_string(descriptor->set) + " binding " +
+			                                      std::to_string(descriptor->binding));
+			if (sets.size() <= descriptor->set)
+				sets.resize(static_cast<size_t>(descriptor->set) + 1);
+			VkDescriptorSetLayoutBinding binding{};
+			binding.binding = descriptor->binding;
+			binding.descriptorType = static_cast<VkDescriptorType>(descriptor->descriptor_type);
+			binding.descriptorCount = descriptor->count;
+			binding.stageFlags = static_cast<VkShaderStageFlags>(module->shader_stage);
+			auto [it, inserted] = sets[descriptor->set].emplace(binding.binding, binding);
+			CHECK_TRUE(inserted || (it->second.descriptorType == binding.descriptorType &&
+			                           it->second.descriptorCount == binding.descriptorCount),
+			    "Incompatible descriptor: set " + std::to_string(descriptor->set) + " binding " +
+			        std::to_string(descriptor->binding));
+			it->second.stageFlags |= binding.stageFlags;
+			if (descriptor->name && *descriptor->name)
 			{
-				DescriptorSetLayoutData setData{};
-				for (auto pBinding : pBindings)
-				{
-					VkDescriptorSetLayoutBinding vkBinding{};
-					vkBinding.binding = pBinding->binding;
-					vkBinding.descriptorType = static_cast<VkDescriptorType>(pBinding->descriptor_type);
-					vkBinding.stageFlags |= static_cast<VkShaderStageFlagBits>(uptrReflectModule->shader_stage);
-					vkBinding.descriptorCount = 1;
-					for (uint32_t uDim = 0u; uDim < pBinding->array.dims_count; ++uDim)
-					{
-						vkBinding.descriptorCount *= (pBinding->array.dims[uDim]);
-					}
-
-					setData.bindings.push_back(std::move(vkBinding));
-					setData.names.emplace_back(pBinding->name);
-				}
-
-				mapDescriptorSets.insert(std::make_pair(curSet.set, setData));
-			}
-			else
-			{
-				auto& setData = mapDescriptorSets[curSet.set];
-				for (auto pBinding : pBindings)
-				{
-					int index = -1;
-
-					// check if we already have such binding stored
-					for (int nBindingIndex = 0; nBindingIndex < setData.bindings.size(); ++nBindingIndex)
-					{
-						auto& vkBinding = setData.bindings[nBindingIndex];
-						if (vkBinding.binding == pBinding->binding)
-						{
-							index = nBindingIndex;
-							break;
-						}
-					}
-
-					if (index != -1)
-					{
-						// we update the existing binding
-						VkDescriptorSetLayoutBinding& vkBinding = setData.bindings[index];
-						uint32_t uDescriptorCount = 1;
-
-						for (uint32_t uDim = 0u; uDim < pBinding->array.dims_count; ++uDim)
-						{
-							uDescriptorCount *= (pBinding->array.dims[uDim]);
-						}
-						CHECK_TRUE(vkBinding.descriptorCount == uDescriptorCount, "The descriptor doesn't match!");
-						CHECK_TRUE(vkBinding.descriptorType == static_cast<VkDescriptorType>(pBinding->descriptor_type), "The descriptor doesn't match!");
-						vkBinding.stageFlags |= static_cast<VkShaderStageFlagBits>(uptrReflectModule->shader_stage);
-					}
-					else
-					{
-						// we add a new binding
-						VkDescriptorSetLayoutBinding vkBinding{};
-
-						vkBinding.binding = pBinding->binding;
-						vkBinding.descriptorType = static_cast<VkDescriptorType>(pBinding->descriptor_type);
-						vkBinding.stageFlags |= static_cast<VkShaderStageFlagBits>(uptrReflectModule->shader_stage);
-						vkBinding.descriptorCount = 1;
-						for (uint32_t uDim = 0u; uDim < pBinding->array.dims_count; ++uDim)
-						{
-							vkBinding.descriptorCount *= (pBinding->array.dims[uDim]);
-						}
-
-						setData.bindings.push_back(std::move(vkBinding));
-						setData.names.emplace_back(pBinding->name);
-					}
-				}
+				const std::string name(descriptor->name);
+				const auto key = std::make_pair(descriptor->set, descriptor->binding);
+				auto [nameIt, added] = names.emplace(name, key);
+				if (!added && nameIt->second != key)
+					ambiguous.insert(name);
 			}
 		}
-	}
-
-	// build descriptor set layout
-	{
-		// find out how many descriptor layouts do we have
-		uint32_t uMaxSet = 0u;
-		int setCount = 0; // check if no descriptors reflected 
-
-		for (const auto& _pair : mapDescriptorSets)
-		{
-			uint32_t uSetId = _pair.first;
-			uMaxSet = std::max(uMaxSet, uSetId);
-			++setCount;
-		}
-		
-		if (setCount == 0) return;
-
-		// update _uptrDescriptorSetLayouts, _mapSetBinding
-		_descriptorSetData.reserve(static_cast<size_t>(uMaxSet + 1));
-		for (uint32_t uSetId = 0u; uSetId <= uMaxSet; ++uSetId)
-		{
-			std::map<uint32_t, VkDescriptorSetLayoutBinding> curSet{};
-
-			// fill descriptor setting in the layout and then initialize layout
-			if (mapDescriptorSets.find(uSetId) != mapDescriptorSets.end())
-			{
-				const auto& descriptorData = mapDescriptorSets[uSetId];
-				for (size_t i = 0; i < descriptorData.bindings.size(); ++i)
-				{
-					const auto& vkInfo = descriptorData.bindings[i];
-					const auto& strDescriptorName = descriptorData.names[i];
-
-					curSet.insert({ vkInfo.binding, vkInfo });
-					_mapSetBinding[strDescriptorName] = { uSetId, vkInfo.binding };
-				}
-			}
-
-			_descriptorSetData.push_back(std::move(curSet));
-		}
-	}
+	for (const auto& name : ambiguous)
+		names.erase(name);
+	if (outAmbiguousNames)
+		*outAmbiguousNames = ambiguous;
+	else
+		CHECK_TRUE(ambiguous.empty(), "Ambiguous descriptor name!");
+	outNames = std::move(names);
+	outSets = std::move(sets);
 }
-
-void ShaderReflector::ReflectInput(
-	VkShaderStageFlagBits _stage, 
-	std::unordered_map<std::string, uint32_t>& _mapLocation, 
-	std::map<uint32_t, VkFormat>& _mapFormat) const
+void ShaderReflector::ReflectInput(VkShaderStageFlagBits stage, std::unordered_map<std::string, uint32_t>& names,
+    std::map<uint32_t, VkFormat>& formats) const
 {
-	SpvReflectShaderModule* pReflectModule = _FindShaderModule(_stage);
-	auto eResult = SPV_REFLECT_RESULT_SUCCESS;
-	uint32_t uCount = 0u;
-	std::vector<SpvReflectInterfaceVariable*> vecVariable;
-
-	if (pReflectModule == nullptr) return;
-
-	eResult = spvReflectEnumerateInputVariables(pReflectModule, &uCount, nullptr);
-	assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-	vecVariable.resize(uCount);
-	eResult = spvReflectEnumerateInputVariables(pReflectModule, &uCount, vecVariable.data());
-	assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-	for (const auto pVariable : vecVariable)
-	{
-		if (CONTAIN_BITS(pVariable->decoration_flags, SPV_REFLECT_DECORATION_BUILT_IN)) continue;
-
-		_mapLocation[pVariable->name] = pVariable->location;
-		_mapFormat[pVariable->location] = static_cast<VkFormat>(pVariable->format);
-	}
+	ReflectInterface(_FindShaderModule(stage), true, names, formats);
 }
-
-void ShaderReflector::ReflectOuput(
-	VkShaderStageFlagBits _stage, 
-	std::unordered_map<std::string, uint32_t>& _mapLocation, 
-	std::map<uint32_t, VkFormat>& _mapFormat) const
+void ShaderReflector::ReflectOutput(VkShaderStageFlagBits stage, std::unordered_map<std::string, uint32_t>& names,
+    std::map<uint32_t, VkFormat>& formats) const
 {
-	SpvReflectShaderModule* pReflectModule = _FindShaderModule(_stage);
-	auto eResult = SPV_REFLECT_RESULT_SUCCESS;
-	uint32_t uCount = 0u;
-	std::vector<SpvReflectInterfaceVariable*> vecVariable;
-
-	if (pReflectModule == nullptr) return;
-
-	eResult = spvReflectEnumerateOutputVariables(pReflectModule, &uCount, nullptr);
-	assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-	vecVariable.resize(uCount);
-	eResult = spvReflectEnumerateOutputVariables(pReflectModule, &uCount, vecVariable.data());
-	assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-	for (const auto pVariable : vecVariable)
-	{
-		if (CONTAIN_BITS(pVariable->decoration_flags, SPV_REFLECT_DECORATION_BUILT_IN)) continue;
-
-		_mapLocation[pVariable->name] = pVariable->location;
-		_mapFormat[pVariable->location] = static_cast<VkFormat>(pVariable->format);
-	}
+	ReflectInterface(_FindShaderModule(stage), false, names, formats);
 }
-
-void ShaderReflector::ReflectPushConst(
-	std::unordered_map<std::string, uint32_t>& _mapIndex, 
-	std::vector<std::pair<VkShaderStageFlags, std::pair<uint32_t, uint32_t>>>& _pushConstInfo) const
+void ShaderReflector::ReflectPushConst(std::unordered_map<std::string, uint32_t>& names,
+    std::vector<std::pair<VkShaderStageFlags, std::pair<uint32_t, uint32_t>>>& ranges) const
 {
-	for (auto& uptrShaderModule : m_vecReflectModule)
+	names.clear();
+	ranges.clear();
+	std::map<VkShaderStageFlagBits, std::pair<uint32_t, uint32_t>> bounds;
+	std::vector<std::pair<std::string, VkShaderStageFlagBits>> blockNames;
+	for (const auto& module : m_vecReflectModule)
 	{
-		std::vector<SpvReflectBlockVariable*> pReflectBlocks;
-		uint32_t uCount = 0;
-		auto eResult = SPV_REFLECT_RESULT_SUCCESS;
-
-		eResult = spvReflectEnumeratePushConstantBlocks(uptrShaderModule.get(), &uCount, nullptr);
-		assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-		pReflectBlocks.resize(uCount);
-		eResult = spvReflectEnumeratePushConstantBlocks(uptrShaderModule.get(), &uCount, pReflectBlocks.data());
-		assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-		for (auto pReflectBlock : pReflectBlocks)
+		const auto stage = static_cast<VkShaderStageFlagBits>(module->shader_stage);
+		for (const auto* block :
+		    Enumerate<SpvReflectBlockVariable>(module.get(), spvReflectEnumeratePushConstantBlocks))
 		{
-			auto itr = _mapIndex.find(pReflectBlock->name);
-			if (pReflectBlock->name[0] == '\0')
+			CHECK_TRUE(block->size > block->offset && block->offset % 4 == 0 && block->size % 4 == 0,
+			    "Invalid push constant range!");
+			auto [it, inserted] = bounds.emplace(stage, std::make_pair(block->offset, block->size));
+			if (!inserted)
 			{
-				std::pair<uint32_t, uint32_t> val = { pReflectBlock->offset, pReflectBlock->size };
-				std::pair<VkShaderStageFlags, std::pair<uint32_t, uint32_t>> pushConstInfo = { static_cast<VkShaderStageFlagBits>(uptrShaderModule->shader_stage), val };
-				_pushConstInfo.push_back(pushConstInfo);
+				it->second.first = std::min(it->second.first, block->offset);
+				it->second.second = std::max(it->second.second, block->size);
 			}
-			else if (itr != _mapIndex.end())
-			{
-				auto& pushConstInfo = _pushConstInfo[(*itr).second];
-				pushConstInfo.first |= static_cast<VkShaderStageFlagBits>(uptrShaderModule->shader_stage);
-				CHECK_TRUE(pushConstInfo.second.second == pReflectBlock->size, "Size of push constant in 2 stages should be same.");
-			}
-			else
-			{
-				std::pair<uint32_t, uint32_t> val = { pReflectBlock->offset, pReflectBlock->size };
-				std::pair<VkShaderStageFlags, std::pair<uint32_t, uint32_t>> pushConstInfo = { static_cast<VkShaderStageFlagBits>(uptrShaderModule->shader_stage), val };
-				uint32_t uIndex = _pushConstInfo.size();
-				_mapIndex[pReflectBlock->name] = uIndex;
-				_pushConstInfo.push_back(pushConstInfo);
-			}
+			if (block->name && *block->name)
+				blockNames.emplace_back(block->name, stage);
 		}
 	}
+	std::map<VkShaderStageFlagBits, uint32_t> indices;
+	for (const auto& [stage, extent] : bounds)
+	{
+		const auto range = std::make_pair(extent.first, extent.second - extent.first);
+		auto it =
+		    std::find_if(ranges.begin(), ranges.end(), [&](const auto& item) -> bool { return item.second == range; });
+		if (it == ranges.end())
+		{
+			indices[stage] = static_cast<uint32_t>(ranges.size());
+			ranges.emplace_back(stage, range);
+		}
+		else
+		{
+			it->first |= stage;
+			indices[stage] = static_cast<uint32_t>(it - ranges.begin());
+		}
+	}
+	std::set<std::string> ambiguous;
+	for (const auto& [name, stage] : blockNames)
+	{
+		const auto [it, added] = names.emplace(name, indices.at(stage));
+		if (!added && it->second != indices.at(stage))
+			ambiguous.insert(name);
+	}
+	for (const auto& name : ambiguous)
+		names.erase(name);
 }
-
 void ShaderReflector::PrintReflectResult() const
 {
-	for (auto& uptrShaderModule : m_vecReflectModule)
+	for (const auto& module : m_vecReflectModule)
 	{
-		std::vector<SpvReflectDescriptorSet*> pSetInfo;
-		std::vector<SpvReflectInterfaceVariable*> pInputInfo;
-		std::vector<SpvReflectInterfaceVariable*> pOutputInfo;
-		std::vector<SpvReflectBlockVariable*> pPushConstInfo;
-
-		// fill spv reflect vectors
+		_PrintStage(std::cout, static_cast<VkShaderStageFlags>(module->shader_stage));
+		std::cout << " entry: " << module->entry_point_name << '\n';
+		for (const auto* binding :
+		    Enumerate<SpvReflectDescriptorBinding>(module.get(), spvReflectEnumerateDescriptorBindings))
 		{
-			uint32_t uCount = 0;
-			auto eResult = SPV_REFLECT_RESULT_SUCCESS;
-
-			// descriptor sets
-			eResult = spvReflectEnumerateDescriptorSets(uptrShaderModule.get(), &uCount, nullptr);
-			assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-			pSetInfo.resize(uCount);
-			eResult = spvReflectEnumerateDescriptorSets(uptrShaderModule.get(), &uCount, pSetInfo.data());
-			assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-			// inputs
-			eResult = spvReflectEnumerateInputVariables(uptrShaderModule.get(), &uCount, nullptr);
-			assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-			pInputInfo.resize(uCount);
-			eResult = spvReflectEnumerateInputVariables(uptrShaderModule.get(), &uCount, pInputInfo.data());
-			assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-			// outputs
-			eResult = spvReflectEnumerateOutputVariables(uptrShaderModule.get(), &uCount, nullptr);
-			assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-			pOutputInfo.resize(uCount);
-			eResult = spvReflectEnumerateOutputVariables(uptrShaderModule.get(), &uCount, pOutputInfo.data());
-			assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-			// push constants
-			eResult = spvReflectEnumeratePushConstantBlocks(uptrShaderModule.get(), &uCount, nullptr);
-			assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
-
-			pPushConstInfo.resize(uCount);
-			eResult = spvReflectEnumeratePushConstantBlocks(uptrShaderModule.get(), &uCount, pPushConstInfo.data());
-			assert(eResult == SPV_REFLECT_RESULT_SUCCESS);
+			std::cout << "  " << (binding->name ? binding->name : "") << " set=" << binding->set
+			          << " binding=" << binding->binding << " count=" << binding->count << " ";
+			_PrintDescriptorType(std::cout, static_cast<VkDescriptorType>(binding->descriptor_type));
+			std::cout << '\n';
 		}
-
-		std::cout << "===============================" << std::endl;
-		_PrintStage(std::cout, static_cast<VkShaderStageFlags>(uptrShaderModule->shader_stage));
-		std::cout << "\r\n===============================" << std::endl;
-
-		if (pInputInfo.size() > 0)
-		{
-			std::cout << "Input variables:\r\n";
-			for (const auto pVariable : pInputInfo)
+		for (bool input : {true, false})
+			for (const auto* variable : Enumerate<SpvReflectInterfaceVariable>(
+			         module.get(), input ? spvReflectEnumerateInputVariables : spvReflectEnumerateOutputVariables))
 			{
-				if (CONTAIN_BITS(pVariable->decoration_flags, SPV_REFLECT_DECORATION_BUILT_IN)) continue;
-				std::cout << "    name: " << pVariable->name << std::endl;
-				std::cout << "    location: " << pVariable->location << std::endl;
-				std::cout << "    format: ";
-				_PrintVkFormat(std::cout, static_cast<VkFormat>(pVariable->format));
-				std::cout << "\n\n";
+				if (variable->decoration_flags & SPV_REFLECT_DECORATION_BUILT_IN)
+					continue;
+				std::cout << (input ? "  input " : "  output ") << (variable->name ? variable->name : "")
+				          << " location=" << variable->location << " ";
+				_PrintVkFormat(std::cout, static_cast<VkFormat>(variable->format));
+				std::cout << '\n';
 			}
-		}
-
-		if (pOutputInfo.size() > 0)
-		{
-			std::cout << "Output variables:\r\n";
-			for (const auto pVariable : pOutputInfo)
-			{
-				if (CONTAIN_BITS(pVariable->decoration_flags, SPV_REFLECT_DECORATION_BUILT_IN)) continue;
-				std::cout << "    name: " << pVariable->name << std::endl;
-				std::cout << "    location: " << pVariable->location << std::endl;
-				std::cout << "    format: ";
-				_PrintVkFormat(std::cout, static_cast<VkFormat>(pVariable->format));
-				std::cout << "\n\n";
-			}
-		}
-
-		if (pPushConstInfo.size() > 0)
-		{
-			std::cout << "Push constant:\r\n";
-			for (const auto pReflectBlock : pPushConstInfo)
-			{
-				std::cout << "    name: " << pReflectBlock->name << std::endl;
-				std::cout << "    offset: " << pReflectBlock->offset << std::endl;
-				std::cout << "    size: " << pReflectBlock->size << std::endl;
-				std::cout << "\n\n";
-			}
-		}
-
-		if (pSetInfo.size() > 0)
-		{
-			std::cout << "Descriptor sets:\r\n";
-			for (const auto pDescriptorSet : pSetInfo)
-			{
-				std::cout << "    set: " << pDescriptorSet->set << std::endl;
-				for (uint32_t i = 0; i < pDescriptorSet->binding_count; ++i)
-				{
-					const SpvReflectDescriptorBinding* pDescriptor = pDescriptorSet->bindings[i];
-					uint32_t uDescriptorCount = 1;
-					for (uint32_t uDim = 0u; uDim < pDescriptor->array.dims_count; ++uDim)
-					{
-						uDescriptorCount *= (pDescriptor->array.dims[uDim]);
-					}
-
-					std::cout << "        name: " << pDescriptor->name << std::endl;
-					std::cout << "        binding: " << pDescriptor->binding << std::endl;
-					std::cout << "        descriptor count: " << uDescriptorCount << std::endl;
-					std::cout << "        type: ";
-					_PrintDescriptorType(std::cout, static_cast<VkDescriptorType>(pDescriptor->descriptor_type));
-					std::cout << "\n\n";
-				}
-			}
-		}
-
+		for (const auto* block :
+		    Enumerate<SpvReflectBlockVariable>(module.get(), spvReflectEnumeratePushConstantBlocks))
+			std::cout << "  push constant " << (block->name ? block->name : "") << " offset=" << block->offset
+			          << " size=" << block->size - block->offset << '\n';
 	}
 }
-
 void ShaderReflector::Destroy()
 {
-	for (auto& uptrReflectModule : m_vecReflectModule)
-	{
-		spvReflectDestroyShaderModule(uptrReflectModule.get());
-	}
 	m_vecReflectModule.clear();
 }
