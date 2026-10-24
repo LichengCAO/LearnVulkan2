@@ -1,7 +1,7 @@
 #pragma once
 #include "common.h"
-#include "shader_program_layout.h"
-#include "shader.h"
+#include "private/shader_program_layout.h"
+#include "private/shader.h"
 #include "shader_resources.h"
 
 class PushConstantManager;

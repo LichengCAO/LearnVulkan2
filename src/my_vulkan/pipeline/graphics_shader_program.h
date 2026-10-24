@@ -1,10 +1,10 @@
 #pragma once
-#include "pipeline_common.h"
-#include "shader_program_layout.h"
-#include "shader.h"
+#include "private/pipeline_common.h"
+#include "private/shader_program_layout.h"
+#include "private/shader.h"
 #include "shader_resources.h"
 #include <map>
-#include <pipeline_state.h>
+#include "pipeline_state.h"
 class RenderPass;
 class Framebuffer;
 class ImageView;
