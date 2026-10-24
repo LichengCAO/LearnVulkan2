@@ -2,7 +2,6 @@
 #include <limits>
 #include "../graphics_shader_program.h"
 #include "device.h"
-#include "push_constant_manager.h"
 #include "command_buffer.h"
 #include "../render_pass.h"
 #include "utility/hash_util.h"
@@ -496,8 +495,7 @@ void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo* inCrea
 	{
 		auto resolved = ShaderDetail::Resolve(inCreateInfo->m_shaders, m_shaderModules);
 		m_shaderStages = std::move(resolved.stages);
-		m_shaderProgramLayout.Create(resolved.reflection);
-		_CreatePushConstantManager(m_shaderProgramLayout.GetPushConstantRanges());
+		m_pipelineLayout.Create(resolved.reflection);
 		_CreateDefaults(*inCreateInfo, resolved.reflection);
 	}
 	catch (...)
@@ -506,20 +504,7 @@ void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo* inCrea
 		throw;
 	}
 	CHECK_TRUE(GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE);
-	CHECK_TRUE(m_uptrPushConstant != nullptr);
 	CHECK_TRUE(!m_shaderModules.empty());
-}
-
-void GraphicsShaderProgram::_CreatePushConstantManager(const std::vector<VkPushConstantRange>& inPushConstantRanges)
-{
-	m_uptrPushConstant = std::make_unique<PushConstantManager>();
-	for (const auto& pushConstantRange : inPushConstantRanges)
-	{
-		m_uptrPushConstant->AddConstantRange(
-			pushConstantRange.stageFlags,
-			pushConstantRange.offset,
-			pushConstantRange.size);
-	}
 }
 
 auto GraphicsShaderProgram::_HashGraphicsPipelineStateInfo(const GraphicsPipelineStateInfo& inStateInfo) const -> size_t
@@ -672,19 +657,12 @@ void GraphicsShaderProgram::Destroy()
 	}
 	m_shaderStages.clear();
 	m_shaderModules.clear();
-	m_shaderProgramLayout.Destroy();
-	m_uptrPushConstant.reset();
-}
-
-auto GraphicsShaderProgram::GetNameToSetBinding() const
-	-> const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&
-{
-	return m_shaderProgramLayout.GetNameToSetBinding();
+	m_pipelineLayout.Destroy();
 }
 
 auto GraphicsShaderProgram::GetLayout() const -> const PipelineLayout&
 {
-	return m_shaderProgramLayout.GetLayout();
+	return m_pipelineLayout;
 }
 
 auto GraphicsShaderProgram::GetVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) -> VkPipeline

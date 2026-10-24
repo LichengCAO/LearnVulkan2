@@ -1,14 +1,14 @@
 #pragma once
-#include "private/pipeline_common.h"
-#include "private/shader_program_layout.h"
+#include "common.h"
+#include "pipeline_layout.h"
 #include "private/shader.h"
-#include "shader_resources.h"
+#include "resource/descriptor.h"
 #include <map>
+#include <string_view>
 class RenderPass;
 class Framebuffer;
 class ImageView;
 class GraphicsShaderProgram;
-class PushConstantManager;
 class CommandSubmission;
 class CommandBuffer;
 
@@ -63,10 +63,9 @@ class GraphicsShaderProgram final
 {
 	friend class CommandBuffer;
 private:
-	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
 	std::vector<std::unique_ptr<ShaderModule>> m_shaderModules;
 	std::vector<VkPipelineShaderStageCreateInfo> m_shaderStages;
-	ShaderProgramLayout m_shaderProgramLayout;
+	PipelineLayout m_pipelineLayout;
 	std::unordered_map<size_t, VkPipeline> m_cachedGraphicsPipelines;
 	std::unique_ptr<RenderPass> m_defaultRenderPass;
 	GraphicsPipelineStateInfo m_defaultState;
@@ -75,7 +74,6 @@ private:
 private:
 	void _CreateDefaults(const GraphicsShaderProgramCreateInfo& inInfo, const ShaderProgramReflection& inReflection);
 	auto _ResolveState(const GraphicsPipelineStateInfo& inState) const -> GraphicsPipelineStateInfo;
-	void _CreatePushConstantManager(const std::vector<VkPushConstantRange>& inPushConstantRanges);
 	auto _CreateVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) const -> VkPipeline;
 	auto _HashGraphicsPipelineStateInfo(const GraphicsPipelineStateInfo& inStateInfo) const -> size_t;
 
@@ -87,8 +85,6 @@ public:
 	
 	void Destroy();
 
-	auto GetNameToSetBinding() const -> const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&;
-	
 	auto GetLayout() const -> const PipelineLayout&;
 	auto GetDefaultRenderPass() const -> const RenderPass&;
 	

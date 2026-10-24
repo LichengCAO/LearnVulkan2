@@ -1,5 +1,6 @@
 #pragma once
-#include "pipeline_common.h"
+#include "common.h"
+#include <string_view>
 #include "shader_reflect.h"
 #include "shader_program_reflection.h"
 

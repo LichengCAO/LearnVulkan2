@@ -1,12 +1,11 @@
 #pragma once
 #include "common.h"
-#include "private/shader_program_layout.h"
+#include "pipeline_layout.h"
 #include "private/shader.h"
 #include <string_view>
 
 class Buffer;
 class RayTracingShaderProgram;
-class PushConstantManager;
 class ShaderBindingTable;
 class CommandBuffer;
 
@@ -105,19 +104,6 @@ class RayTracingShaderProgram
 public:
 	RayTracingShaderProgram();
 
-	struct PipelineInput
-	{
-		std::vector<VkDescriptorSet> vkDescriptorSets;
-		std::vector<uint32_t> optDynamicOffsets;
-		std::vector<std::pair<VkShaderStageFlags, const void*>> pushConstants;
-		
-		const ShaderBindingTable* pShaderBindingTable = nullptr;
-		
-		uint32_t uWidth = 0u;
-		uint32_t uHeight = 0u;
-		uint32_t uDepth = 1u;
-	};
-
 	class Builder : public IRayTracingShaderProgramInitializer
 	{
 	private:
@@ -160,9 +146,8 @@ public:
 	};
 
 private:
-	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
 	std::vector<std::unique_ptr<ShaderModule>> m_shaderModules;
-	ShaderProgramLayout m_shaderProgramLayout;
+	PipelineLayout m_pipelineLayout;
 	VkPipeline m_vkPipeline = VK_NULL_HANDLE;
 	uint32_t m_shaderGroupCount = 0;
 	RayTracingShaderGroupSet m_groupSet;
@@ -179,12 +164,8 @@ public:
 	auto GetShaderGroupCount() const -> uint32_t;
 
 	auto GetVkPipeline() const -> VkPipeline;
-	auto GetNameToSetBinding() const
-	    -> const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&;
 
 	auto GetLayout() const -> const PipelineLayout&;
 
 	auto GetShaderGroupSet() const -> const RayTracingShaderGroupSet& { return m_groupSet; }
-
-	void Do(VkCommandBuffer commandBuffer, const PipelineInput& input);
 };

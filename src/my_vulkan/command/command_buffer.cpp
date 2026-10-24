@@ -140,7 +140,7 @@ struct CommandBuffer::BindingCommand final : Command
 	ComputeShaderProgram* compute = nullptr;
 	RayTracingShaderProgram* rayTracing = nullptr;
 	GraphicsPipelineStateInfo state;
-	const ShaderProgramLayout* resourceLayout = nullptr;
+	const PipelineLayout* resourceLayout = nullptr;
 	std::vector<DescriptorSetDesc> descriptions;
 	VkPipelineBindPoint bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	mutable VkPipeline pipeline = VK_NULL_HANDLE;
@@ -172,14 +172,14 @@ struct CommandBuffer::BindingCommand final : Command
 			pipeline = rayTracing->GetVkPipeline();
 		else
 		{
-			pipelineLayout = resourceLayout->GetLayout().GetVkPipelineLayout();
+			pipelineLayout = resourceLayout->GetVkPipelineLayout();
 			sets.clear();
 			for (uint32_t set = 0; set < descriptions.size(); ++set)
 			{
-				if (resourceLayout->GetDescriptorBindings()[set].empty())
+				if (resourceLayout->GetVkDescriptorBindings()[set].empty())
 					continue;
 				DynamicDescriptorSetAllocator::AllocateInfo info;
-				info.SetLayout(resourceLayout->GetLayout().GetDescriptorSetLayout(set));
+				info.SetLayout(resourceLayout->GetDescriptorSetLayout(set));
 				info.SetDescriptorSetDesc(descriptions[set]);
 				sets.emplace_back(set, allocator.GetOrAllocateDescriptorSet(info));
 			}
@@ -250,7 +250,7 @@ auto CommandBuffer::BindGraphicsShaderResource(const ShaderResources& resources)
 	const auto* scope = std::get_if<LegacyRenderPassState>(&m_renderingScopeState);
 	CHECK_TRUE(scope && scope->contents == VK_SUBPASS_CONTENTS_INLINE,
 	    "Graphics resources require an inline render pass!");
-	return _BindShaderResources(m_graphicsProgram->m_shaderProgramLayout, VK_PIPELINE_BIND_POINT_GRAPHICS, resources);
+	return _BindShaderResources(m_graphicsProgram->m_pipelineLayout, VK_PIPELINE_BIND_POINT_GRAPHICS, resources);
 }
 
 auto CommandBuffer::BindComputeShaderResource(const ShaderResources& resources) -> CommandBuffer&
@@ -258,7 +258,7 @@ auto CommandBuffer::BindComputeShaderResource(const ShaderResources& resources) 
 	CHECK_TRUE(m_computeProgram, "Bind a compute program before shader resources!");
 	CHECK_TRUE(std::holds_alternative<std::monostate>(m_renderingScopeState),
 	    "Compute resources require no active render pass!");
-	return _BindShaderResources(m_computeProgram->m_shaderProgramLayout, VK_PIPELINE_BIND_POINT_COMPUTE, resources);
+	return _BindShaderResources(m_computeProgram->m_pipelineLayout, VK_PIPELINE_BIND_POINT_COMPUTE, resources);
 }
 
 auto CommandBuffer::BindRayTracingShaderResource(const ShaderResources& resources) -> CommandBuffer&
@@ -266,10 +266,10 @@ auto CommandBuffer::BindRayTracingShaderResource(const ShaderResources& resource
 	CHECK_TRUE(m_rayTracingProgram, "Bind a ray tracing program before shader resources!");
 	CHECK_TRUE(std::holds_alternative<std::monostate>(m_renderingScopeState),
 	    "Ray tracing resources require no active render pass!");
-	return _BindShaderResources(m_rayTracingProgram->m_shaderProgramLayout, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, resources);
+	return _BindShaderResources(m_rayTracingProgram->m_pipelineLayout, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, resources);
 }
 
-auto CommandBuffer::_BindShaderResources(const ShaderProgramLayout& layout, VkPipelineBindPoint bindPoint,
+auto CommandBuffer::_BindShaderResources(const PipelineLayout& layout, VkPipelineBindPoint bindPoint,
     const ShaderResources& resources) -> CommandBuffer&
 {
 	auto command = std::make_unique<BindingCommand>();

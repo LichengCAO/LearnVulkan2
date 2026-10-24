@@ -1,5 +1,4 @@
 #include "../compute_shader_program.h"
-#include "push_constant_manager.h"
 #include "device.h"
 
 auto ComputeShaderProgramCreateInfo::Reset() -> ComputeShaderProgramCreateInfo&
@@ -44,8 +43,7 @@ void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo* inCreate
 		m_uptrShaderModule->Create(inCreateInfo->m_spirvFile);
 		ShaderProgramReflection reflection;
 		reflection.Create({m_uptrShaderModule->GetEntryReflection(VK_SHADER_STAGE_COMPUTE_BIT)});
-		m_shaderProgramLayout.Create(reflection);
-		_CreatePushConstantManager(m_shaderProgramLayout.GetPushConstantRanges());
+		m_pipelineLayout.Create(reflection);
 		_CreateVkPipeline(m_uptrShaderModule->GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT), inCreateInfo->m_vkPipelineCache);
 	}
 	catch (...)
@@ -56,7 +54,6 @@ void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo* inCreate
 
 	CHECK_TRUE(m_vkPipeline != VK_NULL_HANDLE);
 	CHECK_TRUE(GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE);
-	CHECK_TRUE(m_uptrPushConstant != nullptr);
 }
 
 void ComputeShaderProgram::_CreateVkPipeline(
@@ -68,18 +65,6 @@ void ComputeShaderProgram::_CreateVkPipeline(
 	CHECK_TRUE(GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE, "Compute shader program needs a pipeline layout!");
 	pipelineInfo.layout = GetLayout().GetVkPipelineLayout();
 	m_vkPipeline = MyDevice::GetInstance().CreateComputePipeline(pipelineInfo, inPipelineCache);
-}
-
-void ComputeShaderProgram::_CreatePushConstantManager(const std::vector<VkPushConstantRange>& inPushConstantRanges)
-{
-	m_uptrPushConstant = std::make_unique<PushConstantManager>();
-	for (const auto& pushConstantRange : inPushConstantRanges)
-	{
-		m_uptrPushConstant->AddConstantRange(
-			pushConstantRange.stageFlags,
-			pushConstantRange.offset,
-			pushConstantRange.size);
-	}
 }
 
 void ComputeShaderProgram::Destroy()
@@ -95,19 +80,12 @@ void ComputeShaderProgram::Destroy()
 		m_uptrShaderModule->Destroy();
 		m_uptrShaderModule.reset();
 	}
-	m_shaderProgramLayout.Destroy();
-	m_uptrPushConstant.reset();
-}
-
-auto ComputeShaderProgram::GetNameToSetBinding() const
-	-> const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&
-{
-	return m_shaderProgramLayout.GetNameToSetBinding();
+	m_pipelineLayout.Destroy();
 }
 
 auto ComputeShaderProgram::GetLayout() const -> const PipelineLayout&
 {
-	return m_shaderProgramLayout.GetLayout();
+	return m_pipelineLayout;
 }
 
 auto ComputeShaderProgram::GetVkPipeline() const -> VkPipeline

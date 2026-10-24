@@ -1,8 +1,6 @@
 #include "../ray_tracing_shader_program.h"
 #include "buffer.h"
 #include "device.h"
-#include "push_constant_manager.h"
-#include "command_buffer.h"
 #include <algorithm>
 
 void RayTracingShaderGroupSet::Reset()
@@ -34,7 +32,7 @@ void RayTracingShaderProgram::Create(const IRayTracingShaderProgramInitializer* 
 	{
 		pInitializer->InitRayTracingShaderProgram(this);
 		CHECK_TRUE(m_vkPipeline != VK_NULL_HANDLE && GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE &&
-		    m_uptrPushConstant && m_shaderGroupCount != 0, "Incomplete ray tracing program!");
+		    m_shaderGroupCount != 0, "Incomplete ray tracing program!");
 	}
 	catch (...)
 	{
@@ -51,8 +49,7 @@ void RayTracingShaderProgram::Destroy()
 		device.DestroyPipeline(m_vkPipeline);
 		m_vkPipeline = VK_NULL_HANDLE;
 	}
-	m_shaderProgramLayout.Destroy();
-	m_uptrPushConstant.reset();
+	m_pipelineLayout.Destroy();
 	for (auto& module : m_shaderModules)
 		module->Destroy();
 	m_shaderModules.clear();
@@ -68,46 +65,6 @@ auto RayTracingShaderProgram::GetShaderGroupCount() const -> uint32_t
 auto RayTracingShaderProgram::GetVkPipeline() const -> VkPipeline
 {
 	return m_vkPipeline;
-}
-
-void RayTracingShaderProgram::Do(VkCommandBuffer commandBuffer, const PipelineInput& input)
-{
-	CHECK_TRUE(input.pShaderBindingTable, "No shader binding table!");
-	const auto& pSets = input.vkDescriptorSets;
-	const ShaderBindingTable& inShaderBindingTable = *input.pShaderBindingTable;
-	auto raygenRegion = inShaderBindingTable.GetShaderTableRegion(ShaderTableType::RayGeneration);
-	auto missRegion = inShaderBindingTable.GetShaderTableRegion(ShaderTableType::Miss);
-	auto hitRegion = inShaderBindingTable.GetShaderTableRegion(ShaderTableType::Hit);
-	auto callRegion = inShaderBindingTable.GetShaderTableRegion(ShaderTableType::Callable);
-	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_vkPipeline);
-
-	if (pSets.size() > 0)
-	{
-		vkCmdBindDescriptorSets(
-			commandBuffer,
-			VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
-			GetLayout().GetVkPipelineLayout(),
-			0,
-			static_cast<uint32_t>(pSets.size()),
-			pSets.data(),
-			static_cast<uint32_t>(input.optDynamicOffsets.size()),
-			input.optDynamicOffsets.data());
-	}
-
-	for (const auto& _pushConst : input.pushConstants)
-	{
-		m_uptrPushConstant->PushConstant(commandBuffer, GetLayout().GetVkPipelineLayout(), _pushConst.first, _pushConst.second);
-	}
-
-	vkCmdTraceRaysKHR(
-		commandBuffer,
-		&raygenRegion,
-		&missRegion,
-		&hitRegion,
-		&callRegion,
-		input.uWidth,
-		input.uHeight,
-		input.uDepth);
 }
 
 ShaderBindingTable::ShaderBindingTable() = default;
@@ -349,7 +306,7 @@ void RayTracingShaderProgram::Builder::InitRayTracingShaderProgram(RayTracingSha
 	    { return group.type == ShaderTableType::RayGeneration; }),
 	    "Ray tracing pipeline needs a ray generation group!");
 	auto resolved = ShaderDetail::Resolve(m_shaders, pPipeline->m_shaderModules);
-	pPipeline->m_shaderProgramLayout.Create(resolved.reflection);
+	pPipeline->m_pipelineLayout.Create(resolved.reflection);
 	const auto& stages = resolved.stages;
 	std::vector<VkRayTracingShaderGroupCreateInfoKHR> records;
 	for (const auto& group : m_shaderGroups)
@@ -363,20 +320,10 @@ void RayTracingShaderProgram::Builder::InitRayTracingShaderProgram(RayTracingSha
 	device.GetPhysicalDeviceRayTracingProperties(rayTracingProperties);
 	CHECK_TRUE(m_maxRayRecursionDepth > 0 && m_maxRayRecursionDepth <= rayTracingProperties.maxRayRecursionDepth,
 	    "Ray tracing recursion depth exceeds device limits!");
-	VkPhysicalDeviceProperties properties{};
-	vkGetPhysicalDeviceProperties(device.vkPhysicalDevice, &properties);
-
-	std::unique_ptr<PushConstantManager>& uptrToInit = pPipeline->m_uptrPushConstant;
 	VkPipeline& pipelineToInit = pPipeline->m_vkPipeline;
 	uint32_t& countToInit = pPipeline->m_shaderGroupCount;
 
 	countToInit = static_cast<uint32_t>(m_shaderGroups.size());
-	uptrToInit = std::make_unique<PushConstantManager>(properties.limits.maxPushConstantsSize);
-	const auto& ranges = pPipeline->m_shaderProgramLayout.GetPushConstantRanges();
-	for (const auto& pushConstant : ranges)
-	{
-		uptrToInit->AddConstantRange(pushConstant.stageFlags, pushConstant.offset, pushConstant.size);
-	}
 	const VkPipelineLayout layoutToInit = pPipeline->GetLayout().GetVkPipelineLayout();
 
 	pipelineInfo.pNext = nullptr;
@@ -439,13 +386,7 @@ auto RayTracingShaderProgram::Builder::CustomizePipelineCache(VkPipelineCache in
 
 auto RayTracingShaderProgram::GetLayout() const -> const PipelineLayout&
 {
-	return m_shaderProgramLayout.GetLayout();
-}
-
-auto RayTracingShaderProgram::GetNameToSetBinding() const
-    -> const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&
-{
-	return m_shaderProgramLayout.GetNameToSetBinding();
+	return m_pipelineLayout;
 }
 
 void RayTracingShaderProgram::Builder::_ValidateGroupName(std::string_view inName) const

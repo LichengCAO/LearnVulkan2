@@ -1,6 +1,9 @@
 #pragma once
 #include "common.h"
-#include "resource/descriptor_set.h"
+#include "resource/descriptor.h"
+#include <string_view>
+
+class ShaderProgramReflection;
 
 class PipelineLayoutCreateInfo final
 {
@@ -24,10 +27,14 @@ private:
 
 class PipelineLayout final
 {
+	friend struct ShaderBindingTestProbe;
 private:
 	VkPipelineLayout m_vkPipelineLayout = VK_NULL_HANDLE;
 	std::vector<DescriptorSetLayout> m_descriptorSetLayouts;
 	std::vector<VkPushConstantRange> m_pushConstantRanges;
+	std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> m_nameToSetBinding;
+	std::set<std::string> m_ambiguousNames;
+	std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>> m_descriptorBindings;
 
 public:
 	PipelineLayout() = default;
@@ -38,8 +45,11 @@ public:
 	~PipelineLayout();
 
 	void Create(const PipelineLayoutCreateInfo& inCreateInfo);
+	void Create(const ShaderProgramReflection& inReflection);
 	void Destroy();
 	auto GetVkPipelineLayout() const -> VkPipelineLayout { return m_vkPipelineLayout; };
 	auto GetDescriptorSetLayout(uint32_t inSet) const -> const DescriptorSetLayout&;
-	auto GetPushConstantRanges() const -> const std::vector<VkPushConstantRange>& { return m_pushConstantRanges; }
+	auto GetVkPushConstantRanges() const -> const std::vector<VkPushConstantRange>& { return m_pushConstantRanges; }
+	auto GetVkDescriptorBindings() const -> const std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>>& { return m_descriptorBindings; }
+	auto GetSetBinding(std::string_view inName) const -> std::pair<uint32_t, uint32_t>;
 };

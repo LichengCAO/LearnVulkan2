@@ -14,6 +14,7 @@ class DescriptorSetLayout;
 class DescriptorSetLayoutAllocator;
 class DescriptorSetAllocator;
 class DynamicDescriptorSetAllocator;
+class PipelineLayout;
 
 class DescriptorSetLayoutCreateInfo final
 {
@@ -37,6 +38,7 @@ class DescriptorSetLayout final
 	friend class DescriptorSet;
 	friend class DescriptorSetLayoutAllocator;
 	friend class DynamicDescriptorSetAllocator;
+	friend class PipelineLayout;
 
 private:
 	std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding> m_descriptorBindings;
@@ -45,9 +47,9 @@ private:
 public:
 	DescriptorSetLayout() = default;
 	DescriptorSetLayout(const DescriptorSetLayout&) = default;
-	DescriptorSetLayout& operator=(const DescriptorSetLayout&) = default;
+	auto operator=(const DescriptorSetLayout&) -> DescriptorSetLayout& = default;
 	DescriptorSetLayout(DescriptorSetLayout&&) noexcept = default;
-	DescriptorSetLayout& operator=(DescriptorSetLayout&&) noexcept = default;
+	auto operator=(DescriptorSetLayout&&) noexcept -> DescriptorSetLayout& = default;
 	~DescriptorSetLayout();
 
 	void Create(const DescriptorSetLayoutCreateInfo& inCreateInfo);
@@ -106,9 +108,9 @@ public:
 	DescriptorSetDesc() = default;
 	~DescriptorSetDesc() = default;
 	DescriptorSetDesc(const DescriptorSetDesc&) noexcept = default;
-	DescriptorSetDesc& operator=(const DescriptorSetDesc&) noexcept = default;
+	auto operator=(const DescriptorSetDesc&) noexcept -> DescriptorSetDesc& = default;
 	DescriptorSetDesc(DescriptorSetDesc&& inOther) noexcept = default;
-	DescriptorSetDesc& operator=(DescriptorSetDesc&&) noexcept = default;
+	auto operator=(DescriptorSetDesc&&) noexcept -> DescriptorSetDesc& = default;
 
 	void SetBuffer(
 		uint32_t inBinding,
@@ -130,6 +132,37 @@ public:
 	void SetSampler(uint32_t inBinding, const Sampler* inSampler, uint32_t inArrayElement = 0);
 	void SetBufferView(uint32_t inBinding, const BufferView* inBufferView, uint32_t inArrayElement = 0);
 	void SetAccelerationStructure(uint32_t inBinding, const TopLevelAccelStruct* inAccelerationStructure, uint32_t inArrayElement = 0);
+};
+
+// Settings are copied by the typed resource binding commands; referenced resources must survive GPU completion.
+class ShaderResources final
+{
+	friend class CommandBuffer;
+	friend struct ShaderBindingTestProbe;
+
+private:
+	struct Item
+	{
+		std::string name;
+		uint32_t arrayElement = 0;
+		DescriptorSetDesc::DescriptorBindingInfo resource;
+	};
+	std::vector<Item> m_items;
+	void _Set(std::string_view inName, uint32_t inArrayElement, DescriptorSetDesc::DescriptorBindingInfo inResource);
+	auto _Resolve(const PipelineLayout& inLayout) const -> std::vector<DescriptorSetDesc>;
+
+public:
+	void Clear();
+	void SetBuffer(std::string_view inName, const Buffer* inBuffer, VkDeviceSize inOffset = 0,
+	    VkDeviceSize inRange = VK_WHOLE_SIZE, uint32_t inArrayElement = 0);
+	void SetImage(std::string_view inName, const ImageView* inImageView,
+	    VkImageLayout inLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, uint32_t inArrayElement = 0);
+	void SetCombinedImageSampler(std::string_view inName, const ImageView* inImageView, const Sampler* inSampler,
+	    VkImageLayout inLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, uint32_t inArrayElement = 0);
+	void SetSampler(std::string_view inName, const Sampler* inSampler, uint32_t inArrayElement = 0);
+	void SetBufferView(std::string_view inName, const BufferView* inView, uint32_t inArrayElement = 0);
+	void SetAccelerationStructure(
+	    std::string_view inName, const TopLevelAccelStruct* inAccelerationStructure, uint32_t inArrayElement = 0);
 };
 
 class DescriptorSetCreateInfo final

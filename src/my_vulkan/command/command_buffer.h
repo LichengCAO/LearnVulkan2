@@ -44,7 +44,7 @@ private:
 	RayTracingShaderProgram* m_rayTracingProgram = nullptr;
 	struct BindingCommand;
 	void _PrepareCommands(DynamicDescriptorSetAllocator& inAllocator, QueueFamilyType inQueue);
-	auto _BindShaderResources(const ShaderProgramLayout& inLayout, VkPipelineBindPoint inBindPoint,
+	auto _BindShaderResources(const PipelineLayout& inLayout, VkPipelineBindPoint inBindPoint,
 	    const ShaderResources& inResources) -> CommandBuffer&;
 
 private:

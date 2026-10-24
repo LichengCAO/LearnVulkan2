@@ -1,10 +1,8 @@
 #pragma once
 #include "common.h"
-#include "private/shader_program_layout.h"
+#include "pipeline_layout.h"
 #include "private/shader.h"
-#include "shader_resources.h"
-
-class PushConstantManager;
+#include "resource/descriptor.h"
 
 class ComputeShaderProgramCreateInfo final
 {
@@ -24,14 +22,12 @@ class ComputeShaderProgram final
 {
 	friend class CommandBuffer;
 private:
-	std::unique_ptr<PushConstantManager> m_uptrPushConstant;
 	std::unique_ptr<ShaderModule> m_uptrShaderModule;
-	ShaderProgramLayout m_shaderProgramLayout;
+	PipelineLayout m_pipelineLayout;
 	VkPipeline m_vkPipeline = VK_NULL_HANDLE;
 
 private:
 	void _CreateVkPipeline(const VkPipelineShaderStageCreateInfo& inShaderStageInfo, VkPipelineCache inPipelineCache);
-	void _CreatePushConstantManager(const std::vector<VkPushConstantRange>& inPushConstantRanges);
 
 public:
 	ComputeShaderProgram();
@@ -41,8 +37,6 @@ public:
 	
 	void Destroy();
 
-	auto GetNameToSetBinding() const -> const std::unordered_map<std::string, std::pair<uint32_t, uint32_t>>&;
-	
 	auto GetLayout() const -> const PipelineLayout&;
 	
 	auto GetVkPipeline() const -> VkPipeline;

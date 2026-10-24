@@ -24,8 +24,8 @@ BindShaderResources entry is removed.
 
 ~~~cpp
 GraphicsShaderProgramCreateInfo createInfo;
-createInfo.AddVertexShader("scene.spv", "sceneVertex")
-          .AddFragmentShader("scene.spv", "opaqueFragment");
+createInfo.AddVertexShader("scene.spv")
+          .AddFragmentShader("scene.spv");
 createInfo.SetDefaultColorAttachment(0, VK_FORMAT_R8G8B8A8_UNORM);
 createInfo.SetDefaultDepthAttachment(VK_FORMAT_D32_SFLOAT); // Optional.
 GraphicsShaderProgram program;
@@ -152,6 +152,11 @@ commands.BindRayTracingProgram(program).BindRayTracingShaderResource(resources);
 // Use ExternalCommand to push constants and call vkCmdTraceRaysKHR.
 ~~~
 
+Push constant ranges are stored in `PipelineLayout` and checked against the device
+limit when creating a reflected layout. `PushConstantManager` and the combined
+`RayTracingShaderProgram::Do()` / `PipelineInput` API have been removed. Record
+push constant and trace commands explicitly through `ExternalCommand`.
+
 Builder copies paths and group names. Group names are nonempty
 and unique across all table types. All arguments are validated before registration;
 failed additions retain no partial shaders or reserved names. Stage resolution happens
@@ -260,6 +265,26 @@ contents as well as hashes. Changed snapshots receive separate sets, and pools r
 only after frame completion. Explicit/manual descriptor and pipeline paths remain.
 
 ## Reflection and validation
+
+Descriptor layouts, sets, allocation caching and `ShaderResources` are declared in
+`my_vulkan/resource/descriptor.h`. The named-resource and explicit-binding APIs
+remain separate classes within this module.
+`ShaderEntryReflection` and `ShaderReflector` are declared together in
+`my_vulkan/pipeline/private/shader_reflect.h`; third-party reflection headers remain
+confined to its implementation.
+
+`PipelineLayout` holds the Vulkan pipeline layout, descriptor set layouts, push
+constant ranges and resource lookup metadata. Programs create it directly from
+`ShaderProgramReflection`; the `ShaderProgramLayout` wrapper has been removed.
+Manual creation through `PipelineLayoutCreateInfo` remains available and retains
+descriptor metadata without resource names. `Destroy()` clears the handle and all
+layout and lookup data.
+
+Query a resource with `auto [set, binding] = program.GetLayout().GetSetBinding(name)`.
+The result is a `std::pair<uint32_t, uint32_t>` returned by value. Unknown or
+ambiguous names throw; manually created layouts have no resource names. Programs
+do not forward name queries, and `PipelineLayout` does not expose its name map or
+ambiguity set.
 
 ShaderReflector retains descriptors, inputs, outputs and push constants. Inputs and
 outputs are vectors of `ShaderEntryReflection::InterfaceVariable`, each holding a
