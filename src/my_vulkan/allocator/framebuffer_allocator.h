@@ -14,8 +14,8 @@ public:
 	~FramebufferAllocator();
 
 	void Create(VkDevice inDevice);
-	auto AllocateFramebufferWithResult(const VkFramebufferCreateInfo* inCreateInfo) -> std::pair<VkFramebuffer, VkResult>;
-	auto AllocateFramebuffer(const VkFramebufferCreateInfo* inCreateInfo) -> VkFramebuffer;
+	auto AllocateFramebufferWithResult(const VkFramebufferCreateInfo& inCreateInfo) -> std::pair<VkFramebuffer, VkResult>;
+	auto AllocateFramebuffer(const VkFramebufferCreateInfo& inCreateInfo) -> VkFramebuffer;
 	void FreeFramebuffer(VkFramebuffer& inoutFramebuffer);
 	void Destroy();
 };

@@ -114,24 +114,24 @@ public:
 
 	void SetBuffer(
 		uint32_t inBinding,
-		const Buffer* inBuffer,
+		const Buffer& inBuffer,
 		VkDeviceSize inOffset = 0,
 		VkDeviceSize inRange = VK_WHOLE_SIZE,
 		uint32_t inArrayElement = 0);
 	void SetImage(
 		uint32_t inBinding,
-		const ImageView* inImageView,
+		const ImageView& inImageView,
 		VkImageLayout inImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		uint32_t inArrayElement = 0);
 	void SetCombinedImageSampler(
 		uint32_t inBinding,
-		const ImageView* inImageView,
-		const Sampler* inSampler,
+		const ImageView& inImageView,
+		const Sampler& inSampler,
 		VkImageLayout inImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		uint32_t inArrayElement = 0);
-	void SetSampler(uint32_t inBinding, const Sampler* inSampler, uint32_t inArrayElement = 0);
-	void SetBufferView(uint32_t inBinding, const BufferView* inBufferView, uint32_t inArrayElement = 0);
-	void SetAccelerationStructure(uint32_t inBinding, const TopLevelAccelStruct* inAccelerationStructure, uint32_t inArrayElement = 0);
+	void SetSampler(uint32_t inBinding, const Sampler& inSampler, uint32_t inArrayElement = 0);
+	void SetBufferView(uint32_t inBinding, const BufferView& inBufferView, uint32_t inArrayElement = 0);
+	void SetAccelerationStructure(uint32_t inBinding, const TopLevelAccelStruct& inAccelerationStructure, uint32_t inArrayElement = 0);
 };
 
 // Settings are copied by the typed resource binding commands; referenced resources must survive GPU completion.
@@ -153,16 +153,16 @@ private:
 
 public:
 	void Clear();
-	void SetBuffer(std::string_view inName, const Buffer* inBuffer, VkDeviceSize inOffset = 0,
+	void SetBuffer(std::string_view inName, const Buffer& inBuffer, VkDeviceSize inOffset = 0,
 	    VkDeviceSize inRange = VK_WHOLE_SIZE, uint32_t inArrayElement = 0);
-	void SetImage(std::string_view inName, const ImageView* inImageView,
+	void SetImage(std::string_view inName, const ImageView& inImageView,
 	    VkImageLayout inLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, uint32_t inArrayElement = 0);
-	void SetCombinedImageSampler(std::string_view inName, const ImageView* inImageView, const Sampler* inSampler,
+	void SetCombinedImageSampler(std::string_view inName, const ImageView& inImageView, const Sampler& inSampler,
 	    VkImageLayout inLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, uint32_t inArrayElement = 0);
-	void SetSampler(std::string_view inName, const Sampler* inSampler, uint32_t inArrayElement = 0);
-	void SetBufferView(std::string_view inName, const BufferView* inView, uint32_t inArrayElement = 0);
+	void SetSampler(std::string_view inName, const Sampler& inSampler, uint32_t inArrayElement = 0);
+	void SetBufferView(std::string_view inName, const BufferView& inView, uint32_t inArrayElement = 0);
 	void SetAccelerationStructure(
-	    std::string_view inName, const TopLevelAccelStruct* inAccelerationStructure, uint32_t inArrayElement = 0);
+	    std::string_view inName, const TopLevelAccelStruct& inAccelerationStructure, uint32_t inArrayElement = 0);
 };
 
 class DescriptorSetCreateInfo final

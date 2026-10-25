@@ -91,12 +91,11 @@ void FramebufferAllocator::Create(VkDevice inDevice)
 	m_vkDevice = inDevice;
 }
 
-auto FramebufferAllocator::AllocateFramebufferWithResult(const VkFramebufferCreateInfo* inCreateInfo) -> std::pair<VkFramebuffer, VkResult>
+auto FramebufferAllocator::AllocateFramebufferWithResult(const VkFramebufferCreateInfo& inCreateInfo) -> std::pair<VkFramebuffer, VkResult>
 {
 	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Framebuffer allocator is not created!");
-	CHECK_TRUE(inCreateInfo != nullptr, "Missing framebuffer create info!");
 
-	const uint64_t hash = HashFramebufferCreateInfo(*inCreateInfo);
+	const uint64_t hash = HashFramebufferCreateInfo(inCreateInfo);
 	const auto iter = m_mapHashToVkFramebuffer.find(hash);
 	if (iter != m_mapHashToVkFramebuffer.end())
 	{
@@ -104,7 +103,7 @@ auto FramebufferAllocator::AllocateFramebufferWithResult(const VkFramebufferCrea
 	}
 
 	VkFramebuffer framebuffer = VK_NULL_HANDLE;
-	const VkResult result = vkCreateFramebuffer(m_vkDevice, inCreateInfo, nullptr, &framebuffer);
+	const VkResult result = vkCreateFramebuffer(m_vkDevice, &inCreateInfo, nullptr, &framebuffer);
 	if (result != VK_SUCCESS)
 	{
 		return { VK_NULL_HANDLE, result };
@@ -114,7 +113,7 @@ auto FramebufferAllocator::AllocateFramebufferWithResult(const VkFramebufferCrea
 	return { framebuffer, VK_SUCCESS };
 }
 
-auto FramebufferAllocator::AllocateFramebuffer(const VkFramebufferCreateInfo* inCreateInfo) -> VkFramebuffer
+auto FramebufferAllocator::AllocateFramebuffer(const VkFramebufferCreateInfo& inCreateInfo) -> VkFramebuffer
 {
 	auto [framebuffer, result] = AllocateFramebufferWithResult(inCreateInfo);
 	VK_CHECK(result, "Failed to allocate framebuffer!");

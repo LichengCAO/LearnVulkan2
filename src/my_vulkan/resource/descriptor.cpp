@@ -266,49 +266,49 @@ void DescriptorSetDesc::_SetBinding(
 
 void DescriptorSetDesc::SetBuffer(
 	uint32_t inBinding,
-	const Buffer* inBuffer,
+	const Buffer& inBuffer,
 	VkDeviceSize inOffset,
 	VkDeviceSize inRange,
 	uint32_t inArrayElement)
 {
-	_SetBinding(inBinding, BufferBinding{ inBuffer, inOffset, inRange }, inArrayElement);
+	_SetBinding(inBinding, BufferBinding{ &inBuffer, inOffset, inRange }, inArrayElement);
 }
 
 void DescriptorSetDesc::SetImage(
 	uint32_t inBinding,
-	const ImageView* inImageView,
+	const ImageView& inImageView,
 	VkImageLayout inImageLayout,
 	uint32_t inArrayElement)
 {
-	_SetBinding(inBinding, ImageBinding{ inImageView, nullptr, inImageLayout }, inArrayElement);
+	_SetBinding(inBinding, ImageBinding{ &inImageView, nullptr, inImageLayout }, inArrayElement);
 }
 
 void DescriptorSetDesc::SetCombinedImageSampler(
 	uint32_t inBinding,
-	const ImageView* inImageView,
-	const Sampler* inSampler,
+	const ImageView& inImageView,
+	const Sampler& inSampler,
 	VkImageLayout inImageLayout,
 	uint32_t inArrayElement)
 {
-	_SetBinding(inBinding, ImageBinding{ inImageView, inSampler, inImageLayout }, inArrayElement);
+	_SetBinding(inBinding, ImageBinding{ &inImageView, &inSampler, inImageLayout }, inArrayElement);
 }
 
-void DescriptorSetDesc::SetSampler(uint32_t inBinding, const Sampler* inSampler, uint32_t inArrayElement)
+void DescriptorSetDesc::SetSampler(uint32_t inBinding, const Sampler& inSampler, uint32_t inArrayElement)
 {
-	_SetBinding(inBinding, inSampler, inArrayElement);
+	_SetBinding(inBinding, &inSampler, inArrayElement);
 }
 
-void DescriptorSetDesc::SetBufferView(uint32_t inBinding, const BufferView* inBufferView, uint32_t inArrayElement)
+void DescriptorSetDesc::SetBufferView(uint32_t inBinding, const BufferView& inBufferView, uint32_t inArrayElement)
 {
-	_SetBinding(inBinding, inBufferView, inArrayElement);
+	_SetBinding(inBinding, &inBufferView, inArrayElement);
 }
 
 void DescriptorSetDesc::SetAccelerationStructure(
 	uint32_t inBinding,
-	const TopLevelAccelStruct* inAccelerationStructure,
+	const TopLevelAccelStruct& inAccelerationStructure,
 	uint32_t inArrayElement)
 {
-	_SetBinding(inBinding, inAccelerationStructure, inArrayElement);
+	_SetBinding(inBinding, &inAccelerationStructure, inArrayElement);
 }
 
 DescriptorSet::~DescriptorSet()
@@ -540,32 +540,31 @@ void ShaderResources::Clear()
 	m_items.clear();
 }
 void ShaderResources::SetBuffer(
-    std::string_view name, const Buffer* buffer, VkDeviceSize offset, VkDeviceSize range, uint32_t element)
+    std::string_view name, const Buffer& buffer, VkDeviceSize offset, VkDeviceSize range, uint32_t element)
 {
-	_Set(name, element, DescriptorSetDesc::BufferBinding{buffer, offset, range});
+	_Set(name, element, DescriptorSetDesc::BufferBinding{&buffer, offset, range});
 }
-void ShaderResources::SetImage(std::string_view name, const ImageView* image, VkImageLayout layout, uint32_t element)
+void ShaderResources::SetImage(std::string_view name, const ImageView& image, VkImageLayout layout, uint32_t element)
 {
-	_Set(name, element, DescriptorSetDesc::ImageBinding{image, nullptr, layout});
+	_Set(name, element, DescriptorSetDesc::ImageBinding{&image, nullptr, layout});
 }
 void ShaderResources::SetCombinedImageSampler(
-    std::string_view name, const ImageView* image, const Sampler* sampler, VkImageLayout layout, uint32_t element)
+    std::string_view name, const ImageView& image, const Sampler& sampler, VkImageLayout layout, uint32_t element)
 {
-	CHECK_TRUE(sampler != nullptr, "Combined image sampler requires a sampler!");
-	_Set(name, element, DescriptorSetDesc::ImageBinding{image, sampler, layout});
+	_Set(name, element, DescriptorSetDesc::ImageBinding{&image, &sampler, layout});
 }
-void ShaderResources::SetSampler(std::string_view name, const Sampler* sampler, uint32_t element)
+void ShaderResources::SetSampler(std::string_view name, const Sampler& sampler, uint32_t element)
 {
-	_Set(name, element, sampler);
+	_Set(name, element, &sampler);
 }
-void ShaderResources::SetBufferView(std::string_view name, const BufferView* view, uint32_t element)
+void ShaderResources::SetBufferView(std::string_view name, const BufferView& view, uint32_t element)
 {
-	_Set(name, element, view);
+	_Set(name, element, &view);
 }
 void ShaderResources::SetAccelerationStructure(
-    std::string_view name, const TopLevelAccelStruct* acceleration, uint32_t element)
+    std::string_view name, const TopLevelAccelStruct& acceleration, uint32_t element)
 {
-	_Set(name, element, acceleration);
+	_Set(name, element, &acceleration);
 }
 
 auto ShaderResources::_Resolve(const PipelineLayout& layout) const -> std::vector<DescriptorSetDesc>

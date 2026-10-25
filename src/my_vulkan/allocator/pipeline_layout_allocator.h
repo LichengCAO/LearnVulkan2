@@ -23,8 +23,8 @@ public:
 	~PipelineLayoutAllocator();
 
 	void Create(VkDevice inDevice);
-	auto AllocatePipelineLayoutWithResult(const VkPipelineLayoutCreateInfo* inCreateInfo) -> std::pair<VkPipelineLayout, VkResult>;
-	auto AllocatePipelineLayout(const VkPipelineLayoutCreateInfo* inCreateInfo) -> VkPipelineLayout;
+	auto AllocatePipelineLayoutWithResult(const VkPipelineLayoutCreateInfo& inCreateInfo) -> std::pair<VkPipelineLayout, VkResult>;
+	auto AllocatePipelineLayout(const VkPipelineLayoutCreateInfo& inCreateInfo) -> VkPipelineLayout;
 	void FreePipelineLayout(VkPipelineLayout& inoutPipelineLayout);
 	void Destroy();
 };

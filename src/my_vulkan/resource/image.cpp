@@ -12,28 +12,26 @@ Image::~Image()
 	Destroy();
 }
 
-void Image::Create(const ImageCreateInfo* inCreateInfo)
+void Image::Create(const ImageCreateInfo& inCreateInfo)
 {
-	CHECK_TRUE(inCreateInfo != nullptr, "No image create info!");
-
 	VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	auto& device = MyDevice::GetInstance();
 	auto& infoToFill = m_imageInformation;
 	const auto swapchainSize = device.GetSwapchainExtent();
 
-	imageInfo.imageType = inCreateInfo->m_type;
-	imageInfo.arrayLayers = inCreateInfo->m_optArrayLayers.value_or(1);
+	imageInfo.imageType = inCreateInfo.m_type;
+	imageInfo.arrayLayers = inCreateInfo.m_optArrayLayers.value_or(1);
 	imageInfo.flags = 0;
-	imageInfo.extent.width = inCreateInfo->m_optWidth.value_or(swapchainSize.width);
-	imageInfo.extent.height = inCreateInfo->m_optHeight.value_or(swapchainSize.height);
-	imageInfo.extent.depth = inCreateInfo->m_optDepth.value_or(1);
-	imageInfo.format = inCreateInfo->m_optFormat.value_or(VK_FORMAT_R32G32B32A32_SFLOAT);
+	imageInfo.extent.width = inCreateInfo.m_optWidth.value_or(swapchainSize.width);
+	imageInfo.extent.height = inCreateInfo.m_optHeight.value_or(swapchainSize.height);
+	imageInfo.extent.depth = inCreateInfo.m_optDepth.value_or(1);
+	imageInfo.format = inCreateInfo.m_optFormat.value_or(VK_FORMAT_R32G32B32A32_SFLOAT);
 	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	imageInfo.mipLevels = inCreateInfo->m_optMipLevels.value_or(1);
-	imageInfo.samples = inCreateInfo->m_optSampleCount.value_or(VK_SAMPLE_COUNT_1_BIT);
-	imageInfo.usage = inCreateInfo->m_usage;
+	imageInfo.mipLevels = inCreateInfo.m_optMipLevels.value_or(1);
+	imageInfo.samples = inCreateInfo.m_optSampleCount.value_or(VK_SAMPLE_COUNT_1_BIT);
+	imageInfo.usage = inCreateInfo.m_usage;
 	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	imageInfo.tiling = inCreateInfo->m_optTiling.value_or(VK_IMAGE_TILING_OPTIMAL);
+	imageInfo.tiling = inCreateInfo.m_optTiling.value_or(VK_IMAGE_TILING_OPTIMAL);
 
 	infoToFill.imageType = imageInfo.imageType;
 	infoToFill.width = imageInfo.extent.width;
@@ -46,22 +44,20 @@ void Image::Create(const ImageCreateInfo* inCreateInfo)
 	infoToFill.usage = imageInfo.usage;
 	infoToFill.samples = imageInfo.samples;
 	infoToFill.isSwapchainImage = false;
-	infoToFill.memoryProperty = inCreateInfo->m_optMemoryProperty.value_or(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	infoToFill.memoryProperty = inCreateInfo.m_optMemoryProperty.value_or(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 	m_vkImage = device.CreateImage(imageInfo);
 	_AllocateMemory();
 }
 
-void Image::Create(const SwapchainImageCreateInfo* inCreateInfo)
+void Image::Create(const SwapchainImageCreateInfo& inCreateInfo)
 {
-	CHECK_TRUE(inCreateInfo != nullptr, "No swapchain image create info!");
-
 	auto& infoToFill = m_imageInformation;
 	auto& device = MyDevice::GetInstance();
 	const auto size2D = device.GetSwapchainExtent();
 
 	infoToFill.arrayLayers = 1;
 	infoToFill.depth = 1;
-	infoToFill.format = inCreateInfo->m_format;
+	infoToFill.format = inCreateInfo.m_format;
 	infoToFill.height = size2D.height;
 	infoToFill.imageType = VK_IMAGE_TYPE_2D;
 	infoToFill.isSwapchainImage = true;
@@ -69,10 +65,10 @@ void Image::Create(const SwapchainImageCreateInfo* inCreateInfo)
 	infoToFill.mipLevels = 1;
 	infoToFill.samples = VK_SAMPLE_COUNT_1_BIT;
 	infoToFill.tiling = VK_IMAGE_TILING_LINEAR;
-	infoToFill.usage = inCreateInfo->m_usage;
+	infoToFill.usage = inCreateInfo.m_usage;
 	infoToFill.width = size2D.width;
 
-	m_vkImage = inCreateInfo->m_vkHandle;
+	m_vkImage = inCreateInfo.m_vkHandle;
 }
 
 void Image::Destroy()
@@ -235,7 +231,7 @@ void Image::_DestroyViews()
 	{
 		if (uptrView != nullptr)
 		{
-			uptrView->Destroy();
+			uptrView->_Destroy();
 		}
 	}
 	m_uptrImageViews.clear();
@@ -256,7 +252,7 @@ const ImageView* Image::View(const ImageViewInfo& inCreateInfo)
 	}
 
 	auto uptrView = std::make_unique<ImageView>();
-	uptrView->Create(this, &inCreateInfo);
+	uptrView->_Create(*this, inCreateInfo);
 	ImageView* result = uptrView.get();
 	m_uptrImageViews.push_back(std::move(uptrView));
 
@@ -290,40 +286,38 @@ VkImageAspectFlags _GetDefaultAspectMask(VkFormat format)
 }
 }
 
-void ImageView::Create(const Image* inImage, const ImageViewInfo* inCreateInfo)
+void ImageView::_Create(const Image& inImage, const ImageViewInfo& inCreateInfo)
 {
-	CHECK_TRUE(inCreateInfo != nullptr, "No image view create info!");
-	CHECK_TRUE(inImage != nullptr, "No image!");
 	CHECK_TRUE(m_vkImageView == VK_NULL_HANDLE, "Image view already created!");
 
 	auto& infoToFill = m_viewInformation;
 	auto& device = MyDevice::GetInstance();
 	VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-	const auto& imageInfo = inImage->GetImageInformation();
-	CHECK_TRUE(inCreateInfo->m_baseMipLevel < imageInfo.mipLevels, "Base mip level out of range!");
-	CHECK_TRUE(inCreateInfo->m_baseArrayLayer < imageInfo.arrayLayers, "Base array layer out of range!");
-	const uint32_t resolvedLevelCount = (inCreateInfo->m_levelCount == VK_REMAINING_MIP_LEVELS)
-		? (imageInfo.mipLevels - inCreateInfo->m_baseMipLevel)
-		: inCreateInfo->m_levelCount;
-	const uint32_t resolvedLayerCount = (inCreateInfo->m_layerCount == VK_REMAINING_ARRAY_LAYERS)
-		? (imageInfo.arrayLayers - inCreateInfo->m_baseArrayLayer)
-		: inCreateInfo->m_layerCount;
+	const auto& imageInfo = inImage.GetImageInformation();
+	CHECK_TRUE(inCreateInfo.m_baseMipLevel < imageInfo.mipLevels, "Base mip level out of range!");
+	CHECK_TRUE(inCreateInfo.m_baseArrayLayer < imageInfo.arrayLayers, "Base array layer out of range!");
+	const uint32_t resolvedLevelCount = (inCreateInfo.m_levelCount == VK_REMAINING_MIP_LEVELS)
+		? (imageInfo.mipLevels - inCreateInfo.m_baseMipLevel)
+		: inCreateInfo.m_levelCount;
+	const uint32_t resolvedLayerCount = (inCreateInfo.m_layerCount == VK_REMAINING_ARRAY_LAYERS)
+		? (imageInfo.arrayLayers - inCreateInfo.m_baseArrayLayer)
+		: inCreateInfo.m_layerCount;
 	const VkImageAspectFlags aspectMask = _GetDefaultAspectMask(imageInfo.format);
 	CHECK_TRUE(resolvedLevelCount > 0, "Image view level count must be greater than 0!");
 	CHECK_TRUE(resolvedLayerCount > 0, "Image view layer count must be greater than 0!");
-	CHECK_TRUE((inCreateInfo->m_baseMipLevel + resolvedLevelCount) <= imageInfo.mipLevels, "Mip range out of range!");
-	CHECK_TRUE((inCreateInfo->m_baseArrayLayer + resolvedLayerCount) <= imageInfo.arrayLayers, "Array layer range out of range!");
+	CHECK_TRUE((inCreateInfo.m_baseMipLevel + resolvedLevelCount) <= imageInfo.mipLevels, "Mip range out of range!");
+	CHECK_TRUE((inCreateInfo.m_baseArrayLayer + resolvedLayerCount) <= imageInfo.arrayLayers, "Array layer range out of range!");
 
 	infoToFill.width = imageInfo.width;
 	infoToFill.height = imageInfo.height;
 	infoToFill.depth = imageInfo.depth;
-	infoToFill.baseMipLevel = inCreateInfo->m_baseMipLevel;
+	infoToFill.baseMipLevel = inCreateInfo.m_baseMipLevel;
 	infoToFill.levelCount = resolvedLevelCount;
-	infoToFill.baseArrayLayer = inCreateInfo->m_baseArrayLayer;
+	infoToFill.baseArrayLayer = inCreateInfo.m_baseArrayLayer;
 	infoToFill.layerCount = resolvedLayerCount;
 	infoToFill.format = imageInfo.format;
 	infoToFill.aspectMask = aspectMask;
-	infoToFill.vkImage = inImage->GetVkImage();
+	infoToFill.vkImage = inImage.GetVkImage();
 
 	switch (imageInfo.imageType)
 	{
@@ -364,7 +358,7 @@ void ImageView::Create(const Image* inImage, const ImageViewInfo* inCreateInfo)
 	m_vkImageView = device.CreateImageView(viewInfo);
 }
 
-void ImageView::Destroy()
+void ImageView::_Destroy()
 {
 	if (m_vkImageView != VK_NULL_HANDLE)
 	{

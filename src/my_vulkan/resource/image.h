@@ -132,9 +132,9 @@ private:
 	VkImageView m_vkImageView = VK_NULL_HANDLE;
 
 private:
-	void Create(const Image* inImage, const ImageViewInfo* inCreateInfo);
+	void _Create(const Image& inImage, const ImageViewInfo& inCreateInfo);
 
-	void Destroy();
+	void _Destroy();
 
 public:
 	~ImageView();
@@ -186,9 +186,9 @@ private:
 public:
 	virtual ~Image();
 
-	void Create(const ImageCreateInfo* inCreateInfo);
+	void Create(const ImageCreateInfo& inCreateInfo);
 
-	void Create(const SwapchainImageCreateInfo* inCreateInfo);
+	void Create(const SwapchainImageCreateInfo& inCreateInfo);
 
 	void Destroy();
 

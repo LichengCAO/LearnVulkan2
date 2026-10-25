@@ -22,7 +22,7 @@ public:
 		QueueDependency& inDependency,
 		VkPipelineStageFlags2 inWaitStage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)->SubmissionSyncInfo&;
 	auto AddSignalQueueDependency(QueueDependency& inDependency)->SubmissionSyncInfo&;
-	auto WaitSwapchainImage(const SwapchainImage* inImage)->SubmissionSyncInfo&;
+	auto WaitSwapchainImage(const SwapchainImage& inImage)->SubmissionSyncInfo&;
 	auto SetFence(HostFence& inFence)->SubmissionSyncInfo&;
 };
 
@@ -54,7 +54,7 @@ public:
 
 	void StartFrame();
 	auto GetNextAvailableSwapchainImage() -> SwapchainImage*;
-	void PresentSwapchainImage(const SwapchainImage* inImage, std::span<QueueDependency* const> inWaits);
+	void PresentSwapchainImage(const SwapchainImage& inImage, std::span<QueueDependency* const> inWaits);
 
 	void EndFrame();
 

@@ -79,18 +79,17 @@ auto CommandPool::_FreeTrackedCommandBuffers()->void
 	freeQueue(m_unusedSecondaryCommandBuffers);
 }
 
-auto CommandPool::Create(const CommandPoolCreateInfo* inCreateInfo)->void
+auto CommandPool::Create(const CommandPoolCreateInfo& inCreateInfo)->void
 {
-	CHECK_TRUE(inCreateInfo != nullptr, "No command pool create info!");
 	CHECK_TRUE(m_vkCommandPool == VK_NULL_HANDLE, "Command pool already created!");
 
 	auto& device = MyDevice::GetInstance();
-	m_queueFamilyIndex = device.GetQueueFamilyIndexOfType(inCreateInfo->m_queueFamilyType);
+	m_queueFamilyIndex = device.GetQueueFamilyIndexOfType(inCreateInfo.m_queueFamilyType);
 	CHECK_TRUE(m_queueFamilyIndex != VK_QUEUE_FAMILY_IGNORED, "Invalid command pool queue family index!");
 
 	VkCommandPoolCreateInfo createInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-	createInfo.pNext = inCreateInfo->m_next;
-	createInfo.flags = inCreateInfo->m_createFlags;
+	createInfo.pNext = inCreateInfo.m_next;
+	createInfo.flags = inCreateInfo.m_createFlags;
 	createInfo.queueFamilyIndex = m_queueFamilyIndex;
 
 	m_vkCommandPool = device.CreateCommandPool(createInfo);

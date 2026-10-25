@@ -42,7 +42,7 @@ public:
 	CommandPool& operator=(const CommandPool&) = delete;
 	~CommandPool();
 
-	auto Create(const CommandPoolCreateInfo* inCreateInfo)->void;
+	auto Create(const CommandPoolCreateInfo& inCreateInfo)->void;
 	auto Destroy()->void;
 
 	auto Reset(VkCommandPoolResetFlags inFlags = 0)->void;

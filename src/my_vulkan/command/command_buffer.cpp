@@ -2,10 +2,9 @@
 #include "command_buffer.h"
 #include "device.h"
 
-auto CommandBuffer::_AppendCommand(const Command* inCommand)->void
+auto CommandBuffer::_AppendCommand(const Command& inCommand)->void
 {
-	CHECK_TRUE(inCommand != nullptr, "No command to append!");
-	m_commands.push_back(inCommand);
+	m_commands.push_back(&inCommand);
 }
 
 auto CommandBuffer::_AppendOwnedCommand(std::unique_ptr<Command> inCommand)->void
@@ -13,7 +12,7 @@ auto CommandBuffer::_AppendOwnedCommand(std::unique_ptr<Command> inCommand)->voi
 	CHECK_TRUE(inCommand != nullptr, "No command to append!");
 	const Command* command = inCommand.get();
 	m_ownedCommands.push_back(std::move(inCommand));
-	_AppendCommand(command);
+	_AppendCommand(*command);
 }
 
 auto CommandBuffer::_Append(CommandBuffer&& inCommandBuffer)->CommandBuffer&
@@ -128,7 +127,7 @@ auto CommandBuffer::AddCommands(const Command* const* inCommands, size_t inCount
 	}
 	for (size_t commandIndex = 0; commandIndex < inCount; ++commandIndex)
 	{
-		_AppendCommand(inCommands[commandIndex]);
+		_AppendCommand(*inCommands[commandIndex]);
 	}
 	return *this;
 }

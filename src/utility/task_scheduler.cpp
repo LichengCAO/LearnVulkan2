@@ -5,9 +5,9 @@
 namespace
 {
 	template<typename T>
-	T* _UnpackImpl(T* inPtr)
+	auto _UnpackImpl(T& inObject) -> T&
 	{
-		T* piUnpacked{ inPtr };
+		T* piUnpacked{ &inObject };
 		IImplement* piImpl{ dynamic_cast<IImplement*>(piUnpacked) };
 
 		// see if this has implement behind?
@@ -17,13 +17,13 @@ namespace
 			piImpl = dynamic_cast<IImplement*>(piUnpacked);
 		}
 
-		return piUnpacked;
+		return *piUnpacked;
 	}
 
 	template<typename T>
-	const T* _UnpackImpl(const T* inPtr)
+	auto _UnpackImpl(const T& inObject) -> const T&
 	{
-		const T* piUnpacked{ inPtr };
+		const T* piUnpacked{ &inObject };
 		const IImplement* piImpl{ dynamic_cast<const IImplement*>(piUnpacked) };
 
 		// see if this has implement behind?
@@ -33,7 +33,7 @@ namespace
 			piImpl = dynamic_cast<const IImplement*>(piUnpacked);
 		}
 
-		return piUnpacked;
+		return *piUnpacked;
 	}
 }
 
@@ -48,7 +48,7 @@ private:
 public:
 	MySinglThreadTaskImpl(std::function<void()> inFunction, uint32_t inThreadId = 0) 
 		: enki::IPinnedTask(inThreadId), m_function(inFunction){};
-	virtual void DependOn(IWaitable* pPrecondition) override;
+	virtual void DependOn(IWaitable& inPrecondition) override;
 	virtual void Execute() override;
 };
 
@@ -61,7 +61,7 @@ private:
 public:
 	MyMultiThreadTaskImpl(std::function<void(uint32_t, uint32_t, uint32_t)> inFunction, uint32_t inSubTaskCount = 1) 
 		: enki::ITaskSet(inSubTaskCount), m_function(inFunction) {};
-	virtual void DependOn(IWaitable* pPrecondition) override;
+	virtual void DependOn(IWaitable& inPrecondition) override;
 	virtual void ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint32_t inThreadIndex) override;
 	virtual void ExecuteRange(enki::TaskSetPartition inRange, uint32_t inThreadnum) override;
 };
@@ -69,15 +69,15 @@ public:
 class MyTaskSchedulerImpl final : public ITaskScheduler, public enki::TaskScheduler
 {
 public:
-	virtual void AddSingleThreadTask(ISingleThreadTask* pSingleThreadTask) override;
-	virtual void AddMutiThreadTask(IMultiThreadTask* pMultiThreadTask) override;
-	virtual void WaitForTask(const IWaitable* pToWait) override;
+	virtual void AddSingleThreadTask(ISingleThreadTask& inSingleThreadTask) override;
+	virtual void AddMutiThreadTask(IMultiThreadTask& inMultiThreadTask) override;
+	virtual void WaitForTask(const IWaitable& inToWait) override;
 	virtual void WaitForAll() override;
 };
 
-void MySinglThreadTaskImpl::DependOn(IWaitable* pPrecondition)
+void MySinglThreadTaskImpl::DependOn(IWaitable& inPrecondition)
 {
-	enki::ICompletable* pCompletable = dynamic_cast<enki::ICompletable*>(pPrecondition);
+	enki::ICompletable* pCompletable = dynamic_cast<enki::ICompletable*>(&inPrecondition);
 	CHECK_TRUE(pCompletable != nullptr);
 	m_dependencies.push_back({});
 	this->SetDependency(m_dependencies.back(), pCompletable);
@@ -88,9 +88,9 @@ void MySinglThreadTaskImpl::Execute()
 	m_function();
 }
 
-void MyMultiThreadTaskImpl::DependOn(IWaitable* pPrecondition)
+void MyMultiThreadTaskImpl::DependOn(IWaitable& inPrecondition)
 {
-	IImplement* pImpl = dynamic_cast<IImplement*>(pPrecondition);
+	IImplement* pImpl = dynamic_cast<IImplement*>(&inPrecondition);
 	CHECK_TRUE(pImpl != nullptr);
 	enki::ICompletable* pCompletable = static_cast<enki::ICompletable*>(pImpl->GetRealImplement());
 	CHECK_TRUE(pCompletable != nullptr);
@@ -108,23 +108,23 @@ void MyMultiThreadTaskImpl::ExecuteRange(enki::TaskSetPartition inRange, uint32_
 	ExecuteSubTask(inRange.start, inRange.end, inThreadnum);
 }
 
-void MyTaskSchedulerImpl::AddSingleThreadTask(ISingleThreadTask* pSingleThreadTask)
+void MyTaskSchedulerImpl::AddSingleThreadTask(ISingleThreadTask& inSingleThreadTask)
 {
-	enki::IPinnedTask* piPinned = dynamic_cast<enki::IPinnedTask*>(pSingleThreadTask);
+	enki::IPinnedTask* piPinned = dynamic_cast<enki::IPinnedTask*>(&inSingleThreadTask);
 	CHECK_TRUE(piPinned != nullptr);
 	this->AddPinnedTask(piPinned);
 }
 
-void MyTaskSchedulerImpl::AddMutiThreadTask(IMultiThreadTask* pMultiThreadTask)
+void MyTaskSchedulerImpl::AddMutiThreadTask(IMultiThreadTask& inMultiThreadTask)
 {
-	enki::ITaskSet* piTaskSet = dynamic_cast<enki::ITaskSet*>(pMultiThreadTask);
+	enki::ITaskSet* piTaskSet = dynamic_cast<enki::ITaskSet*>(&inMultiThreadTask);
 	CHECK_TRUE(piTaskSet != nullptr);
 	this->AddTaskSetToPipe(piTaskSet);
 }
 
-void MyTaskSchedulerImpl::WaitForTask(const IWaitable* pToWait)
+void MyTaskSchedulerImpl::WaitForTask(const IWaitable& inToWait)
 {
-	const enki::ICompletable* piComplete = dynamic_cast<const enki::ICompletable*>(pToWait);
+	const enki::ICompletable* piComplete = dynamic_cast<const enki::ICompletable*>(&inToWait);
 	CHECK_TRUE(piComplete != nullptr);
 	this->enki::TaskScheduler::WaitforTask(piComplete);
 }
@@ -139,9 +139,9 @@ MySinglThreadTask::MySinglThreadTask(std::function<void()> inFunction, uint32_t 
 {
 }
 
-void MySinglThreadTask::DependOn(IWaitable* pPrecondition)
+void MySinglThreadTask::DependOn(IWaitable& inPrecondition)
 {
-	m_uptrImpl->DependOn(_UnpackImpl(pPrecondition));
+	m_uptrImpl->DependOn(_UnpackImpl(inPrecondition));
 }
 
 void MySinglThreadTask::Execute()
@@ -149,12 +149,12 @@ void MySinglThreadTask::Execute()
 	m_uptrImpl->Execute();
 }
 
-void* MySinglThreadTask::GetRealImplement()
+auto MySinglThreadTask::GetRealImplement() -> void*
 {
 	return m_uptrImpl.get();
 }
 
-const void* MySinglThreadTask::GetRealImplement() const
+auto MySinglThreadTask::GetRealImplement() const -> const void*
 {
 	return m_uptrImpl.get();
 }
@@ -164,9 +164,9 @@ MyMultiThreadTask::MyMultiThreadTask(std::function<void(uint32_t, uint32_t, uint
 {
 }
 
-void MyMultiThreadTask::DependOn(IWaitable* pPrecondition)
+void MyMultiThreadTask::DependOn(IWaitable& inPrecondition)
 {
-	m_uptrImpl->DependOn(_UnpackImpl(pPrecondition));
+	m_uptrImpl->DependOn(_UnpackImpl(inPrecondition));
 }
 
 void MyMultiThreadTask::ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint32_t inThreadIndex)
@@ -174,12 +174,12 @@ void MyMultiThreadTask::ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint3
 	m_uptrImpl->ExecuteSubTask(SubStart, SubEnd, inThreadIndex);
 }
 
-void* MyMultiThreadTask::GetRealImplement()
+auto MyMultiThreadTask::GetRealImplement() -> void*
 {
 	return m_uptrImpl.get();
 }
 
-const void* MyMultiThreadTask::GetRealImplement() const
+auto MyMultiThreadTask::GetRealImplement() const -> const void*
 {
 	return m_uptrImpl.get();
 }
@@ -189,7 +189,7 @@ MyTaskScheduler::MyTaskScheduler()
 {
 }
 
-MyTaskScheduler& MyTaskScheduler::GetInstance()
+auto MyTaskScheduler::GetInstance() -> MyTaskScheduler&
 {
 	if (g_uptrInstance == nullptr)
 	{
@@ -206,19 +206,19 @@ void MyTaskScheduler::Create()
 	piImpl->Initialize(THREAD_COUNT);
 }
 
-void MyTaskScheduler::AddSingleThreadTask(ISingleThreadTask* pSingleThreadTask)
+void MyTaskScheduler::AddSingleThreadTask(ISingleThreadTask& inSingleThreadTask)
 {
-	m_uptrImpl->AddSingleThreadTask(_UnpackImpl(pSingleThreadTask));
+	m_uptrImpl->AddSingleThreadTask(_UnpackImpl(inSingleThreadTask));
 }
 
-void MyTaskScheduler::AddMutiThreadTask(IMultiThreadTask* pMultiThreadTask)
+void MyTaskScheduler::AddMutiThreadTask(IMultiThreadTask& inMultiThreadTask)
 {
-	m_uptrImpl->AddMutiThreadTask(_UnpackImpl(pMultiThreadTask));
+	m_uptrImpl->AddMutiThreadTask(_UnpackImpl(inMultiThreadTask));
 }
 
-void MyTaskScheduler::WaitForTask(const IWaitable* pToWait)
+void MyTaskScheduler::WaitForTask(const IWaitable& inToWait)
 {
-	m_uptrImpl->WaitForTask(_UnpackImpl(pToWait));
+	m_uptrImpl->WaitForTask(_UnpackImpl(inToWait));
 }
 
 void MyTaskScheduler::WaitForAll()

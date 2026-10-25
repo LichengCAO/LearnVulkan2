@@ -15,10 +15,10 @@ public:
 
 	void Create(VkDevice inDevice);
 	auto AllocateGraphicsPipelineWithResult(
-		const VkGraphicsPipelineCreateInfo* inCreateInfo,
+		const VkGraphicsPipelineCreateInfo& inCreateInfo,
 		VkPipelineCache inCache) -> std::pair<VkPipeline, VkResult>;
 	auto AllocateGraphicsPipeline(
-		const VkGraphicsPipelineCreateInfo* inCreateInfo,
+		const VkGraphicsPipelineCreateInfo& inCreateInfo,
 		VkPipelineCache inCache) -> VkPipeline;
 	bool FreeGraphicsPipeline(VkPipeline& inoutPipeline);
 	bool HasGraphicsPipeline(VkPipeline inPipeline) const;
@@ -39,10 +39,10 @@ public:
 
 	void Create(VkDevice inDevice);
 	auto AllocateComputePipelineWithResult(
-		const VkComputePipelineCreateInfo* inCreateInfo,
+		const VkComputePipelineCreateInfo& inCreateInfo,
 		VkPipelineCache inCache) -> std::pair<VkPipeline, VkResult>;
 	auto AllocateComputePipeline(
-		const VkComputePipelineCreateInfo* inCreateInfo,
+		const VkComputePipelineCreateInfo& inCreateInfo,
 		VkPipelineCache inCache) -> VkPipeline;
 	bool FreeComputePipeline(VkPipeline& inoutPipeline);
 	bool HasComputePipeline(VkPipeline inPipeline) const;
@@ -63,11 +63,11 @@ public:
 
 	void Create(VkDevice inDevice);
 	auto AllocateRayTracingPipelineWithResult(
-		const VkRayTracingPipelineCreateInfoKHR* inCreateInfo,
+		const VkRayTracingPipelineCreateInfoKHR& inCreateInfo,
 		VkPipelineCache inCache,
 		VkDeferredOperationKHR inDeferredOperation) -> std::pair<VkPipeline, VkResult>;
 	auto AllocateRayTracingPipeline(
-		const VkRayTracingPipelineCreateInfoKHR* inCreateInfo,
+		const VkRayTracingPipelineCreateInfoKHR& inCreateInfo,
 		VkPipelineCache inCache,
 		VkDeferredOperationKHR inDeferredOperation) -> VkPipeline;
 	bool FreeRayTracingPipeline(VkPipeline& inoutPipeline);

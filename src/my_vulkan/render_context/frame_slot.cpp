@@ -63,7 +63,7 @@ struct FrameSlot::RecordingTask final
                 _RecordRange(inStart, inEnd, inThreadIndex);
             },
             static_cast<uint32_t>(batches.size()));
-        MyTaskScheduler::GetInstance().AddMutiThreadTask(task.get());
+        MyTaskScheduler::GetInstance().AddMutiThreadTask(*task);
         dispatched = true;
     }
 
@@ -124,7 +124,7 @@ private:
             return;
         }
 
-        MyTaskScheduler::GetInstance().WaitForTask(task.get());
+        MyTaskScheduler::GetInstance().WaitForTask(*task);
         waited = true;
     }
 };
@@ -166,7 +166,7 @@ auto FrameSlot::_GetCommandPool(
         CommandPoolCreateInfo createInfo;
         createInfo.CustomizeQueueFamilyType(inQueue);
         commandPool = std::make_unique<CommandPool>();
-        commandPool->Create(&createInfo);
+        commandPool->Create(createInfo);
     }
 
     return *commandPool;

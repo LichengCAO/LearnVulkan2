@@ -157,11 +157,11 @@ void RenderGraphInstance::ExecutionContext::ConfigureGraphicsPipelineState(
 		"Graphics pipeline state can only be configured by a graph-managed render pass!");
 	CHECK_TRUE(m_pRenderPass != nullptr, "Managed render pass is not available!");
 	CHECK_TRUE(m_currentSubpass != INVALID_INDEX, "Managed render pass subpass index is not available!");
-	inoutStateInfo.SetRenderPassSubpass(m_pRenderPass, m_currentSubpass);
+	inoutStateInfo.SetRenderPassSubpass(*m_pRenderPass, m_currentSubpass);
 }
 
 void RenderGraphInstance::ExecutionContext::RecordCommands(
-	std::function<void(CommandBuffer*)> inProcess)
+	std::function<void(CommandBuffer&)> inProcess)
 {
 	CHECK_TRUE(m_pInstance != nullptr, "Render graph execution context is not initialized!");
 	CHECK_TRUE(inProcess != nullptr, "Render graph pass command recording process is empty!");
@@ -174,7 +174,7 @@ void RenderGraphInstance::ExecutionContext::RecordCommands(
 	}
 
 	CHECK_TRUE(m_pCommandBuffer != nullptr, "Command recording needs a command buffer!");
-	inProcess(m_pCommandBuffer);
+	inProcess(*m_pCommandBuffer);
 }
 
 void RenderGraphInstance::PassInfo::SetProcess(PassProcess inProcess)
@@ -437,7 +437,7 @@ void RenderGraphInstance::_SetUpInternalResources()
 		}
 
 		auto buffer = std::make_unique<Buffer>();
-		buffer->Create(&createInfo);
+		buffer->Create(createInfo);
 		m_buffers[index] = buffer.get();
 		m_internalBuffers.push_back(std::move(buffer));
 	}
@@ -494,7 +494,7 @@ void RenderGraphInstance::_SetUpInternalResources()
 		if (graphImage.m_optSampleCount.has_value()) createInfo.CustomizeSampleCount(graphImage.m_optSampleCount.value());
 
 		auto image = std::make_unique<Image>();
-		image->Create(&createInfo);
+		image->Create(createInfo);
 		m_images[index] = image.get();
 		m_internalImages.push_back(std::move(image));
 	}
@@ -770,7 +770,7 @@ void RenderGraphInstance::_CreateManagedRenderPasses()
 			ManagedRenderPass managedRenderPass;
 			managedRenderPass.attachmentPlans = managedPlan.attachments;
 			managedRenderPass.renderPass = std::make_unique<RenderPass>();
-			managedRenderPass.renderPass->Create(&renderPassInfo);
+			managedRenderPass.renderPass->Create(renderPassInfo);
 
 			CHECK_TRUE(!managedPlan.attachments.empty(), "Managed render pass has no attachments!");
 			const RenderGraph::SubmitBatch::ManagedAttachmentPlan& firstAttachmentPlan = managedPlan.attachments.front();
@@ -793,16 +793,16 @@ void RenderGraphInstance::_CreateManagedRenderPasses()
 			}
 
 			FramebufferCreateInfo framebufferInfo;
-			framebufferInfo.SetRenderPass(managedRenderPass.renderPass.get());
+			framebufferInfo.SetRenderPass(*managedRenderPass.renderPass);
 			for (uint32_t attachmentIndex = 0; attachmentIndex < managedPlan.attachments.size(); ++attachmentIndex)
 			{
 				const RenderGraph::SubmitBatch::ManagedAttachmentPlan& attachment = managedPlan.attachments[attachmentIndex];
 				framebufferInfo.SetImageView(
 					attachmentNames[attachmentIndex],
-					m_images[attachment.image]->View(_MakeImageViewInfo(attachment.subresourceRange)));
+					*m_images[attachment.image]->View(_MakeImageViewInfo(attachment.subresourceRange)));
 			}
 			managedRenderPass.framebuffer = std::make_unique<Framebuffer>();
-			managedRenderPass.framebuffer->Create(&framebufferInfo);
+			managedRenderPass.framebuffer->Create(framebufferInfo);
 			managedRenderPass.defaultClearValues = managedRenderPass.renderPass->GetClearValues();
 
 			const uint32_t managedIndex = static_cast<uint32_t>(m_managedRenderPasses.size());
@@ -1082,7 +1082,7 @@ void RenderGraphInstance::_AppendRenderPassCommands(
 
 void RenderGraphInstance::_RecordSubpassCommandBuffer(
 	PassIndex inPassIndex,
-	std::function<void(CommandBuffer*)> inProcess,
+	std::function<void(CommandBuffer&)> inProcess,
 	ExecutionContext& inContext)
 {
 	CHECK_TRUE(inProcess != nullptr, "Render graph subpass command recording process is empty!");
@@ -1092,7 +1092,7 @@ void RenderGraphInstance::_RecordSubpassCommandBuffer(
 	CHECK_TRUE(iter != inContext.m_passToSubpass.end(), "Target pass is not in current render pass scope!");
 	CHECK_TRUE(iter->second == inContext.m_currentSubpass, "Target pass is not the current subpass!");
 
-	inProcess(inContext.m_pCommandBuffer);
+	inProcess(*inContext.m_pCommandBuffer);
 }
 
 auto RenderGraphInstance::_CreateBarrierCommand(

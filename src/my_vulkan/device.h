@@ -153,7 +153,7 @@ public:
 	void RecreateSwapchain();
 	
 	auto GetNextAvailableSwapchainImage(VkSemaphore acquireSemaphore) -> SwapchainImage*;
-	void PresentSwapchainImage(const SwapchainImage* image);
+	void PresentSwapchainImage(const SwapchainImage& inImage);
 	
 	bool NeedRecreateSwapchain() const;
 	
@@ -198,7 +198,7 @@ public:
 	uint32_t GetQueueFamilyIndex(VkCommandPool inVkCommandPool) const;
 
 	// Return if the loaded pipeline cache is valid
-	bool IsPipelineCacheValid(const VkPipelineCacheHeaderVersionOne* inCacheHeaderPtr) const;
+	auto IsPipelineCacheValid(const VkPipelineCacheHeaderVersionOne& inCacheHeader) const -> bool;
 
 	void GetPhysicalDeviceRayTracingProperties(VkPhysicalDeviceRayTracingPipelinePropertiesKHR& outProperties) const;
 

@@ -62,7 +62,7 @@ public:
 		auto ResolveBuffer(const std::string& inName) -> Buffer*;
 		auto ResolveImage(const std::string& inName) -> Image*;
 		void ConfigureGraphicsPipelineState(GraphicsPipelineStateInfo& inoutStateInfo) const;
-		void RecordCommands(std::function<void(CommandBuffer*)> inProcess);
+		void RecordCommands(std::function<void(CommandBuffer&)> inProcess);
 	};
 
 	using PassProcess = std::function<void(ExecutionContext&)>;
@@ -217,7 +217,7 @@ private:
 	auto _GetImage(const std::string& inName) const->Image*;
 	void _AppendPassCommands(PassIndex inPassIndex, CommandBuffer& inCommandBuffer);
 	void _AppendRenderPassCommands(const std::vector<PassIndex>& inPasses, const ManagedRenderPass& inRenderPass, CommandBuffer& inCommandBuffer);
-	void _RecordSubpassCommandBuffer(PassIndex inPassIndex, std::function<void(CommandBuffer*)> inProcess, ExecutionContext& inContext);
+	void _RecordSubpassCommandBuffer(PassIndex inPassIndex, std::function<void(CommandBuffer&)> inProcess, ExecutionContext& inContext);
 	auto _CreateBarrierCommand(
 		const std::vector<RenderGraph::BarrierPlan>& inBarrierPlans,
 		BarrierCommandMode inMode = BarrierCommandMode::NORMAL)->std::unique_ptr<Command>;

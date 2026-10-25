@@ -48,7 +48,7 @@ private:
 	    const ShaderResources& inResources) -> CommandBuffer&;
 
 private:
-	auto _AppendCommand(const Command* inCommand)->void;
+	auto _AppendCommand(const Command& inCommand)->void;
 	auto _AppendOwnedCommand(std::unique_ptr<Command> inCommand)->void;
 	auto _Append(CommandBuffer&& inCommandBuffer)->CommandBuffer&;
 

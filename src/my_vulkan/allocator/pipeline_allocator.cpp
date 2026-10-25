@@ -413,13 +413,11 @@ void GraphicsPipelineAllocator::Create(VkDevice inDevice)
 }
 
 auto GraphicsPipelineAllocator::AllocateGraphicsPipelineWithResult(
-	const VkGraphicsPipelineCreateInfo* inCreateInfo,
+	const VkGraphicsPipelineCreateInfo& inCreateInfo,
 	VkPipelineCache inCache) -> std::pair<VkPipeline, VkResult>
 {
 	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Graphics pipeline allocator is not created!");
-	CHECK_TRUE(inCreateInfo != nullptr, "Missing graphics pipeline create info!");
-
-	const uint64_t hash = HashGraphicsPipelineCreateInfo(*inCreateInfo);
+	const uint64_t hash = HashGraphicsPipelineCreateInfo(inCreateInfo);
 	const auto iter = m_mapHashToVkPipeline.find(hash);
 	if (iter != m_mapHashToVkPipeline.end())
 	{
@@ -427,7 +425,7 @@ auto GraphicsPipelineAllocator::AllocateGraphicsPipelineWithResult(
 	}
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
-	const VkResult result = vkCreateGraphicsPipelines(m_vkDevice, inCache, 1, inCreateInfo, nullptr, &pipeline);
+	const VkResult result = vkCreateGraphicsPipelines(m_vkDevice, inCache, 1, &inCreateInfo, nullptr, &pipeline);
 	if (result != VK_SUCCESS)
 	{
 		return { VK_NULL_HANDLE, result };
@@ -438,7 +436,7 @@ auto GraphicsPipelineAllocator::AllocateGraphicsPipelineWithResult(
 }
 
 auto GraphicsPipelineAllocator::AllocateGraphicsPipeline(
-	const VkGraphicsPipelineCreateInfo* inCreateInfo,
+	const VkGraphicsPipelineCreateInfo& inCreateInfo,
 	VkPipelineCache inCache) -> VkPipeline
 {
 	auto [pipeline, result] = AllocateGraphicsPipelineWithResult(inCreateInfo, inCache);
@@ -507,13 +505,11 @@ void ComputePipelineAllocator::Create(VkDevice inDevice)
 }
 
 auto ComputePipelineAllocator::AllocateComputePipelineWithResult(
-	const VkComputePipelineCreateInfo* inCreateInfo,
+	const VkComputePipelineCreateInfo& inCreateInfo,
 	VkPipelineCache inCache) -> std::pair<VkPipeline, VkResult>
 {
 	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Compute pipeline allocator is not created!");
-	CHECK_TRUE(inCreateInfo != nullptr, "Missing compute pipeline create info!");
-
-	const uint64_t hash = HashComputePipelineCreateInfo(*inCreateInfo);
+	const uint64_t hash = HashComputePipelineCreateInfo(inCreateInfo);
 	const auto iter = m_mapHashToVkPipeline.find(hash);
 	if (iter != m_mapHashToVkPipeline.end())
 	{
@@ -521,7 +517,7 @@ auto ComputePipelineAllocator::AllocateComputePipelineWithResult(
 	}
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
-	const VkResult result = vkCreateComputePipelines(m_vkDevice, inCache, 1, inCreateInfo, nullptr, &pipeline);
+	const VkResult result = vkCreateComputePipelines(m_vkDevice, inCache, 1, &inCreateInfo, nullptr, &pipeline);
 	if (result != VK_SUCCESS)
 	{
 		return { VK_NULL_HANDLE, result };
@@ -532,7 +528,7 @@ auto ComputePipelineAllocator::AllocateComputePipelineWithResult(
 }
 
 auto ComputePipelineAllocator::AllocateComputePipeline(
-	const VkComputePipelineCreateInfo* inCreateInfo,
+	const VkComputePipelineCreateInfo& inCreateInfo,
 	VkPipelineCache inCache) -> VkPipeline
 {
 	auto [pipeline, result] = AllocateComputePipelineWithResult(inCreateInfo, inCache);
@@ -601,14 +597,12 @@ void RayTracingPipelineAllocator::Create(VkDevice inDevice)
 }
 
 auto RayTracingPipelineAllocator::AllocateRayTracingPipelineWithResult(
-	const VkRayTracingPipelineCreateInfoKHR* inCreateInfo,
+	const VkRayTracingPipelineCreateInfoKHR& inCreateInfo,
 	VkPipelineCache inCache,
 	VkDeferredOperationKHR inDeferredOperation) -> std::pair<VkPipeline, VkResult>
 {
 	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Ray tracing pipeline allocator is not created!");
-	CHECK_TRUE(inCreateInfo != nullptr, "Missing ray tracing pipeline create info!");
-
-	const uint64_t hash = HashRayTracingPipelineCreateInfo(*inCreateInfo);
+	const uint64_t hash = HashRayTracingPipelineCreateInfo(inCreateInfo);
 	const auto iter = m_mapHashToVkPipeline.find(hash);
 	if (iter != m_mapHashToVkPipeline.end())
 	{
@@ -616,7 +610,7 @@ auto RayTracingPipelineAllocator::AllocateRayTracingPipelineWithResult(
 	}
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
-	const VkResult result = vkCreateRayTracingPipelinesKHR(m_vkDevice, inDeferredOperation, inCache, 1, inCreateInfo, nullptr, &pipeline);
+	const VkResult result = vkCreateRayTracingPipelinesKHR(m_vkDevice, inDeferredOperation, inCache, 1, &inCreateInfo, nullptr, &pipeline);
 	if (result != VK_SUCCESS)
 	{
 		return { VK_NULL_HANDLE, result };
@@ -627,7 +621,7 @@ auto RayTracingPipelineAllocator::AllocateRayTracingPipelineWithResult(
 }
 
 auto RayTracingPipelineAllocator::AllocateRayTracingPipeline(
-	const VkRayTracingPipelineCreateInfoKHR* inCreateInfo,
+	const VkRayTracingPipelineCreateInfoKHR& inCreateInfo,
 	VkPipelineCache inCache,
 	VkDeferredOperationKHR inDeferredOperation) -> VkPipeline
 {

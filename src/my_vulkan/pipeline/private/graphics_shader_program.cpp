@@ -455,11 +455,9 @@ auto GraphicsPipelineStateInfo::AddVertexInputDescription(
 	return *this;
 }
 
-auto GraphicsPipelineStateInfo::SetRenderPassSubpass(const RenderPass* inRenderPassPtr, uint32_t inSubpassIndex) -> GraphicsPipelineStateInfo&
+auto GraphicsPipelineStateInfo::SetRenderPassSubpass(const RenderPass& inRenderPass, uint32_t inSubpassIndex) -> GraphicsPipelineStateInfo&
 {
-	CHECK_TRUE(inRenderPassPtr != nullptr, "Graphics pipeline state info needs a render pass!");
-
-	m_renderPassPtr = inRenderPassPtr;
+	m_renderPassPtr = &inRenderPass;
 	m_subpassIndex = inSubpassIndex;
 	return *this;
 }
@@ -472,16 +470,15 @@ GraphicsShaderProgram::~GraphicsShaderProgram()
 	assert(m_shaderModules.empty());
 }
 
-void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo* inCreateInfo)
+void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo& inCreateInfo)
 {
-	CHECK_TRUE(inCreateInfo != nullptr, "No graphics shader program create info!");
-	CHECK_TRUE(!inCreateInfo->m_shaders.empty(), "Graphics shader program needs shaders!");
+	CHECK_TRUE(!inCreateInfo.m_shaders.empty(), "Graphics shader program needs shaders!");
 	CHECK_TRUE(m_cachedGraphicsPipelines.empty(), "Graphics shader program already has cached pipelines!");
 	CHECK_TRUE(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE, "Graphics shader program already created!");
 
 	auto hasStage = [&](VkShaderStageFlagBits stage) -> bool
 	{
-		return std::any_of(inCreateInfo->m_shaders.begin(), inCreateInfo->m_shaders.end(),
+		return std::any_of(inCreateInfo.m_shaders.begin(), inCreateInfo.m_shaders.end(),
 		    [stage](const auto& shader) -> bool { return shader.stage == stage; });
 	};
 	const bool vertex = hasStage(VK_SHADER_STAGE_VERTEX_BIT);
@@ -493,10 +490,10 @@ void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo* inCrea
 	CHECK_TRUE(vertex || mesh, "Graphics program requires a vertex or mesh shader!");
 	try
 	{
-		auto resolved = ShaderDetail::Resolve(inCreateInfo->m_shaders, m_shaderModules);
+		auto resolved = ShaderDetail::Resolve(inCreateInfo.m_shaders, m_shaderModules);
 		m_shaderStages = std::move(resolved.stages);
 		m_pipelineLayout.Create(resolved.reflection);
-		_CreateDefaults(*inCreateInfo, resolved.reflection);
+		_CreateDefaults(inCreateInfo, resolved.reflection);
 	}
 	catch (...)
 	{
@@ -836,7 +833,7 @@ void GraphicsShaderProgram::_CreateDefaults(const GraphicsShaderProgramCreateInf
 	subpass.AddExternalDependency(stages, access);
 	passInfo.AddSubpass("default", subpass);
 	m_defaultRenderPass = std::make_unique<RenderPass>();
-	m_defaultRenderPass->Create(&passInfo);
+	m_defaultRenderPass->Create(passInfo);
 	m_defaultState.m_renderPassPtr = m_defaultRenderPass.get();
 	// Complex vertex layouts remain available through the explicit pipeline-state path.
 	if (m_automaticVertexInputSupported)

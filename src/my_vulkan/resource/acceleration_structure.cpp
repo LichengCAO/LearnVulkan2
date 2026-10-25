@@ -49,7 +49,7 @@ namespace {
 
 		bufferCreateInfo.CustomizeAlignment(uMinAlignment);
 
-		outScratchBufferToInit.Create(&bufferCreateInfo);
+		outScratchBufferToInit.Create(bufferCreateInfo);
 
 		// fill slotAddresses
 		outSlotAddresses.clear();
@@ -218,9 +218,8 @@ void BottomLevelAccelStruct::Descriptor::UpdateGeometries(
 	}
 }
 
-void BottomLevelAccelStruct::Creator::Create(BottomLevelAccelStruct* inoutAccelStruct) const
+void BottomLevelAccelStruct::Creator::Create(BottomLevelAccelStruct& inoutAccelStruct) const
 {
-	CHECK_TRUE(inoutAccelStruct != nullptr);
 	CHECK_TRUE(m_descriptor != nullptr);
 
 	// create VkAcceleartionStructure
@@ -229,50 +228,50 @@ void BottomLevelAccelStruct::Creator::Create(BottomLevelAccelStruct* inoutAccelS
 	auto buildSizesInfo = m_descriptor->GetBuildSizesInfo(m_flags);
 	auto& device = MyDevice::GetInstance();
 
-	if (inoutAccelStruct->m_uptrBuffer == nullptr)
+	if (inoutAccelStruct.m_uptrBuffer == nullptr)
 	{
 		BufferCreateInfo bufferCreateInfo{};
 
 		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		bufferCreateInfo.SetBufferSize(buildSizesInfo.accelerationStructureSize);
 		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-		inoutAccelStruct->m_uptrBuffer = std::make_unique<Buffer>();
-		inoutAccelStruct->m_uptrBuffer->Create(&bufferCreateInfo);
+		inoutAccelStruct.m_uptrBuffer = std::make_unique<Buffer>();
+		inoutAccelStruct.m_uptrBuffer->Create(bufferCreateInfo);
 	}
-	else if (inoutAccelStruct->m_uptrBuffer->GetBufferInformation().size < buildSizesInfo.accelerationStructureSize)
+	else if (inoutAccelStruct.m_uptrBuffer->GetBufferInformation().size < buildSizesInfo.accelerationStructureSize)
 	{
 		BufferCreateInfo bufferCreateInfo{};
 
 		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		bufferCreateInfo.SetBufferSize(buildSizesInfo.accelerationStructureSize);
 		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-		inoutAccelStruct->m_uptrBuffer->Destroy();
-		inoutAccelStruct->m_uptrBuffer->Create(&bufferCreateInfo);
+		inoutAccelStruct.m_uptrBuffer->Destroy();
+		inoutAccelStruct.m_uptrBuffer->Create(bufferCreateInfo);
 	}
 
 	createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 	createInfo.size = buildSizesInfo.accelerationStructureSize;
 	createInfo.pNext = nullptr;
 	createInfo.offset = 0;
-	createInfo.buffer = inoutAccelStruct->m_uptrBuffer->GetVkBuffer();
+	createInfo.buffer = inoutAccelStruct.m_uptrBuffer->GetVkBuffer();
 	// following info are for replay https://registry.khronos.org/vulkan/specs/latest/man/html/VkAccelerationStructureCreateInfoKHR.html
 	// createInfo.deviceAddress = 0;
 	// createInfo.createFlags = 0;
 
-	inoutAccelStruct->m_vkAccelStruct = device.CreateAccelerationStructure(createInfo);
-	addrInfo.accelerationStructure = inoutAccelStruct->GetVkAccelerationStructure();
-	inoutAccelStruct->m_accelStructReference = vkGetAccelerationStructureDeviceAddressKHR(MyDevice::GetInstance().vkDevice, &addrInfo);
-	inoutAccelStruct->m_flags = m_flags;
+	inoutAccelStruct.m_vkAccelStruct = device.CreateAccelerationStructure(createInfo);
+	addrInfo.accelerationStructure = inoutAccelStruct.GetVkAccelerationStructure();
+	inoutAccelStruct.m_accelStructReference = vkGetAccelerationStructureDeviceAddressKHR(MyDevice::GetInstance().vkDevice, &addrInfo);
+	inoutAccelStruct.m_flags = m_flags;
 }
 
 void BottomLevelAccelStruct::BuildHelper::GetBuildInfo(
-	const BottomLevelAccelStruct* inDstAccelStruct,
+	const BottomLevelAccelStruct& inDstAccelStruct,
 	VkAccelStructBuildInfo& outBuildInfo) const noexcept
 {
 	auto& device = MyDevice::GetInstance();
 	auto& buildGeomInfo = outBuildInfo.buildGeometryInfo;
-	auto buildFlag = inDstAccelStruct->m_flags;
-	auto dstAccelStruct = inDstAccelStruct->GetVkAccelerationStructure();
+	auto buildFlag = inDstAccelStruct.m_flags;
+	auto dstAccelStruct = inDstAccelStruct.GetVkAccelerationStructure();
 
 	outBuildInfo.buildRangesInfos = m_descriptor->m_dataRanges;
 	outBuildInfo.geometries = m_descriptor->m_dataSources;
@@ -291,15 +290,15 @@ void BottomLevelAccelStruct::BuildHelper::GetBuildInfo(
 }
 
 void BottomLevelAccelStruct::BuildHelper::GetUpdateInfo(
-	const BottomLevelAccelStruct* inSrcAccelStruct,
-	const BottomLevelAccelStruct* inDstAccelStruct,
+	const BottomLevelAccelStruct& inSrcAccelStruct,
+	const BottomLevelAccelStruct& inDstAccelStruct,
 	VkAccelStructBuildInfo& outBuildInfo) const noexcept
 {
 	auto& device = MyDevice::GetInstance();
 	auto& buildGeomInfo = outBuildInfo.buildGeometryInfo;
-	auto buildFlag = inDstAccelStruct->m_flags;
-	auto srcAccelStruct = inSrcAccelStruct->GetVkAccelerationStructure();
-	auto dstAccelStruct = inDstAccelStruct->GetVkAccelerationStructure();
+	auto buildFlag = inDstAccelStruct.m_flags;
+	auto srcAccelStruct = inSrcAccelStruct.GetVkAccelerationStructure();
+	auto dstAccelStruct = inDstAccelStruct.GetVkAccelerationStructure();
 
 	outBuildInfo.buildRangesInfos = m_descriptor->m_dataRanges;
 	outBuildInfo.geometries = m_descriptor->m_dataSources;
@@ -323,11 +322,11 @@ BottomLevelAccelStruct::~BottomLevelAccelStruct()
 	Destroy();
 }
 
-void BottomLevelAccelStruct::Create(const BottomLevelAccelStruct::Creator* inInitializer)
+void BottomLevelAccelStruct::Create(const BottomLevelAccelStruct::Creator& inInitializer)
 {
 	Destroy();
 
-	inInitializer->Create(this);
+	inInitializer.Create(*this);
 
 	CHECK_TRUE(m_vkAccelStruct != VK_NULL_HANDLE);
 	CHECK_TRUE(m_uptrBuffer != nullptr);
@@ -362,11 +361,11 @@ TopLevelAccelStruct::~TopLevelAccelStruct()
 	Destroy();
 }
 
-void TopLevelAccelStruct::Create(const TopLevelAccelStruct::Creator* inInitializer)
+void TopLevelAccelStruct::Create(const TopLevelAccelStruct::Creator& inInitializer)
 {
 	Destroy();
 
-	inInitializer->Create(this);
+	inInitializer.Create(*this);
 
 	CHECK_TRUE(m_vkAccelStruct != VK_NULL_HANDLE);
 	CHECK_TRUE(m_uptrBuffer != nullptr);
@@ -467,7 +466,7 @@ auto TopLevelAccelStruct::Descriptor::GetBuildSizesInfo(VkBuildAccelerationStruc
 	return result;
 }
 
-void TopLevelAccelStruct::Creator::Create(TopLevelAccelStruct* inoutAccelStruct) const
+void TopLevelAccelStruct::Creator::Create(TopLevelAccelStruct& inoutAccelStruct) const
 {
 	// create VkAcceleartionStructure
 	VkAccelerationStructureCreateInfoKHR createInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
@@ -475,49 +474,49 @@ void TopLevelAccelStruct::Creator::Create(TopLevelAccelStruct* inoutAccelStruct)
 	auto buildSizesInfo = m_descriptor->GetBuildSizesInfo(m_flags);
 	auto& device = MyDevice::GetInstance();
 
-	if (inoutAccelStruct->m_uptrBuffer == nullptr)
+	if (inoutAccelStruct.m_uptrBuffer == nullptr)
 	{
 		BufferCreateInfo bufferCreateInfo{};
 
 		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		bufferCreateInfo.SetBufferSize(buildSizesInfo.accelerationStructureSize);
 		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-		inoutAccelStruct->m_uptrBuffer = std::make_unique<Buffer>();
-		inoutAccelStruct->m_uptrBuffer->Create(&bufferCreateInfo);
+		inoutAccelStruct.m_uptrBuffer = std::make_unique<Buffer>();
+		inoutAccelStruct.m_uptrBuffer->Create(bufferCreateInfo);
 	}
-	else if (inoutAccelStruct->m_uptrBuffer->GetBufferInformation().size < buildSizesInfo.accelerationStructureSize)
+	else if (inoutAccelStruct.m_uptrBuffer->GetBufferInformation().size < buildSizesInfo.accelerationStructureSize)
 	{
 		BufferCreateInfo bufferCreateInfo{};
 
 		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		bufferCreateInfo.SetBufferSize(buildSizesInfo.accelerationStructureSize);
 		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-		inoutAccelStruct->m_uptrBuffer->Destroy();
-		inoutAccelStruct->m_uptrBuffer->Create(&bufferCreateInfo);
+		inoutAccelStruct.m_uptrBuffer->Destroy();
+		inoutAccelStruct.m_uptrBuffer->Create(bufferCreateInfo);
 	}
 
 	createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
 	createInfo.size = buildSizesInfo.accelerationStructureSize;
 	createInfo.pNext = nullptr;
 	createInfo.offset = 0;
-	createInfo.buffer = inoutAccelStruct->m_uptrBuffer->GetVkBuffer();
+	createInfo.buffer = inoutAccelStruct.m_uptrBuffer->GetVkBuffer();
 	// following info are for replay https://registry.khronos.org/vulkan/specs/latest/man/html/VkAccelerationStructureCreateInfoKHR.html
 	// createInfo.deviceAddress = 0;
 	// createInfo.createFlags = 0;
 
-	inoutAccelStruct->m_vkAccelStruct = device.CreateAccelerationStructure(createInfo);
-	inoutAccelStruct->m_flags = m_flags;
+	inoutAccelStruct.m_vkAccelStruct = device.CreateAccelerationStructure(createInfo);
+	inoutAccelStruct.m_flags = m_flags;
 }
 
 void TopLevelAccelStruct::BuildHelper::GetBuildInfo(
-	const TopLevelAccelStruct* inDstAccelStruct,
+	const TopLevelAccelStruct& inDstAccelStruct,
 	VkAccelStructBuildInfo& outBuildInfo) const noexcept
 {
 	VkAccelerationStructureGeometryInstancesDataKHR geometryInstData{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR };
 	auto& device = MyDevice::GetInstance();
 	auto& buildGeomInfo = outBuildInfo.buildGeometryInfo;
-	auto buildFlag = inDstAccelStruct->m_flags;
-	auto dstAccelStruct = inDstAccelStruct->GetVkAccelerationStructure();
+	auto buildFlag = inDstAccelStruct.m_flags;
+	auto dstAccelStruct = inDstAccelStruct.GetVkAccelerationStructure();
 
 	outBuildInfo.buildRangesInfos.resize(1);
 	outBuildInfo.geometries.resize(1);
@@ -547,16 +546,16 @@ void TopLevelAccelStruct::BuildHelper::GetBuildInfo(
 }
 
 void TopLevelAccelStruct::BuildHelper::GetUpdateInfo(
-	const TopLevelAccelStruct* inSrcAccelStruct,
-	const TopLevelAccelStruct* inDstAccelStruct,
+	const TopLevelAccelStruct& inSrcAccelStruct,
+	const TopLevelAccelStruct& inDstAccelStruct,
 	VkAccelStructBuildInfo& outBuildInfo) const noexcept
 {
 	VkAccelerationStructureGeometryInstancesDataKHR geometryInstData{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR };
 	auto& device = MyDevice::GetInstance();
 	auto& buildGeomInfo = outBuildInfo.buildGeometryInfo;
-	auto buildFlag = inDstAccelStruct->m_flags;
-	auto srcAccelStruct = inSrcAccelStruct->GetVkAccelerationStructure();
-	auto dstAccelStruct = inDstAccelStruct->GetVkAccelerationStructure();
+	auto buildFlag = inDstAccelStruct.m_flags;
+	auto srcAccelStruct = inSrcAccelStruct.GetVkAccelerationStructure();
+	auto dstAccelStruct = inDstAccelStruct.GetVkAccelerationStructure();
 
 	outBuildInfo.buildRangesInfos.resize(1);
 	outBuildInfo.geometries.resize(1);

@@ -201,15 +201,15 @@ public:
         /// Associates a descriptor with the creator (provides geometry data for BLAS)
         /// Must be called before Create()
         /// </summary>
-        /// <param name="inDescriptor">Pointer to valid BLAS descriptor</param>
-        void SetDescriptor(const BottomLevelAccelStruct::Descriptor* inDescriptor) noexcept { m_descriptor = inDescriptor; };
+        /// <param name="inDescriptor">Valid BLAS descriptor</param>
+        void SetDescriptor(const BottomLevelAccelStruct::Descriptor& inDescriptor) noexcept { m_descriptor = &inDescriptor; };
 
         /// <summary>
         /// Creates and initializes a Vulkan BLAS object from the configured creator
         /// Populates the input BottomLevelAccelStruct with Vulkan handles/buffers
         /// </summary>
-        /// <param name="inoutAccelStruct">Pointer to BLAS object to initialize</param>
-        void Create(BottomLevelAccelStruct* inoutAccelStruct) const;
+        /// <param name="inoutAccelStruct">BLAS object to initialize</param>
+        void Create(BottomLevelAccelStruct& inoutAccelStruct) const;
     };
 
     /// <summary>
@@ -232,8 +232,8 @@ public:
         /// Sets the BLAS descriptor for build/update operations
         /// Provides geometry/range data to populate Vulkan command structures
         /// </summary>
-        /// <param name="inDescriptor">Pointer to valid BLAS descriptor</param>
-        void SetDescriptor(const BottomLevelAccelStruct::Descriptor* inDescriptor) noexcept { m_descriptor = inDescriptor; };
+        /// <param name="inDescriptor">Valid BLAS descriptor</param>
+        void SetDescriptor(const BottomLevelAccelStruct::Descriptor& inDescriptor) noexcept { m_descriptor = &inDescriptor; };
 
         /// <summary>
         /// Sets the GPU device address of the scratch buffer
@@ -249,7 +249,7 @@ public:
         /// <param name="inDstAccelStruct">Destination BLAS object to build</param>
         /// <param name="outBuildInfo">Output Vulkan build info struct to populate</param>
         void GetBuildInfo(
-            const BottomLevelAccelStruct* inDstAccelStruct,
+            const BottomLevelAccelStruct& inDstAccelStruct,
             VkAccelStructBuildInfo& outBuildInfo) const noexcept;
 
         /// <summary>
@@ -260,8 +260,8 @@ public:
         /// <param name="inDstAccelStruct">Destination BLAS (updated state)</param>
         /// <param name="outBuildInfo">Output Vulkan build info struct to populate</param>
         void GetUpdateInfo(
-            const BottomLevelAccelStruct* inSrcAccelStruct,
-            const BottomLevelAccelStruct* inDstAccelStruct,
+            const BottomLevelAccelStruct& inSrcAccelStruct,
+            const BottomLevelAccelStruct& inDstAccelStruct,
             VkAccelStructBuildInfo& outBuildInfo) const noexcept;
     };
 
@@ -277,7 +277,7 @@ public:
     /// Must be called before using the BLAS for ray tracing
     /// </summary>
     /// <param name="inCreator">Configured Creator object</param>
-    void Create(const Creator* inCreator);
+    void Create(const Creator& inCreator);
 
     /// <summary>
     /// Gets the internal reference identifier for the BLAS
@@ -419,11 +419,11 @@ public:
         /// Associates a descriptor with the creator (provides instance data for TLAS)
         /// Returns reference to self for method chaining
         /// </summary>
-        /// <param name="inDescriptor">Pointer to valid TLAS descriptor</param>
+        /// <param name="inDescriptor">Valid TLAS descriptor</param>
         /// <returns>Reference to Creator (for chaining)</returns>
-        auto SetDescriptor(const TopLevelAccelStruct::Descriptor* inDescriptor) noexcept -> TopLevelAccelStruct::Creator&
+        auto SetDescriptor(const TopLevelAccelStruct::Descriptor& inDescriptor) noexcept -> TopLevelAccelStruct::Creator&
         {
-            m_descriptor = inDescriptor;
+            m_descriptor = &inDescriptor;
             return *this;
         };
 
@@ -431,8 +431,8 @@ public:
         /// Creates and initializes a Vulkan TLAS object from the configured creator
         /// Populates the input TopLevelAccelStruct with Vulkan handles/buffers
         /// </summary>
-        /// <param name="inoutAccelStruct">Pointer to TLAS object to initialize</param>
-        void Create(TopLevelAccelStruct* inoutAccelStruct) const;
+        /// <param name="inoutAccelStruct">TLAS object to initialize</param>
+        void Create(TopLevelAccelStruct& inoutAccelStruct) const;
     };
 
     /// <summary>
@@ -456,8 +456,8 @@ public:
         /// Sets the TLAS descriptor for build/update operations
         /// Provides instance data to populate Vulkan command structures
         /// </summary>
-        /// <param name="inDescriptor">Pointer to valid TLAS descriptor</param>
-        void SetDescriptor(const TopLevelAccelStruct::Descriptor* inDescriptor) noexcept { m_descriptor = inDescriptor; }
+        /// <param name="inDescriptor">Valid TLAS descriptor</param>
+        void SetDescriptor(const TopLevelAccelStruct::Descriptor& inDescriptor) noexcept { m_descriptor = &inDescriptor; }
 
         /// <summary>
         /// Sets the GPU device address of the scratch buffer
@@ -480,7 +480,7 @@ public:
         /// <param name="inDstAccelStruct">Destination TLAS object to build</param>
         /// <param name="outBuildInfo">Output Vulkan build info struct to populate</param>
         void GetBuildInfo(
-            const TopLevelAccelStruct* inDstAccelStruct,
+            const TopLevelAccelStruct& inDstAccelStruct,
             VkAccelStructBuildInfo& outBuildInfo) const noexcept;
 
         /// <summary>
@@ -491,8 +491,8 @@ public:
         /// <param name="inDstAccelStruct">Destination TLAS (updated state)</param>
         /// <param name="outBuildInfo">Output Vulkan build info struct to populate</param>
         void GetUpdateInfo(
-            const TopLevelAccelStruct* inSrcAccelStruct,
-            const TopLevelAccelStruct* inDstAccelStruct,
+            const TopLevelAccelStruct& inSrcAccelStruct,
+            const TopLevelAccelStruct& inDstAccelStruct,
             VkAccelStructBuildInfo& outBuildInfo) const noexcept;
     };
 
@@ -507,7 +507,7 @@ public:
     /// Must be called before using the TLAS for ray tracing
     /// </summary>
     /// <param name="inCreator">Configured Creator object</param>
-    void Create(const Creator* inCreator);
+    void Create(const Creator& inCreator);
 
     /// <summary>
     /// Gets the Vulkan TLAS handle for ray tracing operations

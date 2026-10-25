@@ -40,8 +40,8 @@ private:
 	VkBufferView m_vkBufferView = VK_NULL_HANDLE;
 
 private:
-	auto Create(const Buffer* inBuffer, const BufferViewInfo* inCreateInfo)->void;
-	auto Destroy()->void;
+	void _Create(const Buffer& inBuffer, const BufferViewInfo& inCreateInfo);
+	void _Destroy();
 
 public:
 	~BufferView();
@@ -129,7 +129,7 @@ public:
 	
 	virtual ~Buffer();
 
-	void Create(const BufferCreateInfo* inCreateInfo);
+	void Create(const BufferCreateInfo& inCreateInfo);
 	
 	void Destroy();
 

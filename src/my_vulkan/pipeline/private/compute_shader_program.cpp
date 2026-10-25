@@ -30,21 +30,20 @@ ComputeShaderProgram::~ComputeShaderProgram()
 	assert(m_uptrShaderModule == nullptr);
 }
 
-void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo* inCreateInfo)
+void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo& inCreateInfo)
 {
-	CHECK_TRUE(inCreateInfo != nullptr, "No compute shader program create info!");
-	CHECK_TRUE(!inCreateInfo->m_spirvFile.empty(), "Compute shader SPIR-V file is unset!");
+	CHECK_TRUE(!inCreateInfo.m_spirvFile.empty(), "Compute shader SPIR-V file is unset!");
 	CHECK_TRUE(m_vkPipeline == VK_NULL_HANDLE, "Compute shader program already created!");
 	CHECK_TRUE(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE, "Compute shader program already created!");
 
 	try
 	{
 		m_uptrShaderModule = std::make_unique<ShaderModule>();
-		m_uptrShaderModule->Create(inCreateInfo->m_spirvFile);
+		m_uptrShaderModule->Create(inCreateInfo.m_spirvFile);
 		ShaderProgramReflection reflection;
 		reflection.Create({m_uptrShaderModule->GetEntryReflection(VK_SHADER_STAGE_COMPUTE_BIT)});
 		m_pipelineLayout.Create(reflection);
-		_CreateVkPipeline(m_uptrShaderModule->GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT), inCreateInfo->m_vkPipelineCache);
+		_CreateVkPipeline(m_uptrShaderModule->GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT), inCreateInfo.m_vkPipelineCache);
 	}
 	catch (...)
 	{

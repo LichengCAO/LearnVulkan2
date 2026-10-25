@@ -96,13 +96,13 @@ struct RenderGraphTestProbe
 		RenderGraphInstance::PassInfo passInfo;
 		passInfo.SetProcess([](RenderGraphInstance::ExecutionContext& inContext)
 		{
-			inContext.RecordCommands([](CommandBuffer* inCommandBuffer)
+			inContext.RecordCommands([](CommandBuffer& inCommandBuffer)
 			{
 				BeginRenderPassCommand::Parameters parameters;
 				parameters.renderPass = (VkRenderPass)1;
 				parameters.framebuffer = (VkFramebuffer)1;
-				inCommandBuffer->BeginRenderPass(parameters);
-				inCommandBuffer->EndRenderPass();
+				inCommandBuffer.BeginRenderPass(parameters);
+				inCommandBuffer.EndRenderPass();
 			});
 		});
 		RenderGraphInstance::ExecuteInfo executeInfo;

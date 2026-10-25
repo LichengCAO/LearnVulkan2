@@ -120,17 +120,15 @@ auto SamplerAllocator::Create()->void
 {
 }
 
-auto SamplerAllocator::AllocateSamplerWithResult(const SamplerCreateInfo* inCreateInfo)->std::pair<VkSampler, VkResult>
+auto SamplerAllocator::AllocateSamplerWithResult(const SamplerCreateInfo& inCreateInfo)->std::pair<VkSampler, VkResult>
 {
-	CHECK_TRUE(inCreateInfo != nullptr, "No sampler create info!");
-
 	SamplerInfo info{};
-	info.info = NormalizeSamplerCreateInfo(inCreateInfo->GetVkSamplerCreateInfo());
+	info.info = NormalizeSamplerCreateInfo(inCreateInfo.GetVkSamplerCreateInfo());
 
 	return _AllocateSamplerWithResult(info);
 }
 
-auto SamplerAllocator::AllocateSampler(const SamplerCreateInfo* inCreateInfo)->VkSampler
+auto SamplerAllocator::AllocateSampler(const SamplerCreateInfo& inCreateInfo)->VkSampler
 {
 	auto [sampler, result] = AllocateSamplerWithResult(inCreateInfo);
 	VK_CHECK(result, "Failed to allocate sampler!");

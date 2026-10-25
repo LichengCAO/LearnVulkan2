@@ -103,9 +103,8 @@ Sampler::~Sampler()
 	assert(m_vkSampler == VK_NULL_HANDLE);
 }
 
-auto Sampler::Create(const SamplerCreateInfo* inCreateInfo)->void
+auto Sampler::Create(const SamplerCreateInfo& inCreateInfo)->void
 {
-	CHECK_TRUE(inCreateInfo != nullptr, "No sampler create info!");
 	CHECK_TRUE(m_vkSampler == VK_NULL_HANDLE, "Sampler already created!");
 
 	m_vkSampler = MyDevice::GetInstance().GetSamplerAllocator()->AllocateSampler(inCreateInfo);

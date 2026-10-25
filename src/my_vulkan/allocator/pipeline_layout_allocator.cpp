@@ -63,19 +63,18 @@ void PipelineLayoutAllocator::Create(VkDevice inDevice)
 }
 
 auto PipelineLayoutAllocator::AllocatePipelineLayoutWithResult(
-	const VkPipelineLayoutCreateInfo* inCreateInfo) -> std::pair<VkPipelineLayout, VkResult>
+	const VkPipelineLayoutCreateInfo& inCreateInfo) -> std::pair<VkPipelineLayout, VkResult>
 {
 	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Pipeline layout allocator is not created!");
-	CHECK_TRUE(inCreateInfo != nullptr, "Missing pipeline layout create info!");
 
-	const uint64_t hash = HashPipelineLayoutCreateInfo(*inCreateInfo);
+	const uint64_t hash = HashPipelineLayoutCreateInfo(inCreateInfo);
 	std::vector<CacheEntry>& entries = m_mapHashToVkPipelineLayout[hash];
 	for (const CacheEntry& entry : entries)
 	{
-		if (entry.structureType != inCreateInfo->sType ||
-			entry.flags != inCreateInfo->flags ||
-			entry.descriptorSetLayouts.size() != inCreateInfo->setLayoutCount ||
-			entry.pushConstantRanges.size() != inCreateInfo->pushConstantRangeCount)
+		if (entry.structureType != inCreateInfo.sType ||
+			entry.flags != inCreateInfo.flags ||
+			entry.descriptorSetLayouts.size() != inCreateInfo.setLayoutCount ||
+			entry.pushConstantRanges.size() != inCreateInfo.pushConstantRangeCount)
 		{
 			continue;
 		}
@@ -83,7 +82,7 @@ auto PipelineLayoutAllocator::AllocatePipelineLayoutWithResult(
 		if (!std::equal(
 			entry.descriptorSetLayouts.begin(),
 			entry.descriptorSetLayouts.end(),
-			inCreateInfo->pSetLayouts))
+			inCreateInfo.pSetLayouts))
 		{
 			continue;
 		}
@@ -91,7 +90,7 @@ auto PipelineLayoutAllocator::AllocatePipelineLayoutWithResult(
 		if (!std::equal(
 			entry.pushConstantRanges.begin(),
 			entry.pushConstantRanges.end(),
-			inCreateInfo->pPushConstantRanges,
+			inCreateInfo.pPushConstantRanges,
 			[](const VkPushConstantRange& lhs, const VkPushConstantRange& rhs)
 			{
 				return lhs.stageFlags == rhs.stageFlags &&
@@ -106,33 +105,33 @@ auto PipelineLayoutAllocator::AllocatePipelineLayoutWithResult(
 	}
 
 	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-	const VkResult result = vkCreatePipelineLayout(m_vkDevice, inCreateInfo, nullptr, &pipelineLayout);
+	const VkResult result = vkCreatePipelineLayout(m_vkDevice, &inCreateInfo, nullptr, &pipelineLayout);
 	if (result != VK_SUCCESS)
 	{
 		return { VK_NULL_HANDLE, result };
 	}
 
 	CacheEntry entry{};
-	entry.structureType = inCreateInfo->sType;
-	entry.flags = inCreateInfo->flags;
-	if (inCreateInfo->setLayoutCount > 0)
+	entry.structureType = inCreateInfo.sType;
+	entry.flags = inCreateInfo.flags;
+	if (inCreateInfo.setLayoutCount > 0)
 	{
 		entry.descriptorSetLayouts.assign(
-			inCreateInfo->pSetLayouts,
-			inCreateInfo->pSetLayouts + inCreateInfo->setLayoutCount);
+			inCreateInfo.pSetLayouts,
+			inCreateInfo.pSetLayouts + inCreateInfo.setLayoutCount);
 	}
-	if (inCreateInfo->pushConstantRangeCount > 0)
+	if (inCreateInfo.pushConstantRangeCount > 0)
 	{
 		entry.pushConstantRanges.assign(
-			inCreateInfo->pPushConstantRanges,
-			inCreateInfo->pPushConstantRanges + inCreateInfo->pushConstantRangeCount);
+			inCreateInfo.pPushConstantRanges,
+			inCreateInfo.pPushConstantRanges + inCreateInfo.pushConstantRangeCount);
 	}
 	entry.pipelineLayout = pipelineLayout;
 	entries.push_back(std::move(entry));
 	return { pipelineLayout, VK_SUCCESS };
 }
 
-auto PipelineLayoutAllocator::AllocatePipelineLayout(const VkPipelineLayoutCreateInfo* inCreateInfo) -> VkPipelineLayout
+auto PipelineLayoutAllocator::AllocatePipelineLayout(const VkPipelineLayoutCreateInfo& inCreateInfo) -> VkPipelineLayout
 {
 	auto [pipelineLayout, result] = AllocatePipelineLayoutWithResult(inCreateInfo);
 	VK_CHECK(result, "Failed to allocate pipeline layout!");

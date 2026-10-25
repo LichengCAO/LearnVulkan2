@@ -41,9 +41,9 @@ public:
 
 	auto Create()->void;
 
-	auto AllocateSamplerWithResult(const SamplerCreateInfo* inCreateInfo)->std::pair<VkSampler, VkResult>;
+	auto AllocateSamplerWithResult(const SamplerCreateInfo& inCreateInfo)->std::pair<VkSampler, VkResult>;
 
-	auto AllocateSampler(const SamplerCreateInfo* inCreateInfo)->VkSampler;
+	auto AllocateSampler(const SamplerCreateInfo& inCreateInfo)->VkSampler;
 
 	auto FreeSampler(VkSampler& inoutSampler)->void;
 

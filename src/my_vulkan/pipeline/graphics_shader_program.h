@@ -28,7 +28,7 @@ public:
 	auto AddVertexInputDescription(
 		const VkVertexInputBindingDescription& inBindingDescription,
 		const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions) -> GraphicsPipelineStateInfo&;
-	auto SetRenderPassSubpass(const RenderPass* inRenderPassPtr, uint32_t inSubpassIndex = 0) -> GraphicsPipelineStateInfo&;
+	auto SetRenderPassSubpass(const RenderPass& inRenderPass, uint32_t inSubpassIndex = 0) -> GraphicsPipelineStateInfo&;
 };
 
 class GraphicsShaderProgramCreateInfo final
@@ -48,8 +48,7 @@ private:
 	std::optional<VkFormat> m_defaultDepth;
 
 public:
-	auto SetDefaultColorAttachment(uint32_t inLocation, VkFormat inFormat,
-		VkImageLayout inFinalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) -> GraphicsShaderProgramCreateInfo&;
+	auto SetDefaultColorAttachment(uint32_t inLocation, VkFormat inFormat, VkImageLayout inFinalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) -> GraphicsShaderProgramCreateInfo&;
 	auto SetDefaultDepthAttachment(VkFormat inFormat) -> GraphicsShaderProgramCreateInfo&;
 	auto Reset() -> GraphicsShaderProgramCreateInfo&;
 	auto AddVertexShader(std::string_view inSpirv) -> GraphicsShaderProgramCreateInfo&;
@@ -81,12 +80,9 @@ public:
 	GraphicsShaderProgram();
 	~GraphicsShaderProgram();
 
-	void Create(const GraphicsShaderProgramCreateInfo* inCreateInfo);
-	
+	void Create(const GraphicsShaderProgramCreateInfo& inCreateInfo);
 	void Destroy();
-
 	auto GetLayout() const -> const PipelineLayout&;
 	auto GetDefaultRenderPass() const -> const RenderPass&;
-	
 	auto GetVkPipeline(const GraphicsPipelineStateInfo& inStateInfo)->VkPipeline;
 };

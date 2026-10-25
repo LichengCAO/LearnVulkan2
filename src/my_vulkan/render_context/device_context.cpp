@@ -20,14 +20,13 @@ auto SubmissionSyncInfo::AddSignalQueueDependency(
 	return *this;
 }
 
-auto SubmissionSyncInfo::WaitSwapchainImage(const SwapchainImage* inImage)->SubmissionSyncInfo&
+auto SubmissionSyncInfo::WaitSwapchainImage(const SwapchainImage& inImage)->SubmissionSyncInfo&
 {
-	CHECK_TRUE(inImage != nullptr, "Swapchain wait image is null!");
-	CHECK_TRUE(std::find(m_acquireWaitImages.begin(), m_acquireWaitImages.end(), inImage) ==
+	CHECK_TRUE(std::find(m_acquireWaitImages.begin(), m_acquireWaitImages.end(), &inImage) ==
 		m_acquireWaitImages.end(), "Swapchain image has a duplicate acquire wait!");
 	m_submitInfo.AddExternalBinaryWait(
-		inImage->GetAcquireSemaphore(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-	m_acquireWaitImages.push_back(inImage);
+		inImage.GetAcquireSemaphore(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+	m_acquireWaitImages.push_back(&inImage);
 	return *this;
 }
 
@@ -171,13 +170,13 @@ auto DeviceContext::GetNextAvailableSwapchainImage() -> SwapchainImage*
 }
 
 void DeviceContext::PresentSwapchainImage(
-	const SwapchainImage* inImage, std::span<QueueDependency* const> inWaits)
+	const SwapchainImage& inImage, std::span<QueueDependency* const> inWaits)
 {
 	_GetCurrentFrameContext();
-	const auto imageIter = std::find(m_acquiredImages.begin(), m_acquiredImages.end(), inImage);
-	CHECK_TRUE(inImage != nullptr && imageIter != m_acquiredImages.end(),
+	const auto imageIter = std::find(m_acquiredImages.begin(), m_acquiredImages.end(), &inImage);
+	CHECK_TRUE(imageIter != m_acquiredImages.end(),
 		"Presented image was not acquired in the current frame!");
-	CHECK_TRUE(inImage->m_acquireWaitSubmitted, "Swapchain acquire wait was not submitted!");
+	CHECK_TRUE(inImage.m_acquireWaitSubmitted, "Swapchain acquire wait was not submitted!");
 	CHECK_TRUE(m_queueRecordingStates[_GetQueueIndex(QueueFamilyType::GRAPHICS)].pendingTickets.empty(),
 		"Cannot present while graphics recording tickets remain pending!");
 	SubmissionManager::SubmitInfo bridge;
@@ -186,7 +185,7 @@ void DeviceContext::PresentSwapchainImage(
 		CHECK_TRUE(dependency != nullptr, "Present queue dependency is null!");
 		bridge.AddWaitQueueDependency(*dependency);
 	}
-	bridge.AddExternalBinarySignal(inImage->GetRenderFinishedSemaphore());
+	bridge.AddExternalBinarySignal(inImage.GetRenderFinishedSemaphore());
 	m_uptrCommandQueueManager->Submit(QueueFamilyType::GRAPHICS, std::move(bridge));
 	MyDevice::GetInstance().PresentSwapchainImage(inImage);
 	m_acquiredImages.erase(imageIter);

@@ -29,15 +29,15 @@ createInfo.AddVertexShader("scene.spv")
 createInfo.SetDefaultColorAttachment(0, VK_FORMAT_R8G8B8A8_UNORM);
 createInfo.SetDefaultDepthAttachment(VK_FORMAT_D32_SFLOAT); // Optional.
 GraphicsShaderProgram program;
-program.Create(&createInfo);
+program.Create(createInfo);
 const RenderPass& renderPass = program.GetDefaultRenderPass();
 
 FramebufferCreateInfo framebufferInfo;
-framebufferInfo.SetRenderPass(&renderPass);
-framebufferInfo.SetImageView("outColor", colorImage.View()); // Shader output name.
-framebufferInfo.SetImageView("__depth", depthImage.View());
+framebufferInfo.SetRenderPass(renderPass);
+framebufferInfo.SetImageView("outColor", *colorImage.View()); // Shader output name.
+framebufferInfo.SetImageView("__depth", *depthImage.View());
 Framebuffer framebuffer;
-framebuffer.Create(&framebufferInfo);
+framebuffer.Create(framebufferInfo);
 
 BeginRenderPassCommand::Parameters begin;
 begin.renderPass = renderPass.GetVkRenderPass();
@@ -46,8 +46,8 @@ begin.renderArea.extent = {width, height};
 begin.clearValues = renderPass.GetClearValues();
 
 ShaderResources resources;
-resources.SetBuffer("camera", &cameraBuffer);
-resources.SetCombinedImageSampler("albedo", albedoImage.View(), &sampler);
+resources.SetBuffer("camera", cameraBuffer);
+resources.SetCombinedImageSampler("albedo", *albedoImage.View(), sampler);
 CommandBuffer commands;
 commands.BeginRenderPass(begin).BindGraphicsProgram(program);
 commands.BindGraphicsShaderResource(resources);
@@ -102,7 +102,7 @@ graphics.AddVertexShader("scene.spv")
 ComputeShaderProgramCreateInfo compute;
 compute.SetShader("compute.spv").CustomizePipelineCache(pipelineCache);
 ComputeShaderProgram program;
-program.Create(&compute);
+program.Create(compute);
 ~~~
 
 Graphics exposes `AddVertexShader`, `AddFragmentShader`, `AddGeometryShader`,
@@ -134,20 +134,27 @@ modules, layouts and pipelines and permits rebuilding.
 ## Ray tracing programs
 
 ~~~cpp
-RayTracingShaderProgram::Builder builder;
+RayTracingShaderProgramCreateInfo builder;
 builder.AddRayGenerationShaderGroup("main", "scene.spv")
        .AddMissShaderGroup("background", "scene.spv");
 RayTracingShaderProgram program;
-program.Create(&builder);
+program.Create(builder);
 
-ShaderBindingTable::Descriptor table(program.GetShaderGroupSet());
-table.SetShaderTableBinding(0, "main")
-     .SetShaderTableBinding(0, "background");
-// Upload the SBT records and manage the SBT buffer through the explicit path.
+ShaderBindingTableCreateInfo tableInfo;
+tableInfo.SetShaderGroupSet(program.GetShaderGroupSet())
+         .SetTableCapacity(ShaderTableType::RayGeneration, 1, 0)
+         .SetTableCapacity(ShaderTableType::Miss, 1, 0);
+ShaderBindingTable table;
+table.Create(tableInfo);
+table.SetShaderTableBinding(ShaderTableType::RayGeneration, 0, "main")
+     .SetShaderTableBinding(ShaderTableType::Miss, 0, "background");
+table.Commit();
+const auto raygenRegion = table.GetShaderTableRegion(ShaderTableType::RayGeneration);
+const auto missRegion = table.GetShaderTableRegion(ShaderTableType::Miss);
 
 ShaderResources resources;
-resources.SetAccelerationStructure("scene", &tlas);
-resources.SetImage("outputImage", outputImage.View(), VK_IMAGE_LAYOUT_GENERAL);
+resources.SetAccelerationStructure("scene", tlas);
+resources.SetImage("outputImage", *outputImage.View(), VK_IMAGE_LAYOUT_GENERAL);
 commands.BindRayTracingProgram(program).BindRayTracingShaderResource(resources);
 // Use ExternalCommand to push constants and call vkCmdTraceRaysKHR.
 ~~~
@@ -195,48 +202,64 @@ state; `Destroy()` permits recreation.
 ~~~cpp
 const auto& group = program.GetShaderGroupSet().GetGroupData("opaque");
 // group.type is ShaderTableType::Hit; group.handle owns the aligned handle bytes.
-ShaderBindingTable::Descriptor table(program.GetShaderGroupSet());
-table.SetShaderTableBinding(0, "main")
-     .SetShaderTableBinding(0, "background")
-     .SetShaderTableBinding(0, "opaque", &record);
-table.UpdateShaderTableBinding(0, "alpha", &record);
-table.SetShaderTableBinding(1, "volume", bytes, byteCount);
-table.UpdateShaderTableBinding(1, "volume_only");
+ShaderBindingTableCreateInfo tableInfo;
+tableInfo.SetShaderGroupSet(program.GetShaderGroupSet())
+         .SetTableCapacity(ShaderTableType::RayGeneration, 2, 0)
+         .SetTableCapacity(ShaderTableType::Miss, 1, 0)
+         .SetTableCapacity(ShaderTableType::Hit, 2, sizeof(record));
+ShaderBindingTable table;
+table.Create(tableInfo);
+table.SetShaderTableBinding(ShaderTableType::RayGeneration, 0, "main")
+     .SetShaderTableBinding(ShaderTableType::RayGeneration, 1, "main")
+     .SetShaderTableBinding(ShaderTableType::Miss, 0, "background")
+     .SetShaderTableBinding(ShaderTableType::Hit, 0, "opaque", record);
+table.SetShaderTableBinding(ShaderTableType::Hit, 0, "alpha", record);
+table.SetShaderTableBinding(ShaderTableType::Hit, 1, "volume", bytes, byteCount);
+table.SetShaderTableBinding(ShaderTableType::Hit, 1, "volume_only");
+table.Commit();
+const auto raygenRegion = table.GetShaderTableRegion(ShaderTableType::RayGeneration, 1);
 ~~~
 
 GetGroupData is the only group-handle query and reports unknown names. Each GroupData
 owns its handle bytes, padded to shaderGroupHandleAlignment. GroupSet copies own
-independent storage; Reset clears only that copy. Descriptor stores its own GroupSet
-copy, so record construction remains valid after the source GroupSet is reset or its
-pipeline is destroyed. GPU execution still requires the corresponding live pipeline.
+independent storage; Reset clears only that copy. CreateInfo and the created SBT each
+store their own GroupSet copy, so record construction remains valid after the source
+GroupSet is reset or its pipeline is destroyed. GPU execution still requires the
+corresponding live pipeline.
 
-Set/Update derive the table type from the group name. `binding` is the record position
-within that table, so different tables can use the same binding. Both methods support
-no payload, a typed pointer, or a byte pointer and length. Payloads start after the
-aligned handle; record strides use shaderGroupHandleAlignment, with raygen additionally
-aligned to shaderGroupBaseAlignment. Set can grow the table stride and preserves
-existing records. Update requires an initialized table and a payload fitting its
-current stride, preserving the existing binding-position behavior. Smaller or absent
-payloads clear the previous record bytes. Acceleration structure SBT record offsets
-retain their meaning as offsets into the hit table; group names do not change them.
+SetTableCapacity configures each region's record count and maximum extra payload size
+independently. Create allocates a fixed-size buffer and Host mirror; changing capacity
+requires recreating the SBT with a new CreateInfo, which has no Reset method.
+SetShaderTableBinding takes the table type explicitly and rejects mismatched group
+types, out-of-range bindings and oversized payloads. `binding` is the record position
+within that table, so different tables can use the same binding. Payload overloads
+accept no data, a typed const reference, or a byte pointer and length. A null byte
+pointer is valid only for an empty payload. Payloads start shaderGroupHandleSize bytes
+after the record's start;
+record strides use shaderGroupHandleAlignment, with raygen additionally aligned to
+shaderGroupBaseAlignment, and must fit maxShaderGroupStride. Replacing a record clears
+its previous bytes and never resizes the buffer. Commit uploads the full Host mirror
+through Buffer::CopyFromHost. GetShaderTableRegion returns one raygen record selected
+by its optional record offset; other types require zero offset and return the full
+region, or a zero region when empty. Acceleration structure SBT record offsets retain
+their meaning as offsets into the hit table; group names do not change them.
 
-Do remains available to bind pipeline/resources and trace. For independent bindings,
-use the typed commands and a trace command. Ray tracing submissions require an actual
+Use the typed commands and a trace command. Ray tracing submissions require an actual
 compute-capable queue family. Payloads, hit attributes and shader record structures
 are not reflected.
 
 ## Named resources
 
 ~~~cpp
-void SetBuffer(std::string_view name, const Buffer* buffer,
+void SetBuffer(std::string_view name, const Buffer& buffer,
     VkDeviceSize offset = 0, VkDeviceSize range = VK_WHOLE_SIZE, uint32_t arrayElement = 0);
-void SetImage(std::string_view name, const ImageView* view,
+void SetImage(std::string_view name, const ImageView& view,
     VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, uint32_t arrayElement = 0);
-void SetCombinedImageSampler(std::string_view name, const ImageView* view, const Sampler* sampler,
+void SetCombinedImageSampler(std::string_view name, const ImageView& view, const Sampler& sampler,
     VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, uint32_t arrayElement = 0);
-void SetSampler(std::string_view name, const Sampler* sampler, uint32_t arrayElement = 0);
-void SetBufferView(std::string_view name, const BufferView* view, uint32_t arrayElement = 0);
-void SetAccelerationStructure(std::string_view name, const TopLevelAccelStruct* acceleration,
+void SetSampler(std::string_view name, const Sampler& sampler, uint32_t arrayElement = 0);
+void SetBufferView(std::string_view name, const BufferView& view, uint32_t arrayElement = 0);
+void SetAccelerationStructure(std::string_view name, const TopLevelAccelStruct& acceleration,
     uint32_t arrayElement = 0);
 void Clear();
 ~~~
@@ -244,10 +267,15 @@ void Clear();
 Repeated settings and aliases resolving to one binding/array element use the last
 value. Every typed resource binding call must provide all reflected bindings and fixed
 array elements. Calls never fill gaps with resources from earlier calls. Unknown or
-ambiguous names, type mismatches, missing elements, null references, invalid storage
+ambiguous names, type mismatches, missing elements, invalid storage
 image layouts, buffer bounds and array bounds raise exceptions. Storage images
 require GENERAL. Runtime descriptor arrays and dynamic buffer descriptors are
 unsupported on this path.
+
+Required CreateInfo and resource inputs use references. Setters borrow the referenced
+resources; ownership and lifetime requirements are unchanged. Raw byte arrays,
+pointer/count sequences, optional pNext chains and allocation callbacks retain their
+pointer interfaces.
 
 Resources can be rebound without rebinding a pipeline. After changing a program at
 the same bind point,

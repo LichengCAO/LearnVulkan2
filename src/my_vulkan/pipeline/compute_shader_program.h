@@ -33,7 +33,7 @@ public:
 	ComputeShaderProgram();
 	~ComputeShaderProgram();
 
-	void Create(const ComputeShaderProgramCreateInfo* inCreateInfo);
+	void Create(const ComputeShaderProgramCreateInfo& inCreateInfo);
 	
 	void Destroy();
 

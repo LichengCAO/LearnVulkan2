@@ -159,7 +159,7 @@ public:
 	RenderPass& operator=(const RenderPass&) = delete;
 	~RenderPass();
 
-	void Create(const RenderPassCreateInfo* inCreateInfo);
+	void Create(const RenderPassCreateInfo& inCreateInfo);
 	void Destroy();
 	auto GetVkRenderPass()const -> VkRenderPass { return m_vkRenderPass; };
 	auto GetClearValues() const -> const std::vector<VkClearValue>& { return m_clearValues; };
@@ -177,8 +177,8 @@ private:
 	uint32_t m_layers = 1;
 
 public:
-	void SetImageView(std::string_view inTargetAttachmentName, const ImageView* inViewAttached);
-	void SetRenderPass(const RenderPass* inRenderPass);
+	void SetImageView(std::string_view inTargetAttachmentName, const ImageView& inViewAttached);
+	void SetRenderPass(const RenderPass& inRenderPass);
 };
 
 class Framebuffer final
@@ -189,7 +189,7 @@ private:
 public:
 	Framebuffer() = default;
 	~Framebuffer();
-	void Create(const FramebufferCreateInfo* inCreateInfo);
+	void Create(const FramebufferCreateInfo& inCreateInfo);
 	void Destroy();
 	VkFramebuffer GetVkFramebuffer() const;
 };

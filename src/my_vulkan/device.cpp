@@ -338,16 +338,15 @@ auto MyDevice::GetNextAvailableSwapchainImage(VkSemaphore acquireSemaphore) -> S
 	return image;
 }
 
-void MyDevice::PresentSwapchainImage(const SwapchainImage* image)
+void MyDevice::PresentSwapchainImage(const SwapchainImage& image)
 {
-	CHECK_TRUE(image != nullptr, "Presented swapchain image is null!");
 	const auto iter = std::find_if(m_uptrSwapchainImages.begin(), m_uptrSwapchainImages.end(),
-		[image](const std::unique_ptr<SwapchainImage>& current) { return current.get() == image; });
+		[&image](const std::unique_ptr<SwapchainImage>& current) { return current.get() == &image; });
 	CHECK_TRUE(iter != m_uptrSwapchainImages.end(), "Presented image is not in the current swapchain!");
-	CHECK_TRUE(image->m_acquireSemaphore != VK_NULL_HANDLE && image->m_acquireWaitSubmitted,
+	CHECK_TRUE(image.m_acquireSemaphore != VK_NULL_HANDLE && image.m_acquireWaitSubmitted,
 		"Swapchain acquire wait must be submitted before present!");
-	const uint32_t imageIdx = image->GetIndex();
-	const VkSemaphore renderFinished = image->GetRenderFinishedSemaphore();
+	const uint32_t imageIdx = image.GetIndex();
+	const VkSemaphore renderFinished = image.GetRenderFinishedSemaphore();
 	VkSwapchainKHR swapChains[] = { vkSwapchain };
 	VkPresentInfoKHR presentInfo{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 	presentInfo.waitSemaphoreCount = 1;
@@ -366,7 +365,7 @@ void MyDevice::PresentSwapchainImage(const SwapchainImage* image)
 	{
 		throw std::runtime_error("Failed to present swapchain!");
 	}
-	const_cast<SwapchainImage*>(image)->_MarkPresented();
+	const_cast<SwapchainImage&>(image)._MarkPresented();
 }
 
 bool MyDevice::NeedRecreateSwapchain() const
@@ -558,7 +557,7 @@ void MyDevice::_UpdateSwapchainImages()
 
 		uptrImage = std::make_unique<SwapchainImage>(static_cast<uint32_t>(i));
 		swapchainCreateInfo.SetUp(vkImages[i], m_swapchain.image_usage_flags, m_swapchain.image_format);
-		uptrImage->Create(&swapchainCreateInfo);
+		uptrImage->Create(swapchainCreateInfo);
 		uptrImage->_CreateRenderFinishedSemaphore();
 	}
 }
@@ -935,13 +934,13 @@ uint32_t MyDevice::GetQueueFamilyIndex(VkCommandPool inVkCommandPool) const
 	return m_mapPoolToQueueFamily.at(inVkCommandPool);
 }
 
-bool MyDevice::IsPipelineCacheValid(const VkPipelineCacheHeaderVersionOne* inCacheHeaderPtr) const
+auto MyDevice::IsPipelineCacheValid(const VkPipelineCacheHeaderVersionOne& inCacheHeader) const -> bool
 {
 	bool result = false;
 
-	result = (m_physicalDevice.properties.deviceID == inCacheHeaderPtr->deviceID)
-		&& (m_physicalDevice.properties.vendorID == inCacheHeaderPtr->vendorID)
-		&& (memcmp(inCacheHeaderPtr->pipelineCacheUUID, m_physicalDevice.properties.pipelineCacheUUID, VK_UUID_SIZE) == 0);
+	result = (m_physicalDevice.properties.deviceID == inCacheHeader.deviceID)
+		&& (m_physicalDevice.properties.vendorID == inCacheHeader.vendorID)
+		&& (memcmp(inCacheHeader.pipelineCacheUUID, m_physicalDevice.properties.pipelineCacheUUID, VK_UUID_SIZE) == 0);
 
 	return result;
 }
@@ -1119,7 +1118,7 @@ VkPipeline MyDevice::CreateGraphicsPipeline(const VkGraphicsPipelineCreateInfo& 
 	if (pAllocator == nullptr)
 	{
 		CHECK_TRUE(m_uptrGraphicsPipelineAllocator != nullptr, "Graphics pipeline allocator is not created!");
-		result = m_uptrGraphicsPipelineAllocator->AllocateGraphicsPipeline(&inCreateInfo, inCache);
+		result = m_uptrGraphicsPipelineAllocator->AllocateGraphicsPipeline(inCreateInfo, inCache);
 	}
 	else
 	{
@@ -1136,7 +1135,7 @@ VkPipeline MyDevice::CreateComputePipeline(const VkComputePipelineCreateInfo& in
 	if (pAllocator == nullptr)
 	{
 		CHECK_TRUE(m_uptrComputePipelineAllocator != nullptr, "Compute pipeline allocator is not created!");
-		result = m_uptrComputePipelineAllocator->AllocateComputePipeline(&inCreateInfo, inCache);
+		result = m_uptrComputePipelineAllocator->AllocateComputePipeline(inCreateInfo, inCache);
 	}
 	else
 	{
@@ -1153,7 +1152,7 @@ VkPipeline MyDevice::CreateRayTracingPipeline(const VkRayTracingPipelineCreateIn
 	if (pAllocator == nullptr)
 	{
 		CHECK_TRUE(m_uptrRayTracingPipelineAllocator != nullptr, "Ray tracing pipeline allocator is not created!");
-		result = m_uptrRayTracingPipelineAllocator->AllocateRayTracingPipeline(&inCreateInfo, inCache, inDeferredOperation);
+		result = m_uptrRayTracingPipelineAllocator->AllocateRayTracingPipeline(inCreateInfo, inCache, inDeferredOperation);
 	}
 	else
 	{
@@ -1215,7 +1214,7 @@ VkPipelineLayout MyDevice::CreatePipelineLayout(
 	if (pAllocator == nullptr)
 	{
 		CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr, "Pipeline layout allocator is not created!");
-		auto [pipelineLayout, allocateResult] = m_uptrPipelineLayoutAllocator->AllocatePipelineLayoutWithResult(&inCreateInfo);
+		auto [pipelineLayout, allocateResult] = m_uptrPipelineLayoutAllocator->AllocatePipelineLayoutWithResult(inCreateInfo);
 		result = pipelineLayout;
 		outProcessResult = allocateResult;
 	}
@@ -1357,7 +1356,7 @@ VkRenderPass MyDevice::CreateRenderPass(const VkRenderPassCreateInfo& inCreateIn
 	if (pAllocator == nullptr)
 	{
 		CHECK_TRUE(m_uptrRenderPassAllocator != nullptr, "Render pass allocator is not created!");
-		result = m_uptrRenderPassAllocator->AllocateRenderPass(&inCreateInfo);
+		result = m_uptrRenderPassAllocator->AllocateRenderPass(inCreateInfo);
 	}
 	else
 	{
@@ -1392,7 +1391,7 @@ VkFramebuffer MyDevice::CreateFramebuffer(const VkFramebufferCreateInfo& inCreat
 	if (pAllocator == nullptr)
 	{
 		CHECK_TRUE(m_uptrFramebufferAllocator != nullptr, "Framebuffer allocator is not created!");
-		result = m_uptrFramebufferAllocator->AllocateFramebuffer(&inCreateInfo);
+		result = m_uptrFramebufferAllocator->AllocateFramebuffer(inCreateInfo);
 	}
 	else
 	{

@@ -49,7 +49,7 @@ public:
 	Sampler& operator=(const Sampler&) = delete;
 	~Sampler();
 
-	auto Create(const SamplerCreateInfo* inCreateInfo)->void;
+	auto Create(const SamplerCreateInfo& inCreateInfo)->void;
 
 	auto Destroy()->void;
 
