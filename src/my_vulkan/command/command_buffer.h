@@ -13,6 +13,8 @@ class Image;
 class Framebuffer;
 class BottomLevelAccelStruct;
 class TopLevelAccelStruct;
+class BottomLevelAccelStructCreateInfo;
+class TopLevelAccelStructCreateInfo;
 struct VkAccelStructBuildInfo;
 
 // Member commands own their CPU parameters. GPU resources remain caller-owned
@@ -149,6 +151,19 @@ public:
     void TraceRaysKHR(const ShaderBindingTable& inTable, uint32_t inWidth,
         uint32_t inHeight = 1, uint32_t inDepth = 1, uint32_t inRayGenerationIndex = 0);
     void BuildAccelerationStructuresKHR(std::span<const VkAccelStructBuildInfo> inBuildInfos);
+    // Snapshots descriptions only. External buffers/contents must survive GPU use.
+    void BuildAccelerationStructureKHR(BottomLevelAccelStruct& inDst,
+        const BottomLevelAccelStructCreateInfo& inInfo, Buffer& inScratchBuffer,
+        VkDeviceSize inScratchOffset = 0);
+    void BuildAccelerationStructureKHR(TopLevelAccelStruct& inDst,
+        const TopLevelAccelStructCreateInfo& inInfo, const Buffer& inInstanceBuffer,
+        VkDeviceSize inInstanceOffset, Buffer& inScratchBuffer, VkDeviceSize inScratchOffset = 0);
+    void UpdateAccelerationStructureKHR(const BottomLevelAccelStruct& inSrc, BottomLevelAccelStruct& inDst,
+        const BottomLevelAccelStructCreateInfo& inInfo, Buffer& inScratchBuffer,
+        VkDeviceSize inScratchOffset = 0);
+    void UpdateAccelerationStructureKHR(const TopLevelAccelStruct& inSrc, TopLevelAccelStruct& inDst,
+        const TopLevelAccelStructCreateInfo& inInfo, const Buffer& inInstanceBuffer,
+        VkDeviceSize inInstanceOffset, Buffer& inScratchBuffer, VkDeviceSize inScratchOffset = 0);
     void CopyAccelerationStructureKHR(const BottomLevelAccelStruct& inSrc, BottomLevelAccelStruct& inDst,
         VkCopyAccelerationStructureModeKHR inMode = VK_COPY_ACCELERATION_STRUCTURE_MODE_CLONE_KHR);
     void CopyAccelerationStructureKHR(const TopLevelAccelStruct& inSrc, TopLevelAccelStruct& inDst,

@@ -441,6 +441,44 @@ void CommandBuffer::TraceRaysKHR(const ShaderBindingTable& inTable, uint32_t inW
     _AppendStateCommand(std::move(command));
 }
 
+void CommandBuffer::BuildAccelerationStructureKHR(BottomLevelAccelStruct& inDst,
+    const BottomLevelAccelStructCreateInfo& inInfo, Buffer& inScratchBuffer, VkDeviceSize inScratchOffset)
+{
+    _RequireOutsideRenderPass();
+    const auto build = inDst._BuildInfo(inInfo, nullptr, inScratchBuffer, inScratchOffset);
+    BuildAccelerationStructuresKHR(std::span(&build, 1));
+}
+
+void CommandBuffer::BuildAccelerationStructureKHR(TopLevelAccelStruct& inDst,
+    const TopLevelAccelStructCreateInfo& inInfo, const Buffer& inInstanceBuffer,
+    VkDeviceSize inInstanceOffset, Buffer& inScratchBuffer, VkDeviceSize inScratchOffset)
+{
+    _RequireOutsideRenderPass();
+    const auto build = inDst._BuildInfo(inInfo, nullptr, inInstanceBuffer, inInstanceOffset,
+        inScratchBuffer, inScratchOffset);
+    BuildAccelerationStructuresKHR(std::span(&build, 1));
+}
+
+void CommandBuffer::UpdateAccelerationStructureKHR(const BottomLevelAccelStruct& inSrc,
+    BottomLevelAccelStruct& inDst, const BottomLevelAccelStructCreateInfo& inInfo,
+    Buffer& inScratchBuffer, VkDeviceSize inScratchOffset)
+{
+    _RequireOutsideRenderPass();
+    const auto build = inDst._BuildInfo(inInfo, &inSrc, inScratchBuffer, inScratchOffset);
+    BuildAccelerationStructuresKHR(std::span(&build, 1));
+}
+
+void CommandBuffer::UpdateAccelerationStructureKHR(const TopLevelAccelStruct& inSrc,
+    TopLevelAccelStruct& inDst, const TopLevelAccelStructCreateInfo& inInfo,
+    const Buffer& inInstanceBuffer, VkDeviceSize inInstanceOffset,
+    Buffer& inScratchBuffer, VkDeviceSize inScratchOffset)
+{
+    _RequireOutsideRenderPass();
+    const auto build = inDst._BuildInfo(inInfo, &inSrc, inInstanceBuffer, inInstanceOffset,
+        inScratchBuffer, inScratchOffset);
+    BuildAccelerationStructuresKHR(std::span(&build, 1));
+}
+
 void CommandBuffer::BuildAccelerationStructuresKHR(std::span<const VkAccelStructBuildInfo> inBuildInfos)
 {
     _RequireOutsideRenderPass();
@@ -455,7 +493,7 @@ void CommandBuffer::BuildAccelerationStructuresKHR(std::span<const VkAccelStruct
         CHECK_TRUE(build.buildGeometryInfo.dstAccelerationStructure != VK_NULL_HANDLE,
             "Invalid destination acceleration structure!");
         auto info = build.buildGeometryInfo;
-        // The existing BuildHelper wrapper's owned vectors are the source of truth.
+        // Owned vectors are authoritative; incoming embedded pointers may be stale after copies/moves.
         info.pGeometries = build.geometries.data();
         info.ppGeometries = nullptr;
         parameters.buildInfos.push_back(info);

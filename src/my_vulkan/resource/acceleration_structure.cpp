@@ -1,588 +1,510 @@
 #include "acceleration_structure.h"
 #include "device.h"
-#include "buffer.h"
-#include "command_buffer.h"
-#include "utils.h"
-#include <chrono> // For timing
+#include <limits>
 
-namespace {
-	void _InitScratchBuffer(
-		const std::vector<VkAccelerationStructureBuildSizesInfoKHR>& inBuildSizesInfos,
-		Buffer& outScratchBufferToInit,
-		std::vector<VkDeviceAddress>& outSlotAddresses,
-		bool inBuildNotUpdate = true,
-		VkDeviceSize inMaxBudget = 256'000'000)
-	{
-		BufferCreateInfo bufferCreateInfo{};
+namespace
+{
+    constexpr auto InputUsage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
-		uint32_t	uMinAlignment = 128; /*m_rtASProperties.minAccelerationStructureScratchOffsetAlignment*/
-		VkDeviceSize maxScratchChunk = 0;
-		VkDeviceSize fullScratchSize = 0;
-		uint64_t	uSlotCount = 0;
+    struct VertexFormatLayout
+    {
+        VkDeviceSize size;
+        VkDeviceSize alignment;
+    };
 
-		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    auto VertexLayout(VkFormat inFormat) -> VertexFormatLayout
+    {
+        switch (inFormat)
+        {
+        case VK_FORMAT_R32G32_SFLOAT: return { 8, 4 };
+        case VK_FORMAT_R32G32B32_SFLOAT: return { 12, 4 };
+        case VK_FORMAT_R32G32B32A32_SFLOAT: return { 16, 4 };
+        case VK_FORMAT_R16G16_SFLOAT:
+        case VK_FORMAT_R16G16_SNORM:
+        case VK_FORMAT_R16G16_UNORM: return { 4, 2 };
+        case VK_FORMAT_R16G16B16_SFLOAT:
+        case VK_FORMAT_R16G16B16_SNORM:
+        case VK_FORMAT_R16G16B16_UNORM: return { 6, 2 };
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+        case VK_FORMAT_R16G16B16A16_SNORM:
+        case VK_FORMAT_R16G16B16A16_UNORM: return { 8, 2 };
+        case VK_FORMAT_R8G8_SNORM:
+        case VK_FORMAT_R8G8_UNORM: return { 2, 1 };
+        case VK_FORMAT_R8G8B8_SNORM:
+        case VK_FORMAT_R8G8B8_UNORM: return { 3, 1 };
+        case VK_FORMAT_R8G8B8A8_SNORM:
+        case VK_FORMAT_R8G8B8A8_UNORM: return { 4, 1 };
+        default: throw std::runtime_error("Unsupported acceleration structure vertex format!");
+        }
+    }
 
-		// setup maxScratchChunk, fullScratchSize
-		for (const auto& sizeInfo : inBuildSizesInfos)
-		{
-			VkDeviceSize chunkSizeAligned = inBuildNotUpdate ? common_utils::AlignUp(sizeInfo.buildScratchSize, uMinAlignment) : common_utils::AlignUp(sizeInfo.updateScratchSize, uMinAlignment);
+    auto CheckedMultiply(VkDeviceSize inLeft, VkDeviceSize inRight) -> VkDeviceSize
+    {
+        CHECK_TRUE(inRight == 0 || inLeft <= std::numeric_limits<VkDeviceSize>::max() / inRight,
+            "Acceleration structure byte size overflow!");
+        return inLeft * inRight;
+    }
 
-			maxScratchChunk = std::max(maxScratchChunk, chunkSizeAligned);
-			fullScratchSize += chunkSizeAligned;
-		}
-		CHECK_TRUE(inMaxBudget >= maxScratchChunk, "Max Budget is too small!");
+    auto CheckedAdd(VkDeviceSize inLeft, VkDeviceSize inRight) -> VkDeviceSize
+    {
+        CHECK_TRUE(inLeft <= std::numeric_limits<VkDeviceSize>::max() - inRight,
+            "Acceleration structure address overflow!");
+        return inLeft + inRight;
+    }
 
-		// Find the scratch buffer size
-		if (fullScratchSize <= inMaxBudget)
-		{
-			bufferCreateInfo.SetBufferSize(fullScratchSize);
-			uSlotCount = inBuildSizesInfos.size();
-		}
-		else
-		{
-			uint64_t nChunkCount = std::min(inBuildSizesInfos.size(), inMaxBudget / maxScratchChunk);
+    auto StridedSize(uint32_t inCount, VkDeviceSize inStride, VkDeviceSize inElementSize) -> VkDeviceSize
+    {
+        return inCount == 0 ? 0 : CheckedAdd(CheckedMultiply(inCount - 1, inStride), inElementSize);
+    }
 
-			bufferCreateInfo.SetBufferSize(nChunkCount * maxScratchChunk);
-			uSlotCount = nChunkCount;
-		}
+    auto BufferAddress(const Buffer& inBuffer, VkDeviceSize inOffset, VkDeviceSize inSize,
+        VkBufferUsageFlags inUsage, VkDeviceSize inAlignment) -> VkDeviceAddress
+    {
+        const auto& bufferInfo = inBuffer.GetBufferInformation();
+        CHECK_TRUE(inBuffer.GetVkBuffer() != VK_NULL_HANDLE, "Acceleration structure buffer is not created!");
+        CHECK_TRUE(CONTAIN_BITS(bufferInfo.usage, inUsage), "Acceleration structure buffer usage is invalid!");
+        CHECK_TRUE(inOffset < bufferInfo.size && inSize <= bufferInfo.size - inOffset,
+            "Acceleration structure buffer range is out of bounds!");
+        const auto baseAddress = inBuffer.GetDeviceAddress();
+        CHECK_TRUE(baseAddress != 0, "Acceleration structure buffer address is invalid!");
+        const auto address = CheckedAdd(baseAddress, inOffset);
+        CheckedAdd(address, inSize);
+        CHECK_TRUE(inAlignment != 0 && address % inAlignment == 0,
+            "Acceleration structure buffer address is misaligned!");
+        return address;
+    }
 
-		bufferCreateInfo.CustomizeAlignment(uMinAlignment);
+    auto ScratchAddress(Buffer& inBuffer, VkDeviceSize inOffset, VkDeviceSize inSize,
+        VkDeviceSize inAlignment) -> VkDeviceAddress
+    {
+        if (inSize == 0) return 0;
+        return BufferAddress(inBuffer, inOffset, inSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, inAlignment);
+    }
 
-		outScratchBufferToInit.Create(bufferCreateInfo);
+    auto SameLayout(const VkAccelStructBuildInfo& inLeft, const VkAccelStructBuildInfo& inRight) -> bool
+    {
+        if (inLeft.buildGeometryInfo.type != inRight.buildGeometryInfo.type ||
+            inLeft.buildGeometryInfo.flags != inRight.buildGeometryInfo.flags ||
+            inLeft.geometries.size() != inRight.geometries.size() ||
+            inLeft.buildRangesInfos.size() != inRight.buildRangesInfos.size()) return false;
+        for (size_t i = 0; i < inLeft.geometries.size(); ++i)
+        {
+            const auto& left = inLeft.geometries[i];
+            const auto& right = inRight.geometries[i];
+            if (left.geometryType != right.geometryType || left.flags != right.flags ||
+                inLeft.buildRangesInfos[i].primitiveCount != inRight.buildRangesInfos[i].primitiveCount) return false;
+            if (left.geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR)
+            {
+                const auto& a = left.geometry.triangles;
+                const auto& b = right.geometry.triangles;
+                if (a.vertexFormat != b.vertexFormat || a.vertexStride != b.vertexStride ||
+                    a.maxVertex != b.maxVertex || a.indexType != b.indexType ||
+                    (a.transformData.deviceAddress != 0) != (b.transformData.deviceAddress != 0)) return false;
+            }
+            else if (left.geometryType == VK_GEOMETRY_TYPE_AABBS_KHR &&
+                left.geometry.aabbs.stride != right.geometry.aabbs.stride) return false;
+        }
+        return true;
+    }
 
-		// fill slotAddresses
-		outSlotAddresses.clear();
-		outSlotAddresses.reserve(uSlotCount);
-		if (fullScratchSize <= inMaxBudget)
-		{
-			VkDeviceAddress curAddress = outScratchBufferToInit.GetDeviceAddress();
-			for (int i = 0; i < inBuildSizesInfos.size(); ++i)
-			{
-				const auto& sizeInfo = inBuildSizesInfos[i];
-				VkDeviceSize chunkSizeAligned = inBuildNotUpdate ? common_utils::AlignUp(sizeInfo.buildScratchSize, uMinAlignment) : common_utils::AlignUp(sizeInfo.updateScratchSize, uMinAlignment);
+    auto QueryProperties(const VkAccelStructBuildInfo& inLayout) -> VkPhysicalDeviceAccelerationStructurePropertiesKHR
+    {
+        auto& device = MyDevice::GetInstance();
+        VkPhysicalDeviceAccelerationStructurePropertiesKHR result{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR };
+        VkPhysicalDeviceProperties2 properties{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+        properties.pNext = &result;
+        vkGetPhysicalDeviceProperties2(device.vkPhysicalDevice, &properties);
+        CHECK_TRUE(result.minAccelerationStructureScratchOffsetAlignment != 0,
+            "Acceleration structure scratch alignment is invalid!");
+        if (inLayout.buildGeometryInfo.type == VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR)
+        {
+            CHECK_TRUE(inLayout.geometries.size() <= result.maxGeometryCount, "Too many BLAS geometries!");
+            VkDeviceSize primitiveCount = 0;
+            for (size_t i = 0; i < inLayout.geometries.size(); ++i)
+            {
+                primitiveCount = CheckedAdd(primitiveCount, inLayout.buildRangesInfos[i].primitiveCount);
+                if (inLayout.geometries[i].geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR)
+                {
+                    VkFormatProperties formatProperties{};
+                    vkGetPhysicalDeviceFormatProperties(device.vkPhysicalDevice,
+                        inLayout.geometries[i].geometry.triangles.vertexFormat, &formatProperties);
+                    CHECK_TRUE(CONTAIN_BITS(formatProperties.bufferFeatures,
+                        VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR),
+                        "Vertex format does not support acceleration structure input!");
+                }
+            }
+            CHECK_TRUE(primitiveCount <= result.maxPrimitiveCount, "Too many BLAS primitives!");
+        }
+        else
+        {
+            CHECK_TRUE(inLayout.buildRangesInfos[0].primitiveCount <= result.maxInstanceCount,
+                "Too many TLAS instances!");
+        }
+        return result;
+    }
 
-				outSlotAddresses.push_back(curAddress);
-				curAddress += chunkSizeAligned;
-			}
-		}
-		else
-		{
-			VkDeviceAddress curAddress = outScratchBufferToInit.GetDeviceAddress();
-			for (int i = 0; i < uSlotCount; ++i)
-			{
-				outSlotAddresses.push_back(curAddress);
-				curAddress += maxScratchChunk;
-			}
-		}
-	}
+    auto QuerySizes(const VkAccelStructBuildInfo& inLayout) -> VkAccelerationStructureBuildSizesInfoKHR
+    {
+        auto buildInfo = inLayout.buildGeometryInfo;
+        buildInfo.pGeometries = inLayout.geometries.data();
+        std::vector<uint32_t> primitiveCounts;
+        primitiveCounts.reserve(inLayout.buildRangesInfos.size());
+        for (const auto& range : inLayout.buildRangesInfos) primitiveCounts.push_back(range.primitiveCount);
+        VkAccelerationStructureBuildSizesInfoKHR result{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
+        MyDevice::GetInstance().GetAccelerationStructureBuildSizes(
+            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, buildInfo, primitiveCounts, result);
+        CHECK_TRUE(result.accelerationStructureSize != 0, "Acceleration structure size query returned zero!");
+        return result;
+    }
+
+    auto CreateBackingBuffer(VkDeviceSize inSize) -> std::unique_ptr<Buffer>
+    {
+        BufferCreateInfo info{};
+        info.SetBufferSize(inSize);
+        info.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+        info.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        auto buffer = std::make_unique<Buffer>();
+        buffer->Create(info);
+        CHECK_TRUE(buffer->GetVkBuffer() != VK_NULL_HANDLE, "Acceleration structure backing buffer creation failed!");
+        return buffer;
+    }
+
+    auto CreateHandle(const Buffer& inBuffer, VkDeviceSize inSize, VkAccelerationStructureTypeKHR inType)
+        -> VkAccelerationStructureKHR
+    {
+        VkAccelerationStructureCreateInfoKHR info{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
+        info.type = inType;
+        info.size = inSize;
+        info.buffer = inBuffer.GetVkBuffer();
+        auto handle = MyDevice::GetInstance().CreateAccelerationStructure(info);
+        CHECK_TRUE(handle != VK_NULL_HANDLE, "Acceleration structure creation returned a null handle!");
+        return handle;
+    }
 }
 
-#pragma region BLAS
-
-void BottomLevelAccelStruct::Descriptor::AddGeometries(
-	const BottomLevelAccelStruct::GeometryDescription* inDescriptions,
-	uint32_t inCount)
+void BottomLevelAccelStructCreateInfo::SetTriangles(std::span<const AccelStructTriangleGeometry> inGeometries)
 {
-	if (inCount == 0 || inDescriptions == nullptr) return;
-	size_t offset = m_dataRanges.size();
-	
-	CHECK_TRUE(m_dataRanges.size() == m_dataSources.size());
-	m_dataRanges.resize(offset + static_cast<size_t>(inCount), {});
-	m_dataSources.resize(offset + static_cast<size_t>(inCount), { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR });
-	switch (m_geometryType)
-	{
-	case VK_GEOMETRY_TYPE_AABBS_KHR:
-	{
-		for (uint32_t i = 0; i < inCount; ++i)
-		{
-			auto& dataRange = m_dataRanges[offset];
-			auto& dataSource = m_dataSources[offset];
-			const auto& inputData = inDescriptions[i];
-			auto& aabbs = dataSource.geometry.aabbs;
-
-			dataRange.primitiveCount = inputData.primitiveCount;
-			dataSource.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
-			dataSource.flags = inputData.flags.value_or(VK_GEOMETRY_OPAQUE_BIT_KHR);
-			aabbs.data.deviceAddress = inputData.aabbs.aabbBufferAddress;
-			aabbs.stride = inputData.aabbs.stride;
-			aabbs.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
-			++offset;
-		}
-	}
-	break;
-	case VK_GEOMETRY_TYPE_TRIANGLES_KHR:
-	{
-		for (uint32_t i = 0; i < inCount; ++i)
-		{
-			auto& dataRange = m_dataRanges[offset];
-			auto& dataSource = m_dataSources[offset];
-			const auto& inputData = inDescriptions[i];
-			auto& trigs = dataSource.geometry.triangles;
-			const auto& srcTrigs = inputData.triangles;
-
-			dataRange.primitiveCount = inputData.primitiveCount;
-			dataSource.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-			dataSource.flags = inputData.flags.value_or(VK_GEOMETRY_OPAQUE_BIT_KHR);
-			trigs.indexData.deviceAddress = srcTrigs.indexBufferAddress;
-			trigs.indexType = srcTrigs.indexType.value_or(VK_INDEX_TYPE_UINT32);
-			trigs.maxVertex = srcTrigs.vertexCount - 1;
-			trigs.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
-			trigs.transformData.deviceAddress = srcTrigs.transform.value_or(0);
-			trigs.vertexData.deviceAddress = srcTrigs.vertexBufferAddress;
-			trigs.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-			trigs.vertexStride = srcTrigs.vertexStride;
-			++offset;
-		}
-	}
-	break;
-	default:
-		CHECK_TRUE(false);
-		break;
-	}
+    std::vector<AccelStructTriangleGeometry> geometries(inGeometries.begin(), inGeometries.end());
+    m_triangles = std::move(geometries);
+    m_aabbs.clear();
 }
 
-auto BottomLevelAccelStruct::Descriptor::GetBuildSizesInfo(VkBuildAccelerationStructureFlagsKHR inFlags) const noexcept->VkAccelerationStructureBuildSizesInfoKHR
+void BottomLevelAccelStructCreateInfo::SetAabbs(std::span<const AccelStructAabbGeometry> inGeometries)
 {
-	auto& device = MyDevice::GetInstance();
-	std::vector<uint32_t> primitiveCounts;
-	VkAccelerationStructureBuildSizesInfoKHR result{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
-	VkAccelerationStructureBuildGeometryInfoKHR buildGeometryInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
-
-	buildGeometryInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-	buildGeometryInfo.flags = inFlags;
-	buildGeometryInfo.geometryCount = GetGeometryCount();
-	buildGeometryInfo.pGeometries = m_dataSources.data();
-
-	primitiveCounts.resize(m_dataRanges.size());
-	for (size_t i = 0; i < m_dataRanges.size(); ++i)
-	{
-		primitiveCounts[i] = m_dataRanges[i].primitiveCount;
-	}
-
-	device.GetAccelerationStructureBuildSizes(
-		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
-		buildGeometryInfo,
-		primitiveCounts,
-		result);
-
-	return result;
+    std::vector<AccelStructAabbGeometry> geometries(inGeometries.begin(), inGeometries.end());
+    m_aabbs = std::move(geometries);
+    m_triangles.clear();
 }
 
-void BottomLevelAccelStruct::Descriptor::UpdateGeometries(
-	const BottomLevelAccelStruct::GeometryUpdateDescription* inUpdateDescriptions, 
-	uint32_t inBeginIndex, 
-	uint32_t inCount)
+void BottomLevelAccelStructCreateInfo::CustomizeBuildFlags(VkBuildAccelerationStructureFlagsKHR inFlags) noexcept
 {
-	if (inCount == 0 || inUpdateDescriptions == nullptr) return;
-	size_t offset = static_cast<size_t>(inBeginIndex);
-
-	CHECK_TRUE(m_dataRanges.size() == m_dataSources.size());
-	CHECK_TRUE(m_dataSources.size() >= static_cast<size_t>(inBeginIndex + inCount));
-	switch (m_geometryType)
-	{
-	case VK_GEOMETRY_TYPE_AABBS_KHR:
-	{
-		for (uint32_t i = 0; i < inCount; ++i)
-		{
-			auto& dataRange = m_dataRanges[offset];
-			auto& dataSource = m_dataSources[offset];
-			const auto& inputData = inUpdateDescriptions[i];
-			auto& aabbs = dataSource.geometry.aabbs;
-
-			aabbs.data.deviceAddress = inputData.aabbs.aabbBufferAddress;
-			++offset;
-		}
-	}
-	break;
-	case VK_GEOMETRY_TYPE_TRIANGLES_KHR:
-	{
-		for (uint32_t i = 0; i < inCount; ++i)
-		{
-			auto& dataRange = m_dataRanges[offset];
-			auto& dataSource = m_dataSources[offset];
-			const auto& inputData = inUpdateDescriptions[i];
-			auto& trigs = dataSource.geometry.triangles;
-			const auto& srcTrigs = inputData.triangles;
-
-			trigs.indexData.deviceAddress = srcTrigs.indexBufferAddress;
-			trigs.transformData.deviceAddress = srcTrigs.transform.value_or(0);
-			trigs.vertexData.deviceAddress = srcTrigs.vertexBufferAddress;
-			++offset;
-		}
-	}
-	break;
-	default:
-		CHECK_TRUE(false);
-		break;
-	}
+    m_flags = inFlags;
 }
 
-void BottomLevelAccelStruct::Creator::Create(BottomLevelAccelStruct& inoutAccelStruct) const
+void BottomLevelAccelStructCreateInfo::Reset() noexcept
 {
-	CHECK_TRUE(m_descriptor != nullptr);
-
-	// create VkAcceleartionStructure
-	VkAccelerationStructureCreateInfoKHR createInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
-	VkAccelerationStructureDeviceAddressInfoKHR addrInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR };
-	auto buildSizesInfo = m_descriptor->GetBuildSizesInfo(m_flags);
-	auto& device = MyDevice::GetInstance();
-
-	if (inoutAccelStruct.m_uptrBuffer == nullptr)
-	{
-		BufferCreateInfo bufferCreateInfo{};
-
-		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		bufferCreateInfo.SetBufferSize(buildSizesInfo.accelerationStructureSize);
-		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-		inoutAccelStruct.m_uptrBuffer = std::make_unique<Buffer>();
-		inoutAccelStruct.m_uptrBuffer->Create(bufferCreateInfo);
-	}
-	else if (inoutAccelStruct.m_uptrBuffer->GetBufferInformation().size < buildSizesInfo.accelerationStructureSize)
-	{
-		BufferCreateInfo bufferCreateInfo{};
-
-		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		bufferCreateInfo.SetBufferSize(buildSizesInfo.accelerationStructureSize);
-		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-		inoutAccelStruct.m_uptrBuffer->Destroy();
-		inoutAccelStruct.m_uptrBuffer->Create(bufferCreateInfo);
-	}
-
-	createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-	createInfo.size = buildSizesInfo.accelerationStructureSize;
-	createInfo.pNext = nullptr;
-	createInfo.offset = 0;
-	createInfo.buffer = inoutAccelStruct.m_uptrBuffer->GetVkBuffer();
-	// following info are for replay https://registry.khronos.org/vulkan/specs/latest/man/html/VkAccelerationStructureCreateInfoKHR.html
-	// createInfo.deviceAddress = 0;
-	// createInfo.createFlags = 0;
-
-	inoutAccelStruct.m_vkAccelStruct = device.CreateAccelerationStructure(createInfo);
-	addrInfo.accelerationStructure = inoutAccelStruct.GetVkAccelerationStructure();
-	inoutAccelStruct.m_accelStructReference = vkGetAccelerationStructureDeviceAddressKHR(MyDevice::GetInstance().vkDevice, &addrInfo);
-	inoutAccelStruct.m_flags = m_flags;
+    m_triangles.clear();
+    m_aabbs.clear();
+    m_flags = 0;
 }
 
-void BottomLevelAccelStruct::BuildHelper::GetBuildInfo(
-	const BottomLevelAccelStruct& inDstAccelStruct,
-	VkAccelStructBuildInfo& outBuildInfo) const noexcept
+void TopLevelAccelStructCreateInfo::SetInstances(std::span<const AccelStructInstance> inInstances)
 {
-	auto& device = MyDevice::GetInstance();
-	auto& buildGeomInfo = outBuildInfo.buildGeometryInfo;
-	auto buildFlag = inDstAccelStruct.m_flags;
-	auto dstAccelStruct = inDstAccelStruct.GetVkAccelerationStructure();
-
-	outBuildInfo.buildRangesInfos = m_descriptor->m_dataRanges;
-	outBuildInfo.geometries = m_descriptor->m_dataSources;
-
-	CHECK_TRUE(dstAccelStruct != VK_NULL_HANDLE);
-
-	buildGeomInfo = VkAccelerationStructureBuildGeometryInfoKHR{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
-	buildGeomInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-	buildGeomInfo.flags = buildFlag;
-	buildGeomInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-	buildGeomInfo.srcAccelerationStructure = VK_NULL_HANDLE;
-	buildGeomInfo.scratchData.deviceAddress = m_scratchBufferAddress;
-	buildGeomInfo.dstAccelerationStructure = dstAccelStruct;
-	buildGeomInfo.geometryCount = static_cast<uint32_t>(outBuildInfo.geometries.size());
-	buildGeomInfo.pGeometries = outBuildInfo.geometries.data();
+    CHECK_TRUE(inInstances.size() <= UINT32_MAX, "Too many acceleration structure instances!");
+    std::vector<AccelStructInstance> instances(inInstances.begin(), inInstances.end());
+    m_instances = std::move(instances);
 }
 
-void BottomLevelAccelStruct::BuildHelper::GetUpdateInfo(
-	const BottomLevelAccelStruct& inSrcAccelStruct,
-	const BottomLevelAccelStruct& inDstAccelStruct,
-	VkAccelStructBuildInfo& outBuildInfo) const noexcept
+void TopLevelAccelStructCreateInfo::CustomizeBuildFlags(VkBuildAccelerationStructureFlagsKHR inFlags) noexcept
 {
-	auto& device = MyDevice::GetInstance();
-	auto& buildGeomInfo = outBuildInfo.buildGeometryInfo;
-	auto buildFlag = inDstAccelStruct.m_flags;
-	auto srcAccelStruct = inSrcAccelStruct.GetVkAccelerationStructure();
-	auto dstAccelStruct = inDstAccelStruct.GetVkAccelerationStructure();
+    m_flags = inFlags;
+}
 
-	outBuildInfo.buildRangesInfos = m_descriptor->m_dataRanges;
-	outBuildInfo.geometries = m_descriptor->m_dataSources;
+void TopLevelAccelStructCreateInfo::Reset() noexcept
+{
+    m_instances.clear();
+    m_flags = 0;
+}
 
-	CHECK_TRUE(srcAccelStruct != VK_NULL_HANDLE);
-	CHECK_TRUE(dstAccelStruct != VK_NULL_HANDLE);
+auto TopLevelAccelStructCreateInfo::GetInstanceCount() const noexcept -> uint32_t
+{
+    return static_cast<uint32_t>(m_instances.size());
+}
 
-	buildGeomInfo = VkAccelerationStructureBuildGeometryInfoKHR{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
-	buildGeomInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-	buildGeomInfo.flags = buildFlag;
-	buildGeomInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
-	buildGeomInfo.srcAccelerationStructure = srcAccelStruct;
-	buildGeomInfo.scratchData.deviceAddress = m_scratchBufferAddress;
-	buildGeomInfo.dstAccelerationStructure = dstAccelStruct;
-	buildGeomInfo.geometryCount = static_cast<uint32_t>(outBuildInfo.geometries.size());
-	buildGeomInfo.pGeometries = outBuildInfo.geometries.data();
+auto TopLevelAccelStructCreateInfo::GetInstanceBufferSize() const noexcept -> VkDeviceSize
+{
+    return static_cast<VkDeviceSize>(m_instances.size()) * sizeof(VkAccelerationStructureInstanceKHR);
+}
+
+auto BottomLevelAccelStruct::_Describe(const BottomLevelAccelStructCreateInfo& inInfo,
+    bool inResolveAddresses) -> VkAccelStructBuildInfo
+{
+    CHECK_TRUE(!inInfo.m_triangles.empty() || !inInfo.m_aabbs.empty(), "BLAS geometry list is empty!");
+    const auto count = inInfo.m_triangles.empty() ? inInfo.m_aabbs.size() : inInfo.m_triangles.size();
+    CHECK_TRUE(count <= UINT32_MAX, "Too many BLAS geometries!");
+    VkAccelStructBuildInfo result;
+    result.buildGeometryInfo = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
+    result.buildGeometryInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    result.buildGeometryInfo.flags = inInfo.m_flags;
+    result.buildGeometryInfo.geometryCount = static_cast<uint32_t>(count);
+    result.geometries.reserve(count);
+    result.buildRangesInfos.reserve(count);
+    for (const auto& source : inInfo.m_triangles)
+    {
+        const auto format = VertexLayout(source.vertexFormat);
+        CHECK_TRUE(source.vertexBuffer != nullptr, "BLAS vertex buffer is missing!");
+        CHECK_TRUE(source.vertexStride >= format.size && source.vertexStride <= UINT32_MAX &&
+            source.vertexStride % format.alignment == 0, "BLAS vertex stride is invalid!");
+        CHECK_TRUE(source.primitiveCount == 0 || source.vertexCount != 0, "BLAS vertex count is invalid!");
+        const auto vertexBytes = StridedSize(source.vertexCount, source.vertexStride, format.size);
+        CheckedAdd(source.vertexOffset, vertexBytes);
+        CHECK_TRUE(source.indexBuffer != nullptr ||
+            static_cast<uint64_t>(source.primitiveCount) * 3 <= source.vertexCount,
+            "Non-indexed BLAS has too few vertices!");
+        VkAccelerationStructureGeometryKHR geometry{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
+        geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        geometry.flags = source.flags;
+        auto& triangles = geometry.geometry.triangles;
+        triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+        triangles.vertexFormat = source.vertexFormat;
+        triangles.vertexStride = source.vertexStride;
+        triangles.maxVertex = source.vertexCount == 0 ? 0 : source.vertexCount - 1;
+        triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+        if (inResolveAddresses)
+            triangles.vertexData.deviceAddress = BufferAddress(*source.vertexBuffer, source.vertexOffset,
+                vertexBytes, InputUsage, format.alignment);
+        if (source.indexBuffer != nullptr)
+        {
+            CHECK_TRUE(source.indexType == VK_INDEX_TYPE_UINT16 || source.indexType == VK_INDEX_TYPE_UINT32,
+                "BLAS index type is invalid!");
+            const VkDeviceSize indexWidth = source.indexType == VK_INDEX_TYPE_UINT16 ? 2 : 4;
+            const auto indexBytes = CheckedMultiply(CheckedMultiply(source.primitiveCount, 3), indexWidth);
+            CheckedAdd(source.indexOffset, indexBytes);
+            triangles.indexType = source.indexType;
+            if (inResolveAddresses)
+                triangles.indexData.deviceAddress = BufferAddress(*source.indexBuffer, source.indexOffset,
+                    indexBytes, InputUsage, indexWidth);
+        }
+        if (source.transformBuffer != nullptr)
+        {
+            CheckedAdd(source.transformOffset, sizeof(VkTransformMatrixKHR));
+            // Size queries ignore input addresses, but transform presence affects the layout.
+            triangles.transformData.deviceAddress = inResolveAddresses
+                ? BufferAddress(*source.transformBuffer, source.transformOffset, sizeof(VkTransformMatrixKHR), InputUsage, 16)
+                : 1;
+        }
+        result.geometries.push_back(geometry);
+        result.buildRangesInfos.push_back({ source.primitiveCount, 0, 0, 0 });
+    }
+    for (const auto& source : inInfo.m_aabbs)
+    {
+        CHECK_TRUE(source.buffer != nullptr, "BLAS AABB buffer is missing!");
+        CHECK_TRUE(source.stride >= sizeof(VkAabbPositionsKHR) && source.stride <= UINT32_MAX && source.stride % 8 == 0,
+            "BLAS AABB stride is invalid!");
+        const auto bytes = StridedSize(source.primitiveCount, source.stride, sizeof(VkAabbPositionsKHR));
+        CheckedAdd(source.offset, bytes);
+        VkAccelerationStructureGeometryKHR geometry{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
+        geometry.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+        geometry.flags = source.flags;
+        geometry.geometry.aabbs.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+        geometry.geometry.aabbs.stride = source.stride;
+        if (inResolveAddresses)
+            geometry.geometry.aabbs.data.deviceAddress = BufferAddress(*source.buffer, source.offset, bytes, InputUsage, 8);
+        result.geometries.push_back(geometry);
+        result.buildRangesInfos.push_back({ source.primitiveCount, 0, 0, 0 });
+    }
+    return result;
+}
+
+auto TopLevelAccelStruct::_Describe(const TopLevelAccelStructCreateInfo& inInfo) -> VkAccelStructBuildInfo
+{
+    VkAccelStructBuildInfo result;
+    result.buildGeometryInfo = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
+    result.buildGeometryInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    result.buildGeometryInfo.flags = inInfo.m_flags;
+    result.buildGeometryInfo.geometryCount = 1;
+    VkAccelerationStructureGeometryKHR geometry{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
+    geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    geometry.geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    geometry.geometry.instances.arrayOfPointers = VK_FALSE;
+    result.geometries.push_back(geometry);
+    result.buildRangesInfos.push_back({ inInfo.GetInstanceCount(), 0, 0, 0 });
+    return result;
+}
+
+void BottomLevelAccelStruct::Create(const BottomLevelAccelStructCreateInfo& inCreateInfo)
+{
+    auto layout = _Describe(inCreateInfo, false);
+    const auto properties = QueryProperties(layout);
+    const auto sizes = QuerySizes(layout);
+    auto buffer = CreateBackingBuffer(sizes.accelerationStructureSize);
+    auto handle = CreateHandle(*buffer, sizes.accelerationStructureSize, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR);
+    VkDeviceAddress address = 0;
+    try
+    {
+        VkAccelerationStructureDeviceAddressInfoKHR addressInfo{
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR };
+        addressInfo.accelerationStructure = handle;
+        address = MyDevice::GetInstance().GetAccelerationStructureDeviceAddress(addressInfo);
+        CHECK_TRUE(address != 0, "BLAS device address is invalid!");
+    }
+    catch (...)
+    {
+        vkDestroyAccelerationStructureKHR(MyDevice::GetInstance().vkDevice, handle, nullptr);
+        throw;
+    }
+    Destroy();
+    m_vkAccelStruct = handle;
+    m_uptrBuffer = std::move(buffer);
+    m_accelStructReference = address;
+    m_flags = inCreateInfo.m_flags;
+    m_buildSizes = sizes;
+    m_scratchAlignment = properties.minAccelerationStructureScratchOffsetAlignment;
+    m_layout = std::move(layout);
+}
+
+void TopLevelAccelStruct::Create(const TopLevelAccelStructCreateInfo& inCreateInfo)
+{
+    auto layout = _Describe(inCreateInfo);
+    const auto properties = QueryProperties(layout);
+    const auto sizes = QuerySizes(layout);
+    auto buffer = CreateBackingBuffer(sizes.accelerationStructureSize);
+    const auto handle = CreateHandle(*buffer, sizes.accelerationStructureSize, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR);
+    Destroy();
+    m_vkAccelStruct = handle;
+    m_uptrBuffer = std::move(buffer);
+    m_flags = inCreateInfo.m_flags;
+    m_buildSizes = sizes;
+    m_scratchAlignment = properties.minAccelerationStructureScratchOffsetAlignment;
+    m_layout = std::move(layout);
+}
+
+auto BottomLevelAccelStruct::_BuildInfo(const BottomLevelAccelStructCreateInfo& inInfo,
+    const BottomLevelAccelStruct* inSrc, Buffer& inScratchBuffer, VkDeviceSize inScratchOffset) const
+    -> VkAccelStructBuildInfo
+{
+    CHECK_TRUE(m_vkAccelStruct != VK_NULL_HANDLE, "Destination BLAS is not created!");
+    const auto layout = _Describe(inInfo, false);
+    CHECK_TRUE(SameLayout(layout, m_layout), "BLAS build layout differs from its creation layout!");
+    if (inSrc != nullptr)
+    {
+        CHECK_TRUE(inSrc->m_vkAccelStruct != VK_NULL_HANDLE, "Source BLAS is not created!");
+        CHECK_TRUE(CONTAIN_BITS(m_flags, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR) &&
+            CONTAIN_BITS(inSrc->m_flags, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR),
+            "BLAS update requires ALLOW_UPDATE!");
+        CHECK_TRUE(SameLayout(layout, inSrc->m_layout), "Source BLAS update layout is incompatible!");
+    }
+    auto result = _Describe(inInfo, true);
+    auto& info = result.buildGeometryInfo;
+    info.mode = inSrc == nullptr ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR : VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+    info.srcAccelerationStructure = inSrc == nullptr ? VK_NULL_HANDLE : inSrc->m_vkAccelStruct;
+    info.dstAccelerationStructure = m_vkAccelStruct;
+    info.scratchData.deviceAddress = ScratchAddress(inScratchBuffer, inScratchOffset,
+        inSrc == nullptr ? m_buildSizes.buildScratchSize : m_buildSizes.updateScratchSize, m_scratchAlignment);
+    return result;
+}
+
+auto TopLevelAccelStruct::_BuildInfo(const TopLevelAccelStructCreateInfo& inInfo, const TopLevelAccelStruct* inSrc,
+    const Buffer& inInstanceBuffer, VkDeviceSize inInstanceOffset, Buffer& inScratchBuffer,
+    VkDeviceSize inScratchOffset) const -> VkAccelStructBuildInfo
+{
+    CHECK_TRUE(m_vkAccelStruct != VK_NULL_HANDLE, "Destination TLAS is not created!");
+    auto result = _Describe(inInfo);
+    CHECK_TRUE(SameLayout(result, m_layout), "TLAS build layout differs from its creation layout!");
+    if (inSrc != nullptr)
+    {
+        CHECK_TRUE(inSrc->m_vkAccelStruct != VK_NULL_HANDLE, "Source TLAS is not created!");
+        CHECK_TRUE(CONTAIN_BITS(m_flags, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR) &&
+            CONTAIN_BITS(inSrc->m_flags, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR),
+            "TLAS update requires ALLOW_UPDATE!");
+        CHECK_TRUE(SameLayout(result, inSrc->m_layout), "Source TLAS update layout is incompatible!");
+    }
+    result.geometries[0].geometry.instances.data.deviceAddress = BufferAddress(inInstanceBuffer,
+        inInstanceOffset, inInfo.GetInstanceBufferSize(), InputUsage, 16);
+    auto& info = result.buildGeometryInfo;
+    info.mode = inSrc == nullptr ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR : VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+    info.srcAccelerationStructure = inSrc == nullptr ? VK_NULL_HANDLE : inSrc->m_vkAccelStruct;
+    info.dstAccelerationStructure = m_vkAccelStruct;
+    info.scratchData.deviceAddress = ScratchAddress(inScratchBuffer, inScratchOffset,
+        inSrc == nullptr ? m_buildSizes.buildScratchSize : m_buildSizes.updateScratchSize, m_scratchAlignment);
+    return result;
+}
+
+void TopLevelAccelStruct::WriteInstances(const TopLevelAccelStructCreateInfo& inInfo,
+    Buffer& inDstBuffer, VkDeviceSize inOffset)
+{
+    if (inInfo.m_instances.empty()) return;
+    const auto bytes = inInfo.GetInstanceBufferSize();
+    const auto& bufferInfo = inDstBuffer.GetBufferInformation();
+    CHECK_TRUE(inDstBuffer.GetVkBuffer() != VK_NULL_HANDLE, "Instance upload buffer is not created!");
+    CHECK_TRUE(CONTAIN_BITS(bufferInfo.memoryProperty,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+        "Instance upload requires host-visible, host-coherent memory!");
+    CHECK_TRUE(inOffset <= bufferInfo.size && bytes <= bufferInfo.size - inOffset,
+        "Instance upload buffer range is out of bounds!");
+    CHECK_TRUE(inOffset <= std::numeric_limits<size_t>::max() &&
+        bytes <= std::numeric_limits<size_t>::max() - static_cast<size_t>(inOffset),
+        "Instance upload range exceeds host address space!");
+    std::vector<VkAccelerationStructureInstanceKHR> instances;
+    instances.reserve(inInfo.m_instances.size());
+    for (const auto& source : inInfo.m_instances)
+    {
+        CHECK_TRUE(source.instanceCustomIndex <= 0xFFFFFF && source.shaderGroupIndexOffset <= 0xFFFFFF,
+            "Instance custom index or SBT offset exceeds 24 bits!");
+        CHECK_TRUE(source.mask <= 0xFF && source.flags <= 0xFF, "Instance mask or flags exceeds 8 bits!");
+        VkAccelerationStructureInstanceKHR instance{};
+        if (source.accelStruct != nullptr)
+        {
+            instance.accelerationStructureReference = source.accelStruct->GetDeviceAddress();
+            CHECK_TRUE(instance.accelerationStructureReference != 0, "Instance BLAS address is invalid!");
+        }
+        for (uint32_t row = 0; row < 3; ++row)
+            for (uint32_t column = 0; column < 4; ++column)
+                instance.transform.matrix[row][column] = source.transform[column][row];
+        instance.instanceCustomIndex = source.instanceCustomIndex;
+        instance.instanceShaderBindingTableRecordOffset = source.shaderGroupIndexOffset;
+        instance.mask = source.mask;
+        instance.flags = source.flags;
+        instances.push_back(instance);
+    }
+    inDstBuffer.CopyFromHost(instances.data(), static_cast<size_t>(inOffset), static_cast<size_t>(bytes));
 }
 
 BottomLevelAccelStruct::~BottomLevelAccelStruct()
 {
-	Destroy();
-}
-
-void BottomLevelAccelStruct::Create(const BottomLevelAccelStruct::Creator& inInitializer)
-{
-	Destroy();
-
-	inInitializer.Create(*this);
-
-	CHECK_TRUE(m_vkAccelStruct != VK_NULL_HANDLE);
-	CHECK_TRUE(m_uptrBuffer != nullptr);
-	CHECK_TRUE(m_accelStructReference != 0);
+    Destroy();
 }
 
 void BottomLevelAccelStruct::Destroy()
 {
-	if (m_vkAccelStruct != VK_NULL_HANDLE)
-	{
-		auto& device = MyDevice::GetInstance();
-
-		vkDestroyAccelerationStructureKHR(device.vkDevice, m_vkAccelStruct, nullptr);
-		m_vkAccelStruct = VK_NULL_HANDLE;
-	}
-
-	if (m_uptrBuffer != nullptr)
-	{
-		m_uptrBuffer->Destroy();
-		m_uptrBuffer.reset();
-	}
-
-	m_accelStructReference = 0;
+    if (m_vkAccelStruct != VK_NULL_HANDLE)
+        vkDestroyAccelerationStructureKHR(MyDevice::GetInstance().vkDevice, m_vkAccelStruct, nullptr);
+    m_vkAccelStruct = VK_NULL_HANDLE;
+    m_uptrBuffer.reset();
+    m_accelStructReference = 0;
+    m_flags = 0;
+    m_buildSizes = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
+    m_scratchAlignment = 1;
+    m_layout = {};
 }
-
-#pragma endregion
-
-#pragma region TLAS
 
 TopLevelAccelStruct::~TopLevelAccelStruct()
 {
-	Destroy();
-}
-
-void TopLevelAccelStruct::Create(const TopLevelAccelStruct::Creator& inInitializer)
-{
-	Destroy();
-
-	inInitializer.Create(*this);
-
-	CHECK_TRUE(m_vkAccelStruct != VK_NULL_HANDLE);
-	CHECK_TRUE(m_uptrBuffer != nullptr);
+    Destroy();
 }
 
 void TopLevelAccelStruct::Destroy()
 {
-	if (m_vkAccelStruct != VK_NULL_HANDLE)
-	{
-		auto& device = MyDevice::GetInstance();
-
-		vkDestroyAccelerationStructureKHR(device.vkDevice, m_vkAccelStruct, nullptr);
-		m_vkAccelStruct = VK_NULL_HANDLE;
-	}
-
-	if (m_uptrBuffer != nullptr)
-	{
-		m_uptrBuffer->Destroy();
-		m_uptrBuffer.reset();
-	}
+    if (m_vkAccelStruct != VK_NULL_HANDLE)
+        vkDestroyAccelerationStructureKHR(MyDevice::GetInstance().vkDevice, m_vkAccelStruct, nullptr);
+    m_vkAccelStruct = VK_NULL_HANDLE;
+    m_uptrBuffer.reset();
+    m_flags = 0;
+    m_buildSizes = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
+    m_scratchAlignment = 1;
+    m_layout = {};
 }
-
-auto TopLevelAccelStruct::Descriptor::AddInstances(const InstanceDescription* inDescriptions, uint32_t inCount) -> uint32_t
-{
-	if (inCount == 0 || inDescriptions == nullptr) {
-		return static_cast<uint32_t>(m_accelStructInstances.size());
-	}
-
-	const uint32_t currentSize = static_cast<uint32_t>(m_accelStructInstances.size());
-	const uint64_t newSize = static_cast<uint64_t>(currentSize) + static_cast<uint64_t>(inCount);
-
-	if (newSize > UINT32_MAX) {
-		throw std::overflow_error("Instance count exceeds uint32_t maximum limit");
-	}
-
-	const uint32_t result = currentSize;
-	m_accelStructInstances.resize(static_cast<size_t>(newSize));
-
-	SetInstances(
-		reinterpret_cast<const InstanceUpdateDescription*>(inDescriptions),
-		currentSize, 
-		inCount);
-
-	return result;
-}
-
-void TopLevelAccelStruct::Descriptor::SetInstances(const InstanceUpdateDescription* inUpdateDescriptions, uint32_t inBeginIndex, uint32_t inCount)
-{
-	if (inUpdateDescriptions == nullptr) {
-		throw std::invalid_argument("Instance update descriptions pointer is null");
-	}
-
-	const size_t endIndex = static_cast<size_t>(inBeginIndex) + static_cast<size_t>(inCount);
-	if (endIndex > m_accelStructInstances.size()) {
-		throw std::out_of_range("Instance index range exceeds container size");
-	}
-
-	for (uint32_t i = 0; i < inCount; ++i) {
-		const uint32_t currentIndex = inBeginIndex + i;
-		auto& vkInst = m_accelStructInstances[currentIndex];
-		const auto& desc = inUpdateDescriptions[i];
-
-		vkInst.accelerationStructureReference = desc.accelStruct->GetReference();
-		vkInst.flags = desc.flags;
-		vkInst.instanceCustomIndex = desc.instanceCustomIndex;
-		vkInst.instanceShaderBindingTableRecordOffset = desc.shaderGroupIndexOffset;
-		vkInst.mask = desc.mask;
-		vkInst.transform = common_utils::ToTransformMatrixKHR(desc.transform);
-	}
-}
-
-auto TopLevelAccelStruct::Descriptor::GetBuildSizesInfo(VkBuildAccelerationStructureFlagsKHR inFlags) const->VkAccelerationStructureBuildSizesInfoKHR
-{
-	auto& device = MyDevice::GetInstance();
-	std::vector<uint32_t> primitiveCounts;
-	VkAccelerationStructureBuildSizesInfoKHR result{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
-	VkAccelerationStructureBuildGeometryInfoKHR buildGeometryInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
-	VkAccelerationStructureGeometryKHR geometry{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
-	VkAccelerationStructureGeometryInstancesDataKHR geometryInstData{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR };
-
-	geometry.flags = 0; // instance flags serves the same purpose, so leave it 0
-	geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
-	geometry.geometry.instances = geometryInstData; // no need to set device address, VkDeviceOrHostAddressConstKHR is ignored: https://github.khronos.org/Vulkan-Site/refpages/latest/refpages/source/vkGetAccelerationStructureBuildSizesKHR.html
-
-	buildGeometryInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-	buildGeometryInfo.flags = inFlags;
-	buildGeometryInfo.geometryCount = 1; // must be 1 for TLAS
-	buildGeometryInfo.pGeometries = &geometry;
-
-	primitiveCounts.emplace_back(static_cast<uint32_t>(GetInstanceCount()));
-
-	device.GetAccelerationStructureBuildSizes(
-		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
-		buildGeometryInfo,
-		primitiveCounts,
-		result);
-
-	return result;
-}
-
-void TopLevelAccelStruct::Creator::Create(TopLevelAccelStruct& inoutAccelStruct) const
-{
-	// create VkAcceleartionStructure
-	VkAccelerationStructureCreateInfoKHR createInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
-	VkAccelerationStructureDeviceAddressInfoKHR addrInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR };
-	auto buildSizesInfo = m_descriptor->GetBuildSizesInfo(m_flags);
-	auto& device = MyDevice::GetInstance();
-
-	if (inoutAccelStruct.m_uptrBuffer == nullptr)
-	{
-		BufferCreateInfo bufferCreateInfo{};
-
-		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		bufferCreateInfo.SetBufferSize(buildSizesInfo.accelerationStructureSize);
-		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-		inoutAccelStruct.m_uptrBuffer = std::make_unique<Buffer>();
-		inoutAccelStruct.m_uptrBuffer->Create(bufferCreateInfo);
-	}
-	else if (inoutAccelStruct.m_uptrBuffer->GetBufferInformation().size < buildSizesInfo.accelerationStructureSize)
-	{
-		BufferCreateInfo bufferCreateInfo{};
-
-		bufferCreateInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		bufferCreateInfo.SetBufferSize(buildSizesInfo.accelerationStructureSize);
-		bufferCreateInfo.SetBufferUsage(VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-		inoutAccelStruct.m_uptrBuffer->Destroy();
-		inoutAccelStruct.m_uptrBuffer->Create(bufferCreateInfo);
-	}
-
-	createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-	createInfo.size = buildSizesInfo.accelerationStructureSize;
-	createInfo.pNext = nullptr;
-	createInfo.offset = 0;
-	createInfo.buffer = inoutAccelStruct.m_uptrBuffer->GetVkBuffer();
-	// following info are for replay https://registry.khronos.org/vulkan/specs/latest/man/html/VkAccelerationStructureCreateInfoKHR.html
-	// createInfo.deviceAddress = 0;
-	// createInfo.createFlags = 0;
-
-	inoutAccelStruct.m_vkAccelStruct = device.CreateAccelerationStructure(createInfo);
-	inoutAccelStruct.m_flags = m_flags;
-}
-
-void TopLevelAccelStruct::BuildHelper::GetBuildInfo(
-	const TopLevelAccelStruct& inDstAccelStruct,
-	VkAccelStructBuildInfo& outBuildInfo) const noexcept
-{
-	VkAccelerationStructureGeometryInstancesDataKHR geometryInstData{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR };
-	auto& device = MyDevice::GetInstance();
-	auto& buildGeomInfo = outBuildInfo.buildGeometryInfo;
-	auto buildFlag = inDstAccelStruct.m_flags;
-	auto dstAccelStruct = inDstAccelStruct.GetVkAccelerationStructure();
-
-	outBuildInfo.buildRangesInfos.resize(1);
-	outBuildInfo.geometries.resize(1);
-	auto& geometry = outBuildInfo.geometries[0];
-	auto& buildRangeInfo = outBuildInfo.buildRangesInfos[0];
-	buildRangeInfo = VkAccelerationStructureBuildRangeInfoKHR{};
-	geometry = VkAccelerationStructureGeometryKHR{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
-	buildGeomInfo = VkAccelerationStructureBuildGeometryInfoKHR{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
-
-	geometryInstData.data.deviceAddress = m_instanceBuffer;
-
-	geometry.flags = 0; // instance flags serves the same purpose, so leave it 0
-	geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
-	geometry.geometry.instances = geometryInstData;
-
-	CHECK_TRUE(dstAccelStruct != VK_NULL_HANDLE);
-
-	buildGeomInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-	buildGeomInfo.flags = buildFlag;
-	buildGeomInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-	buildGeomInfo.srcAccelerationStructure = VK_NULL_HANDLE;
-	buildGeomInfo.scratchData.deviceAddress = m_scratchBuffer;
-	buildGeomInfo.dstAccelerationStructure = dstAccelStruct;
-	buildGeomInfo.geometryCount = static_cast<uint32_t>(outBuildInfo.geometries.size());
-	buildGeomInfo.pGeometries = outBuildInfo.geometries.data();
-	buildRangeInfo.primitiveCount = static_cast<uint32_t>(m_descriptor->GetInstanceCount());
-}
-
-void TopLevelAccelStruct::BuildHelper::GetUpdateInfo(
-	const TopLevelAccelStruct& inSrcAccelStruct,
-	const TopLevelAccelStruct& inDstAccelStruct,
-	VkAccelStructBuildInfo& outBuildInfo) const noexcept
-{
-	VkAccelerationStructureGeometryInstancesDataKHR geometryInstData{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR };
-	auto& device = MyDevice::GetInstance();
-	auto& buildGeomInfo = outBuildInfo.buildGeometryInfo;
-	auto buildFlag = inDstAccelStruct.m_flags;
-	auto srcAccelStruct = inSrcAccelStruct.GetVkAccelerationStructure();
-	auto dstAccelStruct = inDstAccelStruct.GetVkAccelerationStructure();
-
-	outBuildInfo.buildRangesInfos.resize(1);
-	outBuildInfo.geometries.resize(1);
-	auto& geometry = outBuildInfo.geometries[0];
-	auto& buildRangeInfo = outBuildInfo.buildRangesInfos[0];
-	buildRangeInfo = VkAccelerationStructureBuildRangeInfoKHR{};
-	geometry = VkAccelerationStructureGeometryKHR{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
-	buildGeomInfo = VkAccelerationStructureBuildGeometryInfoKHR{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
-
-	geometryInstData.data.deviceAddress = m_instanceBuffer;
-
-	geometry.flags = 0;	// instance flags serves the same purpose, so leave it 0
-	geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
-	geometry.geometry.instances = geometryInstData;
-
-	CHECK_TRUE(srcAccelStruct != VK_NULL_HANDLE);
-	CHECK_TRUE(dstAccelStruct != VK_NULL_HANDLE);
-
-	buildGeomInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-	buildGeomInfo.flags = buildFlag;
-	buildGeomInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
-	buildGeomInfo.srcAccelerationStructure = srcAccelStruct;
-	buildGeomInfo.scratchData.deviceAddress = m_scratchBuffer;
-	buildGeomInfo.dstAccelerationStructure = dstAccelStruct;
-	buildGeomInfo.geometryCount = static_cast<uint32_t>(outBuildInfo.geometries.size());
-	buildGeomInfo.pGeometries = outBuildInfo.geometries.data();
-	buildRangeInfo.primitiveCount = static_cast<uint32_t>(m_descriptor->GetInstanceCount());
-}
-
-#pragma endregion
