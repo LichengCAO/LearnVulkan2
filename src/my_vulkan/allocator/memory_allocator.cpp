@@ -84,8 +84,17 @@ void MemoryAllocator::AllocateForVkImage(VkImage _vkImage, VkMemoryPropertyFlags
 
 	VK_CHECK(vmaAllocateMemoryForImage(*_GetPtrVmaAllocator(), _vkImage, &allocCreateInfo, &allocResult, &allocInfo), "Failed to allocate memory!");
 
-	vmaBindImageMemory(*_GetPtrVmaAllocator(), allocResult, _vkImage);
-	m_mapVkImageToAllocation.insert({ _vkImage, allocResult });
+	try
+	{
+		VK_CHECK(vmaBindImageMemory(*_GetPtrVmaAllocator(), allocResult, _vkImage), "Failed to bind image memory!");
+		const auto [iter, inserted] = m_mapVkImageToAllocation.emplace(_vkImage, allocResult);
+		CHECK_TRUE(inserted, "Image memory is already allocated!");
+	}
+	catch (...)
+	{
+		vmaFreeMemory(*_GetPtrVmaAllocator(), allocResult);
+		throw;
+	}
 }
 
 void MemoryAllocator::AllocateForVkBuffer(VkBuffer _vkBuffer, VkMemoryPropertyFlags _flags, VkDeviceSize _alignment)

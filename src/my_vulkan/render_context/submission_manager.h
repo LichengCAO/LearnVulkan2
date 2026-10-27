@@ -135,6 +135,7 @@ private:
 class SubmissionManager final
 {
 	friend struct CommandQueueManagerTestProbe;
+	friend struct ResourceSubmissionTestProbe;
 
 public:
 	class SubmitInfo final

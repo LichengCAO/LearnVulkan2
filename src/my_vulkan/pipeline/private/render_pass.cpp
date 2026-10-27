@@ -1,6 +1,7 @@
 #include "../render_pass.h"
 #include "device.h"
 #include "resource/image.h"
+#include "allocator/render_pass_allocator.h"
 
 #include <algorithm>
 
@@ -240,7 +241,7 @@ void RenderPassCreateInfo::AddAttachment(std::string_view inName, const Attachme
 	m_attachmentNameToIndex.emplace(name, index);
 }
 
-auto RenderPassCreateInfo::GetAttachmentIndex(std::string_view inName) const -> uint32_t
+auto RenderPassCreateInfo::_GetAttachmentIndex(std::string_view inName) const -> uint32_t
 {
 	const auto iter = m_attachmentNameToIndex.find(std::string(inName));
 	CHECK_TRUE(iter != m_attachmentNameToIndex.end(), "Attachment name does not exist!");
@@ -248,7 +249,7 @@ auto RenderPassCreateInfo::GetAttachmentIndex(std::string_view inName) const -> 
 	return iter->second;
 }
 
-auto RenderPassCreateInfo::GetSubpassIndex(std::string_view inName) const -> uint32_t
+auto RenderPassCreateInfo::_GetSubpassIndex(std::string_view inName) const -> uint32_t
 {
 	const auto iter = m_subpassNameToIndex.find(std::string(inName));
 	CHECK_TRUE(iter != m_subpassNameToIndex.end(), "Subpass name does not exist!");
@@ -258,14 +259,13 @@ auto RenderPassCreateInfo::GetSubpassIndex(std::string_view inName) const -> uin
 
 RenderPass::~RenderPass()
 {
-	assert(m_vkRenderPass == VK_NULL_HANDLE);
+	Destroy();
 }
 
 void RenderPass::Create(const RenderPassCreateInfo& inCreateInfo)
 {
-	CHECK_TRUE(m_vkRenderPass == VK_NULL_HANDLE, "Render pass already created!");
-	CHECK_TRUE(!inCreateInfo.m_attachments.empty(), "Render pass needs at least one attachment!");
 	CHECK_TRUE(!inCreateInfo.m_subpasses.empty(), "Render pass needs at least one subpass!");
+	auto description = MakeIntrusive<VulkanDetail::RenderPassDescription>();
 
 	std::vector<VkAttachmentDescription> vkAttachments;
 	std::vector<VkSubpassDescription> vkSubpasses;
@@ -276,14 +276,12 @@ void RenderPass::Create(const RenderPassCreateInfo& inCreateInfo)
 	std::vector<VkSubpassDependency> dependencies;
 
 	vkAttachments.reserve(inCreateInfo.m_attachments.size());
-	m_clearValues.clear();
-	m_subpassInfos.clear();
-	m_clearValues.reserve(inCreateInfo.m_attachments.size());
+	description->clearValues.reserve(inCreateInfo.m_attachments.size());
 	for (const auto& attachment : inCreateInfo.m_attachments)
 	{
 		CHECK_TRUE(attachment.m_description.format != VK_FORMAT_UNDEFINED, "Attachment format cannot be undefined!");
 		vkAttachments.push_back(attachment.m_description);
-		m_clearValues.push_back(attachment.m_clearValue);
+		description->clearValues.push_back(attachment.m_clearValue);
 	}
 
 	const auto resolveAttachmentReference =
@@ -295,7 +293,7 @@ void RenderPass::Create(const RenderPassCreateInfo& inCreateInfo)
 			}
 
 			return VkAttachmentReference{
-				inCreateInfo.GetAttachmentIndex(inReference.attachmentName),
+				inCreateInfo._GetAttachmentIndex(inReference.attachmentName),
 				inReference.layout
 			};
 		};
@@ -338,7 +336,7 @@ void RenderPass::Create(const RenderPassCreateInfo& inCreateInfo)
 		resolvedPreserveAttachments.reserve(subpass.m_preserveAttachments.size());
 		for (const std::string& attachmentName : subpass.m_preserveAttachments)
 		{
-			resolvedPreserveAttachments.push_back(inCreateInfo.GetAttachmentIndex(attachmentName));
+			resolvedPreserveAttachments.push_back(inCreateInfo._GetAttachmentIndex(attachmentName));
 		}
 
 		VkSubpassDescription vkSubpass{};
@@ -372,7 +370,7 @@ void RenderPass::Create(const RenderPassCreateInfo& inCreateInfo)
 			}
 			else if (!isExternalDependency)
 			{
-				srcSubpass = inCreateInfo.GetSubpassIndex(dependency.srcSubpassName);
+				srcSubpass = inCreateInfo._GetSubpassIndex(dependency.srcSubpassName);
 			}
 			const auto& sourceSubpass = (isExternalDependency || isSelfDependency)
 				? subpass
@@ -402,10 +400,10 @@ void RenderPass::Create(const RenderPassCreateInfo& inCreateInfo)
 	renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
 	renderPassInfo.pDependencies = dependencies.data();
 
-    std::vector<SubpassInfo> subpassInfos;
+	    std::vector<VulkanDetail::RenderPassDescription::SubpassInfo> subpassInfos;
     for (const auto& subpass : vkSubpasses)
     {
-        SubpassInfo info;
+	        VulkanDetail::RenderPassDescription::SubpassInfo info;
         info.colorSlotCount = subpass.colorAttachmentCount;
         std::optional<VkSampleCountFlagBits> samples;
         const auto inspect = [&](const VkAttachmentReference& reference)
@@ -421,100 +419,191 @@ void RenderPass::Create(const RenderPassCreateInfo& inCreateInfo)
         info.samples = samples.value_or(VK_SAMPLE_COUNT_1_BIT);
         subpassInfos.push_back(info);
     }
-	m_vkRenderPass = MyDevice::GetInstance().CreateRenderPass(renderPassInfo);
-    m_subpassInfos = std::move(subpassInfos);
-	m_attachmentNameToIndex = inCreateInfo.m_attachmentNameToIndex;
+	description->subpassInfos = std::move(subpassInfos);
+	description->attachmentNameToIndex = inCreateInfo.m_attachmentNameToIndex;
+	description->attachments = vkAttachments;
+	description->dependencies = dependencies;
+	description->attachmentUsages.resize(vkAttachments.size());
+	for (size_t index = 0; index < vkSubpasses.size(); ++index)
+	{
+		VulkanDetail::RenderPassDescription::Subpass subpass;
+		subpass.colors = colorAttachments[index];
+		subpass.resolves = resolveAttachments[index];
+		if (vkSubpasses[index].pDepthStencilAttachment) subpass.depth = depthStencilAttachments[index];
+		subpass.preserves = preserveAttachments[index];
+		const auto addUsage = [&](const VkAttachmentReference& reference, VkImageUsageFlags usage)
+		{
+			if (reference.attachment != VK_ATTACHMENT_UNUSED) description->attachmentUsages.at(reference.attachment) |= usage;
+		};
+		for (const auto& reference : subpass.colors) addUsage(reference, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+		for (const auto& reference : subpass.resolves) addUsage(reference, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+		if (subpass.depth) addUsage(*subpass.depth, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+		description->subpasses.push_back(std::move(subpass));
+	}
+	auto resource = MyDevice::GetInstance().GetRenderPassAllocator()->AllocateRenderPass(renderPassInfo);
+	VulkanDetail::RenderPassSnapshot snapshot{ std::move(resource), std::move(description) };
+	ClearFramebufferCache();
+	m_snapshot = std::move(snapshot);
 }
 
 void RenderPass::Destroy()
 {
-	if (m_vkRenderPass != VK_NULL_HANDLE)
-	{
-		MyDevice::GetInstance().DestroyRenderPass(m_vkRenderPass);
-		m_vkRenderPass = VK_NULL_HANDLE;
-	}
-	m_clearValues.clear();
-	m_subpassInfos.clear();
-	m_attachmentNameToIndex.clear();
+	ClearFramebufferCache();
+	m_snapshot = {};
 }
 
 auto RenderPass::GetAttachmentIndex(std::string_view inName) const -> uint32_t
 {
-	const auto iter = m_attachmentNameToIndex.find(std::string(inName));
-	CHECK_TRUE(iter != m_attachmentNameToIndex.end(), "Render pass attachment name does not exist!");
+	CHECK_TRUE(m_snapshot.description, "Render pass is not created!");
+	const auto iter = m_snapshot.description->attachmentNameToIndex.find(std::string(inName));
+	CHECK_TRUE(iter != m_snapshot.description->attachmentNameToIndex.end(), "Render pass attachment name does not exist!");
 
 	return iter->second;
 }
 
-void FramebufferCreateInfo::SetImageView(std::string_view inTargetAttachmentName, const ImageView& inViewAttached)
+void FramebufferInfo::Reset()
 {
-	CHECK_TRUE(m_renderPass != nullptr, "Framebuffer render pass must be set before image views!");
+	*this = {};
+}
 
-	const uint32_t attachmentIndex = m_renderPass->GetAttachmentIndex(inTargetAttachmentName);
-	if (m_imageViews.size() <= attachmentIndex)
+void FramebufferInfo::SetImageView(std::string_view inTargetAttachmentName, const ImageView& inViewAttached)
+{
+	CHECK_TRUE(!inTargetAttachmentName.empty(), "Framebuffer attachment name cannot be empty!");
+	CHECK_TRUE(inViewAttached.IsValid(), "Framebuffer image view is invalid!");
+	m_imageViews.insert_or_assign(std::string(inTargetAttachmentName), inViewAttached);
+}
+
+void FramebufferInfo::CustomizeSize(uint32_t inWidth, uint32_t inHeight, uint32_t inLayers)
+{
+	CHECK_TRUE(inWidth > 0 && inHeight > 0 && inLayers > 0, "Framebuffer dimensions cannot be empty!");
+	m_extent = VkExtent2D{ inWidth, inHeight };
+	m_layers = inLayers;
+}
+
+void Framebuffer::Reset() noexcept
+{
+	m_resource = nullptr;
+	m_renderPass = {};
+	m_extent = {};
+	m_layers = 0;
+}
+
+void RenderPass::ClearFramebufferCache()
+{
+	m_framebuffers.clear();
+}
+
+auto RenderPass::GetFramebuffer(const FramebufferInfo& inInfo) const -> Framebuffer
+{
+	CHECK_TRUE(GetVkRenderPass() != VK_NULL_HANDLE && m_snapshot.description, "Render pass is not created!");
+	const auto& description = *m_snapshot.description;
+	CHECK_TRUE(inInfo.m_imageViews.size() == description.attachments.size(), "Framebuffer attachment set must match the render pass!");
+	CHECK_TRUE(!description.attachments.empty() || inInfo.m_extent.has_value(), "An attachmentless framebuffer requires explicit dimensions!");
+	std::vector<ImageView> views(description.attachments.size());
+	std::vector<VkImageView> handles(description.attachments.size());
+	std::vector<VulkanDetail::ResourceReference> dependencies{ m_snapshot.resource };
+	VkExtent2D extent = inInfo.m_extent.value_or(VkExtent2D{ UINT32_MAX, UINT32_MAX });
+	uint32_t layers = inInfo.m_extent ? inInfo.m_layers : UINT32_MAX;
+	for (const auto& [name, view] : inInfo.m_imageViews)
 	{
-		m_imageViews.resize(static_cast<size_t>(attachmentIndex) + 1, VK_NULL_HANDLE);
+		const auto iterator = description.attachmentNameToIndex.find(name);
+		CHECK_TRUE(iterator != description.attachmentNameToIndex.end(), "Unknown framebuffer attachment name!");
+		const uint32_t index = iterator->second;
+		const auto& information = view.GetImageViewInformation();
+		const auto size = view.GetViewSize();
+		CHECK_TRUE(view.IsValid(), "Framebuffer image view is invalid!");
+		CHECK_TRUE(information.levelCount == 1, "Framebuffer attachment views must contain one mip level!");
+		CHECK_TRUE(information.format == description.attachments[index].format, "Framebuffer attachment format differs from the render pass!");
+		CHECK_TRUE(information.samples == description.attachments[index].samples, "Framebuffer attachment sample count differs from the render pass!");
+		CHECK_TRUE((information.usage & description.attachmentUsages[index]) == description.attachmentUsages[index], "Framebuffer image usage does not support the attachment!");
+		CHECK_TRUE(information.layerCount > 0 && information.layerCount != VK_REMAINING_ARRAY_LAYERS, "Framebuffer image view layer range is invalid!");
+		CHECK_TRUE(information.type != VK_IMAGE_VIEW_TYPE_3D, "Framebuffer attachment cannot be a 3D view!");
+		if (inInfo.m_extent)
+		{
+			CHECK_TRUE(extent.width <= size.width && extent.height <= size.height && layers <= information.layerCount, "Framebuffer dimensions exceed an attachment view!");
+		}
+		else
+		{
+			extent.width = std::min(extent.width, size.width);
+			extent.height = std::min(extent.height, size.height);
+			layers = std::min(layers, information.layerCount);
+		}
+		views[index] = view;
+		handles[index] = view.GetVkImageView();
+		dependencies.push_back(view._GetResourceReference());
 	}
+	CHECK_TRUE(extent.width > 0 && extent.height > 0 && layers > 0, "Framebuffer dimensions cannot be empty!");
+	for (const auto& cached : m_framebuffers)
+	{
+		const auto size = cached.framebuffer.GetSize();
+		if (size.width == extent.width && size.height == extent.height && cached.framebuffer.GetLayerCount() == layers && cached.views == views) return cached.framebuffer;
+	}
+	VkFramebufferCreateInfo createInfo{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+	createInfo.renderPass = GetVkRenderPass();
+	createInfo.attachmentCount = static_cast<uint32_t>(handles.size());
+	createInfo.pAttachments = handles.data();
+	createInfo.width = extent.width;
+	createInfo.height = extent.height;
+	createInfo.layers = layers;
+	const auto handle = MyDevice::GetInstance().CreateFramebuffer(createInfo);
+	Framebuffer framebuffer;
+	const auto device = MyDevice::GetInstance().GetVkDevice();
+	try
+	{
+		framebuffer.m_resource = MakeIntrusive<VulkanDetail::FramebufferResource>(handle, [device](VkFramebuffer value) { vkDestroyFramebuffer(device, value, nullptr); }, std::move(dependencies));
+	}
+	catch (...)
+	{
+		vkDestroyFramebuffer(device, handle, nullptr);
+		throw;
+	}
+	framebuffer.m_renderPass = m_snapshot;
+	framebuffer.m_extent = extent;
+	framebuffer.m_layers = layers;
+	m_framebuffers.push_back({ std::move(views), framebuffer });
+	return framebuffer;
+}
 
-	const auto& viewInfo = inViewAttached.GetImageViewInformation();
-	const uint32_t layerCount = viewInfo.layerCount == VK_REMAINING_ARRAY_LAYERS ? 1 : viewInfo.layerCount;
-	const VkExtent2D viewExtent{
-		std::max(1u, viewInfo.width >> viewInfo.baseMipLevel),
-		std::max(1u, viewInfo.height >> viewInfo.baseMipLevel)
+auto VulkanDetail::RenderPassSnapshot::GetClearValues() const -> const std::vector<VkClearValue>&
+{
+	static const std::vector<VkClearValue> empty;
+	return description ? description->clearValues : empty;
+}
+
+auto VulkanDetail::RenderPassSnapshot::IsCompatibleWith(const RenderPassSnapshot& inOther) const -> bool
+{
+	if (!resource || !inOther.resource || !description || !inOther.description) return false;
+	if (description.get() == inOther.description.get()) return true;
+	const auto& left = *description;
+	const auto& right = *inOther.description;
+	if (left.subpasses.size() != right.subpasses.size() || left.dependencies.size() != right.dependencies.size()) return false;
+	for (size_t i = 0; i < left.dependencies.size(); ++i)
+	{
+		const auto& a = left.dependencies[i];
+		const auto& b = right.dependencies[i];
+		if (a.srcSubpass != b.srcSubpass || a.dstSubpass != b.dstSubpass || a.srcStageMask != b.srcStageMask || a.dstStageMask != b.dstStageMask || a.srcAccessMask != b.srcAccessMask || a.dstAccessMask != b.dstAccessMask || a.dependencyFlags != b.dependencyFlags) return false;
+	}
+	const auto referenceCompatible = [&](const VkAttachmentReference& a, const VkAttachmentReference& b)
+	{
+		if (a.attachment == VK_ATTACHMENT_UNUSED || b.attachment == VK_ATTACHMENT_UNUSED) return a.attachment == b.attachment;
+		const auto& attachmentA = left.attachments.at(a.attachment);
+		const auto& attachmentB = right.attachments.at(b.attachment);
+		return attachmentA.format == attachmentB.format && attachmentA.samples == attachmentB.samples && attachmentA.flags == attachmentB.flags;
 	};
-	if (std::find_if(m_imageViews.begin(), m_imageViews.end(), [](VkImageView inView) { return inView != VK_NULL_HANDLE; }) != m_imageViews.end())
+	const auto referencesCompatible = [&](const auto& a, const auto& b)
 	{
-		CHECK_TRUE(m_extent.width == viewExtent.width && m_extent.height == viewExtent.height, "Framebuffer image views must have identical extents!");
-		CHECK_TRUE(m_layers == layerCount, "Framebuffer image views must have identical layer counts!");
-	}
-	m_imageViews[attachmentIndex] = inViewAttached.GetVkImageView();
-	m_extent = viewExtent;
-	m_layers = layerCount;
-}
-
-void FramebufferCreateInfo::SetRenderPass(const RenderPass& inRenderPass)
-{
-	m_renderPass = &inRenderPass;
-}
-
-Framebuffer::~Framebuffer()
-{
-	assert(m_vkFramebuffer == VK_NULL_HANDLE);
-}
-
-void Framebuffer::Create(const FramebufferCreateInfo& inCreateInfo)
-{
-	CHECK_TRUE(inCreateInfo.m_renderPass != nullptr, "No render pass for framebuffer!");
-	CHECK_TRUE(inCreateInfo.m_renderPass->GetVkRenderPass() != VK_NULL_HANDLE, "Invalid render pass for framebuffer!");
-	CHECK_TRUE(!inCreateInfo.m_imageViews.empty(), "Framebuffer needs at least one image view!");
-	CHECK_TRUE(inCreateInfo.m_extent.width > 0 && inCreateInfo.m_extent.height > 0, "Framebuffer extent cannot be empty!");
-
-	for (VkImageView imageView : inCreateInfo.m_imageViews)
+		for (size_t i = 0; i < std::max(a.size(), b.size()); ++i)
+		{
+			if (!referenceCompatible(i < a.size() ? a[i] : kUnusedAttachment, i < b.size() ? b[i] : kUnusedAttachment)) return false;
+		}
+		return true;
+	};
+	for (size_t i = 0; i < left.subpasses.size(); ++i)
 	{
-		CHECK_TRUE(imageView != VK_NULL_HANDLE, "Framebuffer image view is missing!");
+		const auto& a = left.subpasses[i];
+		const auto& b = right.subpasses[i];
+		if (a.flags != b.flags || a.bindPoint != b.bindPoint || a.preserves != b.preserves || !referencesCompatible(a.colors, b.colors) || !referenceCompatible(a.depth.value_or(kUnusedAttachment), b.depth.value_or(kUnusedAttachment))) return false;
+		if (left.subpasses.size() != 1 && !referencesCompatible(a.resolves, b.resolves)) return false;
 	}
-
-	VkFramebufferCreateInfo framebufferInfo{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-	framebufferInfo.renderPass = inCreateInfo.m_renderPass->GetVkRenderPass();
-	framebufferInfo.attachmentCount = static_cast<uint32_t>(inCreateInfo.m_imageViews.size());
-	framebufferInfo.pAttachments = inCreateInfo.m_imageViews.data();
-	framebufferInfo.width = inCreateInfo.m_extent.width;
-	framebufferInfo.height = inCreateInfo.m_extent.height;
-	framebufferInfo.layers = inCreateInfo.m_layers;
-
-	m_vkFramebuffer = MyDevice::GetInstance().CreateFramebuffer(framebufferInfo);
-}
-
-void Framebuffer::Destroy()
-{
-	if (m_vkFramebuffer != VK_NULL_HANDLE)
-	{
-		MyDevice::GetInstance().DestroyFramebuffer(m_vkFramebuffer);
-		m_vkFramebuffer = VK_NULL_HANDLE;
-	}
-}
-
-VkFramebuffer Framebuffer::GetVkFramebuffer() const
-{
-	return m_vkFramebuffer;
+	return true;
 }

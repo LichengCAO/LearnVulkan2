@@ -3,6 +3,7 @@
 #include "pipeline_layout.h"
 #include "private/shader.h"
 #include "resource/descriptor.h"
+#include "render_pass.h"
 #include <map>
 #include <string_view>
 class RenderPass;
@@ -20,15 +21,15 @@ private:
 
 	std::vector<VkVertexInputBindingDescription> m_vertexBindingDescriptions;
 	std::vector<VkVertexInputAttributeDescription> m_vertexAttributeDescriptions;
-	const RenderPass* m_renderPassPtr = nullptr;
+	VulkanDetail::RenderPassSnapshot m_renderPass;
 	uint32_t m_subpassIndex = 0;
 
 public:
-	auto Reset() -> GraphicsPipelineStateInfo&;
-	auto AddVertexInputDescription(
+	void Reset();
+	void AddVertexInputDescription(
 		const VkVertexInputBindingDescription& inBindingDescription,
-		const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions) -> GraphicsPipelineStateInfo&;
-	auto SetRenderPassSubpass(const RenderPass& inRenderPass, uint32_t inSubpassIndex = 0) -> GraphicsPipelineStateInfo&;
+		const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions);
+	void SetRenderPassSubpass(const RenderPass& inRenderPass, uint32_t inSubpassIndex = 0);
 };
 
 class GraphicsShaderProgramCreateInfo final
@@ -65,7 +66,12 @@ private:
 	std::vector<std::unique_ptr<ShaderModule>> m_shaderModules;
 	std::vector<VkPipelineShaderStageCreateInfo> m_shaderStages;
 	PipelineLayout m_pipelineLayout;
-	std::unordered_map<size_t, VkPipeline> m_cachedGraphicsPipelines;
+	struct CachedGraphicsPipeline
+	{
+		VkPipeline pipeline = VK_NULL_HANDLE;
+		VulkanDetail::RenderPassSnapshot renderPass;
+	};
+	std::unordered_map<size_t, CachedGraphicsPipeline> m_cachedGraphicsPipelines;
 	std::unique_ptr<RenderPass> m_defaultRenderPass;
 	GraphicsPipelineStateInfo m_defaultState;
 	bool m_automaticVertexInputSupported = true;

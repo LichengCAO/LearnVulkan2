@@ -1,6 +1,7 @@
 #include "pipeline/render_pass.h"
 #include "command_buffer.h"
 #include "device.h"
+#include "resource/image.h"
 
 namespace
 {
@@ -26,7 +27,41 @@ namespace
 
 void CommandBuffer::_AppendCommand(const Command& inCommand)
 {
+	m_resourceReferences.insert(m_resourceReferences.end(),
+		inCommand.m_resourceReferences.begin(), inCommand.m_resourceReferences.end());
 	m_commands.push_back(&inCommand);
+}
+
+CommandBuffer::CommandBuffer(CommandBuffer&& inOther) noexcept
+{
+    *this = std::move(inOther);
+}
+
+auto CommandBuffer::operator=(CommandBuffer&& inOther) noexcept -> CommandBuffer&
+{
+    if (this == &inOther)
+        return *this;
+    m_commands = std::move(inOther.m_commands);
+    m_ownedCommands = std::move(inOther.m_ownedCommands);
+    m_resourceReferences = std::move(inOther.m_resourceReferences);
+    m_renderingScopeState = std::move(inOther.m_renderingScopeState);
+    m_hasRenderingCommands = inOther.m_hasRenderingCommands;
+    m_hasProgramBindings = inOther.m_hasProgramBindings;
+    m_requiresSingleVkCommandBuffer = inOther.m_requiresSingleVkCommandBuffer;
+    m_graphicsProgram = inOther.m_graphicsProgram;
+    m_computeProgram = inOther.m_computeProgram;
+    m_rayTracingProgram = inOther.m_rayTracingProgram;
+    inOther.m_commands.clear();
+    inOther.m_ownedCommands.clear();
+    inOther.m_resourceReferences.clear();
+    inOther.m_renderingScopeState = std::monostate{};
+    inOther.m_hasRenderingCommands = false;
+    inOther.m_hasProgramBindings = false;
+    inOther.m_requiresSingleVkCommandBuffer = false;
+    inOther.m_graphicsProgram = nullptr;
+    inOther.m_computeProgram = nullptr;
+    inOther.m_rayTracingProgram = nullptr;
+    return *this;
 }
 
 void CommandBuffer::_AppendOwnedCommand(std::unique_ptr<Command> inCommand)
@@ -59,6 +94,9 @@ void CommandBuffer::_Append(CommandBuffer&& inCommandBuffer)
 	{
 		m_ownedCommands.push_back(std::move(command));
 	}
+	m_resourceReferences.insert(m_resourceReferences.end(),
+		std::make_move_iterator(inCommandBuffer.m_resourceReferences.begin()),
+		std::make_move_iterator(inCommandBuffer.m_resourceReferences.end()));
 	m_hasRenderingCommands = m_hasRenderingCommands || inCommandBuffer.m_hasRenderingCommands;
 	m_hasProgramBindings = m_hasProgramBindings || inCommandBuffer.m_hasProgramBindings;
 	m_requiresSingleVkCommandBuffer =
@@ -69,6 +107,7 @@ void CommandBuffer::_Append(CommandBuffer&& inCommandBuffer)
 
 	inCommandBuffer.m_commands.clear();
 	inCommandBuffer.m_ownedCommands.clear();
+	inCommandBuffer.m_resourceReferences.clear();
 	inCommandBuffer.m_hasRenderingCommands = false;
 	inCommandBuffer.m_hasProgramBindings = false;
 	inCommandBuffer.m_requiresSingleVkCommandBuffer = false;
@@ -121,6 +160,27 @@ void CommandBuffer::NextSubpass(VkSubpassContents inContents)
 	m_graphicsProgram = nullptr;
 	state->contents = inContents;
 	return;
+}
+
+void CommandBuffer::_BeginRenderPass(const BeginRenderPassCommand::Parameters& inParameters,
+    const VulkanDetail::RenderPassSnapshot& inSnapshot, VulkanDetail::ResourceReference inFramebuffer)
+{
+    CHECK_TRUE(inSnapshot.GetVkRenderPass() == inParameters.renderPass, "Render pass snapshot mismatch!");
+    CHECK_TRUE(inFramebuffer.get() != nullptr, "Framebuffer has no native resource!");
+    // Validate before changing the stream or its retention list.
+    CHECK_TRUE(std::holds_alternative<std::monostate>(m_renderingScopeState),
+        "A rendering scope is already active!");
+    CHECK_TRUE(inParameters.renderPass != VK_NULL_HANDLE && inParameters.framebuffer != VK_NULL_HANDLE &&
+        inSnapshot.GetSubpassCount() > 0 && inParameters.next == nullptr, "Invalid render pass parameters!");
+    auto command = std::make_unique<BeginRenderPassCommand>();
+    command->SetParameters(inParameters);
+    command->m_resourceReferences.push_back(inSnapshot.resource);
+    command->m_resourceReferences.push_back(std::move(inFramebuffer));
+    _AppendOwnedCommand(std::move(command));
+    m_hasRenderingCommands = true;
+    m_graphicsProgram = nullptr;
+    m_renderingScopeState = LegacyRenderPassState{inParameters.renderPass, inParameters.framebuffer,
+        0, inSnapshot.GetSubpassCount(), inParameters.contents, inSnapshot};
 }
 
 void CommandBuffer::EndRenderPass()
@@ -242,13 +302,20 @@ void CommandBuffer::BindGraphicsProgram(GraphicsShaderProgram& program, const Gr
 	CHECK_TRUE(scope != nullptr && scope->contents == VK_SUBPASS_CONTENTS_INLINE,
 	    "Graphics binding requires an inline render pass!");
 	CHECK_TRUE(program.GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE, "Graphics program was not created!");
-	auto state = program._ResolveState(input);
+	auto state = input;
+	if (state.m_renderPass.GetVkRenderPass() == VK_NULL_HANDLE)
+	{
+		state.m_renderPass = scope->snapshot;
+		state.m_subpassIndex = scope->currentSubpass;
+	}
+	state = program._ResolveState(state);
 	CHECK_TRUE(
-	    state.m_renderPassPtr->GetVkRenderPass() == scope->renderPass && state.m_subpassIndex == scope->currentSubpass,
+	    state.m_renderPass.IsCompatibleWith(scope->snapshot) && state.m_subpassIndex == scope->currentSubpass,
 	    "Graphics pipeline does not match the active render pass/subpass!");
 	auto command = std::make_unique<BindingCommand>();
 	command->graphics = &program;
 	command->state = std::move(state);
+	command->m_resourceReferences.push_back(command->state.m_renderPass.resource);
 	_AppendOwnedCommand(std::move(command));
 	m_graphicsProgram = &program;
 	m_hasProgramBindings = true;
@@ -312,10 +379,39 @@ void CommandBuffer::_BindShaderResources(const PipelineLayout& layout, VkPipelin
 	auto command = std::make_unique<BindingCommand>();
 	command->resourceLayout = &layout;
 	command->descriptions = resources._Resolve(layout);
+	for (const auto& description : command->descriptions)
+		for (const auto& item : description.m_items)
+			if (const auto* image = std::get_if<1>(&item.resource))
+				command->m_resourceReferences.push_back(image->imageView._GetResourceReference());
 	command->bindPoint = bindPoint;
 	_AppendOwnedCommand(std::move(command));
 	m_hasProgramBindings = true;
 	return;
+}
+
+void CommandBuffer::KeepAlive(const Image& inImage)
+{
+    auto reference = inImage._GetResourceReference();
+    CHECK_TRUE(reference.get() != nullptr, "Image was not created!");
+    m_resourceReferences.push_back(std::move(reference));
+}
+void CommandBuffer::KeepAlive(const ImageView& inImageView)
+{
+    auto reference = inImageView._GetResourceReference();
+    CHECK_TRUE(reference.get() != nullptr, "Image view was not created!");
+    m_resourceReferences.push_back(std::move(reference));
+}
+void CommandBuffer::KeepAlive(const RenderPass& inRenderPass)
+{
+    auto reference = inRenderPass._GetResourceReference();
+    CHECK_TRUE(reference.get() != nullptr, "Render pass was not created!");
+    m_resourceReferences.push_back(std::move(reference));
+}
+void CommandBuffer::KeepAlive(const Framebuffer& inFramebuffer)
+{
+    auto reference = inFramebuffer._GetResourceReference();
+    CHECK_TRUE(reference.get() != nullptr, "Framebuffer was not created!");
+    m_resourceReferences.push_back(std::move(reference));
 }
 void CommandBuffer::_PrepareCommands(DynamicDescriptorSetAllocator& allocator, QueueFamilyType queue)
 {

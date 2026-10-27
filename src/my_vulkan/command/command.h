@@ -1,10 +1,17 @@
 #pragma once
 #include "common.h"
+#include "resource/vulkan_handle_resource.h"
 
 class CommandBuffer;
 
 class Command
 {
+    friend class CommandBuffer;
+    friend class RenderGraphInstance;
+    friend struct ResourceLifetimeTestProbe;
+private:
+    std::vector<VulkanDetail::ResourceReference> m_resourceReferences;
+
 public:
 	Command() = default;
 	Command(const Command&) = delete;

@@ -1,6 +1,6 @@
 #pragma once
 #include "common.h"
-#include "../ref_counted.h"
+#include "vulkan_handle_resource.h"
 
 class Buffer;
 class Image;
@@ -31,50 +31,37 @@ private:
 	friend class Image;
 
 public:
-	ImageCreateInfo& Reset();
+	void Reset();
 
 	// Set usage of image, mandatory
-	ImageCreateInfo& SetUsage(VkImageUsageFlags usage);
+	void SetUsage(VkImageUsageFlags usage);
 
 	// Optional, default: swapchain image size 2D image
-	ImageCreateInfo& CustomizeSize1D(uint32_t width);
+	void CustomizeSize1D(uint32_t width);
 
 	// Optional, default: swapchain image size 2D image
-	ImageCreateInfo& CustomizeSize2D(uint32_t width, uint32_t height);
+	void CustomizeSize2D(uint32_t width, uint32_t height);
 
 	// Optional, default: swapchain image size 2D image
-	ImageCreateInfo& CustomizeSize3D(uint32_t width, uint32_t height, uint32_t depth);
+	void CustomizeSize3D(uint32_t width, uint32_t height, uint32_t depth);
 
 	// Optional, default: 1
-	ImageCreateInfo& CustomizeMipLevels(uint32_t mipLevelCount);
+	void CustomizeMipLevels(uint32_t mipLevelCount);
 
 	// Optional, default: 1
-	ImageCreateInfo& CustomizeArrayLayers(uint32_t layerCount);
+	void CustomizeArrayLayers(uint32_t layerCount);
 
 	// Optional, default: VK_FORMAT_R32G32B32A32_SFLOAT
-	ImageCreateInfo& CustomizeFormat(VkFormat format);
+	void CustomizeFormat(VkFormat format);
 
 	// Optional, default: VK_IMAGE_TILING_OPTIMAL
-	ImageCreateInfo& CustomizeImageTiling(VkImageTiling tiling);
+	void CustomizeImageTiling(VkImageTiling tiling);
 
 	// Optional, default: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-	ImageCreateInfo& CustomizeMemoryProperty(VkMemoryPropertyFlags memoryProperty);
+	void CustomizeMemoryProperty(VkMemoryPropertyFlags memoryProperty);
 
 	// Optional, default: VK_SAMPLE_COUNT_1_BIT
-	ImageCreateInfo& CustomizeSampleCount(VkSampleCountFlagBits sampleCount);
-};
-
-class SwapchainImageCreateInfo final
-{
-private:
-	VkImage m_vkHandle = VK_NULL_HANDLE;
-	VkImageUsageFlags m_usage = 0;
-	VkFormat m_format = VK_FORMAT_UNDEFINED;
-
-	friend class Image;
-
-public:
-	SwapchainImageCreateInfo& SetUp(VkImage inSwapchain, VkImageUsageFlags inUsage, VkFormat inFormat);
+	void CustomizeSampleCount(VkSampleCountFlagBits sampleCount);
 };
 
 class ImageViewInfo final
@@ -114,94 +101,114 @@ class ImageView
 public:
 	struct Information
 	{
-		uint32_t width;
-		uint32_t height;
-		uint32_t depth;
+		uint32_t width = 0;
+		uint32_t height = 0;
+		uint32_t depth = 0;
 		uint32_t baseMipLevel = 0;
-		uint32_t levelCount = VK_REMAINING_MIP_LEVELS;
+		uint32_t levelCount = 0;
 		uint32_t baseArrayLayer = 0;
-		uint32_t layerCount = VK_REMAINING_ARRAY_LAYERS;
+		uint32_t layerCount = 0;
 		VkFormat format = VK_FORMAT_UNDEFINED;
-		VkImageAspectFlags aspectMask;
-		VkImageViewType type;
+		VkImageAspectFlags aspectMask = 0;
+		VkImageViewType type = VK_IMAGE_VIEW_TYPE_2D;
+		VkImageUsageFlags usage = 0;
+		VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 		VkImage vkImage = VK_NULL_HANDLE;
 	};
 
 private:
 	Information m_viewInformation{};
-	VkImageView m_vkImageView = VK_NULL_HANDLE;
+	IntrusivePtr<VulkanDetail::ImageViewResource> m_resource;
 
 private:
 	void _Create(const Image& inImage, const ImageViewInfo& inCreateInfo);
 
-	void _Destroy();
+	auto _GetResourceReference() const -> VulkanDetail::ResourceReference;
 
 public:
-	~ImageView();
+	ImageView() = default;
+	ImageView(const ImageView&) noexcept = default;
+	ImageView(ImageView&&) noexcept = default;
+	auto operator=(const ImageView&) noexcept -> ImageView& = default;
+	auto operator=(ImageView&&) noexcept -> ImageView& = default;
 
-	const Information& GetImageViewInformation() const;
+	auto GetImageViewInformation() const -> const Information&;
 
-	VkImageSubresourceRange GetImageSubresourceRange() const;
+	auto GetImageSubresourceRange() const -> VkImageSubresourceRange;
 
-	VkImageView GetVkImageView() const;
+	auto GetVkImageView() const noexcept -> VkImageView;
+	auto GetVkImage() const noexcept -> VkImage;
+	auto GetViewSize() const -> VkExtent3D;
+	auto IsValid() const noexcept -> bool;
+	void Reset() noexcept;
+	auto operator==(const ImageView& inOther) const noexcept -> bool;
 
 	friend class Image;
+	friend class RenderPass;
+	friend class DynamicDescriptorSetAllocator;
+	friend class Framebuffer;
+	friend class CommandBuffer;
+	friend class RenderGraphInstance;
+	friend struct ResourceLifetimeTestProbe;
 };
 
 class Image : public RefCounted
 {
 	friend struct CommandBufferTestProbe;
+	friend struct ResourceLifetimeTestProbe;
+	friend class ImageView;
+	friend class CommandBuffer;
+	friend class RenderGraphInstance;
+	friend class MyDevice;
 public:
 	struct Information
 	{
-		uint32_t width;
-		uint32_t height;
-		uint32_t depth;
-		uint32_t mipLevels;
-		uint32_t arrayLayers;
-		VkFormat format;
-		VkImageType imageType;
-		VkImageTiling tiling;
-		VkImageUsageFlags usage;
-		VkSampleCountFlagBits samples;
-		VkMemoryPropertyFlags memoryProperty;			  // image memory
+		uint32_t width = 0;
+		uint32_t height = 0;
+		uint32_t depth = 0;
+		uint32_t mipLevels = 0;
+		uint32_t arrayLayers = 0;
+		VkFormat format = VK_FORMAT_UNDEFINED;
+		VkImageType imageType = VK_IMAGE_TYPE_2D;
+		VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
+		VkImageUsageFlags usage = 0;
+		VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+		VkMemoryPropertyFlags memoryProperty = 0;			  // image memory
 		bool isSwapchainImage = false;
 	};
 
 private:
 	Information m_imageInformation{};
-	VkImage m_vkImage = VK_NULL_HANDLE;
-	std::vector<std::unique_ptr<ImageView>> m_uptrImageViews;
+	IntrusivePtr<VulkanDetail::ImageResource> m_resource;
+	mutable std::vector<ImageView> m_imageViews;
 
 private:
-	void _AllocateMemory();
-	
-	void _FreeMemory();
-
-	MemoryAllocator* _GetMemoryAllocator() const;
-
-	ImageView* _FindView(const ImageViewInfo& inCreateInfo) const;
-
-	void _DestroyViews();
+	auto _FindView(const ImageViewInfo& inCreateInfo) const -> const ImageView*;
+	auto _GetResourceReference() const -> VulkanDetail::ResourceReference;
+	void _ImportSwapchain(VkImage inImage, VkImageUsageFlags inUsage, VkFormat inFormat,
+		VkExtent2D inExtent, const IntrusivePtr<VulkanDetail::SwapchainResource>& inOwner);
 
 public:
+	Image() = default;
+	Image(const Image&) = delete;
+	Image(Image&&) = delete;
+	auto operator=(const Image&) -> Image& = delete;
+	auto operator=(Image&&) -> Image& = delete;
 	virtual ~Image();
 
 	void Create(const ImageCreateInfo& inCreateInfo);
 
-	void Create(const SwapchainImageCreateInfo& inCreateInfo);
-
 	void Destroy();
+	void ClearViewCache();
 
-	const ImageView* View();
+	auto View(const ImageViewInfo& inCreateInfo = {}) const -> ImageView;
 
-	const ImageView* View(const ImageViewInfo& inCreateInfo);
+	auto GetImageInformation() const -> const Image::Information&;
 
-	const Image::Information& GetImageInformation() const;
+	auto GetImageSize() const -> VkExtent3D;
 
-	VkExtent3D GetImageSize() const;
-
-	VkImage GetVkImage() const;
+	auto GetVkImage() const -> VkImage;
+	auto IsValid() const noexcept -> bool;
 };
 
 class SwapchainImage final : public Image
@@ -220,9 +227,9 @@ private:
 	void _CreateRenderFinishedSemaphore();
 	void _CommitAcquireWait();
 	void _MarkPresented();
+	explicit SwapchainImage(uint32_t inIndex);
 
 public:
-	explicit SwapchainImage(uint32_t inIndex);
 	~SwapchainImage();
 
 	auto GetIndex() const -> uint32_t;

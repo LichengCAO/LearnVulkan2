@@ -82,7 +82,7 @@ namespace
 				}
 				else if constexpr (requires { resource.imageView; })
 				{
-					CHECK_TRUE(resource.imageView != nullptr, "Descriptor image view cannot be null!");
+					CHECK_TRUE(resource.imageView.IsValid(), "Descriptor image view cannot be null!");
 				}
 				else
 				{
@@ -139,7 +139,7 @@ namespace
 				CHECK_TRUE(imageBinding->sampler == nullptr, "Image descriptor must not include a sampler!");
 			}
 			VkDescriptorImageInfo& imageInfo = inOutBundle.imageInfos.emplace_back();
-			imageInfo.imageView = imageBinding->imageView->GetVkImageView();
+			imageInfo.imageView = imageBinding->imageView.GetVkImageView();
 			imageInfo.imageLayout = imageBinding->imageLayout;
 			imageInfo.sampler = imageBinding->sampler != nullptr
 				? imageBinding->sampler->GetVkSampler()
@@ -280,7 +280,7 @@ void DescriptorSetDesc::SetImage(
 	VkImageLayout inImageLayout,
 	uint32_t inArrayElement)
 {
-	_SetBinding(inBinding, ImageBinding{ &inImageView, nullptr, inImageLayout }, inArrayElement);
+	_SetBinding(inBinding, ImageBinding{ inImageView, nullptr, inImageLayout }, inArrayElement);
 }
 
 void DescriptorSetDesc::SetCombinedImageSampler(
@@ -290,7 +290,7 @@ void DescriptorSetDesc::SetCombinedImageSampler(
 	VkImageLayout inImageLayout,
 	uint32_t inArrayElement)
 {
-	_SetBinding(inBinding, ImageBinding{ &inImageView, &inSampler, inImageLayout }, inArrayElement);
+	_SetBinding(inBinding, ImageBinding{ inImageView, &inSampler, inImageLayout }, inArrayElement);
 }
 
 void DescriptorSetDesc::SetSampler(uint32_t inBinding, const Sampler& inSampler, uint32_t inArrayElement)
@@ -374,7 +374,7 @@ auto DynamicDescriptorSetAllocator::_HashDescriptorBindingInfo(
 			}
 			else if constexpr (requires { resource.imageView; })
 			{
-				_HashPointer(result, resource.imageView);
+				_HashPointer(result, resource.imageView.m_resource.get());
 				_HashPointer(result, resource.sampler);
 				hash_combine(result, static_cast<std::underlying_type_t<VkImageLayout>>(resource.imageLayout));
 			}
@@ -546,12 +546,12 @@ void ShaderResources::SetBuffer(
 }
 void ShaderResources::SetImage(std::string_view name, const ImageView& image, VkImageLayout layout, uint32_t element)
 {
-	_Set(name, element, DescriptorSetDesc::ImageBinding{&image, nullptr, layout});
+	_Set(name, element, DescriptorSetDesc::ImageBinding{image, nullptr, layout});
 }
 void ShaderResources::SetCombinedImageSampler(
     std::string_view name, const ImageView& image, const Sampler& sampler, VkImageLayout layout, uint32_t element)
 {
-	_Set(name, element, DescriptorSetDesc::ImageBinding{&image, &sampler, layout});
+	_Set(name, element, DescriptorSetDesc::ImageBinding{image, &sampler, layout});
 }
 void ShaderResources::SetSampler(std::string_view name, const Sampler& sampler, uint32_t element)
 {
@@ -607,7 +607,7 @@ auto ShaderResources::_Resolve(const PipelineLayout& layout) const -> std::vecto
 			case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
 			case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
 				if (const auto* value = std::get_if<1>(&resource))
-					valid = value->imageView != nullptr &&
+					valid = value->imageView.IsValid() &&
 					        ((info.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) ==
 					            (value->sampler != nullptr)) &&
 					        value->imageLayout != VK_IMAGE_LAYOUT_UNDEFINED &&

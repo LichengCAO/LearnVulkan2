@@ -244,6 +244,7 @@ void DeviceContext::SubmitQueue(
 	}
 	QueueRecordingState& recordingState = m_queueRecordingStates[queueIndex];
 	std::vector<VkCommandBuffer> commandBuffers;
+	std::vector<VulkanDetail::ResourceReference> resourceReferences;
 
 	while (!recordingState.pendingTickets.empty())
 	{
@@ -254,12 +255,21 @@ void DeviceContext::SubmitQueue(
 			commandBuffers.end(),
 			payload.vkCommandBuffers.begin(),
 			payload.vkCommandBuffers.end());
+		for (auto& reference : payload.resourceReferences)
+		{
+			resourceReferences.push_back(std::move(reference));
+		}
 		recordingState.pendingTickets.erase(recordingState.pendingTickets.begin());
 	}
 
 	CHECK_TRUE(m_uptrCommandQueueManager != nullptr, "Command queue manager is not available!");
 	SubmissionManager::SubmitInfo submitInfo = inSubmitInfo.m_submitInfo;
 	submitInfo.SetCommandBuffers(std::move(commandBuffers));
+	if (!resourceReferences.empty())
+	{
+		frameContext.AddCompletionCallback(
+			[references = std::move(resourceReferences)]() {});
+	}
 	m_uptrCommandQueueManager->Submit(inQueue, std::move(submitInfo));
 	for (const SwapchainImage* image : inSubmitInfo.m_acquireWaitImages)
 	{
@@ -282,6 +292,11 @@ void DeviceContext::ExecuteCommandsAndWait(
 
 	CHECK_TRUE(m_uptrCommandQueueManager != nullptr, "Command queue manager is not available!");
 	HostFence completionFence;
+	if (!payload.resourceReferences.empty())
+	{
+		completionFence.AddCallback(
+			[references = std::move(payload.resourceReferences)]() {});
+	}
 	SubmissionManager::SubmitInfo submitInfo;
 	submitInfo
 		.SetCommandBuffers(std::move(payload.vkCommandBuffers))

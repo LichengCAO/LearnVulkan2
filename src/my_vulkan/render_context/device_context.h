@@ -29,6 +29,7 @@ public:
 // Thread-affine. Public methods must be called from the owning thread.
 class DeviceContext
 {
+    friend struct ResourceSubmissionTestProbe;
 private:
 	struct QueueRecordingState final
 	{

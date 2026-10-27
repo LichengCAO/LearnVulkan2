@@ -74,6 +74,19 @@ struct FrameSlot::RecordingTask final
             payload.vkCommandBuffers.push_back(batch.vkCommandBuffer);
         }
 
+        size_t referenceCount = 0;
+        for (const CommandBuffer& buffer : sourceBuffers)
+        {
+            referenceCount += buffer.m_resourceReferences.size();
+        }
+        payload.resourceReferences.reserve(referenceCount);
+        for (CommandBuffer& buffer : sourceBuffers)
+        {
+            for (auto& reference : buffer.m_resourceReferences)
+            {
+                payload.resourceReferences.push_back(std::move(reference));
+            }
+        }
         sourceBuffers.clear();
         return payload;
     }

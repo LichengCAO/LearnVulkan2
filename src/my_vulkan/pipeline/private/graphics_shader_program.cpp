@@ -433,33 +433,32 @@ auto GraphicsShaderProgramCreateInfo::AddMeshShader(std::string_view file) -> Gr
 	return _AddShader(file, VK_SHADER_STAGE_MESH_BIT_EXT);
 }
 
-auto GraphicsPipelineStateInfo::Reset() -> GraphicsPipelineStateInfo&
+void GraphicsPipelineStateInfo::Reset()
 {
 	m_vertexBindingDescriptions.clear();
 	m_vertexAttributeDescriptions.clear();
-	m_renderPassPtr = nullptr;
+	m_renderPass = {};
 	m_subpassIndex = 0;
-	return *this;
 }
 
-auto GraphicsPipelineStateInfo::AddVertexInputDescription(
+void GraphicsPipelineStateInfo::AddVertexInputDescription(
 	const VkVertexInputBindingDescription& inBindingDescription,
-	const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions) -> GraphicsPipelineStateInfo&
+	const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions)
 {
 	m_vertexBindingDescriptions.push_back(inBindingDescription);
 	m_vertexAttributeDescriptions.insert(
 		m_vertexAttributeDescriptions.end(),
 		inAttributeDescriptions.begin(),
 		inAttributeDescriptions.end());
-
-	return *this;
 }
 
-auto GraphicsPipelineStateInfo::SetRenderPassSubpass(const RenderPass& inRenderPass, uint32_t inSubpassIndex) -> GraphicsPipelineStateInfo&
+void GraphicsPipelineStateInfo::SetRenderPassSubpass(const RenderPass& inRenderPass, uint32_t inSubpassIndex)
 {
-	m_renderPassPtr = &inRenderPass;
+	const auto snapshot = inRenderPass._GetSnapshot();
+	CHECK_TRUE(snapshot.GetVkRenderPass() != VK_NULL_HANDLE && inSubpassIndex < snapshot.GetSubpassCount(),
+	    "Invalid render pass/subpass!");
+	m_renderPass = snapshot;
 	m_subpassIndex = inSubpassIndex;
-	return *this;
 }
 
 GraphicsShaderProgram::GraphicsShaderProgram() = default;
@@ -508,7 +507,7 @@ auto GraphicsShaderProgram::_HashGraphicsPipelineStateInfo(const GraphicsPipelin
 {
 	size_t result = 0;
 
-	hash_combine(result, inStateInfo.m_renderPassPtr != nullptr ? inStateInfo.m_renderPassPtr->GetVkRenderPass() : VK_NULL_HANDLE);
+	hash_combine(result, inStateInfo.m_renderPass.GetVkRenderPass());
 	hash_combine(result, inStateInfo.m_subpassIndex);
 	hash_combine(result, inStateInfo.m_vertexBindingDescriptions.size());
 	for (const auto& binding : inStateInfo.m_vertexBindingDescriptions)
@@ -529,9 +528,9 @@ auto GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& i
 	const VkPipelineLayout pipelineLayout = GetLayout().GetVkPipelineLayout();
 	CHECK_TRUE(pipelineLayout != VK_NULL_HANDLE, "Graphics shader program needs a pipeline layout!");
 	CHECK_TRUE(!m_shaderModules.empty(), "Graphics shader program needs shader stages!");
-	CHECK_TRUE(inStateInfo.m_renderPassPtr != nullptr, "Graphics pipeline state info needs a render pass!");
-    CHECK_TRUE(inStateInfo.m_subpassIndex < inStateInfo.m_renderPassPtr->m_subpassInfos.size(), "Invalid graphics subpass index!");
-    const auto& subpass = inStateInfo.m_renderPassPtr->m_subpassInfos[inStateInfo.m_subpassIndex];
+	CHECK_TRUE(inStateInfo.m_renderPass.GetVkRenderPass() != VK_NULL_HANDLE, "Graphics pipeline state info needs a render pass!");
+    CHECK_TRUE(inStateInfo.m_subpassIndex < inStateInfo.m_renderPass.GetSubpassCount(), "Invalid graphics subpass index!");
+    const auto& subpass = inStateInfo.m_renderPass.description->subpassInfos[inStateInfo.m_subpassIndex];
 
 	const auto& shaderStageInfos = m_shaderStages;
 	CHECK_TRUE(!shaderStageInfos.empty(), "Graphics shader program needs shader stages!");
@@ -625,7 +624,7 @@ auto GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& i
 	pipelineInfo.pColorBlendState = &colorBlendStateInfo;
 	pipelineInfo.pDynamicState = &dynamicStateInfo;
 	pipelineInfo.layout = pipelineLayout;
-	pipelineInfo.renderPass = inStateInfo.m_renderPassPtr->GetVkRenderPass();
+	pipelineInfo.renderPass = inStateInfo.m_renderPass.GetVkRenderPass();
 	pipelineInfo.subpass = inStateInfo.m_subpassIndex;
 	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 	pipelineInfo.basePipelineIndex = -1;
@@ -637,11 +636,11 @@ auto GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& i
 void GraphicsShaderProgram::Destroy()
 {
 	auto& device = MyDevice::GetInstance();
-	for (auto& [stateHash, pipeline] : m_cachedGraphicsPipelines)
+	for (auto& [stateHash, entry] : m_cachedGraphicsPipelines)
 	{
-		if (pipeline != VK_NULL_HANDLE)
+		if (entry.pipeline != VK_NULL_HANDLE)
 		{
-			device.DestroyPipeline(pipeline);
+			device.DestroyPipeline(entry.pipeline);
 		}
 	}
 	m_cachedGraphicsPipelines.clear();
@@ -668,11 +667,11 @@ auto GraphicsShaderProgram::GetVkPipeline(const GraphicsPipelineStateInfo& inSta
 	const size_t stateHash = _HashGraphicsPipelineStateInfo(state);
 	if (const auto cacheIt = m_cachedGraphicsPipelines.find(stateHash); cacheIt != m_cachedGraphicsPipelines.end())
 	{
-		return cacheIt->second;
+		return cacheIt->second.pipeline;
 	}
 
 	VkPipeline pipeline = _CreateVkPipeline(state);
-	m_cachedGraphicsPipelines[stateHash] = pipeline;
+	m_cachedGraphicsPipelines[stateHash] = {pipeline, state.m_renderPass};
 	return pipeline;
 }
 
@@ -834,7 +833,7 @@ void GraphicsShaderProgram::_CreateDefaults(const GraphicsShaderProgramCreateInf
 	passInfo.AddSubpass("default", subpass);
 	m_defaultRenderPass = std::make_unique<RenderPass>();
 	m_defaultRenderPass->Create(passInfo);
-	m_defaultState.m_renderPassPtr = m_defaultRenderPass.get();
+	m_defaultState.m_renderPass = m_defaultRenderPass->_GetSnapshot();
 	// Complex vertex layouts remain available through the explicit pipeline-state path.
 	if (m_automaticVertexInputSupported)
 		GetVkPipeline({});
@@ -842,9 +841,10 @@ void GraphicsShaderProgram::_CreateDefaults(const GraphicsShaderProgramCreateInf
 auto GraphicsShaderProgram::_ResolveState(const GraphicsPipelineStateInfo& input) const -> GraphicsPipelineStateInfo
 {
 	auto state = input;
-	if (!state.m_renderPassPtr)
-		state.m_renderPassPtr = m_defaultRenderPass.get();
-	CHECK_TRUE(state.m_renderPassPtr != nullptr, "Provide an explicit render pass or configure default attachments!");
+	if (state.m_renderPass.GetVkRenderPass() == VK_NULL_HANDLE)
+		state.m_renderPass = m_defaultState.m_renderPass;
+	CHECK_TRUE(state.m_renderPass.GetVkRenderPass() != VK_NULL_HANDLE,
+	    "Provide an explicit render pass or configure default attachments!");
 	if (state.m_vertexBindingDescriptions.empty() && state.m_vertexAttributeDescriptions.empty())
 	{
 		CHECK_TRUE(m_automaticVertexInputSupported, "Shader inputs require an explicit vertex layout!");

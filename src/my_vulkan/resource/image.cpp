@@ -1,8 +1,7 @@
 #include "image.h"
 #include "device.h"
-#include "buffer.h"
-#include "command_buffer.h"
 #include "memory_allocator.h"
+#include <algorithm>
 //#ifndef STB_IMAGE_IMPLEMENTATION
 //#define STB_IMAGE_IMPLEMENTATION
 //#endif defined in tinyglTF
@@ -16,7 +15,7 @@ void Image::Create(const ImageCreateInfo& inCreateInfo)
 {
 	VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	auto& device = MyDevice::GetInstance();
-	auto& infoToFill = m_imageInformation;
+	Information infoToFill{};
 	const auto swapchainSize = device.GetSwapchainExtent();
 
 	imageInfo.imageType = inCreateInfo.m_type;
@@ -45,77 +44,84 @@ void Image::Create(const ImageCreateInfo& inCreateInfo)
 	infoToFill.samples = imageInfo.samples;
 	infoToFill.isSwapchainImage = false;
 	infoToFill.memoryProperty = inCreateInfo.m_optMemoryProperty.value_or(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	m_vkImage = device.CreateImage(imageInfo);
-	_AllocateMemory();
+	const VkImage image = device.CreateImage(imageInfo);
+	auto* allocator = device.GetMemoryAllocator();
+	bool allocated = false;
+	IntrusivePtr<VulkanDetail::ImageResource> resource;
+	try
+	{
+		allocator->AllocateForVkImage(image, infoToFill.memoryProperty);
+		allocated = true;
+		resource = MakeIntrusive<VulkanDetail::ImageResource>(image,
+			[vkDevice = device.vkDevice, allocator](VkImage inImage)
+			{
+				vkDestroyImage(vkDevice, inImage, nullptr);
+				allocator->FreeMemory(inImage);
+			});
+	}
+	catch (...)
+	{
+		vkDestroyImage(device.vkDevice, image, nullptr);
+		if (allocated)
+		{
+			allocator->FreeMemory(image);
+		}
+		throw;
+	}
+	ClearViewCache();
+	m_resource = std::move(resource);
+	m_imageInformation = infoToFill;
 }
 
-void Image::Create(const SwapchainImageCreateInfo& inCreateInfo)
+void Image::_ImportSwapchain(VkImage inImage, VkImageUsageFlags inUsage, VkFormat inFormat,
+	VkExtent2D inExtent, const IntrusivePtr<VulkanDetail::SwapchainResource>& inOwner)
 {
-	auto& infoToFill = m_imageInformation;
-	auto& device = MyDevice::GetInstance();
-	const auto size2D = device.GetSwapchainExtent();
+	CHECK_TRUE(inImage != VK_NULL_HANDLE && inOwner, "Imported image requires its swapchain owner!");
+	Information infoToFill{};
 
 	infoToFill.arrayLayers = 1;
 	infoToFill.depth = 1;
-	infoToFill.format = inCreateInfo.m_format;
-	infoToFill.height = size2D.height;
+	infoToFill.format = inFormat;
+	infoToFill.height = inExtent.height;
 	infoToFill.imageType = VK_IMAGE_TYPE_2D;
 	infoToFill.isSwapchainImage = true;
 	infoToFill.memoryProperty = 0; // TODO
 	infoToFill.mipLevels = 1;
 	infoToFill.samples = VK_SAMPLE_COUNT_1_BIT;
 	infoToFill.tiling = VK_IMAGE_TILING_LINEAR;
-	infoToFill.usage = inCreateInfo.m_usage;
-	infoToFill.width = size2D.width;
+	infoToFill.usage = inUsage;
+	infoToFill.width = inExtent.width;
 
-	m_vkImage = inCreateInfo.m_vkHandle;
+	auto resource = MakeIntrusive<VulkanDetail::ImageResource>(inImage, nullptr,
+		std::vector<VulkanDetail::ResourceReference>{ inOwner });
+	ClearViewCache();
+	m_resource = std::move(resource);
+	m_imageInformation = infoToFill;
 }
 
 void Image::Destroy()
 {
-	_DestroyViews();
-
-	if (m_imageInformation.isSwapchainImage)
-	{
-		if (m_vkImage != VK_NULL_HANDLE)
-		{
-			m_vkImage = VK_NULL_HANDLE;
-		}
-	}
-	else
-	{
-		if (m_vkImage != VK_NULL_HANDLE)
-		{
-			_FreeMemory();
-			vkDestroyImage(MyDevice::GetInstance().vkDevice, m_vkImage, nullptr);
-			m_vkImage = VK_NULL_HANDLE;
-		}
-	}
+	ClearViewCache();
+	m_resource.reset();
+	m_imageInformation = {};
 }
 
-void Image::_AllocateMemory()
+void Image::ClearViewCache()
 {
-	MemoryAllocator* pAllocator = _GetMemoryAllocator();
-	pAllocator->AllocateForVkImage(m_vkImage, m_imageInformation.memoryProperty);
+	m_imageViews.clear();
 }
 
-void Image::_FreeMemory()
+auto Image::_GetResourceReference() const -> VulkanDetail::ResourceReference
 {
-	MemoryAllocator* pAllocator = _GetMemoryAllocator();
-	pAllocator->FreeMemory(m_vkImage);
+	return m_resource;
 }
 
-MemoryAllocator* Image::_GetMemoryAllocator() const
-{
-	return MyDevice::GetInstance().GetMemoryAllocator();
-}
-
-const Image::Information& Image::GetImageInformation() const
+auto Image::GetImageInformation() const -> const Image::Information&
 {
 	return m_imageInformation;
 }
 
-VkExtent3D Image::GetImageSize() const
+auto Image::GetImageSize() const -> VkExtent3D
 {
 	VkExtent3D extent{};
 	extent.width = m_imageInformation.width;
@@ -124,10 +130,12 @@ VkExtent3D Image::GetImageSize() const
 	return extent;
 }
 
-VkImage Image::GetVkImage() const
+auto Image::GetVkImage() const -> VkImage
 {
-	return m_vkImage;
+	return m_resource ? m_resource->GetHandle() : VK_NULL_HANDLE;
 }
+
+auto Image::IsValid() const noexcept -> bool { return static_cast<bool>(m_resource); }
 
 SwapchainImage::SwapchainImage(uint32_t inIndex)
 	: m_index(inIndex)
@@ -192,9 +200,9 @@ auto SwapchainImage::GetRenderFinishedSemaphore() const -> VkSemaphore
 	return m_renderFinishedSemaphore;
 }
 
-ImageView* Image::_FindView(const ImageViewInfo& inCreateInfo) const
+auto Image::_FindView(const ImageViewInfo& inCreateInfo) const -> const ImageView*
 {
-	CHECK_TRUE(m_vkImage != VK_NULL_HANDLE, "Image must be created before requesting an image view!");
+	CHECK_TRUE(m_resource, "Image must be created before requesting an image view!");
 	CHECK_TRUE(inCreateInfo.m_baseMipLevel < m_imageInformation.mipLevels, "Base mip level out of range!");
 	CHECK_TRUE(inCreateInfo.m_baseArrayLayer < m_imageInformation.arrayLayers, "Base array layer out of range!");
 
@@ -207,66 +215,40 @@ ImageView* Image::_FindView(const ImageViewInfo& inCreateInfo) const
 
 	CHECK_TRUE(resolvedLevelCount > 0, "Image view level count must be greater than 0!");
 	CHECK_TRUE(resolvedLayerCount > 0, "Image view layer count must be greater than 0!");
-	CHECK_TRUE((inCreateInfo.m_baseMipLevel + resolvedLevelCount) <= m_imageInformation.mipLevels, "Mip range out of range!");
-	CHECK_TRUE((inCreateInfo.m_baseArrayLayer + resolvedLayerCount) <= m_imageInformation.arrayLayers, "Array layer range out of range!");
+	CHECK_TRUE(resolvedLevelCount <= m_imageInformation.mipLevels - inCreateInfo.m_baseMipLevel, "Mip range out of range!");
+	CHECK_TRUE(resolvedLayerCount <= m_imageInformation.arrayLayers - inCreateInfo.m_baseArrayLayer, "Array layer range out of range!");
 
-	for (const auto& uptrView : m_uptrImageViews)
+	for (const auto& view : m_imageViews)
 	{
-		const auto& viewInfo = uptrView->GetImageViewInformation();
+		const auto& viewInfo = view.GetImageViewInformation();
 		if (viewInfo.baseMipLevel == inCreateInfo.m_baseMipLevel
 			&& viewInfo.levelCount == resolvedLevelCount
 			&& viewInfo.baseArrayLayer == inCreateInfo.m_baseArrayLayer
 			&& viewInfo.layerCount == resolvedLayerCount)
 		{
-			return uptrView.get();
+			return &view;
 		}
 	}
 
 	return nullptr;
 }
 
-void Image::_DestroyViews()
+auto Image::View(const ImageViewInfo& inCreateInfo) const -> ImageView
 {
-	for (auto& uptrView : m_uptrImageViews)
+	if (const ImageView* existingView = _FindView(inCreateInfo))
 	{
-		if (uptrView != nullptr)
-		{
-			uptrView->_Destroy();
-		}
-	}
-	m_uptrImageViews.clear();
-}
-
-const ImageView* Image::View()
-{
-	ImageViewInfo createInfo{};
-
-	return View(createInfo);
-}
-
-const ImageView* Image::View(const ImageViewInfo& inCreateInfo)
-{
-	if (ImageView* existingView = _FindView(inCreateInfo))
-	{
-		return existingView;
+		return *existingView;
 	}
 
-	auto uptrView = std::make_unique<ImageView>();
-	uptrView->_Create(*this, inCreateInfo);
-	ImageView* result = uptrView.get();
-	m_uptrImageViews.push_back(std::move(uptrView));
-
-	return result;
-}
-
-ImageView::~ImageView()
-{
-	assert(m_vkImageView == VK_NULL_HANDLE);
+	ImageView view;
+	view._Create(*this, inCreateInfo);
+	m_imageViews.push_back(view);
+	return view;
 }
 
 namespace
 {
-VkImageAspectFlags _GetDefaultAspectMask(VkFormat format)
+auto _GetDefaultAspectMask(VkFormat format) -> VkImageAspectFlags
 {
 	switch (format)
 	{
@@ -288,7 +270,7 @@ VkImageAspectFlags _GetDefaultAspectMask(VkFormat format)
 
 void ImageView::_Create(const Image& inImage, const ImageViewInfo& inCreateInfo)
 {
-	CHECK_TRUE(m_vkImageView == VK_NULL_HANDLE, "Image view already created!");
+	CHECK_TRUE(!m_resource, "Image view already created!");
 
 	auto& infoToFill = m_viewInformation;
 	auto& device = MyDevice::GetInstance();
@@ -305,8 +287,8 @@ void ImageView::_Create(const Image& inImage, const ImageViewInfo& inCreateInfo)
 	const VkImageAspectFlags aspectMask = _GetDefaultAspectMask(imageInfo.format);
 	CHECK_TRUE(resolvedLevelCount > 0, "Image view level count must be greater than 0!");
 	CHECK_TRUE(resolvedLayerCount > 0, "Image view layer count must be greater than 0!");
-	CHECK_TRUE((inCreateInfo.m_baseMipLevel + resolvedLevelCount) <= imageInfo.mipLevels, "Mip range out of range!");
-	CHECK_TRUE((inCreateInfo.m_baseArrayLayer + resolvedLayerCount) <= imageInfo.arrayLayers, "Array layer range out of range!");
+	CHECK_TRUE(resolvedLevelCount <= imageInfo.mipLevels - inCreateInfo.m_baseMipLevel, "Mip range out of range!");
+	CHECK_TRUE(resolvedLayerCount <= imageInfo.arrayLayers - inCreateInfo.m_baseArrayLayer, "Array layer range out of range!");
 
 	infoToFill.width = imageInfo.width;
 	infoToFill.height = imageInfo.height;
@@ -318,6 +300,8 @@ void ImageView::_Create(const Image& inImage, const ImageViewInfo& inCreateInfo)
 	infoToFill.format = imageInfo.format;
 	infoToFill.aspectMask = aspectMask;
 	infoToFill.vkImage = inImage.GetVkImage();
+	infoToFill.usage = imageInfo.usage;
+	infoToFill.samples = imageInfo.samples;
 
 	switch (imageInfo.imageType)
 	{
@@ -355,26 +339,32 @@ void ImageView::_Create(const Image& inImage, const ImageViewInfo& inCreateInfo)
 	viewInfo.subresourceRange.baseArrayLayer = infoToFill.baseArrayLayer;
 	viewInfo.subresourceRange.layerCount = infoToFill.layerCount;
 
-	m_vkImageView = device.CreateImageView(viewInfo);
+	const VkImageView imageView = device.CreateImageView(viewInfo);
+	try
+	{
+		m_resource = MakeIntrusive<VulkanDetail::ImageViewResource>(imageView,
+			[vkDevice = device.vkDevice](VkImageView inView) { vkDestroyImageView(vkDevice, inView, nullptr); },
+			std::vector<VulkanDetail::ResourceReference>{ inImage._GetResourceReference() });
+	}
+	catch (...)
+	{
+		device.DestroyImageView(imageView);
+		throw;
+	}
 }
 
-void ImageView::_Destroy()
+void ImageView::Reset() noexcept
 {
-	if (m_vkImageView != VK_NULL_HANDLE)
-	{
-		auto& device = MyDevice::GetInstance();
-		device.DestroyImageView(m_vkImageView);
-		m_vkImageView = VK_NULL_HANDLE;
-	}
+	m_resource.reset();
 	m_viewInformation = ImageView::Information{};
 }
 
-const ImageView::Information& ImageView::GetImageViewInformation() const
+auto ImageView::GetImageViewInformation() const -> const Information&
 {
 	return m_viewInformation;
 }
 
-VkImageSubresourceRange ImageView::GetImageSubresourceRange() const
+auto ImageView::GetImageSubresourceRange() const -> VkImageSubresourceRange
 {
 	VkImageSubresourceRange subRange{};
 	subRange.aspectMask = m_viewInformation.aspectMask;
@@ -386,88 +376,89 @@ VkImageSubresourceRange ImageView::GetImageSubresourceRange() const
 	return subRange;
 }
 
-VkImageView ImageView::GetVkImageView() const
+auto ImageView::GetVkImageView() const noexcept -> VkImageView
 {
-	return m_vkImageView;
+	return m_resource ? m_resource->GetHandle() : VK_NULL_HANDLE;
 }
 
-ImageCreateInfo& ImageCreateInfo::Reset()
+auto ImageView::GetVkImage() const noexcept -> VkImage { return m_resource ? m_viewInformation.vkImage : VK_NULL_HANDLE; }
+auto ImageView::IsValid() const noexcept -> bool { return static_cast<bool>(m_resource); }
+auto ImageView::_GetResourceReference() const -> VulkanDetail::ResourceReference { return m_resource; }
+auto ImageView::operator==(const ImageView& inOther) const noexcept -> bool { return m_resource.get() == inOther.m_resource.get(); }
+
+auto ImageView::GetViewSize() const -> VkExtent3D
+{
+	if (!IsValid())
+	{
+		return {};
+	}
+	const auto mipSize = [mip = m_viewInformation.baseMipLevel](uint32_t inSize) -> uint32_t
+	{
+		return mip >= 32 ? 1 : std::max(1u, inSize >> mip);
+	};
+	return { mipSize(m_viewInformation.width), mipSize(m_viewInformation.height), mipSize(m_viewInformation.depth) };
+}
+
+void ImageCreateInfo::Reset()
 {
 	*this = ImageCreateInfo{};
-	return *this;
 }
 
-ImageCreateInfo& ImageCreateInfo::SetUsage(VkImageUsageFlags usage)
+void ImageCreateInfo::SetUsage(VkImageUsageFlags usage)
 {
 	m_usage = usage;
-	return *this;
 }
 
-ImageCreateInfo& ImageCreateInfo::CustomizeSize1D(uint32_t width)
+void ImageCreateInfo::CustomizeSize1D(uint32_t width)
 {
 	m_optWidth = width;
+	m_optHeight = 1;
+	m_optDepth = 1;
 	m_type = VK_IMAGE_TYPE_1D;
-	return *this;
 }
 
-ImageCreateInfo& ImageCreateInfo::CustomizeSize2D(uint32_t width, uint32_t height)
+void ImageCreateInfo::CustomizeSize2D(uint32_t width, uint32_t height)
 {
 	m_optWidth = width;
 	m_optHeight = height;
+	m_optDepth = 1;
 	m_type = VK_IMAGE_TYPE_2D;
-	return *this;
 }
 
-ImageCreateInfo& ImageCreateInfo::CustomizeSize3D(uint32_t width, uint32_t height, uint32_t depth)
+void ImageCreateInfo::CustomizeSize3D(uint32_t width, uint32_t height, uint32_t depth)
 {
 	m_optWidth = width;
 	m_optHeight = height;
 	m_optDepth = depth;
 	m_type = VK_IMAGE_TYPE_3D;
-	return *this;
 }
 
-ImageCreateInfo& ImageCreateInfo::CustomizeMipLevels(uint32_t mipLevelCount)
+void ImageCreateInfo::CustomizeMipLevels(uint32_t mipLevelCount)
 {
 	m_optMipLevels = mipLevelCount;
-	return *this;
 }
 
-ImageCreateInfo& ImageCreateInfo::CustomizeArrayLayers(uint32_t layerCount)
+void ImageCreateInfo::CustomizeArrayLayers(uint32_t layerCount)
 {
 	m_optArrayLayers = layerCount;
-	return *this;
 }
 
-ImageCreateInfo& ImageCreateInfo::CustomizeFormat(VkFormat format)
+void ImageCreateInfo::CustomizeFormat(VkFormat format)
 {
 	m_optFormat = format;
-	return *this;
 }
 
-ImageCreateInfo& ImageCreateInfo::CustomizeImageTiling(VkImageTiling tiling)
+void ImageCreateInfo::CustomizeImageTiling(VkImageTiling tiling)
 {
 	m_optTiling = tiling;
-	return *this;
 }
 
-ImageCreateInfo& ImageCreateInfo::CustomizeMemoryProperty(VkMemoryPropertyFlags memoryProperty)
+void ImageCreateInfo::CustomizeMemoryProperty(VkMemoryPropertyFlags memoryProperty)
 {
 	m_optMemoryProperty = memoryProperty;
-	return *this;
 }
 
-ImageCreateInfo& ImageCreateInfo::CustomizeSampleCount(VkSampleCountFlagBits sampleCount)
+void ImageCreateInfo::CustomizeSampleCount(VkSampleCountFlagBits sampleCount)
 {
 	m_optSampleCount = sampleCount;
-	return *this;
-}
-
-SwapchainImageCreateInfo& SwapchainImageCreateInfo::SetUp(VkImage inSwapchain, VkImageUsageFlags inUsage, VkFormat inFormat)
-{
-	m_vkHandle = inSwapchain;
-	m_usage = inUsage;
-	m_format = inFormat;
-
-	return *this;
 }

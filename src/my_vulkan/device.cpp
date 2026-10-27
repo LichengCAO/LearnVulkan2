@@ -8,7 +8,6 @@
 #include "memory_allocator.h"
 #include "allocator/descriptor_set_layout_allocator.h"
 #include "allocator/descriptor_set_allocator.h"
-#include "framebuffer_allocator.h"
 #include "render_pass_allocator.h"
 #include "pipeline_layout_allocator.h"
 #include "pipeline_allocator.h"
@@ -272,7 +271,7 @@ void MyDevice::_CreateLogicalDevice()
 	}
 }
 
-void MyDevice::_CreateSwapchain()
+void MyDevice::_CreateSwapchain(VkSwapchainKHR inOldSwapchain)
 {
 	SwapChainSupportDetails swapChainSupport = _QuerySwapchainSupport(vkPhysicalDevice, vkSurface);
 	uint32_t imageCnt = swapChainSupport.capabilities.minImageCount + 1;
@@ -280,7 +279,7 @@ void MyDevice::_CreateSwapchain()
 	VkPresentModeKHR presentMode = _ChooseSwapchainPresentMode(swapChainSupport.presentModes);
 	VkExtent2D extent = _ChooseSwapchainExtent(swapChainSupport.capabilities);
 	vkb::SwapchainBuilder swapchainBuilder{ m_device };
-	// swapchainBuilder.set_old_swapchain(m_swapchain); // it says that we need to set this, but if i leave it empty it still works, weird
+	swapchainBuilder.set_old_swapchain(inOldSwapchain);
 	swapchainBuilder.set_desired_format(surfaceFormat);
 	swapchainBuilder.set_desired_present_mode(presentMode);
 	swapchainBuilder.set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
@@ -294,6 +293,17 @@ void MyDevice::_CreateSwapchain()
 	}
 	m_swapchain = swapchainBuilderReturn.value();
 	vkSwapchain = m_swapchain.swapchain;
+	try
+	{
+		m_swapchainResource = MakeIntrusive<VulkanDetail::SwapchainResource>(vkSwapchain,
+			[device = vkDevice](VkSwapchainKHR inSwapchain) { vkDestroySwapchainKHR(device, inSwapchain, nullptr); });
+	}
+	catch (...)
+	{
+		vkb::destroy_swapchain(m_swapchain);
+		vkSwapchain = VK_NULL_HANDLE;
+		throw;
+	}
 	m_needRecreate = false;
 	_UpdateSwapchainImages();
 }
@@ -309,8 +319,9 @@ void MyDevice::RecreateSwapchain()
 		glfwWaitEvents();
 	}
 	WaitIdle();
+	const auto oldSwapchain = m_swapchainResource;
 	_DestroySwapchain();
-	_CreateSwapchain();
+	_CreateSwapchain(oldSwapchain ? oldSwapchain->GetHandle() : VK_NULL_HANDLE);
 }
 
 auto MyDevice::GetNextAvailableSwapchainImage(VkSemaphore acquireSemaphore) -> SwapchainImage*
@@ -394,7 +405,9 @@ void MyDevice::_DestroySwapchain()
 		}
 	}
 	m_uptrSwapchainImages.clear();
-	vkb::destroy_swapchain(m_swapchain);
+	m_swapchainResource.reset();
+	vkSwapchain = VK_NULL_HANDLE;
+	m_swapchain = {};
 }
 
 void MyDevice::_CreateMemoryAllocator()
@@ -553,11 +566,9 @@ void MyDevice::_UpdateSwapchainImages()
 	for (size_t i = 0; i < vkImages.size(); ++i)
 	{
 		std::unique_ptr<SwapchainImage>& uptrImage = m_uptrSwapchainImages[i];
-		SwapchainImageCreateInfo swapchainCreateInfo{};
-
-		uptrImage = std::make_unique<SwapchainImage>(static_cast<uint32_t>(i));
-		swapchainCreateInfo.SetUp(vkImages[i], m_swapchain.image_usage_flags, m_swapchain.image_format);
-		uptrImage->Create(swapchainCreateInfo);
+		uptrImage = std::unique_ptr<SwapchainImage>(new SwapchainImage(static_cast<uint32_t>(i)));
+		uptrImage->_ImportSwapchain(vkImages[i], m_swapchain.image_usage_flags,
+			m_swapchain.image_format, m_swapchain.extent, m_swapchainResource);
 		uptrImage->_CreateRenderFinishedSemaphore();
 	}
 }
@@ -623,30 +634,6 @@ void MyDevice::_DestroyDescriptorSetLayoutAllocator()
 	{
 		m_uptrDescriptorSetLayoutAllocator->Destroy();
 		m_uptrDescriptorSetLayoutAllocator.reset();
-	}
-}
-
-void MyDevice::_CreateFramebufferAllocator()
-{
-	m_uptrFramebufferAllocator = std::make_unique<FramebufferAllocator>();
-	m_uptrFramebufferAllocator->Create(vkDevice);
-}
-
-void MyDevice::_DestroyFramebufferAllocator()
-{
-	if (m_uptrFramebufferAllocator != nullptr)
-	{
-		m_uptrFramebufferAllocator->Destroy();
-		m_uptrFramebufferAllocator.reset();
-	}
-}
-
-void MyDevice::_ResetFramebufferAllocator()
-{
-	if (m_uptrFramebufferAllocator != nullptr)
-	{
-		m_uptrFramebufferAllocator->Destroy();
-		m_uptrFramebufferAllocator->Create(vkDevice);
 	}
 }
 
@@ -741,7 +728,6 @@ void MyDevice::Create()
 	_CreateRenderPassAllocator();
 	_CreatePipelineLayoutAllocator();
 	_CreatePipelineAllocators();
-	_CreateFramebufferAllocator();
 	_CreateSwapchain();
 	_CreateDescriptorSetLayoutAllocator();
 	_CreateDescriptorSetAllocator();
@@ -753,7 +739,6 @@ void MyDevice::Destroy()
 	_DestroyDescriptorSetAllocator();
 	_DestroyDescriptorSetLayoutAllocator();
 	_DestroySwapchain();
-	_DestroyFramebufferAllocator();
 	_DestroyPipelineAllocators();
 	_DestroyPipelineLayoutAllocator();
 	_DestroyRenderPassAllocator();
@@ -794,6 +779,11 @@ double MyDevice::GetTime() const
 MemoryAllocator* MyDevice::GetMemoryAllocator()
 {
 	return m_uptrMemoryAllocator.get();
+}
+
+auto MyDevice::GetRenderPassAllocator() -> RenderPassAllocator*
+{
+	return m_uptrRenderPassAllocator.get();
 }
 
 auto MyDevice::GetDescriptorSetLayoutAllocator() -> DescriptorSetLayoutAllocator*
@@ -1345,24 +1335,13 @@ auto MyDevice::CreateImageView(const VkImageViewCreateInfo& inCreateInfo, const 
 
 void MyDevice::DestroyImageView(VkImageView inView, const VkAllocationCallbacks* pAllocator)
 {
-	_ResetFramebufferAllocator();
 	vkDestroyImageView(vkDevice, inView, pAllocator);
 }
 
-VkRenderPass MyDevice::CreateRenderPass(const VkRenderPassCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator)
+auto MyDevice::CreateRenderPass(const VkRenderPassCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator) -> VkRenderPass
 {
 	VkRenderPass result = VK_NULL_HANDLE;
-
-	if (pAllocator == nullptr)
-	{
-		CHECK_TRUE(m_uptrRenderPassAllocator != nullptr, "Render pass allocator is not created!");
-		result = m_uptrRenderPassAllocator->AllocateRenderPass(inCreateInfo);
-	}
-	else
-	{
-		VK_CHECK(vkCreateRenderPass(vkDevice, &inCreateInfo, pAllocator, &result));
-	}
-
+	VK_CHECK(vkCreateRenderPass(vkDevice, &inCreateInfo, pAllocator, &result));
 	return result;
 }
 
@@ -1373,31 +1352,13 @@ void MyDevice::DestroyRenderPass(VkRenderPass inRenderPass, const VkAllocationCa
 		return;
 	}
 
-	if (pAllocator == nullptr)
-	{
-		CHECK_TRUE(m_uptrRenderPassAllocator != nullptr, "Render pass allocator is not created!");
-		m_uptrRenderPassAllocator->FreeRenderPass(inRenderPass);
-	}
-	else
-	{
-		vkDestroyRenderPass(vkDevice, inRenderPass, pAllocator);
-	}
+	vkDestroyRenderPass(vkDevice, inRenderPass, pAllocator);
 }
 
-VkFramebuffer MyDevice::CreateFramebuffer(const VkFramebufferCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator)
+auto MyDevice::CreateFramebuffer(const VkFramebufferCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator) -> VkFramebuffer
 {
 	VkFramebuffer result = VK_NULL_HANDLE;
-
-	if (pAllocator == nullptr)
-	{
-		CHECK_TRUE(m_uptrFramebufferAllocator != nullptr, "Framebuffer allocator is not created!");
-		result = m_uptrFramebufferAllocator->AllocateFramebuffer(inCreateInfo);
-	}
-	else
-	{
-		VK_CHECK(vkCreateFramebuffer(vkDevice, &inCreateInfo, pAllocator, &result));
-	}
-
+	VK_CHECK(vkCreateFramebuffer(vkDevice, &inCreateInfo, pAllocator, &result));
     return result;
 }
 
@@ -1408,15 +1369,7 @@ void MyDevice::DestroyFramebuffer(VkFramebuffer inFramebuffer, const VkAllocatio
 		return;
 	}
 
-	if (pAllocator == nullptr)
-	{
-		CHECK_TRUE(m_uptrFramebufferAllocator != nullptr, "Framebuffer allocator is not created!");
-		m_uptrFramebufferAllocator->FreeFramebuffer(inFramebuffer);
-	}
-	else
-	{
-		vkDestroyFramebuffer(vkDevice, inFramebuffer, pAllocator);
-	}
+	vkDestroyFramebuffer(vkDevice, inFramebuffer, pAllocator);
 }
 
 void MyDevice::GetAccelerationStructureBuildSizes(VkAccelerationStructureBuildTypeKHR inBuildType, const VkAccelerationStructureBuildGeometryInfoKHR& inBuildInfo, const std::vector<uint32_t>& inMaxPrimitiveCounts, VkAccelerationStructureBuildSizesInfoKHR& outSizeInfo)

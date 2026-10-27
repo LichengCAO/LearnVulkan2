@@ -4,6 +4,7 @@
 #include "common_enums.h"
 #include "command_pool.h"
 #include "utility/task_scheduler.h"
+#include "resource/vulkan_handle_resource.h"
 
 class CommandBuffer;
 class DeviceContext;
@@ -18,6 +19,8 @@ class FrameSlot final
     friend class DeviceContext;
     friend struct ShaderBindingTestProbe;
     friend struct CommandBufferTestProbe;
+    friend struct ResourceLifetimeTestProbe;
+    friend struct ResourceSubmissionTestProbe;
 
 public:
     class RecordingTicket final
@@ -35,6 +38,7 @@ public:
     {
         QueueFamilyType queue = QueueFamilyType::UNSET;
         std::vector<VkCommandBuffer> vkCommandBuffers;
+        std::vector<VulkanDetail::ResourceReference> resourceReferences;
     };
 
 private:

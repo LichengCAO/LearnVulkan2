@@ -8,7 +8,6 @@
 class MemoryAllocator;
 class DescriptorSetLayoutAllocator;
 class DescriptorSetAllocator;
-class FramebufferAllocator;
 class RenderPassAllocator;
 class PipelineLayoutAllocator;
 class GraphicsPipelineAllocator;
@@ -32,7 +31,9 @@ struct UserInput
 
 class MyDevice final
 {
+    friend struct ResourceSubmissionTestProbe;
 	friend struct ShaderBindingTestProbe;
+	friend struct ResourceLifetimeTestProbe;
 private:
 	struct QueueFamilyIndices
 	{
@@ -65,6 +66,7 @@ private:
 	vkb::Device			m_device;
 	vkb::DispatchTable	m_dispatchTable;
 	vkb::Swapchain		m_swapchain;
+	IntrusivePtr<VulkanDetail::SwapchainResource> m_swapchainResource;
 	VkQueue				m_vkPresentQueue = VK_NULL_HANDLE;
 	VkQueue				m_vkGraphicsQueue = VK_NULL_HANDLE;
 	VkQueue				m_vkComputeQueue = VK_NULL_HANDLE;
@@ -76,7 +78,6 @@ private:
 	std::unique_ptr<MemoryAllocator> m_uptrMemoryAllocator;
 	std::unique_ptr<DescriptorSetLayoutAllocator> m_uptrDescriptorSetLayoutAllocator;
 	std::unique_ptr<DescriptorSetAllocator> descriptorAllocator;
-	std::unique_ptr<FramebufferAllocator> m_uptrFramebufferAllocator;
 	std::unique_ptr<RenderPassAllocator> m_uptrRenderPassAllocator;
 	std::unique_ptr<PipelineLayoutAllocator> m_uptrPipelineLayoutAllocator;
 	std::unique_ptr<GraphicsPipelineAllocator> m_uptrGraphicsPipelineAllocator;
@@ -106,16 +107,13 @@ private:
 	void _DestroyDescriptorSetAllocator();
 	void _CreateDescriptorSetLayoutAllocator();
 	void _DestroyDescriptorSetLayoutAllocator();
-	void _CreateFramebufferAllocator();
-	void _DestroyFramebufferAllocator();
-	void _ResetFramebufferAllocator();
 	void _CreateRenderPassAllocator();
 	void _DestroyRenderPassAllocator();
 	void _CreatePipelineLayoutAllocator();
 	void _DestroyPipelineLayoutAllocator();
 	void _CreatePipelineAllocators();
 	void _DestroyPipelineAllocators();
-	void _CreateSwapchain();
+	void _CreateSwapchain(VkSwapchainKHR inOldSwapchain = VK_NULL_HANDLE);
 	void _DestroySwapchain();
 	void _CreateMemoryAllocator();
 	void _DestroyMemoryAllocator();
@@ -177,6 +175,7 @@ public:
 	double GetTime() const;
 
 	MemoryAllocator* GetMemoryAllocator();
+	auto GetRenderPassAllocator() -> RenderPassAllocator*;
 
 	auto GetDescriptorSetLayoutAllocator() -> DescriptorSetLayoutAllocator*;
 
@@ -381,17 +380,17 @@ public:
 		VkImageView inView, 
 		const VkAllocationCallbacks* pAllocator = nullptr);
 
-	VkRenderPass CreateRenderPass(
+	auto CreateRenderPass(
 		const VkRenderPassCreateInfo& inCreateInfo, 
-		const VkAllocationCallbacks* pAllocator = nullptr);
+		const VkAllocationCallbacks* pAllocator = nullptr) -> VkRenderPass;
 
 	void DestroyRenderPass(
 		VkRenderPass inRenderPass, 
 		const VkAllocationCallbacks* pAllocator = nullptr);
 
-	VkFramebuffer CreateFramebuffer(
+	auto CreateFramebuffer(
 		const VkFramebufferCreateInfo& inCreateInfo,
-		const VkAllocationCallbacks* pAllocator = nullptr);
+		const VkAllocationCallbacks* pAllocator = nullptr) -> VkFramebuffer;
 
 	void DestroyFramebuffer(
 		VkFramebuffer inFramebuffer, 

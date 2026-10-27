@@ -1847,12 +1847,16 @@ void RunShaderBindingTests();
 #endif
 
 void RunCommandBufferTests();
+void RunResourceLifetimeTests();
+void RunResourceSubmissionTests();
 
 auto main() -> int
 {
 	try
 	{
 		RunCommandBufferTests();
+		RunResourceLifetimeTests();
+		RunResourceSubmissionTests();
 #ifdef LEARN_VULKAN_HAS_SHADER_BINDING_TESTS
 		RunShaderBindingTests();
 #endif

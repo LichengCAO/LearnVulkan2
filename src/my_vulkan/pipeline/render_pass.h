@@ -1,5 +1,7 @@
 #pragma once
 #include "common.h"
+#include "resource/image.h"
+#include "resource/vulkan_handle_resource.h"
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -119,8 +121,8 @@ public:
 	RenderPassCreateInfo() = default;
 	RenderPassCreateInfo(const RenderPassCreateInfo&) = delete;
 	RenderPassCreateInfo(RenderPassCreateInfo&&) = delete;
-	RenderPassCreateInfo& operator=(const RenderPassCreateInfo&) = delete;
-	RenderPassCreateInfo& operator=(RenderPassCreateInfo&&) = delete;
+	auto operator=(const RenderPassCreateInfo&) -> RenderPassCreateInfo& = delete;
+	auto operator=(RenderPassCreateInfo&&) -> RenderPassCreateInfo& = delete;
 	~RenderPassCreateInfo() = default;
 
 	void AddSubpass(std::string_view inName, const SubpassDescription& inSubpass);
@@ -129,8 +131,8 @@ public:
 private:
 	friend class RenderPass;
 
-	auto GetAttachmentIndex(std::string_view inName) const -> uint32_t;
-	auto GetSubpassIndex(std::string_view inName) const -> uint32_t;
+		auto _GetAttachmentIndex(std::string_view inName) const -> uint32_t;
+		auto _GetSubpassIndex(std::string_view inName) const -> uint32_t;
 
 	std::vector<AttachmentDescription> m_attachments;
 	std::vector<SubpassDescription> m_subpasses;
@@ -138,61 +140,121 @@ private:
 	std::unordered_map<std::string, uint32_t> m_subpassNameToIndex;
 };
 
-class RenderPass final
+namespace VulkanDetail
 {
-	friend struct CommandBufferTestProbe;
-	friend class GraphicsShaderProgram;
-private:
-	struct SubpassInfo
+	class RenderPassDescription final : public RefCounted
 	{
-		uint32_t colorSlotCount = 0;
-		bool hasDepth = false;
-		VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+	public:
+		struct SubpassInfo
+		{
+			uint32_t colorSlotCount = 0;
+			bool hasDepth = false;
+			VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+		};
+		struct Subpass
+		{
+			VkSubpassDescriptionFlags flags = 0;
+			VkPipelineBindPoint bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+			std::vector<VkAttachmentReference> colors;
+			std::vector<VkAttachmentReference> resolves;
+			std::optional<VkAttachmentReference> depth;
+			std::vector<uint32_t> preserves;
+		};
+		std::vector<SubpassInfo> subpassInfos;
+		std::vector<VkClearValue> clearValues;
+		std::unordered_map<std::string, uint32_t> attachmentNameToIndex;
+		std::vector<VkAttachmentDescription> attachments;
+		std::vector<Subpass> subpasses;
+		std::vector<VkSubpassDependency> dependencies;
+		std::vector<VkImageUsageFlags> attachmentUsages;
 	};
-	std::vector<SubpassInfo> m_subpassInfos;
-	VkRenderPass m_vkRenderPass = VK_NULL_HANDLE;
-	std::vector<VkClearValue> m_clearValues;
-	std::unordered_map<std::string, uint32_t> m_attachmentNameToIndex;
+	struct RenderPassSnapshot
+	{
+		IntrusivePtr<RenderPassResource> resource;
+		IntrusivePtr<RenderPassDescription> description;
+		auto GetVkRenderPass() const -> VkRenderPass { return resource ? resource->GetHandle() : VK_NULL_HANDLE; }
+		auto GetSubpassCount() const -> uint32_t { return description ? static_cast<uint32_t>(description->subpassInfos.size()) : 0; }
+		auto GetClearValues() const -> const std::vector<VkClearValue>&;
+		auto IsCompatibleWith(const RenderPassSnapshot& inOther) const -> bool;
+	};
+}
 
-public:
-	RenderPass() = default;
-	RenderPass(const RenderPass&) = delete;
-	RenderPass& operator=(const RenderPass&) = delete;
-	~RenderPass();
-
-	void Create(const RenderPassCreateInfo& inCreateInfo);
-	void Destroy();
-	auto GetVkRenderPass()const -> VkRenderPass { return m_vkRenderPass; };
-	auto GetSubpassCount() const -> uint32_t { return static_cast<uint32_t>(m_subpassInfos.size()); }
-	auto GetClearValues() const -> const std::vector<VkClearValue>& { return m_clearValues; };
-	auto GetAttachmentIndex(std::string_view inName) const -> uint32_t;
-};
-
-class FramebufferCreateInfo final
+class FramebufferInfo final
 {
+	friend class RenderPass;
 private:
-	friend class Framebuffer;
-
-	const RenderPass* m_renderPass = nullptr;
-	std::vector<VkImageView> m_imageViews;
-	VkExtent2D m_extent{};
+	std::unordered_map<std::string, ImageView> m_imageViews;
+	std::optional<VkExtent2D> m_extent;
 	uint32_t m_layers = 1;
-
 public:
+	void Reset();
 	void SetImageView(std::string_view inTargetAttachmentName, const ImageView& inViewAttached);
-	void SetRenderPass(const RenderPass& inRenderPass);
+	void CustomizeSize(uint32_t inWidth, uint32_t inHeight, uint32_t inLayers = 1);
 };
 
 class Framebuffer final
 {
+	friend class RenderPass;
+	friend class CommandBuffer;
+	friend class RenderGraphInstance;
 	friend struct CommandBufferTestProbe;
+	friend struct ResourceLifetimeTestProbe;
 private:
-	VkFramebuffer m_vkFramebuffer = VK_NULL_HANDLE;
+	IntrusivePtr<VulkanDetail::FramebufferResource> m_resource;
+	VulkanDetail::RenderPassSnapshot m_renderPass;
+	VkExtent2D m_extent{};
+	uint32_t m_layers = 0;
+	auto _GetResourceReference() const -> VulkanDetail::ResourceReference { return m_resource; }
+	auto _GetRenderPassSnapshot() const -> VulkanDetail::RenderPassSnapshot { return m_renderPass; }
+public:
+	Framebuffer() noexcept = default;
+	Framebuffer(const Framebuffer&) noexcept = default;
+	Framebuffer(Framebuffer&&) noexcept = default;
+	auto operator=(const Framebuffer&) noexcept -> Framebuffer& = default;
+	auto operator=(Framebuffer&&) noexcept -> Framebuffer& = default;
+	~Framebuffer() = default;
+	void Reset() noexcept;
+	auto IsValid() const noexcept -> bool { return m_resource && m_resource->GetHandle() != VK_NULL_HANDLE; }
+	auto operator==(const Framebuffer& inOther) const noexcept -> bool { return m_resource.get() == inOther.m_resource.get(); }
+	auto GetSize() const noexcept -> VkExtent2D { return m_extent; }
+	auto GetLayerCount() const noexcept -> uint32_t { return m_layers; }
+	auto GetVkFramebuffer() const noexcept -> VkFramebuffer { return m_resource ? m_resource->GetHandle() : VK_NULL_HANDLE; }
+};
+
+class RenderPass final
+{
+	friend struct CommandBufferTestProbe;
+	friend struct ResourceLifetimeTestProbe;
+	friend class CommandBuffer;
+	friend class RenderGraphInstance;
+	friend class GraphicsShaderProgram;
+	friend class GraphicsPipelineStateInfo;
+private:
+	struct CachedFramebuffer
+	{
+		std::vector<ImageView> views;
+		Framebuffer framebuffer;
+	};
+	VulkanDetail::RenderPassSnapshot m_snapshot;
+	mutable std::vector<CachedFramebuffer> m_framebuffers;
+	auto _GetResourceReference() const -> VulkanDetail::ResourceReference { return m_snapshot.resource; }
+	auto _GetSnapshot() const -> VulkanDetail::RenderPassSnapshot { return m_snapshot; }
 
 public:
-	Framebuffer() = default;
-	~Framebuffer();
-	void Create(const FramebufferCreateInfo& inCreateInfo);
+	RenderPass() = default;
+	RenderPass(const RenderPass&) = delete;
+	RenderPass(RenderPass&&) = delete;
+	auto operator=(const RenderPass&) -> RenderPass& = delete;
+	auto operator=(RenderPass&&) -> RenderPass& = delete;
+	~RenderPass();
+
+	void Create(const RenderPassCreateInfo& inCreateInfo);
 	void Destroy();
-	VkFramebuffer GetVkFramebuffer() const;
+	auto IsValid() const noexcept -> bool { return GetVkRenderPass() != VK_NULL_HANDLE; }
+	auto GetVkRenderPass() const noexcept -> VkRenderPass { return m_snapshot.GetVkRenderPass(); }
+	auto GetSubpassCount() const noexcept -> uint32_t { return m_snapshot.GetSubpassCount(); }
+	auto GetClearValues() const -> const std::vector<VkClearValue>& { return m_snapshot.GetClearValues(); }
+	auto GetAttachmentIndex(std::string_view inName) const -> uint32_t;
+	auto GetFramebuffer(const FramebufferInfo& inInfo) const -> Framebuffer;
+	void ClearFramebufferCache();
 };

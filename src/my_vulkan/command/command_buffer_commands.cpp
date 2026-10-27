@@ -38,6 +38,41 @@ namespace
             uint64_t(inY) + inHeight <= std::numeric_limits<int32_t>::max(), "Rectangle extent overflows!");
     }
 
+    auto RenderPassParameters(const VulkanDetail::RenderPassSnapshot& inSnapshot, const Framebuffer& inFramebuffer,
+        int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight,
+        std::span<const VkClearValue> inClearValues, VkSubpassContents inContents)
+        -> BeginRenderPassCommand::Parameters
+    {
+        ValidateRect(inX, inY, inWidth, inHeight);
+        CHECK_TRUE(inWidth > 0 && inHeight > 0, "Render area must not be empty!");
+        const auto size = inFramebuffer.GetSize();
+        CHECK_TRUE(uint64_t(inX) + inWidth <= size.width && uint64_t(inY) + inHeight <= size.height,
+            "Render area is outside the framebuffer!");
+        CHECK_TRUE(inClearValues.size() <= std::numeric_limits<uint32_t>::max(), "Too many clear values!");
+        CHECK_TRUE(inSnapshot.GetVkRenderPass() != VK_NULL_HANDLE && inSnapshot.description,
+            "Render pass was not created!");
+        for (size_t index = 0; index < inSnapshot.description->attachments.size(); ++index)
+        {
+            const auto& attachment = inSnapshot.description->attachments[index];
+            const bool hasStencil = attachment.format == VK_FORMAT_S8_UINT ||
+                attachment.format == VK_FORMAT_D16_UNORM_S8_UINT || attachment.format == VK_FORMAT_D24_UNORM_S8_UINT ||
+                attachment.format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+            const bool clear = (attachment.format != VK_FORMAT_S8_UINT && attachment.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR) ||
+                (hasStencil && attachment.stencilLoadOp == VK_ATTACHMENT_LOAD_OP_CLEAR);
+            CHECK_TRUE(!clear || index < inClearValues.size(),
+                "Missing clear value for an attachment!");
+        }
+        CHECK_TRUE(inContents == VK_SUBPASS_CONTENTS_INLINE || inContents == VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS,
+            "Invalid subpass contents!");
+        BeginRenderPassCommand::Parameters parameters;
+        parameters.renderPass = inSnapshot.GetVkRenderPass();
+        parameters.framebuffer = inFramebuffer.GetVkFramebuffer();
+        parameters.renderArea = {{inX, inY}, {inWidth, inHeight}};
+        parameters.clearValues.assign(inClearValues.begin(), inClearValues.end());
+        parameters.contents = inContents;
+        return parameters;
+    }
+
     template<typename T>
     void ValidateRegions(std::span<const T> inRegions)
     {
@@ -107,16 +142,29 @@ void CommandBuffer::BeginRenderPass(const RenderPass& inRenderPass, const Frameb
     int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight,
     std::span<const VkClearValue> inClearValues, VkSubpassContents inContents)
 {
-    ValidateRect(inX, inY, inWidth, inHeight);
-    CHECK_TRUE(inWidth > 0 && inHeight > 0, "Render area must not be empty!");
-    CHECK_TRUE(inClearValues.size() <= std::numeric_limits<uint32_t>::max(), "Too many clear values!");
-    BeginRenderPassCommand::Parameters parameters;
-    parameters.renderPass = inRenderPass.GetVkRenderPass();
-    parameters.framebuffer = inFramebuffer.GetVkFramebuffer();
-    parameters.renderArea = { { inX, inY }, { inWidth, inHeight } };
-    parameters.clearValues.assign(inClearValues.begin(), inClearValues.end());
-    parameters.contents = inContents;
-    _BeginRenderPass(parameters, inRenderPass.GetSubpassCount());
+    const auto snapshot = inRenderPass._GetSnapshot();
+    CHECK_TRUE(snapshot.IsCompatibleWith(inFramebuffer._GetRenderPassSnapshot()),
+        "Render pass is incompatible with the framebuffer!");
+    const auto parameters = RenderPassParameters(snapshot, inFramebuffer,
+        inX, inY, inWidth, inHeight, inClearValues, inContents);
+    _BeginRenderPass(parameters, snapshot, inFramebuffer._GetResourceReference());
+}
+
+void CommandBuffer::BeginRenderPass(const Framebuffer& inFramebuffer,
+    int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight, VkSubpassContents inContents)
+{
+    const auto snapshot = inFramebuffer._GetRenderPassSnapshot();
+    BeginRenderPass(inFramebuffer, inX, inY, inWidth, inHeight, snapshot.GetClearValues(), inContents);
+}
+
+void CommandBuffer::BeginRenderPass(const Framebuffer& inFramebuffer,
+    int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight,
+    std::span<const VkClearValue> inClearValues, VkSubpassContents inContents)
+{
+    const auto snapshot = inFramebuffer._GetRenderPassSnapshot();
+    const auto parameters = RenderPassParameters(snapshot, inFramebuffer,
+        inX, inY, inWidth, inHeight, inClearValues, inContents);
+    _BeginRenderPass(parameters, snapshot, inFramebuffer._GetResourceReference());
 }
 
 void CommandBuffer::BindVertexBuffers(uint32_t inFirstBinding, std::span<const Buffer* const> inBuffers,
@@ -328,6 +376,7 @@ void CommandBuffer::CopyImage(const Image& inSrcImage, VkImageLayout inSrcLayout
     command->dst = ImageHandle(inDstImage);
     command->dstLayout = inDstLayout;
     command->regions.assign(inRegions.begin(), inRegions.end());
+    command->m_resourceReferences = {inSrcImage._GetResourceReference(), inDstImage._GetResourceReference()};
     _AppendOwnedCommand(std::move(command));
 }
 
@@ -343,6 +392,7 @@ void CommandBuffer::CopyBufferToImage(const Buffer& inSrcBuffer, Image& inDstIma
     parameters.regions.assign(inRegions.begin(), inRegions.end());
     auto command = std::make_unique<CopyBufferToImageCommand>();
     command->SetParameters(parameters);
+    command->m_resourceReferences.push_back(inDstImage._GetResourceReference());
     _AppendOwnedCommand(std::move(command));
 }
 
@@ -356,6 +406,7 @@ void CommandBuffer::CopyImageToBuffer(const Image& inSrcImage, VkImageLayout inS
     command->srcLayout = inSrcLayout;
     command->dst = BufferHandle(inDstBuffer);
     command->regions.assign(inRegions.begin(), inRegions.end());
+    command->m_resourceReferences.push_back(inSrcImage._GetResourceReference());
     _AppendOwnedCommand(std::move(command));
 }
 
@@ -373,6 +424,7 @@ void CommandBuffer::BlitImage(const Image& inSrcImage, VkImageLayout inSrcLayout
     parameters.filter = inFilter;
     auto command = std::make_unique<BlitImageCommand>();
     command->SetParameters(parameters);
+    command->m_resourceReferences = {inSrcImage._GetResourceReference(), inDstImage._GetResourceReference()};
     _AppendOwnedCommand(std::move(command));
 }
 
@@ -387,6 +439,7 @@ void CommandBuffer::ResolveImage(const Image& inSrcImage, VkImageLayout inSrcLay
     command->dst = ImageHandle(inDstImage);
     command->dstLayout = inDstLayout;
     command->regions.assign(inRegions.begin(), inRegions.end());
+    command->m_resourceReferences = {inSrcImage._GetResourceReference(), inDstImage._GetResourceReference()};
     _AppendOwnedCommand(std::move(command));
 }
 
@@ -403,6 +456,7 @@ void CommandBuffer::_ClearColorImage(Image& inImage, VkImageLayout inLayout, con
     parameters.clearColor = inColor;
     parameters.ranges.push_back(range);
     command->SetParameters(parameters);
+    command->m_resourceReferences.push_back(inImage._GetResourceReference());
     _AppendOwnedCommand(std::move(command));
 }
 
@@ -420,6 +474,7 @@ void CommandBuffer::ClearDepthStencilImage(Image& inImage, VkImageLayout inLayou
     command->value = { inDepth, inStencil };
     command->range = ImageRange(inImage, inAspectMask,
         inBaseMipLevel, inLevelCount, inBaseArrayLayer, inLayerCount);
+    command->m_resourceReferences.push_back(inImage._GetResourceReference());
     _AppendOwnedCommand(std::move(command));
 }
 

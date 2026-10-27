@@ -275,7 +275,7 @@ void RenderGraphInstance::_DestroyManagedRenderPasses()
 	{
 		if (renderPass.framebuffer != nullptr)
 		{
-			renderPass.framebuffer->Destroy();
+			renderPass.framebuffer->Reset();
 			renderPass.framebuffer.reset();
 		}
 		if (renderPass.renderPass != nullptr)
@@ -792,17 +792,16 @@ void RenderGraphInstance::_CreateManagedRenderPasses()
 					"Render graph framebuffer attachments must have identical 2D size!");
 			}
 
-			FramebufferCreateInfo framebufferInfo;
-			framebufferInfo.SetRenderPass(*managedRenderPass.renderPass);
+			FramebufferInfo framebufferInfo;
 			for (uint32_t attachmentIndex = 0; attachmentIndex < managedPlan.attachments.size(); ++attachmentIndex)
 			{
 				const RenderGraph::SubmitBatch::ManagedAttachmentPlan& attachment = managedPlan.attachments[attachmentIndex];
 				framebufferInfo.SetImageView(
 					attachmentNames[attachmentIndex],
-					*m_images[attachment.image]->View(_MakeImageViewInfo(attachment.subresourceRange)));
+					m_images[attachment.image]->View(_MakeImageViewInfo(attachment.subresourceRange)));
 			}
-			managedRenderPass.framebuffer = std::make_unique<Framebuffer>();
-			managedRenderPass.framebuffer->Create(framebufferInfo);
+			managedRenderPass.framebuffer = std::make_unique<Framebuffer>(
+				managedRenderPass.renderPass->GetFramebuffer(framebufferInfo));
 			managedRenderPass.defaultClearValues = managedRenderPass.renderPass->GetClearValues();
 
 			const uint32_t managedIndex = static_cast<uint32_t>(m_managedRenderPasses.size());
@@ -1062,7 +1061,10 @@ void RenderGraphInstance::_AppendRenderPassCommands(
 		}
 	}
 
-	inCommandBuffer._BeginRenderPass(beginParameters, static_cast<uint32_t>(inPasses.size()));
+	inCommandBuffer.BeginRenderPass(*inRenderPass.framebuffer,
+		beginParameters.renderArea.offset.x, beginParameters.renderArea.offset.y,
+		beginParameters.renderArea.extent.width, beginParameters.renderArea.extent.height,
+		beginParameters.clearValues, beginParameters.contents);
 
 	for (uint32_t subpassIndex = 0; subpassIndex < inPasses.size(); ++subpassIndex)
 	{
@@ -1151,6 +1153,7 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 	};
 
 	PipelineBarrierCommand::Parameters parameters;
+	std::vector<VulkanDetail::ResourceReference> resourceReferences;
 
 	for (const RenderGraph::BarrierPlan& plan : inBarrierPlans)
 	{
@@ -1203,8 +1206,9 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 			barrier.image = m_images[imageIndex]->GetVkImage();
 			const RenderGraph::ImageSubresourceRange barrierRange =
 				m_buildResult.GetImageInfo(imageIndex).NormalizeSubresourceRange(plan.subresourceRange);
-			const ImageView* view = m_images[imageIndex]->View(_MakeImageViewInfo(barrierRange));
-			barrier.subresourceRange = view->GetImageSubresourceRange();
+			const ImageView view = m_images[imageIndex]->View(_MakeImageViewInfo(barrierRange));
+			barrier.subresourceRange = view.GetImageSubresourceRange();
+			resourceReferences.push_back(m_images[imageIndex]->_GetResourceReference());
 			parameters.srcStageMask |= _ToStageFlags(entering ? externalInfo.enteringStage : graphState.stage);
 			parameters.dstStageMask |= _ToStageFlags(entering ? graphState.stage : externalInfo.leavingStage);
 			parameters.imageBarriers.push_back(barrier);
@@ -1216,7 +1220,7 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 			CHECK_TRUE(plan.image < m_images.size() && m_images[plan.image] != nullptr, "Render graph barrier image is not available!");
 			const RenderGraph::ImageSubresourceRange barrierRange =
 				m_buildResult.GetImageInfo(plan.image).NormalizeSubresourceRange(plan.subresourceRange);
-			const ImageView* view = m_images[plan.image]->View(_MakeImageViewInfo(barrierRange));
+			const ImageView view = m_images[plan.image]->View(_MakeImageViewInfo(barrierRange));
 			const Image::Information& imageInfo = m_images[plan.image]->GetImageInformation();
 
 			RenderGraph::AccessState srcState;
@@ -1271,12 +1275,13 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 			barrier.srcQueueFamilyIndex = srcQueueFamilyIndex;
 			barrier.dstQueueFamilyIndex = dstQueueFamilyIndex;
 			barrier.image = m_images[plan.image]->GetVkImage();
-			barrier.subresourceRange = view->GetImageSubresourceRange();
+			barrier.subresourceRange = view.GetImageSubresourceRange();
 			if (imageInfo.imageType == VK_IMAGE_TYPE_3D)
 			{
 				barrier.subresourceRange.layerCount = 1;
 			}
 			parameters.imageBarriers.push_back(barrier);
+			resourceReferences.push_back(m_images[plan.image]->_GetResourceReference());
 		}
 		else
 		{
@@ -1328,6 +1333,7 @@ auto RenderGraphInstance::_CreateBarrierCommand(
 
 	auto command = std::make_unique<PipelineBarrierCommand>();
 	command->SetParameters(parameters);
+	command->m_resourceReferences = std::move(resourceReferences);
 	return command;
 }
 

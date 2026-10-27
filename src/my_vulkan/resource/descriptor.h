@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include "image.h"
 #include <cstdint>
 #include <map>
 #include <variant>
@@ -63,6 +64,7 @@ public:
 
 class DescriptorSetDesc final
 {
+	friend class CommandBuffer;
 	friend struct ShaderBindingTestProbe;
 	friend class ShaderResources;
 	friend class DescriptorSet;
@@ -78,7 +80,7 @@ class DescriptorSetDesc final
 
 	struct ImageBinding final
 	{
-		const ImageView* imageView = nullptr;
+		ImageView imageView;
 		const Sampler* sampler = nullptr;
 		VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		auto operator==(const ImageBinding&) const -> bool = default;
@@ -107,8 +109,8 @@ private:
 public:
 	DescriptorSetDesc() = default;
 	~DescriptorSetDesc() = default;
-	DescriptorSetDesc(const DescriptorSetDesc&) noexcept = default;
-	auto operator=(const DescriptorSetDesc&) noexcept -> DescriptorSetDesc& = default;
+	DescriptorSetDesc(const DescriptorSetDesc&) = default;
+	auto operator=(const DescriptorSetDesc&) -> DescriptorSetDesc& = default;
 	DescriptorSetDesc(DescriptorSetDesc&& inOther) noexcept = default;
 	auto operator=(DescriptorSetDesc&&) noexcept -> DescriptorSetDesc& = default;
 
@@ -134,7 +136,7 @@ public:
 	void SetAccelerationStructure(uint32_t inBinding, const TopLevelAccelStruct& inAccelerationStructure, uint32_t inArrayElement = 0);
 };
 
-// Settings are copied by the typed resource binding commands; referenced resources must survive GPU completion.
+// Image views retain their native versions. Other referenced resources must survive GPU completion.
 class ShaderResources final
 {
 	friend class CommandBuffer;
