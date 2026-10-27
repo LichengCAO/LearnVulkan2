@@ -2,20 +2,44 @@
 #include "command_buffer.h"
 #include "device.h"
 
-auto CommandBuffer::_AppendCommand(const Command& inCommand)->void
+namespace
+{
+    auto CanSplitCommand(const Command& inCommand) -> bool
+    {
+        // Only final, known state-independent commands are safe to split.
+        // Opaque user commands may bind state used by later commands.
+        return dynamic_cast<const PipelineBarrierCommand*>(&inCommand) ||
+            dynamic_cast<const ClearColorImageCommand*>(&inCommand) ||
+            dynamic_cast<const FillBufferCommand*>(&inCommand) ||
+            dynamic_cast<const BlitImageCommand*>(&inCommand) ||
+            dynamic_cast<const CopyBufferToImageCommand*>(&inCommand) ||
+            dynamic_cast<const CopyBufferCommand*>(&inCommand) ||
+            dynamic_cast<const BuildAccelerationStructuresKHRCommand*>(&inCommand) ||
+            dynamic_cast<const CopyAccelerationStructureKHRCommand*>(&inCommand) ||
+            dynamic_cast<const UpdateBufferCommand*>(&inCommand) ||
+            dynamic_cast<const CopyImageCommand*>(&inCommand) ||
+            dynamic_cast<const CopyImageToBufferCommand*>(&inCommand) ||
+            dynamic_cast<const ResolveImageCommand*>(&inCommand) ||
+            dynamic_cast<const ClearDepthStencilImageCommand*>(&inCommand);
+    }
+}
+
+void CommandBuffer::_AppendCommand(const Command& inCommand)
 {
 	m_commands.push_back(&inCommand);
 }
 
-auto CommandBuffer::_AppendOwnedCommand(std::unique_ptr<Command> inCommand)->void
+void CommandBuffer::_AppendOwnedCommand(std::unique_ptr<Command> inCommand)
 {
 	CHECK_TRUE(inCommand != nullptr, "No command to append!");
+	if (m_commands.size() == m_commands.capacity())
+		m_commands.reserve(m_commands.size() * 2 + 1);
 	const Command* command = inCommand.get();
 	m_ownedCommands.push_back(std::move(inCommand));
 	_AppendCommand(*command);
 }
 
-auto CommandBuffer::_Append(CommandBuffer&& inCommandBuffer)->CommandBuffer&
+void CommandBuffer::_Append(CommandBuffer&& inCommandBuffer)
 {
 	CHECK_TRUE(
 		std::holds_alternative<std::monostate>(inCommandBuffer.m_renderingScopeState),
@@ -37,6 +61,8 @@ auto CommandBuffer::_Append(CommandBuffer&& inCommandBuffer)->CommandBuffer&
 	}
 	m_hasRenderingCommands = m_hasRenderingCommands || inCommandBuffer.m_hasRenderingCommands;
 	m_hasProgramBindings = m_hasProgramBindings || inCommandBuffer.m_hasProgramBindings;
+	m_requiresSingleVkCommandBuffer =
+		m_requiresSingleVkCommandBuffer || inCommandBuffer.m_requiresSingleVkCommandBuffer;
 	m_graphicsProgram = nullptr;
 	m_computeProgram = nullptr;
 	m_rayTracingProgram = nullptr;
@@ -45,15 +71,16 @@ auto CommandBuffer::_Append(CommandBuffer&& inCommandBuffer)->CommandBuffer&
 	inCommandBuffer.m_ownedCommands.clear();
 	inCommandBuffer.m_hasRenderingCommands = false;
 	inCommandBuffer.m_hasProgramBindings = false;
+	inCommandBuffer.m_requiresSingleVkCommandBuffer = false;
 	inCommandBuffer.m_graphicsProgram = nullptr;
 	inCommandBuffer.m_computeProgram = nullptr;
 	inCommandBuffer.m_rayTracingProgram = nullptr;
-	return *this;
+	return;
 }
 
-auto CommandBuffer::BeginRenderPass(
+void CommandBuffer::_BeginRenderPass(
 	const BeginRenderPassCommand::Parameters& inParameters,
-	uint32_t inSubpassCount)->CommandBuffer&
+	uint32_t inSubpassCount)
 {
 	CHECK_TRUE(
 		std::holds_alternative<std::monostate>(m_renderingScopeState),
@@ -61,6 +88,7 @@ auto CommandBuffer::BeginRenderPass(
 	CHECK_TRUE(inParameters.renderPass != VK_NULL_HANDLE, "Invalid render pass!");
 	CHECK_TRUE(inParameters.framebuffer != VK_NULL_HANDLE, "Invalid framebuffer!");
 	CHECK_TRUE(inSubpassCount > 0, "Render pass must contain at least one subpass!");
+	CHECK_TRUE(inParameters.next == nullptr, "Unsupported render pass pNext!");
 
 	auto command = std::make_unique<BeginRenderPassCommand>();
 	command->SetParameters(inParameters);
@@ -74,10 +102,10 @@ auto CommandBuffer::BeginRenderPass(
 		0,
 		inSubpassCount,
 		inParameters.contents};
-	return *this;
+	return;
 }
 
-auto CommandBuffer::NextSubpass(VkSubpassContents inContents)->CommandBuffer&
+void CommandBuffer::NextSubpass(VkSubpassContents inContents)
 {
 	LegacyRenderPassState* state = std::get_if<LegacyRenderPassState>(&m_renderingScopeState);
 	CHECK_TRUE(state != nullptr, "NextSubpass requires an active render pass!");
@@ -92,10 +120,10 @@ auto CommandBuffer::NextSubpass(VkSubpassContents inContents)->CommandBuffer&
 	++state->currentSubpass;
 	m_graphicsProgram = nullptr;
 	state->contents = inContents;
-	return *this;
+	return;
 }
 
-auto CommandBuffer::EndRenderPass()->CommandBuffer&
+void CommandBuffer::EndRenderPass()
 {
 	CHECK_TRUE(
 		std::holds_alternative<LegacyRenderPassState>(m_renderingScopeState),
@@ -104,17 +132,26 @@ auto CommandBuffer::EndRenderPass()->CommandBuffer&
 	_AppendOwnedCommand(std::make_unique<EndRenderPassCommand>());
 	m_renderingScopeState = std::monostate{};
 	m_graphicsProgram = nullptr;
-	return *this;
+	return;
 }
 
-auto CommandBuffer::AddCommands(const Command* const* inCommands, size_t inCount)->CommandBuffer&
+void CommandBuffer::AppendCommand(std::function<void(VkCommandBuffer)> inRecord)
+{
+    CHECK_TRUE(static_cast<bool>(inRecord), "Recording callback must not be empty!");
+    auto command = std::make_unique<ExternalCommand>();
+    command->SetParameters({ std::move(inRecord) });
+    _AppendStateCommand(std::move(command));
+}
+
+void CommandBuffer::_AppendCommands(const Command* const* inCommands, size_t inCount)
 {
 	if (inCount == 0)
 	{
-		return *this;
+		return;
 	}
 
 	CHECK_TRUE(inCommands != nullptr, "No commands!");
+	bool requiresSingle = false;
 	for (size_t commandIndex = 0; commandIndex < inCount; ++commandIndex)
 	{
 		const Command* command = inCommands[commandIndex];
@@ -124,12 +161,14 @@ auto CommandBuffer::AddCommands(const Command* const* inCommands, size_t inCount
 			dynamic_cast<const NextSubpassCommand*>(command) == nullptr &&
 			dynamic_cast<const EndRenderPassCommand*>(command) == nullptr,
 			"Rendering scope commands must be appended through CommandBuffer members!");
+		requiresSingle = requiresSingle || !CanSplitCommand(*command);
 	}
 	for (size_t commandIndex = 0; commandIndex < inCount; ++commandIndex)
 	{
 		_AppendCommand(*inCommands[commandIndex]);
 	}
-	return *this;
+	m_requiresSingleVkCommandBuffer = m_requiresSingleVkCommandBuffer || requiresSingle;
+	return;
 }
 
 // Prepared on the submitting thread; worker threads only read resolved handles.
@@ -197,8 +236,7 @@ struct CommandBuffer::BindingCommand final : Command
 	}
 };
 
-auto CommandBuffer::BindGraphicsProgram(GraphicsShaderProgram& program, const GraphicsPipelineStateInfo& input)
-    -> CommandBuffer&
+void CommandBuffer::BindGraphicsProgram(GraphicsShaderProgram& program, const GraphicsPipelineStateInfo& input)
 {
 	const auto* scope = std::get_if<LegacyRenderPassState>(&m_renderingScopeState);
 	CHECK_TRUE(scope != nullptr && scope->contents == VK_SUBPASS_CONTENTS_INLINE,
@@ -214,9 +252,9 @@ auto CommandBuffer::BindGraphicsProgram(GraphicsShaderProgram& program, const Gr
 	_AppendOwnedCommand(std::move(command));
 	m_graphicsProgram = &program;
 	m_hasProgramBindings = true;
-	return *this;
+	return;
 }
-auto CommandBuffer::BindComputeProgram(ComputeShaderProgram& program) -> CommandBuffer&
+void CommandBuffer::BindComputeProgram(ComputeShaderProgram& program)
 {
 	CHECK_TRUE(std::holds_alternative<std::monostate>(m_renderingScopeState),
 	    "Compute binding requires no active render pass!");
@@ -227,9 +265,9 @@ auto CommandBuffer::BindComputeProgram(ComputeShaderProgram& program) -> Command
 	_AppendOwnedCommand(std::move(command));
 	m_computeProgram = &program;
 	m_hasProgramBindings = true;
-	return *this;
+	return;
 }
-auto CommandBuffer::BindRayTracingProgram(RayTracingShaderProgram& program) -> CommandBuffer&
+void CommandBuffer::BindRayTracingProgram(RayTracingShaderProgram& program)
 {
 	CHECK_TRUE(std::holds_alternative<std::monostate>(m_renderingScopeState),
 	    "Ray tracing binding requires no active render pass!");
@@ -240,36 +278,36 @@ auto CommandBuffer::BindRayTracingProgram(RayTracingShaderProgram& program) -> C
 	_AppendOwnedCommand(std::move(command));
 	m_rayTracingProgram = &program;
 	m_hasProgramBindings = true;
-	return *this;
+	return;
 }
 
-auto CommandBuffer::BindGraphicsShaderResource(const ShaderResources& resources) -> CommandBuffer&
+void CommandBuffer::BindGraphicsShaderResource(const ShaderResources& resources)
 {
 	CHECK_TRUE(m_graphicsProgram, "Bind a graphics program before shader resources!");
 	const auto* scope = std::get_if<LegacyRenderPassState>(&m_renderingScopeState);
 	CHECK_TRUE(scope && scope->contents == VK_SUBPASS_CONTENTS_INLINE,
 	    "Graphics resources require an inline render pass!");
-	return _BindShaderResources(m_graphicsProgram->m_pipelineLayout, VK_PIPELINE_BIND_POINT_GRAPHICS, resources);
+	_BindShaderResources(m_graphicsProgram->m_pipelineLayout, VK_PIPELINE_BIND_POINT_GRAPHICS, resources);
 }
 
-auto CommandBuffer::BindComputeShaderResource(const ShaderResources& resources) -> CommandBuffer&
+void CommandBuffer::BindComputeShaderResource(const ShaderResources& resources)
 {
 	CHECK_TRUE(m_computeProgram, "Bind a compute program before shader resources!");
 	CHECK_TRUE(std::holds_alternative<std::monostate>(m_renderingScopeState),
 	    "Compute resources require no active render pass!");
-	return _BindShaderResources(m_computeProgram->m_pipelineLayout, VK_PIPELINE_BIND_POINT_COMPUTE, resources);
+	_BindShaderResources(m_computeProgram->m_pipelineLayout, VK_PIPELINE_BIND_POINT_COMPUTE, resources);
 }
 
-auto CommandBuffer::BindRayTracingShaderResource(const ShaderResources& resources) -> CommandBuffer&
+void CommandBuffer::BindRayTracingShaderResource(const ShaderResources& resources)
 {
 	CHECK_TRUE(m_rayTracingProgram, "Bind a ray tracing program before shader resources!");
 	CHECK_TRUE(std::holds_alternative<std::monostate>(m_renderingScopeState),
 	    "Ray tracing resources require no active render pass!");
-	return _BindShaderResources(m_rayTracingProgram->m_pipelineLayout, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, resources);
+	_BindShaderResources(m_rayTracingProgram->m_pipelineLayout, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, resources);
 }
 
-auto CommandBuffer::_BindShaderResources(const PipelineLayout& layout, VkPipelineBindPoint bindPoint,
-    const ShaderResources& resources) -> CommandBuffer&
+void CommandBuffer::_BindShaderResources(const PipelineLayout& layout, VkPipelineBindPoint bindPoint,
+    const ShaderResources& resources)
 {
 	auto command = std::make_unique<BindingCommand>();
 	command->resourceLayout = &layout;
@@ -277,7 +315,7 @@ auto CommandBuffer::_BindShaderResources(const PipelineLayout& layout, VkPipelin
 	command->bindPoint = bindPoint;
 	_AppendOwnedCommand(std::move(command));
 	m_hasProgramBindings = true;
-	return *this;
+	return;
 }
 void CommandBuffer::_PrepareCommands(DynamicDescriptorSetAllocator& allocator, QueueFamilyType queue)
 {

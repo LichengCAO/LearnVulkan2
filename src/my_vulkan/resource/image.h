@@ -150,6 +150,7 @@ public:
 
 class Image : public RefCounted
 {
+	friend struct CommandBufferTestProbe;
 public:
 	struct Information
 	{

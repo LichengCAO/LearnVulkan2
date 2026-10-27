@@ -50,7 +50,7 @@ private:
 	Parameters m_parameters;
 
 public:
-	auto SetParameters(const Parameters& inParameters)->ExternalCommand& { m_parameters = inParameters; return *this; };
+	auto SetParameters(Parameters inParameters) -> ExternalCommand& { m_parameters = std::move(inParameters); return *this; }
 	virtual auto Record(VkCommandBuffer inVkCommandBuffer) const->void override;
 };
 
@@ -223,9 +223,10 @@ public:
 
 private:
 	Parameters m_parameters;
+	std::vector<std::vector<VkAccelerationStructureGeometryKHR>> m_geometries;
 
 public:
-	auto SetParameters(const Parameters& inParameters)->BuildAccelerationStructuresKHRCommand& { m_parameters = inParameters; return *this; };
+	auto SetParameters(const Parameters& inParameters) -> BuildAccelerationStructuresKHRCommand&;
 	virtual auto Record(VkCommandBuffer inVkCommandBuffer) const->void override;
 };
 
@@ -281,4 +282,168 @@ private:
 public:
 	auto SetParameters(const Parameters& inParameters)->ExecuteCommandsCommand& { m_parameters = inParameters; return *this; };
 	virtual auto Record(VkCommandBuffer inVkCommandBuffer) const->void override;
+};
+
+// Owned snapshots used by CommandBuffer member commands.
+class BindVertexBuffersCommand final : public Command
+{
+public:
+    uint32_t firstBinding = 0;
+    std::vector<VkBuffer> buffers;
+    std::vector<VkDeviceSize> offsets;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class BindIndexBufferCommand final : public Command
+{
+public:
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0;
+    VkIndexType indexType = VK_INDEX_TYPE_UINT32;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class SetViewportCommand final : public Command
+{
+public:
+    uint32_t index = 0;
+    VkViewport viewport{};
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class SetScissorCommand final : public Command
+{
+public:
+    uint32_t index = 0;
+    VkRect2D scissor{};
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class DrawCommand final : public Command
+{
+public:
+    uint32_t vertexCount = 0;
+    uint32_t instanceCount = 1;
+    uint32_t firstVertex = 0;
+    uint32_t firstInstance = 0;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class DrawIndexedCommand final : public Command
+{
+public:
+    uint32_t indexCount = 0;
+    uint32_t instanceCount = 1;
+    uint32_t firstIndex = 0;
+    int32_t vertexOffset = 0;
+    uint32_t firstInstance = 0;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class DrawIndirectCommand final : public Command
+{
+public:
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0;
+    uint32_t drawCount = 1;
+    uint32_t stride = sizeof(VkDrawIndirectCommand);
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class DrawIndexedIndirectCommand final : public Command
+{
+public:
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0;
+    uint32_t drawCount = 1;
+    uint32_t stride = sizeof(VkDrawIndexedIndirectCommand);
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class DispatchCommand final : public Command
+{
+public:
+    uint32_t x = 1;
+    uint32_t y = 1;
+    uint32_t z = 1;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class DispatchIndirectCommand final : public Command
+{
+public:
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class PushConstantsCommand final : public Command
+{
+public:
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkShaderStageFlags stages = 0;
+    uint32_t offset = 0;
+    std::vector<uint8_t> data;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class UpdateBufferCommand final : public Command
+{
+public:
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize offset = 0;
+    std::vector<uint8_t> data;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class CopyImageCommand final : public Command
+{
+public:
+    VkImage src = VK_NULL_HANDLE;
+    VkImageLayout srcLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage dst = VK_NULL_HANDLE;
+    VkImageLayout dstLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    std::vector<VkImageCopy> regions;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class CopyImageToBufferCommand final : public Command
+{
+public:
+    VkImage src = VK_NULL_HANDLE;
+    VkImageLayout srcLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkBuffer dst = VK_NULL_HANDLE;
+    std::vector<VkBufferImageCopy> regions;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class ResolveImageCommand final : public Command
+{
+public:
+    VkImage src = VK_NULL_HANDLE;
+    VkImageLayout srcLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage dst = VK_NULL_HANDLE;
+    VkImageLayout dstLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    std::vector<VkImageResolve> regions;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class ClearDepthStencilImageCommand final : public Command
+{
+public:
+    VkImage image = VK_NULL_HANDLE;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkClearDepthStencilValue value{};
+    VkImageSubresourceRange range{};
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class TraceRaysKHRCommand final : public Command
+{
+public:
+    std::array<VkStridedDeviceAddressRegionKHR, 4> regions{};
+    uint32_t width = 1;
+    uint32_t height = 1;
+    uint32_t depth = 1;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
 };

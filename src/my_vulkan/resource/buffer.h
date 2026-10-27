@@ -85,6 +85,7 @@ public:
 
 class Buffer final : public RefCounted
 {
+	friend struct CommandBufferTestProbe;
 	friend struct ShaderBindingTestProbe;
 public:
 	struct Information

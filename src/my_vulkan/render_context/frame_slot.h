@@ -8,6 +8,7 @@
 class CommandBuffer;
 class DeviceContext;
 class DynamicDescriptorSetAllocator;
+class Command;
 
 // Internal frame-slot implementation owned and coordinated by DeviceContext.
 // Other modules must not create, retain, or access FrameSlot directly;
@@ -16,6 +17,7 @@ class FrameSlot final
 {
     friend class DeviceContext;
     friend struct ShaderBindingTestProbe;
+    friend struct CommandBufferTestProbe;
 
 public:
     class RecordingTicket final
@@ -39,6 +41,12 @@ private:
     FrameSlot();
 
     struct RecordingTask;
+    struct RecordBatch
+    {
+        std::vector<const Command*> commands;
+        VkCommandBuffer vkCommandBuffer = VK_NULL_HANDLE;
+    };
+    static auto _BuildRecordingBatches(const std::vector<CommandBuffer>& inBuffers) -> std::vector<RecordBatch>;
 
     using ThreadCommandPools =
         std::array<std::unique_ptr<CommandPool>, MyTaskScheduler::THREAD_COUNT>;

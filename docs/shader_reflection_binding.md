@@ -3,13 +3,14 @@
 ## Command API
 
 ~~~cpp
-auto BindGraphicsProgram(GraphicsShaderProgram& inProgram,
-    const GraphicsPipelineStateInfo& inStateInfo = {}) -> CommandBuffer&;
-auto BindComputeProgram(ComputeShaderProgram& inProgram) -> CommandBuffer&;
-auto BindRayTracingProgram(RayTracingShaderProgram& inProgram) -> CommandBuffer&;
-auto BindGraphicsShaderResource(const ShaderResources& inResources) -> CommandBuffer&;
-auto BindComputeShaderResource(const ShaderResources& inResources) -> CommandBuffer&;
-auto BindRayTracingShaderResource(const ShaderResources& inResources) -> CommandBuffer&;
+void BindGraphicsProgram(GraphicsShaderProgram& inProgram,
+    const GraphicsPipelineStateInfo& inStateInfo = {});
+void BindComputeProgram(ComputeShaderProgram& inProgram);
+void BindRayTracingProgram(RayTracingShaderProgram& inProgram);
+void BindGraphicsShaderResource(const ShaderResources& inResources);
+void BindComputeShaderResource(const ShaderResources& inResources);
+void BindRayTracingShaderResource(const ShaderResources& inResources);
+void AppendCommand(std::function<void(VkCommandBuffer)> inRecord);
 ~~~
 
 Pipeline commands select programs independently for each bind point and never accept
@@ -17,8 +18,24 @@ resources. Each typed resource entry uses its own bind point's selected program 
 reports an error if none was bound. It snapshots the complete settings and resolves
 names immediately. Binding another kind of pipeline preserves the other selections.
 Pipeline and descriptor preparation runs serially before worker recording. Each
-buffer with new bindings remains one Vulkan command buffer. The previous untyped
+buffer with bindings, dynamic state, push constants or execution commands remains
+one Vulkan command buffer, including when it exceeds 256 commands. The previous untyped
 BindShaderResources entry is removed.
+
+CommandBuffer member operations return void and enqueue owned commands. Buffer,
+Image, RenderPass, Framebuffer, PipelineLayout and ShaderBindingTable arguments
+use existing resource objects. Rectangles, viewports, buffer copy regions and
+image clear ranges are scalar parameters; complex image transfer regions retain
+their Vulkan structures. CPU arrays and bytes are copied when enqueued; Vulkan
+resource handles and GPU addresses remain caller-owned and must stay valid until
+GPU completion. AppendCommand owns its callback and invokes it later during
+recording, in stream order. Capture parameters by value; captured references
+must remain valid until recording finishes. Empty callbacks are rejected before
+enqueuing. The callback must preserve the tracked RenderPass lifecycle and
+Program/ShaderResource bindings; use member functions to change those states.
+Any buffer containing a callback remains one native Vulkan command buffer.
+RenderGraph compiled commands use a private borrowed-command entry; their owners
+must keep them alive until asynchronous recording completes.
 
 ## Default graphics setup
 
@@ -39,19 +56,17 @@ framebufferInfo.SetImageView("__depth", *depthImage.View());
 Framebuffer framebuffer;
 framebuffer.Create(framebufferInfo);
 
-BeginRenderPassCommand::Parameters begin;
-begin.renderPass = renderPass.GetVkRenderPass();
-begin.framebuffer = framebuffer.GetVkFramebuffer();
-begin.renderArea.extent = {width, height};
-begin.clearValues = renderPass.GetClearValues();
-
 ShaderResources resources;
 resources.SetBuffer("camera", cameraBuffer);
 resources.SetCombinedImageSampler("albedo", *albedoImage.View(), sampler);
 CommandBuffer commands;
-commands.BeginRenderPass(begin).BindGraphicsProgram(program);
+commands.BeginRenderPass(renderPass, framebuffer, 0, 0, width, height);
+commands.BindGraphicsProgram(program);
 commands.BindGraphicsShaderResource(resources);
-// Add existing Command implementations for viewport/scissor, vertex binding and draw.
+commands.SetViewport(0.0f, 0.0f, float(width), float(height));
+commands.SetScissor(0, 0, width, height);
+// BindVertexBuffers and BindIndexBuffer take Buffer objects when needed.
+commands.Draw(3);
 commands.EndRenderPass();
 ~~~
 
@@ -62,7 +77,7 @@ finalLayout defaults to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL. Swapchain outp
 can specify VK_IMAGE_LAYOUT_PRESENT_SRC_KHR.
 
 Default attachments use one sample, CLEAR/STORE, transparent black, and depth 1.
-Pass GetClearValues() to BeginRenderPass parameters to use those clear defaults.
+BeginRenderPass uses those clear defaults; its clearValues overload copies explicit overrides.
 Attachment names are fragment output names, or color<location> for unnamed outputs.
 Depth uses __depth; avoid that name for fragment outputs. The program owns its default
 RenderPass; the caller owns framebuffer, images and views.
@@ -155,14 +170,16 @@ const auto missRegion = table.GetShaderTableRegion(ShaderTableType::Miss);
 ShaderResources resources;
 resources.SetAccelerationStructure("scene", tlas);
 resources.SetImage("outputImage", *outputImage.View(), VK_IMAGE_LAYOUT_GENERAL);
-commands.BindRayTracingProgram(program).BindRayTracingShaderResource(resources);
-// Use ExternalCommand to push constants and call vkCmdTraceRaysKHR.
+commands.BindRayTracingProgram(program);
+commands.BindRayTracingShaderResource(resources);
+commands.TraceRaysKHR(table, width, height);
 ~~~
 
 Push constant ranges are stored in `PipelineLayout` and checked against the device
 limit when creating a reflected layout. `PushConstantManager` and the combined
-`RayTracingShaderProgram::Do()` / `PipelineInput` API have been removed. Record
-push constant and trace commands explicitly through `ExternalCommand`.
+`RayTracingShaderProgram::Do()` / `PipelineInput` API have been removed. Use
+`commands.PushConstants(program.GetLayout(), stages, offset, size, data)`
+to enqueue a copy of push constant data.
 
 Builder copies paths and group names. Group names are nonempty
 and unique across all table types. All arguments are validated before registration;

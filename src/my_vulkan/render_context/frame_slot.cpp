@@ -13,12 +13,6 @@ namespace
 
 struct FrameSlot::RecordingTask final
 {
-    struct RecordBatch final
-    {
-        std::vector<const Command*> commands;
-        VkCommandBuffer vkCommandBuffer = VK_NULL_HANDLE;
-    };
-
     FrameSlot* owner = nullptr;
     QueueFamilyType queue = QueueFamilyType::UNSET;
     std::vector<CommandBuffer> sourceBuffers;
@@ -247,43 +241,28 @@ void FrameSlot::_Wait(DeviceContext& inDeviceContext)
     _RunCompletionCallbacks();
 }
 
-auto FrameSlot::DispatchRecording(
-    QueueFamilyType inQueue,
-    std::vector<CommandBuffer> inBuffers) -> RecordingTicket
+auto FrameSlot::_BuildRecordingBatches(const std::vector<CommandBuffer>& inBuffers) -> std::vector<RecordBatch>
 {
-    _GetQueueIndex(inQueue);
-    // Serial preparation keeps pools and pipeline caches out of recording workers.
-    for (auto& buffer : inBuffers)
-    {
-        CHECK_TRUE(std::holds_alternative<std::monostate>(buffer.m_renderingScopeState), "Command buffer has an active rendering scope!");
-        if (!buffer.m_hasProgramBindings) continue;
-        if (!m_descriptorAllocator)
-        {
-            m_descriptorAllocator = std::make_unique<DynamicDescriptorSetAllocator>();
-            m_descriptorAllocator->Create();
-        }
-        buffer._PrepareCommands(*m_descriptorAllocator, inQueue);
-    }
-
-    std::vector<RecordingTask::RecordBatch> batches;
-    RecordingTask::RecordBatch currentBatch;
-    for (CommandBuffer& commandBuffer : inBuffers)
+    std::vector<RecordBatch> batches;
+    RecordBatch currentBatch;
+    for (const CommandBuffer& commandBuffer : inBuffers)
     {
         CHECK_TRUE(
             std::holds_alternative<std::monostate>(commandBuffer.m_renderingScopeState),
             "Command buffer has an active rendering scope!");
 
-        if (commandBuffer.m_hasRenderingCommands || commandBuffer.m_hasProgramBindings)
+        if (commandBuffer.m_hasRenderingCommands || commandBuffer.m_hasProgramBindings ||
+            commandBuffer.m_requiresSingleVkCommandBuffer)
         {
             if (!currentBatch.commands.empty())
             {
                 batches.push_back(std::move(currentBatch));
-                currentBatch = RecordingTask::RecordBatch{};
+                currentBatch = RecordBatch{};
             }
 
             if (!commandBuffer.m_commands.empty())
             {
-                RecordingTask::RecordBatch renderingBatch;
+                RecordBatch renderingBatch;
                 renderingBatch.commands = commandBuffer.m_commands;
                 batches.push_back(std::move(renderingBatch));
             }
@@ -295,7 +274,7 @@ auto FrameSlot::DispatchRecording(
             if (currentBatch.commands.size() >= COMMAND_COUNT_PER_VK_COMMAND_BUFFER)
             {
                 batches.push_back(std::move(currentBatch));
-                currentBatch = RecordingTask::RecordBatch{};
+                currentBatch = RecordBatch{};
             }
             currentBatch.commands.push_back(command);
         }
@@ -305,6 +284,28 @@ auto FrameSlot::DispatchRecording(
     {
         batches.push_back(std::move(currentBatch));
     }
+    return batches;
+}
+
+auto FrameSlot::DispatchRecording(
+    QueueFamilyType inQueue,
+    std::vector<CommandBuffer> inBuffers) -> RecordingTicket
+{
+    _GetQueueIndex(inQueue);
+    // Serial preparation keeps pools and pipeline caches out of recording workers.
+    for (auto& buffer : inBuffers)
+    {
+        CHECK_TRUE(std::holds_alternative<std::monostate>(buffer.m_renderingScopeState),
+            "Command buffer has an active rendering scope!");
+        if (!buffer.m_hasProgramBindings) continue;
+        if (!m_descriptorAllocator)
+        {
+            m_descriptorAllocator = std::make_unique<DynamicDescriptorSetAllocator>();
+            m_descriptorAllocator->Create();
+        }
+        buffer._PrepareCommands(*m_descriptorAllocator, inQueue);
+    }
+    auto batches = _BuildRecordingBatches(inBuffers);
 
     CHECK_TRUE(m_nextRecordingSerial != 0, "Recording ticket serial overflow!");
     const uint64_t serial = m_nextRecordingSerial++;

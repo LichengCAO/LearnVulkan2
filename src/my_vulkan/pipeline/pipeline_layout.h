@@ -27,6 +27,7 @@ private:
 
 class PipelineLayout final
 {
+	friend struct CommandBufferTestProbe;
 	friend struct ShaderBindingTestProbe;
 private:
 	VkPipelineLayout m_vkPipelineLayout = VK_NULL_HANDLE;

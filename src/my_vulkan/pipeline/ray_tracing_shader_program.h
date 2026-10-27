@@ -58,6 +58,7 @@ public:
 // https://www.willusher.io/graphics/2019/11/20/the-sbt-three-ways/
 class ShaderBindingTable
 {
+	friend struct CommandBufferTestProbe;
 private:
 	struct TableData
 	{

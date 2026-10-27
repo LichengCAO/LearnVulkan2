@@ -1062,7 +1062,7 @@ void RenderGraphInstance::_AppendRenderPassCommands(
 		}
 	}
 
-	inCommandBuffer.BeginRenderPass(beginParameters, static_cast<uint32_t>(inPasses.size()));
+	inCommandBuffer._BeginRenderPass(beginParameters, static_cast<uint32_t>(inPasses.size()));
 
 	for (uint32_t subpassIndex = 0; subpassIndex < inPasses.size(); ++subpassIndex)
 	{
@@ -1515,7 +1515,7 @@ void RenderGraphInstance::Execute(const ExecuteInfo& inExecuteInfo)
 			CHECK_TRUE(command != nullptr, "Compiled render graph command cannot be null!");
 			commands.push_back(command.get());
 		}
-		inCommandBuffer.AddCommands(commands.data(), commands.size());
+		inCommandBuffer._AppendCommands(commands.data(), commands.size());
 		return true;
 	};
 

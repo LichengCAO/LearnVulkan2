@@ -140,6 +140,7 @@ private:
 
 class RenderPass final
 {
+	friend struct CommandBufferTestProbe;
 	friend class GraphicsShaderProgram;
 private:
 	struct SubpassInfo
@@ -162,6 +163,7 @@ public:
 	void Create(const RenderPassCreateInfo& inCreateInfo);
 	void Destroy();
 	auto GetVkRenderPass()const -> VkRenderPass { return m_vkRenderPass; };
+	auto GetSubpassCount() const -> uint32_t { return static_cast<uint32_t>(m_subpassInfos.size()); }
 	auto GetClearValues() const -> const std::vector<VkClearValue>& { return m_clearValues; };
 	auto GetAttachmentIndex(std::string_view inName) const -> uint32_t;
 };
@@ -183,6 +185,7 @@ public:
 
 class Framebuffer final
 {
+	friend struct CommandBufferTestProbe;
 private:
 	VkFramebuffer m_vkFramebuffer = VK_NULL_HANDLE;
 

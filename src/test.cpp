@@ -9,6 +9,15 @@
 #if MY_VULKAN_ENABLE_RENDER_GRAPH
 struct RenderGraphTestProbe
 {
+	static void AppendBorrowedCommands(CommandBuffer& inBuffer, const Command* const* inCommands, size_t inCount)
+	{
+		inBuffer._AppendCommands(inCommands, inCount);
+	}
+	static void BeginRenderPass(CommandBuffer& inBuffer,
+		const BeginRenderPassCommand::Parameters& inParameters, uint32_t inSubpassCount = 1)
+	{
+		inBuffer._BeginRenderPass(inParameters, inSubpassCount);
+	}
 	struct GraphicsGroupSummary
 	{
 		std::vector<std::string> passes;
@@ -101,7 +110,7 @@ struct RenderGraphTestProbe
 				BeginRenderPassCommand::Parameters parameters;
 				parameters.renderPass = (VkRenderPass)1;
 				parameters.framebuffer = (VkFramebuffer)1;
-				inCommandBuffer.BeginRenderPass(parameters);
+				RenderGraphTestProbe::BeginRenderPass(inCommandBuffer, parameters);
 				inCommandBuffer.EndRenderPass();
 			});
 		});
@@ -836,16 +845,16 @@ namespace
 		ExpectThrows(
 			[&commandBuffer, &directCommand]()
 			{
-				commandBuffer.AddCommands(&directCommand, 1);
+				RenderGraphTestProbe::AppendBorrowedCommands(commandBuffer, &directCommand, 1);
 			},
 			"must be appended through CommandBuffer members");
 
-		commandBuffer.BeginRenderPass(parameters, 2);
+		RenderGraphTestProbe::BeginRenderPass(commandBuffer, parameters, 2);
 
 		ExpectThrows(
 			[&commandBuffer, &parameters]()
 			{
-				commandBuffer.BeginRenderPass(parameters);
+				RenderGraphTestProbe::BeginRenderPass(commandBuffer, parameters);
 			},
 			"A rendering scope is already active");
 
@@ -859,7 +868,7 @@ namespace
 		commandBuffer.EndRenderPass();
 
 		// Ending a scope resets the state machine and permits a new scope.
-		commandBuffer.BeginRenderPass(parameters);
+		RenderGraphTestProbe::BeginRenderPass(commandBuffer, parameters);
 		commandBuffer.EndRenderPass();
 	}
 
@@ -1837,10 +1846,13 @@ namespace
 void RunShaderBindingTests();
 #endif
 
+void RunCommandBufferTests();
+
 auto main() -> int
 {
 	try
 	{
+		RunCommandBufferTests();
 #ifdef LEARN_VULKAN_HAS_SHADER_BINDING_TESTS
 		RunShaderBindingTests();
 #endif

@@ -26,6 +26,7 @@ struct VkAccelStructBuildInfo
 /// </summary>
 class BottomLevelAccelStruct final : public RefCounted
 {
+	friend struct CommandBufferTestProbe;
 public:
     virtual ~BottomLevelAccelStruct();
 
@@ -315,6 +316,7 @@ public:
 /// </summary>
 class TopLevelAccelStruct final : public RefCounted
 {
+	friend struct CommandBufferTestProbe;
 public:
     virtual ~TopLevelAccelStruct();
 
