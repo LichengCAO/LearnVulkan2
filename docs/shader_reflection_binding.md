@@ -319,11 +319,13 @@ remain separate classes within this module.
 confined to its implementation.
 
 `PipelineLayout` holds the Vulkan pipeline layout, descriptor set layouts, push
-constant ranges and resource lookup metadata. Programs create it directly from
-`ShaderProgramReflection`; the `ShaderProgramLayout` wrapper has been removed.
-Manual creation through `PipelineLayoutCreateInfo` remains available and retains
-descriptor metadata without resource names. `Destroy()` clears the handle and all
-layout and lookup data.
+constant ranges and resource lookup metadata. Programs obtain it through
+`MyDevice::GetOrCreatePipelineLayout`, using their finalized layout description.
+For reflection, use `info.SetReflection(reflection).Finalize()`; manual descriptions
+also remain available. The wrapper owns its metadata and borrows the Device-cached
+native handle. Clear it with assignment to `{}`; it has no public Create/Destroy.
+See [pipeline layout ownership](resource_lifetimes.md#pipeline-layout-ownership)
+for cache lifetime and external synchronization requirements.
 
 Query a resource with `auto [set, binding] = program.GetLayout().GetSetBinding(name)`.
 The result is a `std::pair<uint32_t, uint32_t>` returned by value. Unknown or

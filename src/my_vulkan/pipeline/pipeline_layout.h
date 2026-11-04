@@ -9,6 +9,7 @@ class ShaderProgramReflection;
 
 class PipelineLayout final
 {
+	friend class MyDevice;
 	friend struct CommandBufferTestProbe;
 	friend struct ShaderBindingTestProbe;
 private:
@@ -25,10 +26,9 @@ public:
 	auto operator=(const PipelineLayout&) -> PipelineLayout& = default;
 	PipelineLayout(PipelineLayout&&) noexcept = default;
 	auto operator=(PipelineLayout&&) noexcept -> PipelineLayout& = default;
-	~PipelineLayout();
-
-	void Create(const PipelineLayoutCreateInfo& inCreateInfo);
-	void Destroy();
+	// Owns host metadata and borrows the Device cache's native handle. Value
+	// operations never access Device; complete native uses before cache teardown.
+	~PipelineLayout() = default;
 	auto GetVkPipelineLayout() const -> VkPipelineLayout { return m_vkPipelineLayout; };
 	auto GetDescriptorSetLayout(uint32_t inSet) const -> const DescriptorSetLayout&;
 	auto GetVkPushConstantRanges() const -> const std::vector<VkPushConstantRange>& { return m_pushConstantRanges; }

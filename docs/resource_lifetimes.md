@@ -192,3 +192,44 @@ creation sorts directly supplied bindings and reuses the immutable ordered
 binding arrays already prepared by PipelineLayoutCreateInfo::Finalize. Its
 public allocator getter is removed; internal cache access stays behind the
 Device creation entry point.
+
+## Pipeline layout ownership
+
+Create a PipelineLayout with
+`device.GetOrCreatePipelineLayout(layout, finalizedInfo)`. The wrapper owns its
+descriptor-layout values, binding and push-constant snapshots, resource names
+and ambiguous-name set. It borrows a native pipeline layout owned by the Device
+cache. Native identity uses the complete ordered set-layout and push-constant
+description; reflection names belong to each wrapper and do not affect reuse.
+
+There is no public Create, Destroy or Reset. Copying, moving, clearing with
+`layout = {}` and destruction access only host storage. Moved-to values retain
+their metadata; no additional moved-from state guarantee is made. Modifying or
+destroying the source CreateInfo does not change an existing wrapper.
+
+Creation rejects unfinalized input, a nonempty target, an unavailable Device or
+required allocator, and push constants exceeding cached device limits before
+native creation. A nonempty target remains unchanged on rejection. Creation
+into an empty target publishes its handle and metadata only on success, so
+failure permits retry. Child descriptor layouts already published to their
+cache remain cached after an outer failure. Failure to publish a newly created
+native pipeline layout immediately destroys that native object.
+
+Callers serialize creation and lookup with all other accesses to the same
+pipeline-layout cache and, when child layouts are needed, descriptor-layout
+cache, including cache teardown. Allocators have no internal locks. Independent
+wrapper operations access neither cache; conflicting accesses to the same
+wrapper require exclusion. This does not require one global Device lock.
+
+The cache retains native layouts until Device teardown. Complete all native
+uses, including GPU execution, before cache destruction. Wrappers do not retain
+the Device; surviving wrappers may safely be cleared or destroyed, but their
+old handles are invalid and have no validity tracking.
+
+Compute, Graphics and RayTracing ShaderProgram keep their existing public
+Create/Destroy interfaces and have not yet migrated to independent-instance
+concurrent creation. Their Create calls share both layout caches. Callers must
+coordinate creation, destruction and GraphicsShaderProgram's lazy GetVkPipeline
+with every other access to the same shared caches and dependencies. This
+PipelineLayout migration does not change recording, submission, waits or GPU
+resource retention. Program migration follows Compute, Graphics, then RayTracing.

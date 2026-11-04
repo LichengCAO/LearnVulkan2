@@ -20,7 +20,7 @@ void ComputeShaderProgram::Create(const ComputeShaderProgramCreateInfo& inCreate
 	{
 		m_uptrShaderModule = std::make_unique<ShaderModule>();
 		m_uptrShaderModule->Create(inCreateInfo.m_finalized->shader);
-		m_pipelineLayout.Create(inCreateInfo.m_finalized->layout);
+		MyDevice::GetInstance().GetOrCreatePipelineLayout(m_pipelineLayout, inCreateInfo.m_finalized->layout);
 		_CreateVkPipeline(m_uptrShaderModule->GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT), inCreateInfo.m_vkPipelineCache);
 	}
 	catch (...)
@@ -57,7 +57,7 @@ void ComputeShaderProgram::Destroy()
 		m_uptrShaderModule->Destroy();
 		m_uptrShaderModule.reset();
 	}
-	m_pipelineLayout.Destroy();
+	m_pipelineLayout = {};
 }
 
 auto ComputeShaderProgram::GetLayout() const -> const PipelineLayout&

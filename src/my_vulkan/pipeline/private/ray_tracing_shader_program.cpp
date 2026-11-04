@@ -67,7 +67,7 @@ void RayTracingShaderProgram::Destroy()
 		device.DestroyPipeline(m_vkPipeline);
 		m_vkPipeline = VK_NULL_HANDLE;
 	}
-	m_pipelineLayout.Destroy();
+	m_pipelineLayout = {};
 	for (auto& module : m_shaderModules)
 		module->Destroy();
 	m_shaderModules.clear();
@@ -247,7 +247,7 @@ void RayTracingShaderProgram::_Create(const RayTracingShaderProgramCreateInfo& i
 	    "Ray tracing recursion depth exceeds device limits!");
 	std::vector<VkPipelineShaderStageCreateInfo> stages;
 	ShaderDetail::CreateStages(finalized.shaders, m_shaderModules, stages);
-	m_pipelineLayout.Create(finalized.layout);
+	MyDevice::GetInstance().GetOrCreatePipelineLayout(m_pipelineLayout, finalized.layout);
 	std::vector<VkRayTracingShaderGroupCreateInfoKHR> records;
 	for (const auto& group : finalized.groups)
 	{

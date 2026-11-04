@@ -29,6 +29,7 @@ public:
 	~DescriptorSetLayoutAllocator();
 
 	void Create(VkDevice inDevice);
+	auto IsCreated() const noexcept -> bool { return m_vkDevice != VK_NULL_HANDLE; }
 	// Input bindings are sorted; callers serialize access to this cache, including
 	// its destruction. Returned native handles remain owned by the cache.
 	auto GetOrCreate(const std::vector<VkDescriptorSetLayoutBinding>& inSortedBindings) -> VkDescriptorSetLayout;

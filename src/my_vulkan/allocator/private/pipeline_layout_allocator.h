@@ -19,12 +19,13 @@ private:
 public:
 	PipelineLayoutAllocator() = default;
 	PipelineLayoutAllocator(const PipelineLayoutAllocator&) = delete;
-	PipelineLayoutAllocator& operator=(const PipelineLayoutAllocator&) = delete;
+	auto operator=(const PipelineLayoutAllocator&) -> PipelineLayoutAllocator& = delete;
 	~PipelineLayoutAllocator();
 
 	void Create(VkDevice inDevice);
-	auto AllocatePipelineLayoutWithResult(const VkPipelineLayoutCreateInfo& inCreateInfo) -> std::pair<VkPipelineLayout, VkResult>;
-	auto AllocatePipelineLayout(const VkPipelineLayoutCreateInfo& inCreateInfo) -> VkPipelineLayout;
-	void FreePipelineLayout(VkPipelineLayout& inoutPipelineLayout);
+	auto IsCreated() const noexcept -> bool { return m_vkDevice != VK_NULL_HANDLE; }
+	// No internal locking. Callers serialize lookup, creation and cache teardown.
+	// The cache owns each returned native handle until Destroy().
+	auto GetOrCreate(const VkPipelineLayoutCreateInfo& inCreateInfo) -> VkPipelineLayout;
 	void Destroy();
 };

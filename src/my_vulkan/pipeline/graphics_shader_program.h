@@ -61,6 +61,9 @@ public:
 	GraphicsShaderProgram();
 	~GraphicsShaderProgram();
 
+	// Not yet migrated to independent-instance concurrent creation. Callers
+	// coordinate Create/Destroy, lazy GetVkPipeline and all other accesses to the
+	// same Device caches and dependencies. Create shares both layout caches.
 	void Create(const GraphicsShaderProgramCreateInfo& inCreateInfo);
 	void Destroy();
 	auto GetLayout() const -> const PipelineLayout&;

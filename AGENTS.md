@@ -32,4 +32,6 @@ Objects and allocators have no thread affinity. Unless an interface explicitly d
 
 ### Migration Priorities
 
+- Compute, Graphics and RayTracing ShaderProgram retain their existing creation restrictions until individually migrated. Callers coordinate their Create/Destroy paths and GraphicsShaderProgram lazy GetVkPipeline with all other accesses to the same shared caches and dependencies. Program creation accesses both descriptor-layout and pipeline-layout caches; independent instances do not yet support unsynchronized concurrent Create.
+
 - Audit shared-cache creation paths, Buffer/Image memory allocation records, and the CommandPool registry first. Move creation into MyDevice or restructure the shared state according to the actual concurrency requirements.

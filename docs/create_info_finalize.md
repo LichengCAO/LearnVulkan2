@@ -15,7 +15,7 @@ info.Reset();                   // The created program retains the data it needs
 program.Destroy();
 ```
 
-`Finalize()` and `IsFinalized()` are provided by graphics, compute and ray tracing program CreateInfos, RenderPassCreateInfo, PipelineLayoutCreateInfo, and the internal ShaderModuleCreateInfo. Runtime objects have one `Create(const XxxCreateInfo&)` entry. Create rejects unfinalized inputs before calling Vulkan; it does not silently finalize them.
+`Finalize()` and `IsFinalized()` are provided by graphics, compute and ray tracing program CreateInfos, RenderPassCreateInfo, PipelineLayoutCreateInfo, and the internal ShaderModuleCreateInfo. Programs, render passes and shader modules use `Create(const XxxCreateInfo&)`; pipeline layouts use `device.GetOrCreatePipelineLayout(layout, info)`. These creation entries reject unfinalized inputs before calling Vulkan; they do not silently finalize them.
 
 ## State and ownership
 
@@ -38,10 +38,10 @@ set.SetBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT
 PipelineLayoutCreateInfo info;
 info.AddDescriptorSetLayout(set).Finalize();
 PipelineLayout layout;
-layout.Create(info);
+device.GetOrCreatePipelineLayout(layout, info);
 ```
 
-To use reflection, call `info.SetReflection(reflection).Finalize()`, then `layout.Create(info)`. The old `layout.Create(reflection)` overload is removed. Sparse set indices retain empty layout descriptions. PipelineLayout's Device creation obtains its native descriptor layouts through `MyDevice::GetOrCreateDescriptorSetLayout()`, reusing the ordered binding snapshots produced by Finalize.
+To use reflection, call `info.SetReflection(reflection).Finalize()`, then `device.GetOrCreatePipelineLayout(layout, info)`. Sparse set indices retain empty layout descriptions. Device creation obtains native descriptor layouts through `MyDevice::GetOrCreateDescriptorSetLayout()`, reusing the ordered binding snapshots produced by Finalize.
 
 Standalone DescriptorSetLayoutCreateInfo keeps its existing SetBinding interface
 and does not require Finalize. Create a wrapper with
@@ -49,8 +49,10 @@ and does not require Finalize. Create a wrapper with
 and borrows the native handle held by the Device cache. It has no public Create,
 Destroy or Reset; clear the value with `layout = {}`. See
 [descriptor set layout ownership](resource_lifetimes.md#descriptor-set-layout-ownership)
-for its external synchronization and lifetime contract. PipelineLayout itself
-retains its current Create/Destroy interface pending its separate migration.
+for its external synchronization and lifetime contract. PipelineLayout likewise
+owns its host metadata and borrows a Device-cached native handle. It has no
+public Create/Destroy/Reset; clear it with `layout = {}`. See
+[pipeline layout ownership](resource_lifetimes.md#pipeline-layout-ownership).
 
 RenderPassCreateInfo::Finalize resolves attachment/subpass names, validates samples and resolve attachments, and owns the arrays and derived metadata. RenderPass::Create consumes that snapshot. Generated default render passes and automatic vertex layouts are finalized as part of GraphicsShaderProgramCreateInfo::Finalize.
 

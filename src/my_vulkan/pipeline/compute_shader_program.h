@@ -21,6 +21,9 @@ public:
 	ComputeShaderProgram();
 	~ComputeShaderProgram();
 
+	// Not yet migrated to independent-instance concurrent creation. Callers
+	// coordinate Create/Destroy and all other accesses to the same Device caches
+	// and dependencies; Create shares descriptor-layout and pipeline-layout caches.
 	void Create(const ComputeShaderProgramCreateInfo& inCreateInfo);
 	
 	void Destroy();

@@ -2,10 +2,12 @@
 
 ## 当前状态与实施范围
 
-本文记录已经确认、尚未实施的 PipelineLayout 迁移方案，供后续继续工作。
-本轮目前只完成了代码检查，没有开始修改 PipelineLayout 实现或测试。
+本清单已于 2026-11-04 实施，下面保留具体设计与验收要求供维护时参考。
+已完成 Device 创建入口、借用值语义、缓存发布回滚、三类 Program 内部调用迁移及文档更新。
+完整 NMake Debug 构建、两项 CTest，以及独立 Host 构建和一项 CTest 均通过。
+缓存发布失败回滚通过 MSVC Debug CRT 分配失败注入验证；未运行真实 GPU 渲染测试。
 
-工作区已有前几轮迁移的未提交修改，继续实施时应在这些修改上工作，不要还原。
+实施时保留了工作区原有修改与未跟踪文档。
 `CMakePresets.json` 是用户原有修改，不属于本次任务，不要修改或还原。
 
 已经完成的相关接口：
@@ -108,8 +110,8 @@ layout = {}; // 只清空当前包装，copy 保留自己的元数据和借用�
 - 不缓存指向临时数组的指针，不增加内部锁、淘汰或逐对象释放。
 - 保留内部 Create/Destroy；缓存 Destroy 后重复清理和析构不得重复销毁。
 
-当前实现是在 native 创建后复制数组并 push_back，缺少发布失败的 native 回滚，
-本轮应修复这条异常清理路径。
+迁移前的实现是在 native 创建后复制数组并 push_back，缺少发布失败的 native 回滚；
+本轮已将数组复制移至 native 创建前，并在缓存发布异常时销毁新 native 对象。
 
 ### 3. Program 内部调用与并发过渡契约
 
@@ -150,19 +152,20 @@ MyDevice::CreateXxxShaderProgram 并移除相应公开 Create；这些属于后�
 失败重试测试可用。测试中的 Owner<PipelineLayout> 依赖公开 Destroy，需改用普通值对象，
 不能为了保留测试辅助逻辑而给生产类增加释放别名。
 
-- [ ] 相同 native 描述命中缓存，不同 set layouts 或 push constant 字段产生独立布局。
-- [ ] 空 PipelineLayout 和稀疏 set 保持有效，子空布局不被省略。
-- [ ] 相同 native 描述、不同反射名称复用 native handle，但查询结果各自独立。
-- [ ] 覆盖同名歧义、未知名称和原有绑定查询行为。
-- [ ] CreateInfo 修改、Reset 或销毁后，包装保留其原元数据。
-- [ ] 包装复制、移动到目标、赋空和析构不调用 native 创建/销毁 API。
-- [ ] 未 Finalize、非空目标、无 Device、allocator 缺失或未初始化，在创建前被拒绝。
-- [ ] push constant 超出缓存设备属性限制时，不进入 native 创建路径。
-- [ ] 子 DescriptorSetLayout 创建失败、native PipelineLayout 创建失败后，目标为空且可重试。
-- [ ] 外层失败不销毁已缓存子布局，已有缓存项和其他包装不受影响。
-- [ ] 缓存整体销毁准确回收 native 创建，重复清理无重复销毁；包装随后析构无 Device 调用。
-- [ ] 保留三类 Program 的成功创建、失败清理与重试用例。
-- [ ] 不把串行测试通过表述为 Program.Create 已具备无同步并发能力。
+- [x] 相同 native 描述命中缓存，不同 set layouts 或 push constant 字段产生独立布局。
+- [x] 空 PipelineLayout 和稀疏 set 保持有效，子空布局不被省略。
+- [x] 相同 native 描述、不同反射名称复用 native handle，但查询结果各自独立。
+- [x] 覆盖同名歧义、未知名称和原有绑定查询行为。
+- [x] CreateInfo 修改、Reset 或销毁后，包装保留其原元数据。
+- [x] 包装复制、移动到目标、赋空和析构不调用 native 创建/销毁 API。
+- [x] 未 Finalize、非空目标、无 Device、allocator 缺失或未初始化，在创建前被拒绝。
+- [x] push constant 超出缓存设备属性限制时，不进入 native 创建路径。
+- [x] 子 DescriptorSetLayout 创建失败、native PipelineLayout 创建失败后，目标为空且可重试。
+- [x] 外层失败不销毁已缓存子布局，已有缓存项和其他包装不受影响。
+- [x] 缓存整体销毁准确回收 native 创建，重复清理无重复销毁；包装随后析构无 Device 调用。
+- [x] 保留三类 Program 的成功创建、失败清理与重试用例。
+- [x] 不把串行测试通过表述为 Program.Create 已具备无同步并发能力。
+- [x] MSVC Debug 下在 native 创建之后注入缓存发布分配失败，验证立即回滚、旧缓存保留及重试。
 
 若新增 cpp 测试文件，先重新配置完整构建，现有 CMake GLOB 不会自动发现新增文件：
 
@@ -182,6 +185,18 @@ ctest --test-dir build_finalize_host --output-on-failure
 git diff --check
 ```
 
-继续沿用现有 NMake 构建和工具链 helper，不切换构建系统。完成后检查剩余旧接口引用，
-确认它们仅出现在历史说明中；复核失败发布、native 回滚和 Program 同步注释。
+本工作区原先缺少上述 helper 和构建目录，已在忽略的 build_command_buffer 中重建 helper，
+使用本机 VS 2022/MSVC 19.38、Vulkan SDK 1.4.350.0 和 NMake Debug 配置。完整构建配置为：
+
+```powershell
+.\build_command_buffer\run_finalize_cmake.cmd -S . -B build_finalize_nmake -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Debug -DENKITS_BUILD_EXAMPLES=OFF -DLEARN_VULKAN_GPU_TESTS=OFF -DCMAKE_PROJECT_learn_vulkan_INCLUDE=E:/GitStorage/LearnVulkan2/build_command_buffer/tracked_sources.cmake
+.\build_command_buffer\run_finalize_cmake.cmd -S . -B build_finalize_host -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Debug -DLEARN_VULKAN_BUILD_DEVICE=OFF
+```
+
+完整构建首次被未跟踪且已忽略的 src/shader_binding_tests.cpp 阻塞：该本地文件仍引用
+已移除的 allocator 头文件和其他旧接口。保留原文件不变，仅通过本地 tracked_sources.cmake
+从验证 target 移除该文件和对应测试宏；所有已跟踪的运行时代码和回归测试参与构建。
+干净克隆没有该可选文件时，无需此过滤脚本。未验证该历史本地测试或真实 GPU 路径。
+
+已跟踪源码中不存在被移除的旧创建/释放接口引用；已复核失败发布、native 回滚和 Program 同步注释。
 本次不自动提交或推送。

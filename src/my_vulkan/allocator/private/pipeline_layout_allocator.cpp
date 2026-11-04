@@ -25,7 +25,7 @@ namespace
 		hash_combine(seed, range.size);
 	}
 
-	uint64_t HashPipelineLayoutCreateInfo(const VkPipelineLayoutCreateInfo& createInfo)
+	auto HashPipelineLayoutCreateInfo(const VkPipelineLayoutCreateInfo& createInfo) -> uint64_t
 	{
 		size_t result = 0;
 
@@ -62,8 +62,8 @@ void PipelineLayoutAllocator::Create(VkDevice inDevice)
 	m_vkDevice = inDevice;
 }
 
-auto PipelineLayoutAllocator::AllocatePipelineLayoutWithResult(
-	const VkPipelineLayoutCreateInfo& inCreateInfo) -> std::pair<VkPipelineLayout, VkResult>
+auto PipelineLayoutAllocator::GetOrCreate(
+	const VkPipelineLayoutCreateInfo& inCreateInfo) -> VkPipelineLayout
 {
 	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Pipeline layout allocator is not created!");
 
@@ -91,7 +91,7 @@ auto PipelineLayoutAllocator::AllocatePipelineLayoutWithResult(
 			entry.pushConstantRanges.begin(),
 			entry.pushConstantRanges.end(),
 			inCreateInfo.pPushConstantRanges,
-			[](const VkPushConstantRange& lhs, const VkPushConstantRange& rhs)
+			[](const VkPushConstantRange& lhs, const VkPushConstantRange& rhs) -> bool
 			{
 				return lhs.stageFlags == rhs.stageFlags &&
 					lhs.offset == rhs.offset &&
@@ -101,14 +101,7 @@ auto PipelineLayoutAllocator::AllocatePipelineLayoutWithResult(
 			continue;
 		}
 
-		return { entry.pipelineLayout, VK_SUCCESS };
-	}
-
-	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-	const VkResult result = vkCreatePipelineLayout(m_vkDevice, &inCreateInfo, nullptr, &pipelineLayout);
-	if (result != VK_SUCCESS)
-	{
-		return { VK_NULL_HANDLE, result };
+		return entry.pipelineLayout;
 	}
 
 	CacheEntry entry{};
@@ -126,22 +119,20 @@ auto PipelineLayoutAllocator::AllocatePipelineLayoutWithResult(
 			inCreateInfo.pPushConstantRanges,
 			inCreateInfo.pPushConstantRanges + inCreateInfo.pushConstantRangeCount);
 	}
+	VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+	VK_CHECK(vkCreatePipelineLayout(m_vkDevice, &inCreateInfo, nullptr, &pipelineLayout),
+		"Failed to create pipeline layout!");
 	entry.pipelineLayout = pipelineLayout;
-	entries.push_back(std::move(entry));
-	return { pipelineLayout, VK_SUCCESS };
-}
-
-auto PipelineLayoutAllocator::AllocatePipelineLayout(const VkPipelineLayoutCreateInfo& inCreateInfo) -> VkPipelineLayout
-{
-	auto [pipelineLayout, result] = AllocatePipelineLayoutWithResult(inCreateInfo);
-	VK_CHECK(result, "Failed to allocate pipeline layout!");
-
+	try
+	{
+		entries.push_back(std::move(entry));
+	}
+	catch (...)
+	{
+		vkDestroyPipelineLayout(m_vkDevice, pipelineLayout, nullptr);
+		throw;
+	}
 	return pipelineLayout;
-}
-
-void PipelineLayoutAllocator::FreePipelineLayout(VkPipelineLayout& inoutPipelineLayout)
-{
-	inoutPipelineLayout = VK_NULL_HANDLE;
 }
 
 void PipelineLayoutAllocator::Destroy()

@@ -6,6 +6,7 @@
 #include <limits>
 #include "image.h"
 #include "resource/descriptor.h"
+#include "pipeline/pipeline_layout.h"
 #include "allocator/private/memory_allocator.h"
 #include "allocator/private/descriptor_set_layout_allocator.h"
 #include "allocator/private/render_pass_allocator.h"
@@ -798,6 +799,47 @@ void MyDevice::GetOrCreateDescriptorSetLayout(DescriptorSetLayout& outLayout,
 	outLayout.m_vkDescriptorSetLayout = handle;
 }
 
+void MyDevice::GetOrCreatePipelineLayout(PipelineLayout& outLayout,
+	const PipelineLayoutCreateInfo& inCreateInfo)
+{
+	CHECK_TRUE(inCreateInfo.IsFinalized(), "Pipeline layout create info must be finalized!");
+	CHECK_TRUE(outLayout.m_vkPipelineLayout == VK_NULL_HANDLE, "Pipeline layout already created!");
+	CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Pipeline layout creation requires a live device!");
+	CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr && m_uptrPipelineLayoutAllocator->IsCreated(),
+		"Pipeline layout allocator is not created!");
+	const auto& data = *inCreateInfo.m_finalized;
+	CHECK_TRUE(data.layouts.empty() || (m_uptrDescriptorSetLayoutAllocator != nullptr &&
+		m_uptrDescriptorSetLayoutAllocator->IsCreated()), "Descriptor set layout allocator is not created!");
+	for (const auto& range : data.pushConstants)
+	{
+		CHECK_TRUE(range.offset <= m_cachedPhysicalDeviceProperties.limits.maxPushConstantsSize &&
+			range.size <= m_cachedPhysicalDeviceProperties.limits.maxPushConstantsSize - range.offset,
+			"Push constant range exceeds device limits!");
+	}
+
+	PipelineLayout layout;
+	layout.m_pushConstantRanges = data.pushConstants;
+	layout.m_descriptorBindings = data.bindings;
+	layout.m_nameToSetBinding = data.names;
+	layout.m_ambiguousNames = data.ambiguousNames;
+	layout.m_descriptorSetLayouts.resize(data.layouts.size());
+	std::vector<VkDescriptorSetLayout> nativeLayouts(data.layouts.size());
+	for (size_t index = 0; index < data.layouts.size(); ++index)
+	{
+		// Empty layouts preserve sparse set indices. Already cached children remain
+		// owned by their cache if a later creation fails.
+		GetOrCreateDescriptorSetLayout(layout.m_descriptorSetLayouts[index], data.layouts[index]);
+		nativeLayouts[index] = layout.m_descriptorSetLayouts[index].GetVkDescriptorSetLayout();
+	}
+	VkPipelineLayoutCreateInfo info{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+	info.setLayoutCount = static_cast<uint32_t>(nativeLayouts.size());
+	info.pSetLayouts = nativeLayouts.data();
+	info.pushConstantRangeCount = static_cast<uint32_t>(layout.m_pushConstantRanges.size());
+	info.pPushConstantRanges = layout.m_pushConstantRanges.data();
+	layout.m_vkPipelineLayout = m_uptrPipelineLayoutAllocator->GetOrCreate(info);
+	outLayout = std::move(layout);
+}
+
 void MyDevice::GetOrCreateSampler(Sampler& outSampler, const SamplerCreateInfo& inCreateInfo)
 {
 	CHECK_TRUE(outSampler.m_vkSampler == VK_NULL_HANDLE, "Sampler already created!");
@@ -1190,59 +1232,6 @@ void MyDevice::DestroyPipeline(VkPipeline inPipeline, const VkAllocationCallback
 	}
 
 	vkDestroyPipeline(vkDevice, inPipeline, pAllocator);
-}
-
-VkPipelineLayout MyDevice::CreatePipelineLayout(
-	const VkPipelineLayoutCreateInfo& inCreateInfo, 
-	const VkAllocationCallbacks* pAllocator)
-{
-	VkResult processResult;
-	VkPipelineLayout result;
-
-	result = CreatePipelineLayout(inCreateInfo, processResult, pAllocator);
-	VK_CHECK(processResult, "Failed to create pipeline layout!");
-
-	return result;
-}
-
-VkPipelineLayout MyDevice::CreatePipelineLayout(
-	const VkPipelineLayoutCreateInfo& inCreateInfo, 
-	VkResult& outProcessResult, 
-	const VkAllocationCallbacks* pAllocator)
-{
-	VkPipelineLayout result = VK_NULL_HANDLE;
-
-	if (pAllocator == nullptr)
-	{
-		CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr, "Pipeline layout allocator is not created!");
-		auto [pipelineLayout, allocateResult] = m_uptrPipelineLayoutAllocator->AllocatePipelineLayoutWithResult(inCreateInfo);
-		result = pipelineLayout;
-		outProcessResult = allocateResult;
-	}
-	else
-	{
-		outProcessResult = vkCreatePipelineLayout(vkDevice, &inCreateInfo, pAllocator, &result);
-	}
-
-	return result;
-}
-
-void MyDevice::DestroyPipelineLayout(VkPipelineLayout inLayout, const VkAllocationCallbacks* pAllocator)
-{
-	if (inLayout == VK_NULL_HANDLE)
-	{
-		return;
-	}
-
-	if (pAllocator == nullptr)
-	{
-		CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr, "Pipeline layout allocator is not created!");
-		m_uptrPipelineLayoutAllocator->FreePipelineLayout(inLayout);
-	}
-	else
-	{
-		vkDestroyPipelineLayout(vkDevice, inLayout, pAllocator);
-	}
 }
 
 VkResult MyDevice::GetRayTracingShaderGroupHandles(VkPipeline inPipeline, uint32_t inFirstGroup, uint32_t inGroupCount, size_t inDataSize, void* outDataPtr)

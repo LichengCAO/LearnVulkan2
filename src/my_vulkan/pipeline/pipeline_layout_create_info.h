@@ -2,10 +2,11 @@
 #include "my_vulkan/host_common.h"
 #include "private/shader_program_reflection.h"
 
+class MyDevice;
+
 class DescriptorSetLayoutCreateInfo final
 {
     friend class MyDevice;
-    friend class PipelineLayout;
     friend class PipelineLayoutCreateInfo;
     std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding> m_descriptorBindings;
     std::shared_ptr<const std::vector<VkDescriptorSetLayoutBinding>> m_finalizedBindings;
@@ -16,7 +17,7 @@ public:
 
 class PipelineLayoutCreateInfo final
 {
-    friend class PipelineLayout;
+    friend class MyDevice;
 private:
     struct FinalizedData
     {

@@ -15,6 +15,8 @@ class RayTracingPipelineAllocator;
 class SamplerAllocator;
 class DescriptorSetLayout;
 class DescriptorSetLayoutCreateInfo;
+class PipelineLayout;
+class PipelineLayoutCreateInfo;
 
 struct UserInput
 {
@@ -187,6 +189,12 @@ public:
 	void GetOrCreateDescriptorSetLayout(DescriptorSetLayout& outLayout,
 		const DescriptorSetLayoutCreateInfo& inCreateInfo);
 
+	// Caller serializes this device's pipeline-layout cache and, when used,
+	// descriptor-layout cache with all other accesses, including teardown.
+	// Requires finalized input and an empty target; publishes only on success.
+	void GetOrCreatePipelineLayout(PipelineLayout& outLayout,
+		const PipelineLayoutCreateInfo& inCreateInfo);
+
 	// Caller excludes concurrent access to this device's sampler cache, including
 	// cache destruction. Borrowed Sampler value operations do not access it.
 	void GetOrCreateSampler(Sampler& outSampler, const SamplerCreateInfo& inCreateInfo);
@@ -315,19 +323,6 @@ public:
 
 	void DestroyPipeline(
 		VkPipeline inPipeline,
-		const VkAllocationCallbacks* pAllocator = nullptr);
-
-	VkPipelineLayout CreatePipelineLayout(
-		const VkPipelineLayoutCreateInfo& inCreateInfo,
-		const VkAllocationCallbacks* pAllocator = nullptr);
-
-	VkPipelineLayout CreatePipelineLayout(
-		const VkPipelineLayoutCreateInfo& inCreateInfo,
-		VkResult& outProcessResult,
-		const VkAllocationCallbacks* pAllocator = nullptr);
-
-	void DestroyPipelineLayout(
-		VkPipelineLayout inLayout,
 		const VkAllocationCallbacks* pAllocator = nullptr);
 
 	VkResult GetRayTracingShaderGroupHandles(

@@ -51,7 +51,8 @@ Granite 使用 `Util::IntrusivePtrEnabled<T>` 加 `Util::IntrusivePtr<T>`。资�
 - `VkDescriptorSet`：直接使用 native 句柄，由 `DescriptorPool` 显式分配和回收，不另设 RefCounted 包装。
 - `DescriptorState`、`DescriptorSetState`、各种 `CreateInfo`、pipeline state：值语义或短期构造状态。
 - `CommandBuffer`：当前是命令描述数据，不拥有 Vulkan command buffer。
-- `ShaderModule`、`PipelineLayout`、`RenderPass`、`Framebuffer` 和 ShaderProgram：目前主要由 program 或 RenderGraph 独占，暂时没有资源共享带来的同等收益。
+- `PipelineLayout`：拥有独立的 Host 元数据并借用 Device 缓存句柄，复制和析构不管理 native 生命周期，不增加 RefCounted；见 [Pipeline layout ownership](resource_lifetimes.md#pipeline-layout-ownership)。
+- `ShaderModule`、`RenderPass`、`Framebuffer` 和 ShaderProgram：保留各自现有所有权模式，本轮不增加 RefCounted。
 
 ## 兼容性风险
 

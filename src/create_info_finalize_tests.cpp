@@ -12,11 +12,34 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <type_traits>
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
+
+static_assert(std::is_nothrow_move_assignable_v<PipelineLayout>);
 
 struct CreateInfoFinalizeTestProbe
 {
     template<class T>
     static auto Handle(uintptr_t value) -> T { return reinterpret_cast<T>(value); }
+
+    static auto ExchangeLayouts(std::unique_ptr<PipelineLayoutAllocator> replacement)
+        -> std::unique_ptr<PipelineLayoutAllocator>
+    {
+        auto& allocator = MyDevice::GetInstance().m_uptrPipelineLayoutAllocator;
+        auto previous = std::move(allocator);
+        allocator = std::move(replacement);
+        return previous;
+    }
+    static auto ExchangeDescriptors(std::unique_ptr<DescriptorSetLayoutAllocator> replacement)
+        -> std::unique_ptr<DescriptorSetLayoutAllocator>
+    {
+        auto& allocator = MyDevice::GetInstance().m_uptrDescriptorSetLayoutAllocator;
+        auto previous = std::move(allocator);
+        allocator = std::move(replacement);
+        return previous;
+    }
 
     // Keep the real allocator implementations while replacing singleton dependencies.
     struct DeviceScope final
@@ -80,6 +103,27 @@ struct CreateInfoFinalizeTestProbe
 
 namespace
 {
+#if defined(_MSC_VER) && defined(_DEBUG)
+thread_local bool failNextLayoutAllocation = false;
+auto __cdecl FailLayoutAllocation(int type, void*, size_t, int block, long, const unsigned char*, int) -> int
+{
+    if (type == _HOOK_ALLOC && block != _CRT_BLOCK && failNextLayoutAllocation)
+    {
+        failNextLayoutAllocation = false;
+        return 0;
+    }
+    return 1;
+}
+struct LayoutAllocationFailureScope final
+{
+    _CRT_ALLOC_HOOK previous = _CrtSetAllocHook(FailLayoutAllocation);
+    ~LayoutAllocationFailureScope()
+    {
+        failNextLayoutAllocation = false;
+        _CrtSetAllocHook(previous);
+    }
+};
+#endif
 struct NativeStage final
 {
     VkShaderStageFlagBits stage;
@@ -91,6 +135,10 @@ struct NativeState final
     uintptr_t nextHandle = 100;
     uint32_t calls = 0, moduleCreates = 0, moduleDestroys = 0;
     uint32_t layoutCreates = 0, computeCreates = 0, graphicsCreates = 0, rayCreates = 0, groupReads = 0, passCreates = 0;
+    uint32_t descriptorCreates = 0, descriptorDestroys = 0, layoutDestroys = 0;
+    bool failDescriptor = false;
+    bool failLayoutPublication = false;
+    std::set<VkPipelineLayout> liveLayouts;
     bool failModule = false, failLayout = false, failCompute = false, failGraphics = false, failRay = false, failGroups = false, failPass = false;
     std::vector<std::vector<uint32_t>> shaderCode;
     std::map<VkDescriptorSetLayout, std::vector<VkDescriptorSetLayoutBinding>> bindings;
@@ -120,13 +168,18 @@ void VKAPI_PTR DestroyModule(VkDevice, VkShaderModule, const VkAllocationCallbac
 auto VKAPI_PTR CreateDescriptorLayout(VkDevice, const VkDescriptorSetLayoutCreateInfo* info,
     const VkAllocationCallbacks*, VkDescriptorSetLayout* output) -> VkResult
 {
-    ++nativeState->calls;
+    ++nativeState->calls; ++nativeState->descriptorCreates;
+    if (nativeState->failDescriptor) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *output = CreateInfoFinalizeTestProbe::Handle<VkDescriptorSetLayout>(nativeState->nextHandle++);
     auto& bindings = nativeState->bindings[*output];
     for (uint32_t index = 0; index < info->bindingCount; ++index) bindings.push_back(info->pBindings[index]);
     return VK_SUCCESS;
 }
-void VKAPI_PTR DestroyDescriptorLayout(VkDevice, VkDescriptorSetLayout, const VkAllocationCallbacks*) {}
+void VKAPI_PTR DestroyDescriptorLayout(VkDevice, VkDescriptorSetLayout layout, const VkAllocationCallbacks*)
+{
+    CHECK_TRUE(nativeState->bindings.erase(layout) == 1, "Descriptor layouts must be destroyed exactly once!");
+    ++nativeState->descriptorDestroys;
+}
 auto VKAPI_PTR CreateLayout(VkDevice, const VkPipelineLayoutCreateInfo* info,
     const VkAllocationCallbacks*, VkPipelineLayout* output) -> VkResult
 {
@@ -136,9 +189,19 @@ auto VKAPI_PTR CreateLayout(VkDevice, const VkPipelineLayoutCreateInfo* info,
     for (uint32_t index = 0; index < info->pushConstantRangeCount; ++index) nativeState->pushConstants.push_back(info->pPushConstantRanges[index]);
     if (nativeState->failLayout) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *output = CreateInfoFinalizeTestProbe::Handle<VkPipelineLayout>(nativeState->nextHandle++);
+    nativeState->liveLayouts.insert(*output);
+#if defined(_MSC_VER) && defined(_DEBUG)
+    // All test bookkeeping has finished. Fail the allocator's next host
+    // allocation after native creation, without adding a production test seam.
+    failNextLayoutAllocation = nativeState->failLayoutPublication;
+#endif
     return VK_SUCCESS;
 }
-void VKAPI_PTR DestroyLayout(VkDevice, VkPipelineLayout, const VkAllocationCallbacks*) {}
+void VKAPI_PTR DestroyLayout(VkDevice, VkPipelineLayout layout, const VkAllocationCallbacks*)
+{
+    CHECK_TRUE(nativeState->liveLayouts.erase(layout) == 1, "Pipeline layouts must be destroyed exactly once!");
+    ++nativeState->layoutDestroys;
+}
 void CaptureStages(uint32_t count, const VkPipelineShaderStageCreateInfo* stages)
 {
     nativeState->stages.clear();
@@ -312,7 +375,7 @@ void TestUnfinalizedDescriptionsNeverReachVulkan()
     Owner<GraphicsShaderProgram> graphics;
     Owner<ComputeShaderProgram> compute;
     Owner<RayTracingShaderProgram> rays;
-    Owner<PipelineLayout> layout;
+    PipelineLayout layout;
     Owner<RenderPass> pass;
     ShaderModuleCreateInfo moduleInfo;
     GraphicsShaderProgramCreateInfo graphicsInfo;
@@ -326,7 +389,7 @@ void TestUnfinalizedDescriptionsNeverReachVulkan()
     ExpectUnfinalizedFailure([&] { graphics.value.Create(graphicsInfo); });
     ExpectUnfinalizedFailure([&] { compute.value.Create(computeInfo); });
     ExpectUnfinalizedFailure([&] { rays.value.Create(rayInfo); });
-    ExpectUnfinalizedFailure([&] { layout.value.Create(layoutInfo); });
+    ExpectUnfinalizedFailure([&] { MyDevice::GetInstance().GetOrCreatePipelineLayout(layout, layoutInfo); });
     ExpectUnfinalizedFailure([&] { pass.value.Create(passInfo); });
     CHECK_TRUE(environment.state.calls == 0, "Unfinalized runtime Create must reject before every native API!");
     CHECK_TRUE(!moduleInfo.IsFinalized() && !graphicsInfo.IsFinalized() && !computeInfo.IsFinalized() &&
@@ -377,13 +440,18 @@ void TestSparseLayoutNativeSnapshotAndFailureRetry()
     reflection.Create({entry});
     PipelineLayoutCreateInfo info;
     info.SetReflection(reflection).Finalize();
-    Owner<PipelineLayout> layout;
+    PipelineLayout layout;
     environment.state.failLayout = true;
-    ExpectFailure([&] { layout.value.Create(info); });
-    CHECK_TRUE(layout.value.GetVkPipelineLayout() == VK_NULL_HANDLE && layout.value.GetVkDescriptorBindings().empty() &&
-        layout.value.GetVkPushConstantRanges().empty(), "Failed native layout creation must not publish partial runtime metadata!");
+    ExpectFailure([&] { MyDevice::GetInstance().GetOrCreatePipelineLayout(layout, info); });
+    CHECK_TRUE(layout.GetVkPipelineLayout() == VK_NULL_HANDLE && layout.GetVkDescriptorBindings().empty() &&
+        layout.GetVkPushConstantRanges().empty(), "Failed native layout creation must not publish partial runtime metadata!");
+    const auto children = environment.state.bindings;
+    CHECK_TRUE(children.size() == 2 && environment.state.descriptorDestroys == 0,
+        "Outer creation failure must retain cached children, including the shared sparse empty layout!");
     environment.state.failLayout = false;
-    layout.value.Create(info);
+    MyDevice::GetInstance().GetOrCreatePipelineLayout(layout, info);
+    CHECK_TRUE(environment.state.bindings.size() == children.size() && environment.state.descriptorCreates == 2,
+        "Retry must reuse children published before the outer creation failed!");
     info.Reset();
     const auto& sets = environment.state.layoutSets;
     CHECK_TRUE(environment.state.layoutCreates == 2 && sets.size() == 3 &&
@@ -397,17 +465,200 @@ void TestSparseLayoutNativeSnapshotAndFailureRetry()
     CHECK_TRUE(ranges.size() == 1 && ranges[0].offset == 0 && ranges[0].size == 16 && ranges[0].stageFlags == VK_SHADER_STAGE_COMPUTE_BIT,
         "Native push constants must preserve reflected byte ranges and stages!");
     const std::pair<uint32_t, uint32_t> expected{2, 3};
-    CHECK_TRUE(layout.value.GetSetBinding("storage") == expected && layout.value.GetVkDescriptorBindings().size() == 3 &&
-        layout.value.GetVkDescriptorBindings()[2].at(3).descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
-        layout.value.GetVkPushConstantRanges()[0].size == 16 &&
-        layout.value.GetDescriptorSetLayout(2).GetVkDescriptorSetLayout() == sets[2],
+    CHECK_TRUE(layout.GetSetBinding("storage") == expected && layout.GetVkDescriptorBindings().size() == 3 &&
+        layout.GetVkDescriptorBindings()[2].at(3).descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
+        layout.GetVkPushConstantRanges()[0].size == 16 &&
+        layout.GetDescriptorSetLayout(2).GetVkDescriptorSetLayout() == sets[2],
         "Runtime layout metadata must survive resetting its source description!");
     PipelineLayoutCreateInfo tooLarge;
     tooLarge.AddPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, 0, 132).Finalize();
-    Owner<PipelineLayout> rejected;
+    PipelineLayout rejected;
     const auto calls = environment.state.calls;
-    ExpectFailure([&] { rejected.value.Create(tooLarge); });
+    ExpectFailure([&] { MyDevice::GetInstance().GetOrCreatePipelineLayout(rejected, tooLarge); });
     CHECK_TRUE(environment.state.calls == calls, "Cached device push constant limits must be checked before native calls!");
+}
+
+void TestLayoutCacheAndIndependentMetadata()
+{
+    NativeEnvironment environment;
+    auto& device = MyDevice::GetInstance();
+    auto makeInfo = [](const char* name) -> PipelineLayoutCreateInfo
+    {
+        ShaderEntryReflection entry{};
+        entry.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        entry.descriptors.push_back({name, 0, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1});
+        ShaderProgramReflection reflection;
+        reflection.Create({entry});
+        PipelineLayoutCreateInfo info;
+        info.SetReflection(reflection).Finalize();
+        return info;
+    };
+    auto info = makeInfo("first");
+    PipelineLayout first, second;
+    device.GetOrCreatePipelineLayout(first, info);
+    info.AddPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, 0, 16);
+    const auto otherInfo = makeInfo("second");
+    device.GetOrCreatePipelineLayout(second, otherInfo);
+    PipelineLayout afterSourceDestruction;
+    {
+        auto transientInfo = makeInfo("temporary");
+        device.GetOrCreatePipelineLayout(afterSourceDestruction, transientInfo);
+    }
+    CHECK_TRUE(first.GetVkPipelineLayout() == second.GetVkPipelineLayout() && environment.state.layoutCreates == 1,
+        "Reflection names must not participate in native cache identity!");
+    CHECK_TRUE(first.GetSetBinding("first") == second.GetSetBinding("second"),
+        "Each wrapper must retain its own names after input mutation!");
+    CHECK_TRUE(afterSourceDestruction.GetSetBinding("temporary").second == 3 &&
+        afterSourceDestruction.GetVkPipelineLayout() == first.GetVkPipelineLayout(),
+        "A wrapper must retain its owned metadata after its entire source description is destroyed!");
+    ExpectFailure([&] { first.GetSetBinding("second"); });
+    ExpectFailure([&] { second.GetSetBinding("first"); });
+    ExpectFailure([&] { first.GetDescriptorSetLayout(1); });
+    const auto handle = first.GetVkPipelineLayout();
+    const auto calls = environment.state.calls;
+    ExpectFailure([&] { device.GetOrCreatePipelineLayout(first, otherInfo); });
+    CHECK_TRUE(first.GetVkPipelineLayout() == handle && first.GetSetBinding("first").second == 3 &&
+        calls == environment.state.calls, "Nonempty targets must be rejected unchanged before native calls!");
+
+    {
+        PipelineLayout copied(first), assigned;
+        assigned = second;
+        PipelineLayout moved(std::move(copied)), moveAssigned;
+        moveAssigned = std::move(assigned);
+        first = {};
+        CHECK_TRUE(moved.GetSetBinding("first").second == 3 && moveAssigned.GetSetBinding("second").second == 3 &&
+            moved.GetVkPipelineLayout() == handle && moveAssigned.GetVkPipelineLayout() == handle &&
+            first.GetVkPipelineLayout() == VK_NULL_HANDLE && first.GetVkDescriptorBindings().empty(),
+            "Copied and moved targets must own metadata independently of cleared wrappers!");
+    }
+    CHECK_TRUE(environment.state.calls == calls && environment.state.layoutDestroys == 0,
+        "Wrapper copy, move, clearing and destruction must never access native resources!");
+
+    PipelineLayoutCreateInfo emptyInfo;
+    emptyInfo.Finalize();
+    PipelineLayout empty, emptyAgain;
+    device.GetOrCreatePipelineLayout(empty, emptyInfo);
+    device.GetOrCreatePipelineLayout(emptyAgain, emptyInfo);
+    CHECK_TRUE(empty.GetVkPipelineLayout() != VK_NULL_HANDLE && empty.GetVkPipelineLayout() == emptyAgain.GetVkPipelineLayout() &&
+        empty.GetVkDescriptorBindings().empty(), "Empty layouts must be valid cached objects!");
+    info.Finalize();
+    PipelineLayout withPush;
+    device.GetOrCreatePipelineLayout(withPush, info);
+    CHECK_TRUE(withPush.GetVkPipelineLayout() != handle, "Push constants must affect native cache identity!");
+    for (const auto& range : std::vector<VkPushConstantRange>{
+        {VK_SHADER_STAGE_VERTEX_BIT, 0, 16}, {VK_SHADER_STAGE_COMPUTE_BIT, 4, 16}, {VK_SHADER_STAGE_COMPUTE_BIT, 0, 20}})
+    {
+        PipelineLayoutCreateInfo changed;
+        DescriptorSetLayoutCreateInfo set;
+        set.SetBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+        changed.AddDescriptorSetLayout(set).AddPushConstantRange(range.stageFlags, range.offset, range.size).Finalize();
+        PipelineLayout value;
+        device.GetOrCreatePipelineLayout(value, changed);
+        CHECK_TRUE(value.GetVkPipelineLayout() != withPush.GetVkPipelineLayout(),
+            "Every push constant field must affect native identity!");
+    }
+    CHECK_TRUE(environment.state.liveLayouts.size() == 6, "Each distinct native description must be cached separately!");
+
+    ShaderEntryReflection ambiguousEntry{};
+    ambiguousEntry.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    ambiguousEntry.descriptors.push_back({"duplicate", 0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1});
+    ambiguousEntry.descriptors.push_back({"duplicate", 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1});
+    ShaderProgramReflection ambiguousReflection;
+    ambiguousReflection.Create({ambiguousEntry});
+    PipelineLayoutCreateInfo ambiguousInfo;
+    ambiguousInfo.SetReflection(ambiguousReflection).Finalize();
+    PipelineLayout ambiguous;
+    device.GetOrCreatePipelineLayout(ambiguous, ambiguousInfo);
+    ambiguousInfo.Reset();
+    ExpectFailure([&] { ambiguous.GetSetBinding("duplicate"); });
+    ExpectFailure([&] { ambiguous.GetSetBinding("missing"); });
+    CHECK_TRUE(ambiguous.GetVkPipelineLayout() != handle, "Different set layouts must produce independent pipeline layouts!");
+
+    const auto live = environment.state.liveLayouts.size();
+    auto allocator = CreateInfoFinalizeTestProbe::ExchangeLayouts({});
+    allocator->Destroy();
+    allocator->Destroy();
+    allocator.reset();
+    CHECK_TRUE(environment.state.liveLayouts.empty() && environment.state.layoutDestroys == live,
+        "Cache teardown and repeated cleanup must release each successful native creation exactly once!");
+    const auto afterTeardown = environment.state.calls;
+    device.vkDevice = VK_NULL_HANDLE;
+    second = {}; withPush = {}; ambiguous = {};
+    CHECK_TRUE(environment.state.calls == afterTeardown && environment.state.layoutDestroys == live,
+        "Surviving borrowed wrappers must clear without accessing a destroyed cache or device!");
+}
+
+void TestLayoutCreationDependenciesAndChildFailure()
+{
+    NativeEnvironment environment;
+    auto& device = MyDevice::GetInstance();
+    PipelineLayoutCreateInfo info;
+    DescriptorSetLayoutCreateInfo set;
+    set.SetBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
+    info.AddDescriptorSetLayout(set).Finalize();
+    PipelineLayout target;
+    const auto calls = environment.state.calls;
+    const auto nativeDevice = device.vkDevice;
+    device.vkDevice = VK_NULL_HANDLE;
+    ExpectFailure([&] { device.GetOrCreatePipelineLayout(target, info); });
+    device.vkDevice = nativeDevice;
+    auto layouts = CreateInfoFinalizeTestProbe::ExchangeLayouts({});
+    ExpectFailure([&] { device.GetOrCreatePipelineLayout(target, info); });
+    CreateInfoFinalizeTestProbe::ExchangeLayouts(std::make_unique<PipelineLayoutAllocator>());
+    ExpectFailure([&] { device.GetOrCreatePipelineLayout(target, info); });
+    CreateInfoFinalizeTestProbe::ExchangeLayouts(std::move(layouts));
+    auto descriptors = CreateInfoFinalizeTestProbe::ExchangeDescriptors({});
+    ExpectFailure([&] { device.GetOrCreatePipelineLayout(target, info); });
+    CreateInfoFinalizeTestProbe::ExchangeDescriptors(std::make_unique<DescriptorSetLayoutAllocator>());
+    ExpectFailure([&] { device.GetOrCreatePipelineLayout(target, info); });
+    CreateInfoFinalizeTestProbe::ExchangeDescriptors(std::move(descriptors));
+    CHECK_TRUE(environment.state.calls == calls && target.GetVkPipelineLayout() == VK_NULL_HANDLE &&
+        target.GetVkDescriptorBindings().empty(), "Missing or uninitialized dependencies must fail before any native creation!");
+    environment.state.failDescriptor = true;
+    ExpectFailure([&] { device.GetOrCreatePipelineLayout(target, info); });
+    CHECK_TRUE(environment.state.layoutCreates == 0 && target.GetVkDescriptorBindings().empty() &&
+        target.GetVkPipelineLayout() == VK_NULL_HANDLE, "Child creation failure must not publish partial metadata!");
+    environment.state.failDescriptor = false;
+    device.GetOrCreatePipelineLayout(target, info);
+    CHECK_TRUE(target.GetVkPipelineLayout() != VK_NULL_HANDLE && environment.state.descriptorCreates == 2,
+        "The same input and target must support retry after child failure!");
+}
+
+void TestLayoutCachePublicationRollback()
+{
+#if defined(_MSC_VER) && defined(_DEBUG)
+    NativeEnvironment environment;
+    auto& device = MyDevice::GetInstance();
+    PipelineLayoutCreateInfo existingInfo;
+    existingInfo.Finalize();
+    PipelineLayout existing;
+    device.GetOrCreatePipelineLayout(existing, existingInfo);
+    const auto handle = existing.GetVkPipelineLayout();
+    PipelineLayoutCreateInfo info;
+    DescriptorSetLayoutCreateInfo set;
+    set.SetBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+    info.AddDescriptorSetLayout(set).Finalize();
+    PipelineLayout target;
+    bool failed = false;
+    environment.state.failLayoutPublication = true;
+    {
+        LayoutAllocationFailureScope failureScope;
+        try { device.GetOrCreatePipelineLayout(target, info); }
+        catch (const std::bad_alloc&) { failed = true; }
+    }
+    CHECK_TRUE(failed && target.GetVkPipelineLayout() == VK_NULL_HANDLE && target.GetVkDescriptorBindings().empty() &&
+        environment.state.layoutCreates == 2 && environment.state.layoutDestroys == 1 &&
+        environment.state.liveLayouts.size() == 1 && environment.state.liveLayouts.contains(handle) &&
+        environment.state.bindings.size() == 1 && environment.state.descriptorDestroys == 0,
+        "Publication failure must destroy only the new native layout, retain cached children and leave its target empty!");
+    environment.state.failLayoutPublication = false;
+    device.GetOrCreatePipelineLayout(target, info);
+    PipelineLayout cached;
+    device.GetOrCreatePipelineLayout(cached, existingInfo);
+    CHECK_TRUE(environment.state.descriptorCreates == 1 && environment.state.layoutCreates == 3 &&
+        target.GetVkPipelineLayout() != handle && cached.GetVkPipelineLayout() == handle,
+        "Publication failure must allow retry and preserve existing cache entries!");
+#endif
 }
 
 void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
@@ -524,6 +775,9 @@ void RunCreateInfoFinalizeTests()
     TestUnfinalizedDescriptionsNeverReachVulkan();
     TestShaderModuleOwnsFinalizedCodeAndEntryNames();
     TestSparseLayoutNativeSnapshotAndFailureRetry();
+    TestLayoutCacheAndIndependentMetadata();
+    TestLayoutCreationDependenciesAndChildFailure();
+    TestLayoutCachePublicationRollback();
     TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures();
     TestRenderPassNativeFailureDoesNotConsumeFinalizedInfo();
 }

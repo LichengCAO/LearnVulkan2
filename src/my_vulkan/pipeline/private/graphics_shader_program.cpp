@@ -438,7 +438,7 @@ void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo& inCrea
 	{
 		const auto& data = *inCreateInfo.m_finalized;
 		ShaderDetail::CreateStages(data.shaders, m_shaderModules, m_shaderStages);
-		m_pipelineLayout.Create(data.layout);
+		MyDevice::GetInstance().GetOrCreatePipelineLayout(m_pipelineLayout, data.layout);
 		_CreateDefaults(inCreateInfo);
 	}
 	catch (...)
@@ -600,7 +600,7 @@ void GraphicsShaderProgram::Destroy()
 	}
 	m_shaderStages.clear();
 	m_shaderModules.clear();
-	m_pipelineLayout.Destroy();
+	m_pipelineLayout = {};
 }
 
 auto GraphicsShaderProgram::GetLayout() const -> const PipelineLayout&
