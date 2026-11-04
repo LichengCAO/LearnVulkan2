@@ -22,6 +22,7 @@ public:
 
 private:
 	std::unordered_map<std::string, GroupData> m_groups;
+	friend class MyDevice;
 	friend class RayTracingShaderProgram;
 
 public:
@@ -93,9 +94,11 @@ public:
 
 class RayTracingShaderProgram
 {
+	friend class MyDevice;
 	friend class CommandBuffer;
 private:
 	void _Create(const RayTracingShaderProgramCreateInfo& inCreateInfo);
+	void _Destroy();
 
 public:
 	RayTracingShaderProgram();
@@ -109,13 +112,10 @@ private:
 
 public:
 	~RayTracingShaderProgram();
-
-	// Not yet migrated to independent-instance concurrent creation. Callers
-	// coordinate Create/Destroy and all other accesses to the same Device caches
-	// and dependencies; Create shares descriptor-layout and pipeline-layout caches.
-	void Create(const RayTracingShaderProgramCreateInfo& inCreateInfo);
-
-	void Destroy();
+	RayTracingShaderProgram(const RayTracingShaderProgram&) = delete;
+	auto operator=(const RayTracingShaderProgram&) -> RayTracingShaderProgram& = delete;
+	RayTracingShaderProgram(RayTracingShaderProgram&&) = delete;
+	auto operator=(RayTracingShaderProgram&&) -> RayTracingShaderProgram& = delete;
 
 	// Size of total shader group stored in this pipeline;
 	// This may not equal to number of shaders we add to this pipeline.

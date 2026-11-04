@@ -14,6 +14,7 @@ public:
 	~GraphicsPipelineAllocator();
 
 	void Create(VkDevice inDevice);
+	auto IsCreated() const noexcept -> bool { return m_vkDevice != VK_NULL_HANDLE; }
 	auto AllocateGraphicsPipelineWithResult(
 		const VkGraphicsPipelineCreateInfo& inCreateInfo,
 		VkPipelineCache inCache) -> std::pair<VkPipeline, VkResult>;
@@ -38,6 +39,7 @@ public:
 	~ComputePipelineAllocator();
 
 	void Create(VkDevice inDevice);
+	auto IsCreated() const noexcept -> bool { return m_vkDevice != VK_NULL_HANDLE; }
 	auto AllocateComputePipelineWithResult(
 		const VkComputePipelineCreateInfo& inCreateInfo,
 		VkPipelineCache inCache) -> std::pair<VkPipeline, VkResult>;
@@ -62,6 +64,7 @@ public:
 	~RayTracingPipelineAllocator();
 
 	void Create(VkDevice inDevice);
+	auto IsCreated() const noexcept -> bool { return m_vkDevice != VK_NULL_HANDLE; }
 	auto AllocateRayTracingPipelineWithResult(
 		const VkRayTracingPipelineCreateInfoKHR& inCreateInfo,
 		VkPipelineCache inCache,

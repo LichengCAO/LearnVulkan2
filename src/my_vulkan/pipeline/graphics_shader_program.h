@@ -36,8 +36,11 @@ public:
 
 class GraphicsShaderProgram final
 {
+	friend class MyDevice;
 	friend class CommandBuffer;
 private:
+	void _Create(const GraphicsShaderProgramCreateInfo& inInfo);
+	void _Destroy();
 	std::vector<std::unique_ptr<ShaderModule>> m_shaderModules;
 	std::vector<VkPipelineShaderStageCreateInfo> m_shaderStages;
 	PipelineLayout m_pipelineLayout;
@@ -60,12 +63,13 @@ private:
 public:
 	GraphicsShaderProgram();
 	~GraphicsShaderProgram();
+	GraphicsShaderProgram(const GraphicsShaderProgram&) = delete;
+	auto operator=(const GraphicsShaderProgram&) -> GraphicsShaderProgram& = delete;
+	GraphicsShaderProgram(GraphicsShaderProgram&&) = delete;
+	auto operator=(GraphicsShaderProgram&&) -> GraphicsShaderProgram& = delete;
 
-	// Not yet migrated to independent-instance concurrent creation. Callers
-	// coordinate Create/Destroy, lazy GetVkPipeline and all other accesses to the
-	// same Device caches and dependencies. Create shares both layout caches.
-	void Create(const GraphicsShaderProgramCreateInfo& inCreateInfo);
-	void Destroy();
+	// MyDevice creates this object synchronously. Callers serialize this instance,
+	// its lazy GetVkPipeline calls and related shared cache/dependency accesses.
 	auto GetLayout() const -> const PipelineLayout&;
 	auto GetDefaultRenderPass() const -> const RenderPass&;
 	auto GetVkPipeline(const GraphicsPipelineStateInfo& inStateInfo)->VkPipeline;

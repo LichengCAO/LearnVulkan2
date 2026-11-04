@@ -18,6 +18,28 @@
 #endif
 
 static_assert(std::is_nothrow_move_assignable_v<PipelineLayout>);
+static_assert(!std::is_copy_constructible_v<ComputeShaderProgram> && !std::is_copy_assignable_v<ComputeShaderProgram>);
+static_assert(!std::is_move_constructible_v<ComputeShaderProgram> && !std::is_move_assignable_v<ComputeShaderProgram>);
+template<class T>
+concept HasPublicComputeCreate = requires(T& value, const ComputeShaderProgramCreateInfo& info) { value.Create(info); };
+template<class T>
+concept HasPublicGraphicsCreate = requires(T& value, const GraphicsShaderProgramCreateInfo& info) { value.Create(info); };
+template<class T>
+concept HasPublicRayTracingCreate = requires(T& value, const RayTracingShaderProgramCreateInfo& info) { value.Create(info); };
+template<class T>
+concept HasPublicDestroy = requires(T& value) { value.Destroy(); };
+template<class T>
+concept HasPublicReset = requires(T& value) { value.Reset(); };
+static_assert(!HasPublicComputeCreate<ComputeShaderProgram> && !HasPublicDestroy<ComputeShaderProgram> &&
+    !HasPublicReset<ComputeShaderProgram>);
+static_assert(!std::is_copy_constructible_v<GraphicsShaderProgram> && !std::is_copy_assignable_v<GraphicsShaderProgram> &&
+    !std::is_move_constructible_v<GraphicsShaderProgram> && !std::is_move_assignable_v<GraphicsShaderProgram>);
+static_assert(!std::is_copy_constructible_v<RayTracingShaderProgram> && !std::is_copy_assignable_v<RayTracingShaderProgram> &&
+    !std::is_move_constructible_v<RayTracingShaderProgram> && !std::is_move_assignable_v<RayTracingShaderProgram>);
+static_assert(!HasPublicGraphicsCreate<GraphicsShaderProgram> && !HasPublicDestroy<GraphicsShaderProgram> &&
+    !HasPublicReset<GraphicsShaderProgram>);
+static_assert(!HasPublicRayTracingCreate<RayTracingShaderProgram> && !HasPublicDestroy<RayTracingShaderProgram> &&
+    !HasPublicReset<RayTracingShaderProgram>);
 
 struct CreateInfoFinalizeTestProbe
 {
@@ -39,6 +61,56 @@ struct CreateInfoFinalizeTestProbe
         auto previous = std::move(allocator);
         allocator = std::move(replacement);
         return previous;
+    }
+    static auto ExchangeCompute(std::unique_ptr<ComputePipelineAllocator> replacement)
+        -> std::unique_ptr<ComputePipelineAllocator>
+    {
+        auto& allocator = MyDevice::GetInstance().m_uptrComputePipelineAllocator;
+        auto previous = std::move(allocator);
+        allocator = std::move(replacement);
+        return previous;
+    }
+    static auto ExchangeGraphics(std::unique_ptr<GraphicsPipelineAllocator> replacement)
+        -> std::unique_ptr<GraphicsPipelineAllocator>
+    {
+        auto& allocator = MyDevice::GetInstance().m_uptrGraphicsPipelineAllocator;
+        auto previous = std::move(allocator);
+        allocator = std::move(replacement);
+        return previous;
+    }
+    static auto ExchangeRayTracing(std::unique_ptr<RayTracingPipelineAllocator> replacement)
+        -> std::unique_ptr<RayTracingPipelineAllocator>
+    {
+        auto& allocator = MyDevice::GetInstance().m_uptrRayTracingPipelineAllocator;
+        auto previous = std::move(allocator);
+        allocator = std::move(replacement);
+        return previous;
+    }
+    static auto EmptyComputeDestructionLeavesDeviceAbsent() -> bool
+    {
+        auto previous = std::move(MyDevice::s_uptrInstance);
+        { ComputeShaderProgram empty; }
+        const auto untouched = MyDevice::s_uptrInstance == nullptr;
+        MyDevice::s_uptrInstance = std::move(previous);
+        return untouched;
+    }
+    static auto EmptyProgramDestructionLeavesDeviceAbsent() -> bool
+    {
+        auto previous = std::move(MyDevice::s_uptrInstance);
+        { GraphicsShaderProgram empty; RayTracingShaderProgram emptyRay; }
+        const auto untouched = MyDevice::s_uptrInstance == nullptr;
+        MyDevice::s_uptrInstance = std::move(previous);
+        return untouched;
+    }
+    static void SetPushConstantLimit(uint32_t value)
+    {
+        MyDevice::GetInstance().m_cachedPhysicalDeviceProperties.limits.maxPushConstantsSize = value;
+    }
+    static void SetRayHandleProperties(uint32_t size, uint32_t alignment)
+    {
+        auto& properties = MyDevice::GetInstance().m_cachedRayTracingProperties;
+        properties.shaderGroupHandleSize = size;
+        properties.shaderGroupHandleAlignment = alignment;
     }
 
     // Keep the real allocator implementations while replacing singleton dependencies.
@@ -136,6 +208,10 @@ struct NativeState final
     uint32_t calls = 0, moduleCreates = 0, moduleDestroys = 0;
     uint32_t layoutCreates = 0, computeCreates = 0, graphicsCreates = 0, rayCreates = 0, groupReads = 0, passCreates = 0;
     uint32_t descriptorCreates = 0, descriptorDestroys = 0, layoutDestroys = 0;
+    uint32_t pipelineDestroys = 0;
+    std::set<VkPipeline> livePipelines;
+    std::set<VkShaderModule> liveModules;
+    VkPipelineCache computePipelineCache = VK_NULL_HANDLE;
     bool failDescriptor = false;
     bool failLayoutPublication = false;
     std::set<VkPipelineLayout> liveLayouts;
@@ -162,9 +238,14 @@ auto VKAPI_PTR CreateModule(VkDevice, const VkShaderModuleCreateInfo* info, cons
     nativeState->shaderCode.emplace_back(info->pCode, info->pCode + info->codeSize / sizeof(uint32_t));
     if (nativeState->failModule) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *output = CreateInfoFinalizeTestProbe::Handle<VkShaderModule>(nativeState->nextHandle++);
+    nativeState->liveModules.insert(*output);
     return VK_SUCCESS;
 }
-void VKAPI_PTR DestroyModule(VkDevice, VkShaderModule, const VkAllocationCallbacks*) { ++nativeState->moduleDestroys; }
+void VKAPI_PTR DestroyModule(VkDevice, VkShaderModule module, const VkAllocationCallbacks*)
+{
+    CHECK_TRUE(nativeState->liveModules.erase(module) == 1, "Shader modules must be destroyed exactly once!");
+    ++nativeState->moduleDestroys;
+}
 auto VKAPI_PTR CreateDescriptorLayout(VkDevice, const VkDescriptorSetLayoutCreateInfo* info,
     const VkAllocationCallbacks*, VkDescriptorSetLayout* output) -> VkResult
 {
@@ -208,14 +289,16 @@ void CaptureStages(uint32_t count, const VkPipelineShaderStageCreateInfo* stages
     for (uint32_t index = 0; index < count; ++index)
         nativeState->stages.push_back({stages[index].stage, stages[index].module, stages[index].pName});
 }
-auto VKAPI_PTR CreateCompute(VkDevice, VkPipelineCache, uint32_t count, const VkComputePipelineCreateInfo* info,
+auto VKAPI_PTR CreateCompute(VkDevice, VkPipelineCache cache, uint32_t count, const VkComputePipelineCreateInfo* info,
     const VkAllocationCallbacks*, VkPipeline* output) -> VkResult
 {
     ++nativeState->calls; ++nativeState->computeCreates;
     CHECK_TRUE(count == 1 && info->layout != VK_NULL_HANDLE, "Compute creation must have a native layout!");
     CaptureStages(1, &info->stage);
+    nativeState->computePipelineCache = cache;
     if (nativeState->failCompute) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *output = CreateInfoFinalizeTestProbe::Handle<VkPipeline>(nativeState->nextHandle++);
+    nativeState->livePipelines.insert(*output);
     return VK_SUCCESS;
 }
 auto VKAPI_PTR CreateGraphics(VkDevice, VkPipelineCache, uint32_t count, const VkGraphicsPipelineCreateInfo* info,
@@ -233,6 +316,7 @@ auto VKAPI_PTR CreateGraphics(VkDevice, VkPipelineCache, uint32_t count, const V
         nativeState->vertexAttributes.push_back(input.pVertexAttributeDescriptions[index]);
     if (nativeState->failGraphics) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *output = CreateInfoFinalizeTestProbe::Handle<VkPipeline>(nativeState->nextHandle++);
+    nativeState->livePipelines.insert(*output);
     return VK_SUCCESS;
 }
 auto VKAPI_PTR CreateRay(VkDevice, VkDeferredOperationKHR, VkPipelineCache, uint32_t count,
@@ -245,6 +329,7 @@ auto VKAPI_PTR CreateRay(VkDevice, VkDeferredOperationKHR, VkPipelineCache, uint
     nativeState->recursionDepth = info->maxPipelineRayRecursionDepth;
     if (nativeState->failRay) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *output = CreateInfoFinalizeTestProbe::Handle<VkPipeline>(nativeState->nextHandle++);
+    nativeState->livePipelines.insert(*output);
     return VK_SUCCESS;
 }
 auto VKAPI_PTR GetGroups(VkDevice, VkPipeline, uint32_t, uint32_t count, size_t size, void* data) -> VkResult
@@ -256,7 +341,11 @@ auto VKAPI_PTR GetGroups(VkDevice, VkPipeline, uint32_t, uint32_t count, size_t 
         std::memset(static_cast<uint8_t*>(data) + index * 8, 0x5a + index, 8);
     return VK_SUCCESS;
 }
-void VKAPI_PTR DestroyPipeline(VkDevice, VkPipeline, const VkAllocationCallbacks*) {}
+void VKAPI_PTR DestroyPipeline(VkDevice, VkPipeline pipeline, const VkAllocationCallbacks*)
+{
+    CHECK_TRUE(nativeState->livePipelines.erase(pipeline) == 1, "Pipelines must be destroyed exactly once!");
+    ++nativeState->pipelineDestroys;
+}
 auto VKAPI_PTR CreatePass(VkDevice, const VkRenderPassCreateInfo* info, const VkAllocationCallbacks*, VkRenderPass* output) -> VkResult
 {
     ++nativeState->calls; ++nativeState->passCreates;
@@ -372,9 +461,9 @@ void TestUnfinalizedDescriptionsNeverReachVulkan()
 {
     NativeEnvironment environment;
     Owner<ShaderModule> module;
-    Owner<GraphicsShaderProgram> graphics;
-    Owner<ComputeShaderProgram> compute;
-    Owner<RayTracingShaderProgram> rays;
+    GraphicsShaderProgram graphics;
+    ComputeShaderProgram compute;
+    RayTracingShaderProgram rays;
     PipelineLayout layout;
     Owner<RenderPass> pass;
     ShaderModuleCreateInfo moduleInfo;
@@ -386,9 +475,9 @@ void TestUnfinalizedDescriptionsNeverReachVulkan()
     // Valid host-only descriptions expose accidental implicit Finalize too.
     passInfo.AddSubpass("main", SubpassDescription{});
     ExpectUnfinalizedFailure([&] { module.value.Create(moduleInfo); });
-    ExpectUnfinalizedFailure([&] { graphics.value.Create(graphicsInfo); });
-    ExpectUnfinalizedFailure([&] { compute.value.Create(computeInfo); });
-    ExpectUnfinalizedFailure([&] { rays.value.Create(rayInfo); });
+    ExpectUnfinalizedFailure([&] { MyDevice::GetInstance().CreateGraphicsShaderProgram(graphics, graphicsInfo); });
+    ExpectUnfinalizedFailure([&] { MyDevice::GetInstance().CreateComputeShaderProgram(compute, computeInfo); });
+    ExpectUnfinalizedFailure([&] { MyDevice::GetInstance().CreateRayTracingShaderProgram(rays, rayInfo); });
     ExpectUnfinalizedFailure([&] { MyDevice::GetInstance().GetOrCreatePipelineLayout(layout, layoutInfo); });
     ExpectUnfinalizedFailure([&] { pass.value.Create(passInfo); });
     CHECK_TRUE(environment.state.calls == 0, "Unfinalized runtime Create must reject before every native API!");
@@ -661,6 +750,177 @@ void TestLayoutCachePublicationRollback()
 #endif
 }
 
+void TestComputeCreationDependencies()
+{
+    CHECK_TRUE(CreateInfoFinalizeTestProbe::EmptyComputeDestructionLeavesDeviceAbsent(),
+        "An empty Compute Program must not obtain or initialize the Device during destruction!");
+    CHECK_TRUE(CreateInfoFinalizeTestProbe::EmptyProgramDestructionLeavesDeviceAbsent(),
+        "Empty Graphics and RayTracing Programs must not obtain or initialize the Device during destruction!");
+    NativeEnvironment environment;
+    ShaderFiles files;
+    const auto file = files.Write("dependencies.comp", "#version 450\nlayout(local_size_x=1) in; "
+        "layout(set=2,binding=3) buffer Data { uint value; } data; "
+        "layout(push_constant) uniform Push { uint increment; } pushData; "
+        "void main(){ data.value += pushData.increment; }\n");
+    ComputeShaderProgramCreateInfo info;
+    info.SetShader(file).Finalize();
+    auto& device = MyDevice::GetInstance();
+    ComputeShaderProgram target;
+    const auto calls = environment.state.calls;
+    const auto nativeDevice = device.vkDevice;
+    device.vkDevice = VK_NULL_HANDLE;
+    ExpectFailure([&] { device.CreateComputeShaderProgram(target, info); });
+    device.vkDevice = nativeDevice;
+    auto descriptors = CreateInfoFinalizeTestProbe::ExchangeDescriptors({});
+    ExpectFailure([&] { device.CreateComputeShaderProgram(target, info); });
+    CreateInfoFinalizeTestProbe::ExchangeDescriptors(std::make_unique<DescriptorSetLayoutAllocator>());
+    ExpectFailure([&] { device.CreateComputeShaderProgram(target, info); });
+    CreateInfoFinalizeTestProbe::ExchangeDescriptors(std::move(descriptors));
+    auto layouts = CreateInfoFinalizeTestProbe::ExchangeLayouts({});
+    ExpectFailure([&] { device.CreateComputeShaderProgram(target, info); });
+    CreateInfoFinalizeTestProbe::ExchangeLayouts(std::make_unique<PipelineLayoutAllocator>());
+    ExpectFailure([&] { device.CreateComputeShaderProgram(target, info); });
+    CreateInfoFinalizeTestProbe::ExchangeLayouts(std::move(layouts));
+    auto compute = CreateInfoFinalizeTestProbe::ExchangeCompute({});
+    ExpectFailure([&] { device.CreateComputeShaderProgram(target, info); });
+    CreateInfoFinalizeTestProbe::ExchangeCompute(std::make_unique<ComputePipelineAllocator>());
+    ExpectFailure([&] { device.CreateComputeShaderProgram(target, info); });
+    CreateInfoFinalizeTestProbe::ExchangeCompute(std::move(compute));
+    CHECK_TRUE(environment.state.calls == calls && target.GetVkPipeline() == VK_NULL_HANDLE &&
+        target.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE,
+        "Missing or uninitialized dependencies must be rejected before every native call and leave the target empty!");
+
+    const auto limits = device.GetCachedPhysicalDeviceProperties().limits;
+    // DeviceScope owns the mutable cached properties; lower the test device limit.
+    CreateInfoFinalizeTestProbe::SetPushConstantLimit(0);
+    ExpectFailure([&] { device.CreateComputeShaderProgram(target, info); });
+    CreateInfoFinalizeTestProbe::SetPushConstantLimit(limits.maxPushConstantsSize);
+    CHECK_TRUE(environment.state.calls == calls, "Invalid device push constant sizes must fail before shader creation!");
+
+    device.CreateComputeShaderProgram(target, info);
+    const auto pipeline = target.GetVkPipeline();
+    const auto layout = target.GetLayout().GetVkPipelineLayout();
+    const auto createdCalls = environment.state.calls;
+    ExpectFailure([&] { device.CreateComputeShaderProgram(target, info); });
+    ComputeShaderProgramCreateInfo unfinalized;
+    ExpectUnfinalizedFailure([&] { device.CreateComputeShaderProgram(target, unfinalized); });
+    CHECK_TRUE(environment.state.calls == createdCalls && target.GetVkPipeline() == pipeline &&
+        target.GetLayout().GetVkPipelineLayout() == layout && target.GetLayout().GetSetBinding("data").first == 2,
+        "Rejecting recreation must preserve an existing Program and its reflection without native calls!");
+}
+
+void TestComputeCreationFailureStagesAndRetry()
+{
+    ShaderFiles files;
+    const auto baselineFile = files.Write("baseline.comp", "#version 450\nlayout(local_size_x=1) in; void main() {}\n");
+    const auto file = files.Write("retry.comp", "#version 450\nlayout(local_size_x=1) in; "
+        "layout(set=2,binding=3) buffer Data { uint value; } data; void main(){ data.value = 1; }\n");
+    ComputeShaderProgramCreateInfo baselineInfo, info;
+    baselineInfo.SetShader(baselineFile).Finalize();
+    info.SetShader(file).Finalize();
+    CHECK_TRUE(std::filesystem::remove(baselineFile) && std::filesystem::remove(file),
+        "Retry tests must use finalized snapshots after removing source files!");
+    for (auto failure : {&NativeState::failModule, &NativeState::failDescriptor, &NativeState::failLayout, &NativeState::failCompute})
+    {
+        NativeEnvironment environment;
+        auto& device = MyDevice::GetInstance();
+        ComputeShaderProgram baseline, target;
+        device.CreateComputeShaderProgram(baseline, baselineInfo);
+        const auto pipeline = baseline.GetVkPipeline();
+        const auto layout = baseline.GetLayout().GetVkPipelineLayout();
+        environment.state.*failure = true;
+        ExpectFailure([&] { device.CreateComputeShaderProgram(target, info); });
+        CHECK_TRUE(target.GetVkPipeline() == VK_NULL_HANDLE && target.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE &&
+            target.GetLayout().GetVkDescriptorBindings().empty() && environment.state.liveModules.size() == 1 &&
+            environment.state.livePipelines.size() == 1 && environment.state.livePipelines.contains(pipeline) &&
+            environment.state.liveLayouts.contains(layout) && environment.state.pipelineDestroys == 0,
+            "Each failure must roll back temporary ownership, preserve existing caches and leave the output empty!");
+        const auto descriptors = environment.state.descriptorCreates;
+        const auto layouts = environment.state.layoutCreates;
+        environment.state.*failure = false;
+        device.CreateComputeShaderProgram(target, info);
+        CHECK_TRUE(target.GetVkPipeline() != VK_NULL_HANDLE && target.GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE &&
+            target.GetLayout().GetSetBinding("data") == std::make_pair(uint32_t{2}, uint32_t{3}) &&
+            target.GetLayout().GetVkDescriptorBindings().size() == 3 && environment.state.liveModules.size() == 2 &&
+            baseline.GetVkPipeline() == pipeline && baseline.GetLayout().GetVkPipelineLayout() == layout,
+            "Every creation stage must allow retry from the same finalized input and retain independent sparse reflection!");
+        if (failure == &NativeState::failCompute)
+        {
+            CHECK_TRUE(environment.state.descriptorCreates == descriptors && environment.state.layoutCreates == layouts,
+                "A failed Compute pipeline must leave published descriptor/layout entries available for retry!");
+        }
+    }
+}
+
+void TestComputeAutomaticLifetimeAndCacheOwnership()
+{
+    NativeEnvironment environment;
+    ShaderFiles files;
+    const auto file = files.Write("lifetime.comp", "#version 450\nlayout(local_size_x=1) in; "
+        "layout(set=1,binding=4) buffer Values { uint value; } values; void main(){ values.value = 1; }\n");
+    auto& device = MyDevice::GetInstance();
+    const auto cache = CreateInfoFinalizeTestProbe::Handle<VkPipelineCache>(99);
+    ComputeShaderProgramCreateInfo retryInfo;
+    retryInfo.SetShader(file).Finalize();
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    {
+        ComputeShaderProgram program;
+        {
+            ComputeShaderProgramCreateInfo info;
+            info.SetShader(file).CustomizePipelineCache(cache).Finalize();
+            device.CreateComputeShaderProgram(program, info);
+            info.Reset();
+        }
+        pipeline = program.GetVkPipeline();
+        CHECK_TRUE(program.GetLayout().GetSetBinding("values") == std::make_pair(uint32_t{1}, uint32_t{4}) &&
+            environment.state.computePipelineCache == cache && environment.state.liveModules.size() == 1,
+            "Published Compute ownership, reflection and pipeline cache selection must survive destruction of its input!");
+        // Reuse a live native module to exercise the existing allocator's exact-key hit.
+        const auto stage = environment.state.stages.front();
+        VkComputePipelineCreateInfo nativeInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        nativeInfo.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        nativeInfo.stage.stage = stage.stage;
+        nativeInfo.stage.module = stage.module;
+        nativeInfo.stage.pName = stage.entry.c_str();
+        nativeInfo.layout = program.GetLayout().GetVkPipelineLayout();
+        CHECK_TRUE(device.CreateComputePipeline(nativeInfo, cache) == pipeline && environment.state.computeCreates == 1,
+            "The migration must preserve existing compute cache hits!");
+    }
+    CHECK_TRUE(environment.state.liveModules.empty() && environment.state.moduleDestroys == 1 &&
+        environment.state.livePipelines.contains(pipeline) && environment.state.pipelineDestroys == 0 &&
+        environment.state.layoutDestroys == 0 && environment.state.descriptorDestroys == 0,
+        "Scope exit must release the owned shader and retain borrowed cached pipelines and layouts!");
+
+    const auto destroyed = environment.state.moduleDestroys;
+    ExpectFailure([&]
+    {
+        ComputeShaderProgram program;
+        device.CreateComputeShaderProgram(program, retryInfo);
+        throw std::runtime_error("Test exception after successful creation");
+    });
+    CHECK_TRUE(environment.state.liveModules.empty() && environment.state.moduleDestroys == destroyed + 1 &&
+        environment.state.pipelineDestroys == 0, "Exception unwinding must release only the Program's owned native resources!");
+    auto program = std::make_unique<ComputeShaderProgram>();
+    device.CreateComputeShaderProgram(*program, retryInfo);
+    program.reset();
+    CHECK_TRUE(environment.state.liveModules.empty() && environment.state.moduleDestroys == destroyed + 2 &&
+        environment.state.pipelineDestroys == 0, "unique_ptr reset must release a Compute Program without an explicit Destroy!");
+
+    const auto pipelines = environment.state.livePipelines.size();
+    const auto layouts = environment.state.liveLayouts.size();
+    const auto descriptors = environment.state.bindings.size();
+    auto computeAllocator = CreateInfoFinalizeTestProbe::ExchangeCompute({});
+    computeAllocator->Destroy(); computeAllocator->Destroy(); computeAllocator.reset();
+    auto layoutAllocator = CreateInfoFinalizeTestProbe::ExchangeLayouts({});
+    layoutAllocator->Destroy(); layoutAllocator->Destroy(); layoutAllocator.reset();
+    auto descriptorAllocator = CreateInfoFinalizeTestProbe::ExchangeDescriptors({});
+    descriptorAllocator->Destroy(); descriptorAllocator->Destroy(); descriptorAllocator.reset();
+    CHECK_TRUE(environment.state.livePipelines.empty() && environment.state.liveLayouts.empty() && environment.state.bindings.empty() &&
+        environment.state.pipelineDestroys == pipelines && environment.state.layoutDestroys == layouts &&
+        environment.state.descriptorDestroys == descriptors,
+        "Cache teardown must release every borrowed native resource once, including those retained through failed outer lifetimes!");
+}
+
 void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
 {
     NativeEnvironment environment;
@@ -672,41 +932,64 @@ void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
     ComputeShaderProgramCreateInfo computeInfo;
     GraphicsShaderProgramCreateInfo graphicsInfo;
     RayTracingShaderProgramCreateInfo rayInfo;
+    auto compute = std::make_unique<ComputeShaderProgram>();
+    auto graphics = std::make_unique<GraphicsShaderProgram>();
+    auto rays = std::make_unique<RayTracingShaderProgram>();
     computeInfo.SetShader(computeFile).Finalize();
     graphicsInfo.AddVertexShader(vertexFile).AddFragmentShader(fragmentFile)
         .SetDefaultColorAttachment(2, VK_FORMAT_R8G8B8A8_UNORM).Finalize();
     rayInfo.AddRayGenerationShaderGroup("primary", rayFile).AddRayGenerationShaderGroup("secondary", rayFile)
         .CustomizeMaxRecursionDepth(2).Finalize();
+    RayTracingShaderProgramCreateInfo overLimitRayInfo;
+    overLimitRayInfo.AddRayGenerationShaderGroup("tooDeep", rayFile).CustomizeMaxRecursionDepth(3).Finalize();
+    const auto nativeCallsBeforeMissingAllocators = environment.state.calls;
+    auto graphicsAllocator = CreateInfoFinalizeTestProbe::ExchangeGraphics({});
+    ExpectFailure([&] { MyDevice::GetInstance().CreateGraphicsShaderProgram(*graphics, graphicsInfo); });
+    graphicsAllocator = CreateInfoFinalizeTestProbe::ExchangeGraphics(std::move(graphicsAllocator));
+    auto rayAllocator = CreateInfoFinalizeTestProbe::ExchangeRayTracing({});
+    ExpectFailure([&] { MyDevice::GetInstance().CreateRayTracingShaderProgram(*rays, rayInfo); });
+    rayAllocator = CreateInfoFinalizeTestProbe::ExchangeRayTracing(std::move(rayAllocator));
+    CHECK_TRUE(environment.state.calls == nativeCallsBeforeMissingAllocators,
+        "Missing program allocators must be rejected before native creation!");
+    CreateInfoFinalizeTestProbe::SetRayHandleProperties(0, 8);
+    ExpectFailure([&] { MyDevice::GetInstance().CreateRayTracingShaderProgram(*rays, rayInfo); });
+    CreateInfoFinalizeTestProbe::SetRayHandleProperties(8, 8);
+    CHECK_TRUE(environment.state.calls == nativeCallsBeforeMissingAllocators,
+        "Invalid ray group handle properties must be rejected before native creation!");
+    ExpectFailure([&] { MyDevice::GetInstance().CreateRayTracingShaderProgram(*rays, overLimitRayInfo); });
+    CHECK_TRUE(environment.state.calls == nativeCallsBeforeMissingAllocators,
+        "Ray recursion depth beyond the cached device limit must be rejected before native creation!");
     CHECK_TRUE(std::filesystem::remove(computeFile) && std::filesystem::remove(vertexFile) &&
         std::filesystem::remove(fragmentFile) && std::filesystem::remove(rayFile),
         "Program shader files must be absent throughout native creation and retry!");
-    Owner<ComputeShaderProgram> compute;
-    Owner<GraphicsShaderProgram> graphics;
-    Owner<RayTracingShaderProgram> rays;
     environment.state.failCompute = true;
-    ExpectFailure([&] { compute.value.Create(computeInfo); });
-    CHECK_TRUE(compute.value.GetVkPipeline() == VK_NULL_HANDLE && compute.value.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE &&
+    ExpectFailure([&] { MyDevice::GetInstance().CreateComputeShaderProgram(*compute, computeInfo); });
+    CHECK_TRUE(compute->GetVkPipeline() == VK_NULL_HANDLE && compute->GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE &&
         environment.state.moduleDestroys == 1, "Failed compute creation must clear its runtime layout and shader module!");
     environment.state.failCompute = false;
-    compute.value.Create(computeInfo);
+    MyDevice::GetInstance().CreateComputeShaderProgram(*compute, computeInfo);
     computeInfo.Reset();
-    CHECK_TRUE(compute.value.GetVkPipeline() != VK_NULL_HANDLE && environment.state.stages.size() == 1 &&
+    CHECK_TRUE(compute->GetVkPipeline() != VK_NULL_HANDLE && environment.state.stages.size() == 1 &&
         environment.state.stages[0].stage == VK_SHADER_STAGE_COMPUTE_BIT && environment.state.stages[0].entry == "main",
         "Compute retry must use the finalized stage snapshot!");
 
     auto destroyed = environment.state.moduleDestroys;
     environment.state.failGraphics = true;
-    ExpectFailure([&] { graphics.value.Create(graphicsInfo); });
-    CHECK_TRUE(graphics.value.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE && environment.state.moduleDestroys == destroyed + 2,
+    ExpectFailure([&] { MyDevice::GetInstance().CreateGraphicsShaderProgram(*graphics, graphicsInfo); });
+    CHECK_TRUE(graphics->GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE && environment.state.moduleDestroys == destroyed + 2,
         "Failed default graphics pipeline creation must release both shaders and its layout!");
     environment.state.failGraphics = false;
-    graphics.value.Create(graphicsInfo);
-    graphicsInfo.Reset();
-    CHECK_TRUE(graphics.value.GetVkPipeline({}) != VK_NULL_HANDLE && environment.state.stages.size() == 2 &&
+    MyDevice::GetInstance().CreateGraphicsShaderProgram(*graphics, graphicsInfo);
+    CHECK_TRUE(graphics->GetVkPipeline({}) != VK_NULL_HANDLE && environment.state.stages.size() == 2 &&
         environment.state.stages[0].stage == VK_SHADER_STAGE_VERTEX_BIT && environment.state.stages[1].stage == VK_SHADER_STAGE_FRAGMENT_BIT &&
         environment.state.stages[0].entry == "main" && environment.state.stages[1].entry == "main" &&
-        graphics.value.GetDefaultRenderPass().GetVkRenderPass() != VK_NULL_HANDLE,
+        graphics->GetDefaultRenderPass().GetVkRenderPass() != VK_NULL_HANDLE,
         "Graphics retry and cached default pipeline must retain finalized stages and generated render pass!");
+    const auto nativeCallsBeforeOccupiedGraphics = environment.state.calls;
+    ExpectFailure([&] { MyDevice::GetInstance().CreateGraphicsShaderProgram(*graphics, graphicsInfo); });
+    CHECK_TRUE(environment.state.calls == nativeCallsBeforeOccupiedGraphics,
+        "Creation into an occupied Graphics target must leave the existing program untouched!");
+    graphicsInfo.Reset();
     const auto& colors = environment.state.passColors;
     const auto& attachments = environment.state.passAttachments;
     CHECK_TRUE(colors.size() == 3 && colors[0].attachment == VK_ATTACHMENT_UNUSED && colors[1].attachment == VK_ATTACHMENT_UNUSED &&
@@ -720,34 +1003,64 @@ void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
         attributes[0].location == 0 && attributes[0].binding == 0 && attributes[0].offset == 0 && attributes[0].format == VK_FORMAT_R32G32B32_SFLOAT &&
         attributes[1].location == 1 && attributes[1].binding == 0 && attributes[1].offset == 12 && attributes[1].format == VK_FORMAT_R32G32_SFLOAT,
         "Automatic vertex input must reach native creation with packed stride, offsets and formats!");
+    const auto graphicsCreatesBeforeLazyFailure = environment.state.graphicsCreates;
+    GraphicsPipelineStateInfo explicitState;
+    VkVertexInputBindingDescription customBinding{0, 64, VK_VERTEX_INPUT_RATE_VERTEX};
+    explicitState.AddVertexInputDescription(customBinding, {});
+    explicitState.SetRenderPassSubpass(graphics->GetDefaultRenderPass());
+    environment.state.failGraphics = true;
+    ExpectFailure([&] { graphics->GetVkPipeline(explicitState); });
+    CHECK_TRUE(environment.state.graphicsCreates == graphicsCreatesBeforeLazyFailure + 1,
+        "A failed lazy Graphics PSO request must not be published in the program-local map!");
+    environment.state.failGraphics = false;
+    const auto lazyPipeline = graphics->GetVkPipeline(explicitState);
+    CHECK_TRUE(lazyPipeline != VK_NULL_HANDLE && graphics->GetVkPipeline(explicitState) == lazyPipeline,
+        "A successful lazy Graphics PSO must be cached and reused!");
 
     destroyed = environment.state.moduleDestroys;
     environment.state.failRay = true;
-    ExpectFailure([&] { rays.value.Create(rayInfo); });
-    CHECK_TRUE(rays.value.GetVkPipeline() == VK_NULL_HANDLE && rays.value.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE &&
-        rays.value.GetShaderGroupCount() == 0 && environment.state.moduleDestroys == destroyed + 1,
+    ExpectFailure([&] { MyDevice::GetInstance().CreateRayTracingShaderProgram(*rays, rayInfo); });
+    CHECK_TRUE(rays->GetVkPipeline() == VK_NULL_HANDLE && rays->GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE &&
+        rays->GetShaderGroupCount() == 0 && environment.state.moduleDestroys == destroyed + 1,
         "Failed RT pipeline creation must clear runtime groups, layout and deduplicated shader module!");
     environment.state.failRay = false;
     environment.state.failGroups = true;
-    ExpectFailure([&] { rays.value.Create(rayInfo); });
-    CHECK_TRUE(rays.value.GetVkPipeline() == VK_NULL_HANDLE && rays.value.GetShaderGroupCount() == 0 &&
-        rays.value.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE && environment.state.moduleDestroys == destroyed + 2,
+    const auto rayCreatesBeforeGroupFailure = environment.state.rayCreates;
+    const auto pipelineDestroysBeforeGroupFailure = environment.state.pipelineDestroys;
+    ExpectFailure([&] { MyDevice::GetInstance().CreateRayTracingShaderProgram(*rays, rayInfo); });
+    CHECK_TRUE(rays->GetVkPipeline() == VK_NULL_HANDLE && rays->GetShaderGroupCount() == 0 &&
+        rays->GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE && environment.state.moduleDestroys == destroyed + 2 &&
+        environment.state.rayCreates == rayCreatesBeforeGroupFailure + 1 &&
+        environment.state.pipelineDestroys == pipelineDestroysBeforeGroupFailure &&
+        environment.state.livePipelines.size() >= 1,
         "Failure after RT pipeline creation must also leave the runtime object reusable!");
     environment.state.failGroups = false;
-    rays.value.Create(rayInfo);
-    rayInfo.Reset();
-    CHECK_TRUE(rays.value.GetVkPipeline() != VK_NULL_HANDLE && rays.value.GetShaderGroupCount() == 2 &&
+    MyDevice::GetInstance().CreateRayTracingShaderProgram(*rays, rayInfo);
+    CHECK_TRUE(environment.state.rayCreates == rayCreatesBeforeGroupFailure + 2 &&
+        environment.state.pipelineDestroys == pipelineDestroysBeforeGroupFailure,
+        "Handle-fetch failure must leave its pipeline cache-owned while the retry can create a fresh keyed pipeline!");
+    CHECK_TRUE(rays->GetVkPipeline() != VK_NULL_HANDLE && rays->GetShaderGroupCount() == 2 &&
         environment.state.recursionDepth == 2 && environment.state.groups.size() == 2 && environment.state.stages.size() == 1 &&
         environment.state.stages[0].stage == VK_SHADER_STAGE_RAYGEN_BIT_KHR && environment.state.stages[0].entry == "main" &&
         environment.state.groups[0].type == VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR && environment.state.groups[0].generalShader == 0 &&
         environment.state.groups[1].type == VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR && environment.state.groups[1].generalShader == 0,
         "RT native creation must preserve named group order while sharing one shader stage!");
-    const auto& primary = rays.value.GetShaderGroupSet().GetGroupData("primary");
-    const auto& secondary = rays.value.GetShaderGroupSet().GetGroupData("secondary");
+    const auto nativeCallsBeforeOccupiedRay = environment.state.calls;
+    ExpectFailure([&] { MyDevice::GetInstance().CreateRayTracingShaderProgram(*rays, rayInfo); });
+    CHECK_TRUE(environment.state.calls == nativeCallsBeforeOccupiedRay,
+        "Creation into an occupied RayTracing target must leave the existing program untouched!");
+    rayInfo.Reset();
+    const auto& primary = rays->GetShaderGroupSet().GetGroupData("primary");
+    const auto& secondary = rays->GetShaderGroupSet().GetGroupData("secondary");
     CHECK_TRUE(primary.type == ShaderTableType::RayGeneration && secondary.type == ShaderTableType::RayGeneration &&
         primary.handle == std::vector<uint8_t>(8, 0x5a) && secondary.handle == std::vector<uint8_t>(8, 0x5b),
         "Named RT group metadata and handles must remain owned after resetting the description!");
-    compute.value.Destroy(); graphics.value.Destroy(); rays.value.Destroy();
+    const auto copiedGroups = rays->GetShaderGroupSet();
+    const auto pipelineDestroysBeforeProgramRelease = environment.state.pipelineDestroys;
+    compute.reset(); graphics.reset(); rays.reset();
+    CHECK_TRUE(environment.state.pipelineDestroys == pipelineDestroysBeforeProgramRelease &&
+        copiedGroups.GetGroupData("primary").handle == std::vector<uint8_t>(8, 0x5a),
+        "Program release must preserve Device-cached pipelines and copied RT host metadata!");
     CHECK_TRUE(environment.state.moduleCreates == environment.state.moduleDestroys,
         "All program creation retries and successful lifetimes must release every shader module!");
 }
@@ -778,6 +1091,9 @@ void RunCreateInfoFinalizeTests()
     TestLayoutCacheAndIndependentMetadata();
     TestLayoutCreationDependenciesAndChildFailure();
     TestLayoutCachePublicationRollback();
+    TestComputeCreationDependencies();
+    TestComputeCreationFailureStagesAndRetry();
+    TestComputeAutomaticLifetimeAndCacheOwnership();
     TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures();
     TestRenderPassNativeFailureDoesNotConsumeFinalizedInfo();
 }

@@ -424,28 +424,15 @@ GraphicsShaderProgram::GraphicsShaderProgram() = default;
 
 GraphicsShaderProgram::~GraphicsShaderProgram()
 {
-	assert(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE);
-	assert(m_shaderModules.empty());
+	_Destroy();
 }
 
-void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo& inCreateInfo)
+void GraphicsShaderProgram::_Create(const GraphicsShaderProgramCreateInfo& inCreateInfo)
 {
-	CHECK_TRUE(inCreateInfo.IsFinalized(), "GraphicsShaderProgramCreateInfo must be finalized before Create!");
-	CHECK_TRUE(m_cachedGraphicsPipelines.empty(), "Graphics shader program already has cached pipelines!");
-	CHECK_TRUE(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE, "Graphics shader program already created!");
-
-	try
-	{
-		const auto& data = *inCreateInfo.m_finalized;
-		ShaderDetail::CreateStages(data.shaders, m_shaderModules, m_shaderStages);
-		MyDevice::GetInstance().GetOrCreatePipelineLayout(m_pipelineLayout, data.layout);
-		_CreateDefaults(inCreateInfo);
-	}
-	catch (...)
-	{
-		Destroy();
-		throw;
-	}
+	const auto& data = *inCreateInfo.m_finalized;
+	ShaderDetail::CreateStages(data.shaders, m_shaderModules, m_shaderStages);
+	MyDevice::GetInstance().GetOrCreatePipelineLayout(m_pipelineLayout, data.layout);
+	_CreateDefaults(inCreateInfo);
 	CHECK_TRUE(GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE);
 	CHECK_TRUE(!m_shaderModules.empty());
 }
@@ -580,19 +567,19 @@ auto GraphicsShaderProgram::_CreateVkPipeline(const GraphicsPipelineStateInfo& i
 	return MyDevice::GetInstance().CreateGraphicsPipeline(pipelineInfo, VK_NULL_HANDLE);
 }
 
-void GraphicsShaderProgram::Destroy()
+void GraphicsShaderProgram::_Destroy()
 {
-	auto& device = MyDevice::GetInstance();
-	for (auto& [stateHash, entry] : m_cachedGraphicsPipelines)
+	if (!m_cachedGraphicsPipelines.empty())
 	{
-		if (entry.pipeline != VK_NULL_HANDLE)
+		auto& device = MyDevice::GetInstance();
+		for (auto& [stateHash, entry] : m_cachedGraphicsPipelines)
 		{
-			device.DestroyPipeline(entry.pipeline);
+			if (entry.pipeline != VK_NULL_HANDLE) device.DestroyPipeline(entry.pipeline);
 		}
 	}
 	m_cachedGraphicsPipelines.clear();
-    if (m_defaultRenderPass) { m_defaultRenderPass->Destroy(); m_defaultRenderPass.reset(); }
-    m_defaultState.Reset();
+	m_defaultState.Reset();
+	m_defaultRenderPass.reset();
     m_automaticVertexInputSupported = true;
 	for (auto& shaderModule : m_shaderModules)
 	{

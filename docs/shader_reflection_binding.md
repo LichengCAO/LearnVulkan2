@@ -45,8 +45,9 @@ createInfo.AddVertexShader("scene.spv")
           .AddFragmentShader("scene.spv");
 createInfo.SetDefaultColorAttachment(0, VK_FORMAT_R8G8B8A8_UNORM);
 createInfo.SetDefaultDepthAttachment(VK_FORMAT_D32_SFLOAT); // Optional.
+createInfo.Finalize();
 GraphicsShaderProgram program;
-program.Create(createInfo);
+device.CreateGraphicsShaderProgram(program, createInfo);
 const RenderPass& renderPass = program.GetDefaultRenderPass();
 
 FramebufferCreateInfo framebufferInfo;
@@ -112,22 +113,31 @@ Different stages in one file may have identical entry names.
 ~~~cpp
 GraphicsShaderProgramCreateInfo graphics;
 graphics.AddVertexShader("scene.spv")
-        .AddFragmentShader("scene.spv"); // One candidate in each stage.
+        .AddFragmentShader("scene.spv").Finalize(); // One candidate in each stage.
+GraphicsShaderProgram graphicsProgram;
+device.CreateGraphicsShaderProgram(graphicsProgram, graphics);
 
 ComputeShaderProgramCreateInfo compute;
-compute.SetShader("compute.spv").CustomizePipelineCache(pipelineCache);
+compute.SetShader("compute.spv").CustomizePipelineCache(pipelineCache).Finalize();
 ComputeShaderProgram program;
-program.Create(compute);
+device.CreateComputeShaderProgram(program, compute);
 ~~~
 
 Graphics exposes `AddVertexShader`, `AddFragmentShader`, `AddGeometryShader`,
 `AddTaskShader`, and `AddMeshShader`, all with the same path-only signature
 and a reference return for chaining. Adding the same stage twice fails immediately.
-`Create()` requires vertex with optional geometry, or mesh with optional task; task
+`Finalize()` requires vertex with optional geometry, or mesh with optional task; task
 requires mesh and the two paths cannot be mixed. Fragment is optional on either path.
 Mesh pipelines omit vertex input and input assembly state. Tessellation and patch
 state are outside this interface. `Reset()` clears all shaders and default attachments.
-Compute uses `SetShader(path)`; `Reset()` clears the shader and pipeline cache.
+Compute's CreateInfo uses `SetShader(path)`; its `Reset()` clears the shader and
+pipeline cache. The Program itself has no public Create/Destroy/Reset. Creation
+through MyDevice requires finalized input and an empty target, publishes only on
+success, and permits retry after failure. Program destruction releases its owned
+shader module automatically; pipeline/layout handles remain Device-cached. Keep
+the Device alive and complete native uses before scope exit or owning-pointer
+reset. Creation and destruction require caller synchronization of their shared
+state; see [Program ownership](resource_lifetimes.md#shader-program-ownership).
 
 Within each program, one Vulkan shader module is created per exact file string.
 Actual pipeline stages are deduplicated by `(file string, stage)` in
@@ -151,9 +161,9 @@ modules, layouts and pipelines and permits rebuilding.
 ~~~cpp
 RayTracingShaderProgramCreateInfo builder;
 builder.AddRayGenerationShaderGroup("main", "scene.spv")
-       .AddMissShaderGroup("background", "scene.spv");
+       .AddMissShaderGroup("background", "scene.spv").Finalize();
 RayTracingShaderProgram program;
-program.Create(builder);
+device.CreateRayTracingShaderProgram(program, builder);
 
 ShaderBindingTableCreateInfo tableInfo;
 tableInfo.SetShaderGroupSet(program.GetShaderGroupSet())

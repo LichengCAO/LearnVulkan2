@@ -4,9 +4,14 @@
 #include <unordered_set>
 #include <algorithm>
 #include <limits>
+#include <utility>
+#include <type_traits>
 #include "image.h"
 #include "resource/descriptor.h"
 #include "pipeline/pipeline_layout.h"
+#include "pipeline/compute_shader_program.h"
+#include "pipeline/graphics_shader_program.h"
+#include "pipeline/ray_tracing_shader_program.h"
 #include "allocator/private/memory_allocator.h"
 #include "allocator/private/descriptor_set_layout_allocator.h"
 #include "allocator/private/render_pass_allocator.h"
@@ -838,6 +843,132 @@ void MyDevice::GetOrCreatePipelineLayout(PipelineLayout& outLayout,
 	info.pPushConstantRanges = layout.m_pushConstantRanges.data();
 	layout.m_vkPipelineLayout = m_uptrPipelineLayoutAllocator->GetOrCreate(info);
 	outLayout = std::move(layout);
+}
+
+void MyDevice::CreateComputeShaderProgram(ComputeShaderProgram& outProgram,
+	const ComputeShaderProgramCreateInfo& inCreateInfo)
+{
+	CHECK_TRUE(inCreateInfo.IsFinalized(), "ComputeShaderProgramCreateInfo must be finalized before creation!");
+	CHECK_TRUE(outProgram.m_vkPipeline == VK_NULL_HANDLE && outProgram.m_uptrShaderModule == nullptr &&
+		outProgram.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE, "Compute shader program already created!");
+	CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Compute shader program creation requires a live device!");
+	CHECK_TRUE(m_uptrDescriptorSetLayoutAllocator != nullptr && m_uptrDescriptorSetLayoutAllocator->IsCreated(),
+		"Descriptor set layout allocator is not created!");
+	CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr && m_uptrPipelineLayoutAllocator->IsCreated(),
+		"Pipeline layout allocator is not created!");
+	CHECK_TRUE(m_uptrComputePipelineAllocator != nullptr && m_uptrComputePipelineAllocator->IsCreated(),
+		"Compute pipeline allocator is not created!");
+	// Validate device limits before even creating a shader module. Finalize owns
+	// the layout snapshot; the normal layout entry checks these limits again.
+	for (const auto& range : inCreateInfo.m_finalized->layout.m_finalized->pushConstants)
+	{
+		CHECK_TRUE(range.offset <= m_cachedPhysicalDeviceProperties.limits.maxPushConstantsSize &&
+			range.size <= m_cachedPhysicalDeviceProperties.limits.maxPushConstantsSize - range.offset,
+			"Push constant range exceeds device limits!");
+	}
+
+	ComputeShaderProgram program;
+	program._Create(inCreateInfo);
+	// All potentially failing work is complete. Transfer ownership without
+	// enabling public moves of a Program or releasing any cached native object.
+	static_assert(std::is_nothrow_move_assignable_v<PipelineLayout>);
+	static_assert(std::is_nothrow_move_assignable_v<std::unique_ptr<ShaderModule>>);
+	outProgram.m_uptrShaderModule = std::move(program.m_uptrShaderModule);
+	outProgram.m_pipelineLayout = std::move(program.m_pipelineLayout);
+	outProgram.m_vkPipeline = std::exchange(program.m_vkPipeline, VK_NULL_HANDLE);
+}
+
+void MyDevice::CreateGraphicsShaderProgram(GraphicsShaderProgram& outProgram,
+	const GraphicsShaderProgramCreateInfo& inCreateInfo)
+{
+	CHECK_TRUE(inCreateInfo.IsFinalized(), "GraphicsShaderProgramCreateInfo must be finalized before creation!");
+	CHECK_TRUE(outProgram.m_shaderModules.empty() && outProgram.m_shaderStages.empty() &&
+		outProgram.m_cachedGraphicsPipelines.empty() && outProgram.m_defaultRenderPass == nullptr &&
+		outProgram.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE,
+		"Graphics shader program already created!");
+	CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Graphics shader program creation requires a live device!");
+	CHECK_TRUE(m_uptrDescriptorSetLayoutAllocator != nullptr && m_uptrDescriptorSetLayoutAllocator->IsCreated(),
+		"Descriptor set layout allocator is not created!");
+	CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr && m_uptrPipelineLayoutAllocator->IsCreated(),
+		"Pipeline layout allocator is not created!");
+	CHECK_TRUE(m_uptrGraphicsPipelineAllocator != nullptr && m_uptrGraphicsPipelineAllocator->IsCreated(),
+		"Graphics pipeline allocator is not created!");
+	const auto& data = *inCreateInfo.m_finalized;
+	if (data.defaultRenderPass != nullptr)
+	{
+		CHECK_TRUE(m_uptrRenderPassAllocator != nullptr && m_uptrRenderPassAllocator->IsCreated(),
+			"Render pass allocator is not created!");
+	}
+	for (const auto& range : data.layout.m_finalized->pushConstants)
+	{
+		CHECK_TRUE(range.offset <= m_cachedPhysicalDeviceProperties.limits.maxPushConstantsSize &&
+			range.size <= m_cachedPhysicalDeviceProperties.limits.maxPushConstantsSize - range.offset,
+			"Push constant range exceeds device limits!");
+	}
+
+	GraphicsShaderProgram program;
+	program._Create(inCreateInfo);
+	static_assert(std::is_nothrow_move_assignable_v<PipelineLayout>);
+	static_assert(std::is_nothrow_move_assignable_v<std::vector<std::unique_ptr<ShaderModule>>>);
+	static_assert(std::is_nothrow_move_assignable_v<std::vector<VkPipelineShaderStageCreateInfo>>);
+	static_assert(std::is_nothrow_move_assignable_v<decltype(program.m_cachedGraphicsPipelines)>);
+	static_assert(std::is_nothrow_move_assignable_v<std::unique_ptr<RenderPass>>);
+	static_assert(std::is_nothrow_move_assignable_v<GraphicsPipelineStateInfo>);
+	outProgram.m_shaderModules = std::move(program.m_shaderModules);
+	outProgram.m_shaderStages = std::move(program.m_shaderStages);
+	outProgram.m_pipelineLayout = std::move(program.m_pipelineLayout);
+	outProgram.m_cachedGraphicsPipelines = std::move(program.m_cachedGraphicsPipelines);
+	outProgram.m_defaultRenderPass = std::move(program.m_defaultRenderPass);
+	outProgram.m_defaultState = std::move(program.m_defaultState);
+	outProgram.m_automaticVertexInputSupported = program.m_automaticVertexInputSupported;
+}
+
+void MyDevice::CreateRayTracingShaderProgram(RayTracingShaderProgram& outProgram,
+	const RayTracingShaderProgramCreateInfo& inCreateInfo)
+{
+	CHECK_TRUE(inCreateInfo.IsFinalized(), "RayTracingShaderProgramCreateInfo must be finalized before creation!");
+	CHECK_TRUE(outProgram.m_shaderModules.empty() && outProgram.m_vkPipeline == VK_NULL_HANDLE &&
+		outProgram.m_shaderGroupCount == 0 && outProgram.m_groupSet.m_groups.empty() &&
+		outProgram.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE,
+		"Ray tracing program already created!");
+	CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Ray tracing program creation requires a live device!");
+	CHECK_TRUE(m_uptrDescriptorSetLayoutAllocator != nullptr && m_uptrDescriptorSetLayoutAllocator->IsCreated(),
+		"Descriptor set layout allocator is not created!");
+	CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr && m_uptrPipelineLayoutAllocator->IsCreated(),
+		"Pipeline layout allocator is not created!");
+	CHECK_TRUE(m_uptrRayTracingPipelineAllocator != nullptr && m_uptrRayTracingPipelineAllocator->IsCreated(),
+		"Ray tracing pipeline allocator is not created!");
+	CHECK_TRUE(vkCreateRayTracingPipelinesKHR != nullptr && vkGetRayTracingShaderGroupHandlesKHR != nullptr,
+		"Ray tracing pipeline extension is unavailable!");
+	const auto& finalized = *inCreateInfo.m_finalized;
+	CHECK_TRUE(finalized.recursionDepth <= m_cachedRayTracingProperties.maxRayRecursionDepth,
+		"Ray tracing recursion depth exceeds device limits!");
+	const uint32_t handleSize = m_cachedRayTracingProperties.shaderGroupHandleSize;
+	const uint32_t handleAlignment = m_cachedRayTracingProperties.shaderGroupHandleAlignment;
+	CHECK_TRUE(handleSize > 0 && handleAlignment > 0 && (handleAlignment & (handleAlignment - 1)) == 0,
+		"Invalid ray tracing shader group handle properties!");
+	CHECK_TRUE(handleSize <= std::numeric_limits<uint32_t>::max() - (handleAlignment - 1),
+		"Ray tracing shader group handle size overflows!");
+	CHECK_TRUE(finalized.groups.size() <= std::numeric_limits<uint32_t>::max() &&
+		finalized.groups.size() <= std::numeric_limits<size_t>::max() / handleSize,
+		"Ray tracing shader group data size overflows!");
+	for (const auto& range : finalized.layout.m_finalized->pushConstants)
+	{
+		CHECK_TRUE(range.offset <= m_cachedPhysicalDeviceProperties.limits.maxPushConstantsSize &&
+			range.size <= m_cachedPhysicalDeviceProperties.limits.maxPushConstantsSize - range.offset,
+			"Push constant range exceeds device limits!");
+	}
+
+	RayTracingShaderProgram program;
+	program._Create(inCreateInfo);
+	static_assert(std::is_nothrow_move_assignable_v<PipelineLayout>);
+	static_assert(std::is_nothrow_move_assignable_v<std::vector<std::unique_ptr<ShaderModule>>>);
+	static_assert(std::is_nothrow_move_assignable_v<RayTracingShaderGroupSet>);
+	outProgram.m_shaderModules = std::move(program.m_shaderModules);
+	outProgram.m_pipelineLayout = std::move(program.m_pipelineLayout);
+	outProgram.m_vkPipeline = std::exchange(program.m_vkPipeline, VK_NULL_HANDLE);
+	outProgram.m_shaderGroupCount = std::exchange(program.m_shaderGroupCount, 0);
+	outProgram.m_groupSet = std::move(program.m_groupSet);
 }
 
 void MyDevice::GetOrCreateSampler(Sampler& outSampler, const SamplerCreateInfo& inCreateInfo)

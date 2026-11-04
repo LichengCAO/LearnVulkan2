@@ -37,34 +37,14 @@ RayTracingShaderProgram::RayTracingShaderProgram() = default;
 
 RayTracingShaderProgram::~RayTracingShaderProgram()
 {
-	assert(m_vkPipeline == VK_NULL_HANDLE);
-	assert(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE);
+	_Destroy();
 }
 
-void RayTracingShaderProgram::Create(const RayTracingShaderProgramCreateInfo& inCreateInfo)
+void RayTracingShaderProgram::_Destroy()
 {
-	CHECK_TRUE(inCreateInfo.IsFinalized(), "RayTracingShaderProgramCreateInfo must be finalized before Create!");
-	CHECK_TRUE(m_vkPipeline == VK_NULL_HANDLE && GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE,
-	    "Ray tracing program already created!");
-	try
-	{
-		_Create(inCreateInfo);
-		CHECK_TRUE(m_vkPipeline != VK_NULL_HANDLE && GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE &&
-		    m_shaderGroupCount != 0, "Incomplete ray tracing program!");
-	}
-	catch (...)
-	{
-		Destroy();
-		throw;
-	}
-}
-
-void RayTracingShaderProgram::Destroy()
-{
-	auto& device = MyDevice::GetInstance();
 	if (m_vkPipeline != VK_NULL_HANDLE)
 	{
-		device.DestroyPipeline(m_vkPipeline);
+		MyDevice::GetInstance().DestroyPipeline(m_vkPipeline);
 		m_vkPipeline = VK_NULL_HANDLE;
 	}
 	m_pipelineLayout = {};
@@ -245,6 +225,15 @@ void RayTracingShaderProgram::_Create(const RayTracingShaderProgramCreateInfo& i
 	device.GetPhysicalDeviceRayTracingProperties(rayTracingProperties);
 	CHECK_TRUE(finalized.recursionDepth <= rayTracingProperties.maxRayRecursionDepth,
 	    "Ray tracing recursion depth exceeds device limits!");
+	const uint32_t handleSize = rayTracingProperties.shaderGroupHandleSize;
+	const uint32_t handleAlignment = rayTracingProperties.shaderGroupHandleAlignment;
+	CHECK_TRUE(handleSize > 0 && handleAlignment > 0 && (handleAlignment & (handleAlignment - 1)) == 0,
+	    "Invalid ray tracing shader group handle properties!");
+	CHECK_TRUE(handleSize <= std::numeric_limits<uint32_t>::max() - (handleAlignment - 1),
+	    "Ray tracing shader group handle size overflows!");
+	const uint32_t paddedHandleSize = (handleSize + handleAlignment - 1) & ~(handleAlignment - 1);
+	CHECK_TRUE(finalized.groups.size() <= std::numeric_limits<size_t>::max() / handleSize,
+	    "Ray tracing shader group data size overflows!");
 	std::vector<VkPipelineShaderStageCreateInfo> stages;
 	ShaderDetail::CreateStages(finalized.shaders, m_shaderModules, stages);
 	MyDevice::GetInstance().GetOrCreatePipelineLayout(m_pipelineLayout, finalized.layout);
@@ -254,16 +243,14 @@ void RayTracingShaderProgram::_Create(const RayTracingShaderProgramCreateInfo& i
 		records.push_back(group.record);
 	}
 	VkPipeline& pipelineToInit = m_vkPipeline;
-	uint32_t& countToInit = m_shaderGroupCount;
-
-	countToInit = static_cast<uint32_t>(finalized.groups.size());
+	const uint32_t groupCount = static_cast<uint32_t>(finalized.groups.size());
 	const VkPipelineLayout layoutToInit = GetLayout().GetVkPipelineLayout();
 
 	pipelineInfo.pNext = nullptr;
 	pipelineInfo.flags = 0;
 	pipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
 	pipelineInfo.pStages = stages.data();
-	pipelineInfo.groupCount = static_cast<uint32_t>(finalized.groups.size());
+	pipelineInfo.groupCount = groupCount;
 	pipelineInfo.pGroups = records.data();
 	pipelineInfo.maxPipelineRayRecursionDepth = finalized.recursionDepth;
 	pipelineInfo.pLibraryInfo = nullptr;
@@ -275,32 +262,30 @@ void RayTracingShaderProgram::_Create(const RayTracingShaderProgramCreateInfo& i
 
 	pipelineToInit = device.CreateRayTracingPipeline(pipelineInfo, inCreateInfo.m_vkPipelineCache);
 
-	// Fetch shader group handles and cache them in RayTracingShaderGroupSet.
-	const uint32_t uHandleSizeHost = rayTracingProperties.shaderGroupHandleSize;
-	CHECK_TRUE(uHandleSizeHost > 0 && rayTracingProperties.shaderGroupHandleAlignment > 0,
-	    "Invalid ray tracing shader group handle properties!");
-	const uint32_t uHandleSizeDevice = static_cast<uint32_t>((uHandleSizeHost + rayTracingProperties.shaderGroupHandleAlignment - 1) & ~(rayTracingProperties.shaderGroupHandleAlignment - 1));
-	const size_t uGroupDataSize = static_cast<size_t>(countToInit) * static_cast<size_t>(uHandleSizeHost);
-	std::vector<uint8_t> groupData(uGroupDataSize, 0u);
+	// A created pipeline remains Device-cache-owned if fetching handles fails.
+	const size_t groupDataSize = static_cast<size_t>(groupCount) * handleSize;
+	std::vector<uint8_t> groupData(groupDataSize, 0u);
 
 	VK_CHECK(
 		vkGetRayTracingShaderGroupHandlesKHR(
 			device.vkDevice,
-			pipelineToInit,
+			m_vkPipeline,
 			0,
-			countToInit,
-			uGroupDataSize,
+			groupCount,
+			groupDataSize,
 			groupData.data()),
 		"Failed to get group handle data!");
 
-	m_groupSet.Reset();
+	RayTracingShaderGroupSet groupSet;
 	for (size_t i = 0; i < finalized.groups.size(); ++i)
 	{
 		const auto& group = finalized.groups[i];
-		RayTracingShaderGroupSet::GroupData data{group.type, std::vector<uint8_t>(uHandleSizeDevice, 0u)};
-		memcpy(data.handle.data(), groupData.data() + i * uHandleSizeHost, uHandleSizeHost);
-		m_groupSet.m_groups.emplace(group.name, std::move(data));
+		RayTracingShaderGroupSet::GroupData data{group.type, std::vector<uint8_t>(paddedHandleSize, 0u)};
+		memcpy(data.handle.data(), groupData.data() + i * handleSize, handleSize);
+		groupSet.m_groups.emplace(group.name, std::move(data));
 	}
+	m_groupSet = std::move(groupSet);
+	m_shaderGroupCount = groupCount;
 }
 
 auto RayTracingShaderProgram::GetLayout() const -> const PipelineLayout&

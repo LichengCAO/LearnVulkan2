@@ -7,15 +7,23 @@ ComputeShaderProgramCreateInfo info;
 info.SetShader("shaders/example.comp.spv");
 info.Finalize();                 // Host: load SPIR-V, reflect, resolve layout data.
 
-ComputeShaderProgram program;
-program.Create(info);            // Device: create native modules, layouts and pipeline.
-info.Reset();                   // The created program retains the data it needs.
-// Record and submit commands using program.
-// Synchronize GPU use before destruction, as required by the existing RHI.
-program.Destroy();
+{
+    ComputeShaderProgram program;
+    device.CreateComputeShaderProgram(program, info); // Synchronous Device creation.
+    info.Reset();               // The program retains the data it needs.
+    // Record and submit commands using program.
+    // Complete native uses before leaving this scope, and before Device teardown.
+}                               // Automatically releases its owned shader module.
 ```
 
-`Finalize()` and `IsFinalized()` are provided by graphics, compute and ray tracing program CreateInfos, RenderPassCreateInfo, PipelineLayoutCreateInfo, and the internal ShaderModuleCreateInfo. Programs, render passes and shader modules use `Create(const XxxCreateInfo&)`; pipeline layouts use `device.GetOrCreatePipelineLayout(layout, info)`. These creation entries reject unfinalized inputs before calling Vulkan; they do not silently finalize them.
+`Finalize()` and `IsFinalized()` are provided by graphics, compute and ray tracing program CreateInfos, RenderPassCreateInfo, PipelineLayoutCreateInfo, and the internal ShaderModuleCreateInfo. All three ShaderPrograms use `device.CreateXxxShaderProgram(program, info)`; render passes and shader modules use `Create(const XxxCreateInfo&)`, and pipeline layouts use `device.GetOrCreatePipelineLayout(layout, info)`. These creation entries reject unfinalized inputs before calling Vulkan; they do not silently finalize them.
+
+Program creation requires an empty output and live Device/allocators. It publishes
+only after successful temporary creation; failures leave the output unchanged and
+retryable. ShaderPrograms have no public Create/Destroy/Reset and cannot be copied
+or moved. Use scope exit or owning `unique_ptr.reset()` for release. Creation and
+destruction access shared state under caller synchronization; see
+[Program ownership](resource_lifetimes.md#shader-program-ownership).
 
 ## State and ownership
 

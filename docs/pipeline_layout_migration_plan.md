@@ -4,6 +4,11 @@
 
 本清单已于 2026-11-04 实施，下面保留具体设计与验收要求供维护时参考。
 已完成 Device 创建入口、借用值语义、缓存发布回滚、三类 Program 内部调用迁移及文档更新。
+
+后续 Compute Program 的公开接口迁移也已完成：使用 MyDevice 创建入口与析构自动清理，
+移除公开 Create/Destroy；见 [Compute 迁移清单](compute_shader_program_migration_plan.md)。
+下文三类 Program 保留公开接口的描述记录的是 PipelineLayout 迁移当时的边界；
+后续 Graphics 与 RayTracing Program 迁移亦已完成。
 完整 NMake Debug 构建、两项 CTest，以及独立 Host 构建和一项 CTest 均通过。
 缓存发布失败回滚通过 MSVC Debug CRT 分配失败注入验证；未运行真实 GPU 渲染测试。
 

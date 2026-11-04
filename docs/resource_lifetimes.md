@@ -226,10 +226,77 @@ uses, including GPU execution, before cache destruction. Wrappers do not retain
 the Device; surviving wrappers may safely be cleared or destroyed, but their
 old handles are invalid and have no validity tracking.
 
-Compute, Graphics and RayTracing ShaderProgram keep their existing public
-Create/Destroy interfaces and have not yet migrated to independent-instance
-concurrent creation. Their Create calls share both layout caches. Callers must
-coordinate creation, destruction and GraphicsShaderProgram's lazy GetVkPipeline
-with every other access to the same shared caches and dependencies. This
-PipelineLayout migration does not change recording, submission, waits or GPU
-resource retention. Program migration follows Compute, Graphics, then RayTracing.
+All three ShaderPrograms are created synchronously through MyDevice entries and
+have no public Create, Destroy or Reset. Their wrappers own ShaderModules and
+host reflection metadata while pipeline/layout handles remain owned by Device
+caches. Destruction releases owned modules and drops borrowed handles synchronously;
+it does not wait for GPU work or retain submitted resources. Destroy Program
+instances before Device/cache teardown and complete their GPU uses first.
+
+## Shader program ownership
+
+Create with `device.CreateComputeShaderProgram(program, finalizedInfo)`. The
+Program owns its ShaderModule, retains its own PipelineLayout metadata and borrows
+pipeline/layout handles from Device caches. It cannot be copied or moved and has
+no public Create, Destroy or Reset. Use scope exit or an owning `unique_ptr.reset()`
+to release it. Input descriptions may be reset, modified or destroyed after
+successful creation without changing the Program's reflection or native handles.
+
+Creation validates finalized input, an empty output, a live Device, initialized
+descriptor-layout, pipeline-layout and compute pipeline allocators, and cached
+device push-constant limits before native calls. Work completes synchronously in
+a temporary Program; only a fully created result is transferred to the output
+using nonthrowing member transfers. Failure releases temporary owned resources,
+leaves the output unchanged and permits retry. Layout entries already published
+remain cached. This migration preserves the existing compute allocator algorithm.
+
+Callers coordinate creation with all other accesses to both layout caches, the
+compute pipeline cache and the supplied VkPipelineCache, including cache teardown.
+Destruction synchronously releases the owned shader module and uses the existing
+DestroyPipeline path to clear the pipeline borrow. That path searches the graphics
+cache first, then compute, and ray tracing if earlier searches miss. Callers must
+also synchronize those cache reads with conflicting accesses. PipelineLayout
+metadata cleanup accesses only host storage. There are no internal locks or
+thread affinity; exclude conflicting access to the same Program and keep creation
+inputs stable. Independent operations using independent shared state may proceed
+concurrently without a global Device lock.
+
+An empty Program's destructor does not access Device. A successfully created
+Program must be destroyed while its Device and relevant caches remain alive.
+Native pipeline/layout resources stay cached until their owning caches are
+destroyed. Program creation/destruction does not wait for the GPU, enqueue work
+or change command recording, submission or resource retention. Complete native
+uses before destroying the Program and before Device/cache teardown.
+
+## Graphics and RayTracing programs
+
+Create with `device.CreateGraphicsShaderProgram(program, finalizedInfo)` or
+`device.CreateRayTracingShaderProgram(program, finalizedInfo)`. Both APIs require
+finalized input, an empty target, a live Device and initialized required
+allocators. They construct a temporary Program and publish only after successful
+completion. Failures leave the output empty and retryable. Both wrapper types are
+noncopyable and nonmovable; scope exit or an owning `unique_ptr.reset()` releases
+them.
+
+Graphics creation accesses descriptor-layout and pipeline-layout caches, the
+Graphics pipeline cache and, when defaults are configured, the RenderPass cache.
+`GetVkPipeline(state)` remains lazy and mutates both Program-local PSO state and
+the Device Graphics pipeline cache. Program cleanup consults pipeline caches and
+drops RenderPass snapshots; callers serialize those operations with related
+creation, lookup, release and teardown, plus conflicting access to that Program.
+Default RenderPass/framebuffer operations retain their existing synchronization
+requirements.
+
+RayTracing creation accesses descriptor-layout and pipeline-layout caches, the
+RayTracing pipeline cache and the supplied `VkPipelineCache`. Group handles and
+named host metadata are prepared before publishing the Program. If handle
+retrieval fails after native pipeline creation, that pipeline remains owned by
+the Device cache. A retry is allowed; cache reuse depends on the existing full
+pipeline key, including shader module handles, so a retry that creates new
+modules may produce a separate cache entry. Cleanup follows `DestroyPipeline`,
+which probes the Graphics, Compute and RayTracing caches; callers synchronize
+those cache accesses as well as the input `VkPipelineCache` and teardown.
+
+Neither path uses internal locks or a global Device lock. Independent work may
+proceed when it uses independent shared state. Device initialization, destruction
+and recreation require exclusive access relative to these operations.

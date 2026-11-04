@@ -20,6 +20,7 @@ public:
 	virtual ~RenderPassAllocator();
 
 	void Create(VkDevice inDevice);
+	auto IsCreated() const noexcept -> bool { return m_vkDevice != VK_NULL_HANDLE; }
 		auto AllocateRenderPassWithResult(const VkRenderPassCreateInfo& inCreateInfo) -> std::pair<IntrusivePtr<VulkanDetail::RenderPassResource>, VkResult>;
 		auto AllocateRenderPass(const VkRenderPassCreateInfo& inCreateInfo) -> IntrusivePtr<VulkanDetail::RenderPassResource>;
 	void Destroy();

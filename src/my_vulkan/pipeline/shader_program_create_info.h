@@ -5,6 +5,7 @@
 
 class GraphicsShaderProgramCreateInfo final
 {
+    friend class MyDevice;
     friend class GraphicsShaderProgram;
     friend class CommandBuffer;
 private:
@@ -39,6 +40,7 @@ public:
 
 class ComputeShaderProgramCreateInfo final
 {
+	friend class MyDevice;
     friend class ComputeShaderProgram;
 private:
     struct FinalizedData
@@ -61,6 +63,7 @@ enum class ShaderTableType : uint8_t { RayGeneration = 0, Miss = 1, Hit = 2, Cal
 
 class RayTracingShaderProgramCreateInfo final
 {
+    friend class MyDevice;
     friend class RayTracingShaderProgram;
 private:
     struct ShaderGroup

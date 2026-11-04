@@ -17,6 +17,12 @@ class DescriptorSetLayout;
 class DescriptorSetLayoutCreateInfo;
 class PipelineLayout;
 class PipelineLayoutCreateInfo;
+class ComputeShaderProgram;
+class ComputeShaderProgramCreateInfo;
+class GraphicsShaderProgram;
+class GraphicsShaderProgramCreateInfo;
+class RayTracingShaderProgram;
+class RayTracingShaderProgramCreateInfo;
 
 struct UserInput
 {
@@ -194,6 +200,31 @@ public:
 	// Requires finalized input and an empty target; publishes only on success.
 	void GetOrCreatePipelineLayout(PipelineLayout& outLayout,
 		const PipelineLayoutCreateInfo& inCreateInfo);
+
+	// Synchronous creation; requires finalized input, an empty target and live
+	// Device/allocators. Failure leaves the target unchanged and retryable.
+	// Caller coordinates both layout caches, the compute pipeline cache and the
+	// supplied VkPipelineCache with every other access, including cache teardown.
+	// Program destruction calls DestroyPipeline, which also searches the graphics
+	// cache (and the ray tracing cache if preceding searches miss). Coordinate
+	// those accesses too. No internal locking or automatic GPU synchronization.
+	void CreateComputeShaderProgram(ComputeShaderProgram& outProgram,
+		const ComputeShaderProgramCreateInfo& inCreateInfo);
+
+	// Caller coordinates the layout caches, graphics pipeline cache, RenderPass
+	// cache/snapshots and all related release paths. DestroyPipeline probes the
+	// Graphics, Compute and RayTracing caches. GetVkPipeline mutates program-local
+	// state and must be serialized with access to that instance. No internal
+	// locking or automatic GPU synchronization.
+	void CreateGraphicsShaderProgram(GraphicsShaderProgram& outProgram,
+		const GraphicsShaderProgramCreateInfo& inCreateInfo);
+
+	// Caller coordinates both layout caches, the ray tracing pipeline cache and
+	// supplied VkPipelineCache with all related accesses and teardown. Destruction
+	// probes the Graphics, Compute and RayTracing caches through DestroyPipeline.
+	// No internal locking or GPU wait.
+	void CreateRayTracingShaderProgram(RayTracingShaderProgram& outProgram,
+		const RayTracingShaderProgramCreateInfo& inCreateInfo);
 
 	// Caller excludes concurrent access to this device's sampler cache, including
 	// cache destruction. Borrowed Sampler value operations do not access it.
