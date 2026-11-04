@@ -218,6 +218,11 @@ void MyDevice::_SelectPhysicalDevice()
 		m_physicalDevice = physicalDeviceSelectorReturn.value();
 		vkPhysicalDevice = m_physicalDevice.physical_device;
 	}
+	m_cachedRayTracingProperties = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR };
+	VkPhysicalDeviceProperties2 properties{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+	properties.pNext = &m_cachedRayTracingProperties;
+	vkGetPhysicalDeviceProperties2(vkPhysicalDevice, &properties);
+	m_cachedPhysicalDeviceProperties = properties.properties;
 }
 
 void MyDevice::_CreateLogicalDevice()
@@ -937,11 +942,12 @@ auto MyDevice::IsPipelineCacheValid(const VkPipelineCacheHeaderVersionOne& inCac
 
 void MyDevice::GetPhysicalDeviceRayTracingProperties(VkPhysicalDeviceRayTracingPipelinePropertiesKHR& outProperties) const
 {
-	VkPhysicalDeviceProperties2 prop2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
-	outProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+	outProperties = m_cachedRayTracingProperties;
+}
 
-	prop2.pNext = &outProperties;
-	vkGetPhysicalDeviceProperties2(vkPhysicalDevice, &prop2);
+auto MyDevice::GetCachedPhysicalDeviceProperties() const -> const VkPhysicalDeviceProperties&
+{
+	return m_cachedPhysicalDeviceProperties;
 }
 
 VkCommandBuffer MyDevice::AllocateCommandBuffer(VkCommandPool inCommandPool, VkCommandBufferLevel inBufferLevel, const void* inNextPtr)

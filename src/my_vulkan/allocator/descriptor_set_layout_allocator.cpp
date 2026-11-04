@@ -103,9 +103,14 @@ void DescriptorSetLayoutAllocator::Create(VkDevice inDevice)
 auto DescriptorSetLayoutAllocator::Allocate(
 	const DescriptorSetLayout& inLayout) -> VkDescriptorSetLayout
 {
-	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Descriptor set layout allocator is not created!");
-
 	const std::vector<VkDescriptorSetLayoutBinding> layoutBindings = _GetSortedBindings(inLayout);
+	return Allocate(layoutBindings);
+}
+
+auto DescriptorSetLayoutAllocator::Allocate(
+    const std::vector<VkDescriptorSetLayoutBinding>& layoutBindings) -> VkDescriptorSetLayout
+{
+	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Descriptor set layout allocator is not created!");
 	const uint64_t hash = _HashBindings(layoutBindings);
 	std::vector<CacheEntry>& entries = m_cache[hash];
 	for (const CacheEntry& entry : entries)
@@ -124,7 +129,12 @@ auto DescriptorSetLayoutAllocator::Allocate(
 	VK_CHECK(
 		vkCreateDescriptorSetLayout(m_vkDevice, &createInfo, nullptr, &descriptorSetLayout),
 		"Failed to create descriptor set layout!");
-	entries.push_back(CacheEntry{ layoutBindings, descriptorSetLayout });
+	try { entries.push_back(CacheEntry{ layoutBindings, descriptorSetLayout }); }
+	catch (...)
+	{
+		vkDestroyDescriptorSetLayout(m_vkDevice, descriptorSetLayout, nullptr);
+		throw;
+	}
 	return descriptorSetLayout;
 }
 

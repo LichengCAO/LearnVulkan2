@@ -1,32 +1,5 @@
 #include "../pipeline_layout.h"
-#include "shader_program_reflection.h"
 #include "device.h"
-
-auto PipelineLayoutCreateInfo::AddDescriptorSetLayout(
-	DescriptorSetLayout inLayout) -> PipelineLayoutCreateInfo&
-{
-	CHECK_TRUE(inLayout.GetVkDescriptorSetLayout() != VK_NULL_HANDLE, "Invalid descriptor set layout!");
-
-	m_descriptorSetLayouts.push_back(std::move(inLayout));
-	return *this;
-}
-
-auto PipelineLayoutCreateInfo::AddPushConstantRange(
-	VkShaderStageFlags inStages,
-	uint32_t inOffset,
-	uint32_t inSize) -> PipelineLayoutCreateInfo&
-{
-	CHECK_TRUE(inStages != 0, "Push constant stages cannot be empty!");
-	CHECK_TRUE(inSize > 0, "Push constant size must be greater than zero!");
-
-	VkPushConstantRange range{};
-	range.stageFlags = inStages;
-	range.offset = inOffset;
-	range.size = inSize;
-
-	m_pushConstantRanges.push_back(range);
-	return *this;
-}
 
 PipelineLayout::~PipelineLayout()
 {
@@ -34,21 +7,30 @@ PipelineLayout::~PipelineLayout()
 
 void PipelineLayout::Create(const PipelineLayoutCreateInfo& inCreateInfo)
 {
+	CHECK_TRUE(inCreateInfo.IsFinalized(), "Pipeline layout create info must be finalized!");
 	CHECK_TRUE(m_vkPipelineLayout == VK_NULL_HANDLE, "Pipeline layout already created!");
-	auto layouts = inCreateInfo.m_descriptorSetLayouts;
-	auto pushConstantRanges = inCreateInfo.m_pushConstantRanges;
-	std::vector<std::map<uint32_t, VkDescriptorSetLayoutBinding>> descriptorBindings;
+	const auto& data = *inCreateInfo.m_finalized;
+	const auto& properties = MyDevice::GetInstance().GetCachedPhysicalDeviceProperties();
+	for (const auto& range : data.pushConstants)
+	{
+		CHECK_TRUE(range.offset <= properties.limits.maxPushConstantsSize &&
+			range.size <= properties.limits.maxPushConstantsSize - range.offset,
+			"Push constant range exceeds device limits!");
+	}
+
+	auto pushConstantRanges = data.pushConstants;
+	auto descriptorBindings = data.bindings;
+	auto nameToSetBinding = data.names;
+	auto ambiguousNames = data.ambiguousNames;
+	std::vector<DescriptorSetLayout> layouts(data.layouts.size());
 
 	std::vector<VkDescriptorSetLayout> descriptorSetLayouts;
 	descriptorSetLayouts.reserve(layouts.size());
-	descriptorBindings.reserve(layouts.size());
-	for (const DescriptorSetLayout& descriptorSetLayout : layouts)
+	for (size_t index = 0; index < layouts.size(); ++index)
 	{
-		CHECK_TRUE(
-			descriptorSetLayout.GetVkDescriptorSetLayout() != VK_NULL_HANDLE,
-			"Pipeline layout contains an invalid descriptor set layout!");
-		descriptorSetLayouts.push_back(descriptorSetLayout.GetVkDescriptorSetLayout());
-		descriptorBindings.emplace_back(descriptorSetLayout.m_descriptorBindings.begin(), descriptorSetLayout.m_descriptorBindings.end());
+		// Empty descriptions still create layouts to preserve sparse set indices.
+		layouts[index].Create(data.layouts[index]);
+		descriptorSetLayouts.push_back(layouts[index].GetVkDescriptorSetLayout());
 	}
 
 	VkPipelineLayoutCreateInfo layoutInfo{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
@@ -57,50 +39,13 @@ void PipelineLayout::Create(const PipelineLayoutCreateInfo& inCreateInfo)
 	layoutInfo.pushConstantRangeCount = static_cast<uint32_t>(pushConstantRanges.size());
 	layoutInfo.pPushConstantRanges = pushConstantRanges.data();
 
-	m_vkPipelineLayout = MyDevice::GetInstance().CreatePipelineLayout(layoutInfo);
+	const VkPipelineLayout pipelineLayout = MyDevice::GetInstance().CreatePipelineLayout(layoutInfo);
 	m_descriptorSetLayouts = std::move(layouts);
 	m_pushConstantRanges = std::move(pushConstantRanges);
 	m_descriptorBindings = std::move(descriptorBindings);
-	m_nameToSetBinding.clear();
-	m_ambiguousNames.clear();
-}
-
-void PipelineLayout::Create(const ShaderProgramReflection& reflection)
-{
-	CHECK_TRUE(m_vkPipelineLayout == VK_NULL_HANDLE, "Pipeline layout already created!");
-	auto nameToSetBinding = reflection.GetNameToSetBinding();
-	auto ambiguousNames = reflection.GetAmbiguousNames();
-	const auto& reflectedPushConstants = reflection.GetVkPushConstantRanges();
-	if (!reflectedPushConstants.empty())
-	{
-		VkPhysicalDeviceProperties properties{};
-		vkGetPhysicalDeviceProperties(MyDevice::GetInstance().vkPhysicalDevice, &properties);
-		for (const auto& range : reflectedPushConstants)
-			CHECK_TRUE(range.offset <= properties.limits.maxPushConstantsSize &&
-			    range.size <= properties.limits.maxPushConstantsSize - range.offset,
-			    "Reflected push constant range exceeds device limits!");
-	}
-
-	PipelineLayoutCreateInfo createInfo;
-	for (const auto& bindings : reflection.GetVkDescriptorBindings())
-	{
-		DescriptorSetLayoutCreateInfo layoutCreateInfo;
-		for (const auto& [bindingIndex, binding] : bindings)
-		{
-			CHECK_TRUE(binding.pImmutableSamplers == nullptr, "Immutable samplers are not supported by reflection-driven layouts!");
-			layoutCreateInfo.SetBinding(bindingIndex, binding.descriptorType, binding.stageFlags, binding.descriptorCount);
-		}
-		// Empty layouts preserve sparse set indices.
-		DescriptorSetLayout layout;
-		layout.Create(layoutCreateInfo);
-		createInfo.AddDescriptorSetLayout(std::move(layout));
-	}
-	for (const auto& range : reflectedPushConstants)
-		createInfo.AddPushConstantRange(range.stageFlags, range.offset, range.size);
-
-	Create(createInfo);
 	m_nameToSetBinding = std::move(nameToSetBinding);
 	m_ambiguousNames = std::move(ambiguousNames);
+	m_vkPipelineLayout = pipelineLayout;
 }
 
 void PipelineLayout::Destroy()

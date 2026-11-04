@@ -202,6 +202,7 @@ void CreateColorPass(RenderPass& pass, VkFormat format = VK_FORMAT_R8G8B8A8_UNOR
         subpass.AddColorAttachment(index, name);
     }
     info.AddSubpass("main", subpass);
+    info.Finalize();
     pass.Create(info);
 }
 

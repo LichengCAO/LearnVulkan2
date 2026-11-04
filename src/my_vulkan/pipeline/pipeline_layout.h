@@ -5,25 +5,7 @@
 
 class ShaderProgramReflection;
 
-class PipelineLayoutCreateInfo final
-{
-public:
-	PipelineLayoutCreateInfo() = default;
-	PipelineLayoutCreateInfo(const PipelineLayoutCreateInfo&) = default;
-	PipelineLayoutCreateInfo(PipelineLayoutCreateInfo&&) noexcept = default;
-	auto operator=(const PipelineLayoutCreateInfo&) -> PipelineLayoutCreateInfo& = default;
-	auto operator=(PipelineLayoutCreateInfo&&) noexcept -> PipelineLayoutCreateInfo& = default;
-	~PipelineLayoutCreateInfo() = default;
-
-	auto AddDescriptorSetLayout(DescriptorSetLayout inLayout) -> PipelineLayoutCreateInfo&;
-	auto AddPushConstantRange(VkShaderStageFlags inStages, uint32_t inOffset, uint32_t inSize) -> PipelineLayoutCreateInfo&;
-
-private:
-	friend class PipelineLayout;
-
-	std::vector<DescriptorSetLayout> m_descriptorSetLayouts;
-	std::vector<VkPushConstantRange> m_pushConstantRanges;
-};
+#include "pipeline_layout_create_info.h"
 
 class PipelineLayout final
 {
@@ -46,7 +28,6 @@ public:
 	~PipelineLayout();
 
 	void Create(const PipelineLayoutCreateInfo& inCreateInfo);
-	void Create(const ShaderProgramReflection& inReflection);
 	void Destroy();
 	auto GetVkPipelineLayout() const -> VkPipelineLayout { return m_vkPipelineLayout; };
 	auto GetDescriptorSetLayout(uint32_t inSet) const -> const DescriptorSetLayout&;

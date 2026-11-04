@@ -46,6 +46,7 @@
 			}\
 		}while(0)
 
+#ifndef CHECK_TRUE
 #define CHECK_TRUE(X, ...) \
 	CHECK_TRUE_IMPL(X __VA_OPT__(, ) __VA_ARGS__, "Check failed!")
 
@@ -56,5 +57,6 @@ if(!(condition)){\
 failedMessage);\
 }\
 }while(0)
+#endif
 
 #define CONTAIN_BITS(a, bits) (((a) & (bits)) == (bits)) 

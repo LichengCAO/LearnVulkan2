@@ -35,11 +35,12 @@ struct CommandBufferTestProbe
             image.m_imageInformation.mipLevels = otherImage.m_imageInformation.mipLevels = 8;
             image.m_imageInformation.arrayLayers = otherImage.m_imageInformation.arrayLayers = 6;
             pass.m_snapshot.resource = MakeIntrusive<VulkanDetail::RenderPassResource>(Handle<VkRenderPass>(301), nullptr);
-            pass.m_snapshot.description = MakeIntrusive<VulkanDetail::RenderPassDescription>();
-            pass.m_snapshot.description->subpassInfos.resize(2);
+            auto description = std::make_shared<VulkanDetail::RenderPassDescription>();
+            description->subpassInfos.resize(2);
             VkClearValue clear{};
             clear.color.float32[0] = 0.25f;
-            pass.m_snapshot.description->clearValues.push_back(clear);
+            description->clearValues.push_back(clear);
+            pass.m_snapshot.description = std::move(description);
             framebuffer.m_resource = MakeIntrusive<VulkanDetail::FramebufferResource>(Handle<VkFramebuffer>(302), nullptr,
                 std::vector<VulkanDetail::ResourceReference>{pass.m_snapshot.resource});
             framebuffer.m_renderPass = pass.m_snapshot;

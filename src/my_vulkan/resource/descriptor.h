@@ -17,20 +17,7 @@ class DescriptorSetAllocator;
 class DynamicDescriptorSetAllocator;
 class PipelineLayout;
 
-class DescriptorSetLayoutCreateInfo final
-{
-private:
-	std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding> m_descriptorBindings;
-
-	friend class DescriptorSetLayout;
-
-public:
-	auto SetBinding(
-		uint32_t inBinding,
-		VkDescriptorType inType,
-		VkShaderStageFlags inStages,
-		uint32_t inDescriptorCount = 1) -> DescriptorSetLayoutCreateInfo&;
-};
+#include "pipeline/pipeline_layout_create_info.h"
 
 class DescriptorSetLayout final
 {

@@ -770,6 +770,7 @@ void RenderGraphInstance::_CreateManagedRenderPasses()
 			ManagedRenderPass managedRenderPass;
 			managedRenderPass.attachmentPlans = managedPlan.attachments;
 			managedRenderPass.renderPass = std::make_unique<RenderPass>();
+			renderPassInfo.Finalize();
 			managedRenderPass.renderPass->Create(renderPassInfo);
 
 			CHECK_TRUE(!managedPlan.attachments.empty(), "Managed render pass has no attachments!");

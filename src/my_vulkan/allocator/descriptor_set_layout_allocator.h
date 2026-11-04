@@ -33,5 +33,6 @@ public:
 
 	void Create(VkDevice inDevice);
 	auto Allocate(const DescriptorSetLayout& inLayout) -> VkDescriptorSetLayout;
+	auto Allocate(const std::vector<VkDescriptorSetLayoutBinding>& inSortedBindings) -> VkDescriptorSetLayout;
 	void Destroy();
 };

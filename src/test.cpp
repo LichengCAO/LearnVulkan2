@@ -1847,6 +1847,9 @@ void RunShaderBindingTests();
 #endif
 
 void RunCommandBufferTests();
+void RunCreateInfoFinalizeTests();
+void RunHostCreateInfoFinalizeTests();
+void RunRenderPassFinalizeTests();
 void RunResourceLifetimeTests();
 void RunResourceSubmissionTests();
 
@@ -1854,6 +1857,9 @@ auto main() -> int
 {
 	try
 	{
+		RunCreateInfoFinalizeTests();
+		RunHostCreateInfoFinalizeTests();
+		RunRenderPassFinalizeTests();
 		RunCommandBufferTests();
 		RunResourceLifetimeTests();
 		RunResourceSubmissionTests();

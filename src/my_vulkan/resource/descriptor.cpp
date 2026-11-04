@@ -204,31 +204,28 @@ namespace
 	}
 }
 
-auto DescriptorSetLayoutCreateInfo::SetBinding(
-	uint32_t inBinding,
-	VkDescriptorType inType,
-	VkShaderStageFlags inStages,
-	uint32_t inDescriptorCount) -> DescriptorSetLayoutCreateInfo&
-{
-	CHECK_TRUE(inDescriptorCount > 0, "Descriptor count must be greater than zero!");
-	VkDescriptorSetLayoutBinding binding{};
-	binding.binding = inBinding;
-	binding.descriptorType = inType;
-	binding.stageFlags = inStages;
-	binding.descriptorCount = inDescriptorCount;
-	m_descriptorBindings[inBinding] = binding;
-	return *this;
-}
 
 DescriptorSetLayout::~DescriptorSetLayout() = default;
 
 void DescriptorSetLayout::Create(const DescriptorSetLayoutCreateInfo& inCreateInfo)
 {
 	CHECK_TRUE(m_vkDescriptorSetLayout == VK_NULL_HANDLE, "Descriptor set layout is already created!");
-	m_descriptorBindings = inCreateInfo.m_descriptorBindings;
+	auto bindings = inCreateInfo.m_descriptorBindings;
 	DescriptorSetLayoutAllocator* allocator = MyDevice::GetInstance().GetDescriptorSetLayoutAllocator();
 	CHECK_TRUE(allocator != nullptr, "Descriptor set layout allocator is not created!");
-	m_vkDescriptorSetLayout = allocator->Allocate(*this);
+	VkDescriptorSetLayout handle = VK_NULL_HANDLE;
+	if (inCreateInfo.m_finalizedBindings)
+		handle = allocator->Allocate(*inCreateInfo.m_finalizedBindings);
+	else
+	{
+		std::vector<VkDescriptorSetLayoutBinding> sorted;
+		sorted.reserve(bindings.size());
+		for (const auto& [index, binding] : bindings) sorted.push_back(binding);
+		std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) -> bool { return a.binding < b.binding; });
+		handle = allocator->Allocate(sorted);
+	}
+	m_descriptorBindings = std::move(bindings);
+	m_vkDescriptorSetLayout = handle;
 }
 
 void DescriptorSetLayout::Destroy()

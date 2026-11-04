@@ -43,6 +43,7 @@ RayTracingShaderProgram::~RayTracingShaderProgram()
 
 void RayTracingShaderProgram::Create(const RayTracingShaderProgramCreateInfo& inCreateInfo)
 {
+	CHECK_TRUE(inCreateInfo.IsFinalized(), "RayTracingShaderProgramCreateInfo must be finalized before Create!");
 	CHECK_TRUE(m_vkPipeline == VK_NULL_HANDLE && GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE,
 	    "Ray tracing program already created!");
 	try
@@ -240,38 +241,31 @@ void RayTracingShaderProgram::_Create(const RayTracingShaderProgramCreateInfo& i
 	VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingProperties{};
 	CHECK_TRUE(vkCreateRayTracingPipelinesKHR && vkGetRayTracingShaderGroupHandlesKHR,
 	    "Ray tracing pipeline extension is unavailable!");
-	CHECK_TRUE(!inCreateInfo.m_shaderGroups.empty(), "Ray tracing pipeline needs shader groups!");
-	CHECK_TRUE(std::any_of(inCreateInfo.m_shaderGroups.begin(), inCreateInfo.m_shaderGroups.end(), [](const auto& group) -> bool
-	    { return group.type == ShaderTableType::RayGeneration; }),
-	    "Ray tracing pipeline needs a ray generation group!");
-	auto resolved = ShaderDetail::Resolve(inCreateInfo.m_shaders, m_shaderModules);
-	m_pipelineLayout.Create(resolved.reflection);
-	const auto& stages = resolved.stages;
-	std::vector<VkRayTracingShaderGroupCreateInfoKHR> records;
-	for (const auto& group : inCreateInfo.m_shaderGroups)
-	{
-		auto record = group.record;
-		for (auto* index : {&record.generalShader, &record.closestHitShader, &record.intersectionShader, &record.anyHitShader})
-			if (*index != VK_SHADER_UNUSED_KHR)
-				*index = resolved.indices.at(*index);
-		records.push_back(record);
-	}
+	const auto& finalized = *inCreateInfo.m_finalized;
 	device.GetPhysicalDeviceRayTracingProperties(rayTracingProperties);
-	CHECK_TRUE(inCreateInfo.m_maxRayRecursionDepth > 0 && inCreateInfo.m_maxRayRecursionDepth <= rayTracingProperties.maxRayRecursionDepth,
+	CHECK_TRUE(finalized.recursionDepth <= rayTracingProperties.maxRayRecursionDepth,
 	    "Ray tracing recursion depth exceeds device limits!");
+	std::vector<VkPipelineShaderStageCreateInfo> stages;
+	ShaderDetail::CreateStages(finalized.shaders, m_shaderModules, stages);
+	m_pipelineLayout.Create(finalized.layout);
+	std::vector<VkRayTracingShaderGroupCreateInfoKHR> records;
+	for (const auto& group : finalized.groups)
+	{
+		records.push_back(group.record);
+	}
 	VkPipeline& pipelineToInit = m_vkPipeline;
 	uint32_t& countToInit = m_shaderGroupCount;
 
-	countToInit = static_cast<uint32_t>(inCreateInfo.m_shaderGroups.size());
+	countToInit = static_cast<uint32_t>(finalized.groups.size());
 	const VkPipelineLayout layoutToInit = GetLayout().GetVkPipelineLayout();
 
 	pipelineInfo.pNext = nullptr;
 	pipelineInfo.flags = 0;
 	pipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
 	pipelineInfo.pStages = stages.data();
-	pipelineInfo.groupCount = static_cast<uint32_t>(inCreateInfo.m_shaderGroups.size());
+	pipelineInfo.groupCount = static_cast<uint32_t>(finalized.groups.size());
 	pipelineInfo.pGroups = records.data();
-	pipelineInfo.maxPipelineRayRecursionDepth = inCreateInfo.m_maxRayRecursionDepth;
+	pipelineInfo.maxPipelineRayRecursionDepth = finalized.recursionDepth;
 	pipelineInfo.pLibraryInfo = nullptr;
 	pipelineInfo.pLibraryInterface = nullptr;
 	pipelineInfo.pDynamicState = nullptr;
@@ -300,128 +294,16 @@ void RayTracingShaderProgram::_Create(const RayTracingShaderProgramCreateInfo& i
 		"Failed to get group handle data!");
 
 	m_groupSet.Reset();
-	for (size_t i = 0; i < inCreateInfo.m_shaderGroups.size(); ++i)
+	for (size_t i = 0; i < finalized.groups.size(); ++i)
 	{
-		const auto& group = inCreateInfo.m_shaderGroups[i];
+		const auto& group = finalized.groups[i];
 		RayTracingShaderGroupSet::GroupData data{group.type, std::vector<uint8_t>(uHandleSizeDevice, 0u)};
 		memcpy(data.handle.data(), groupData.data() + i * uHandleSizeHost, uHandleSizeHost);
 		m_groupSet.m_groups.emplace(group.name, std::move(data));
 	}
 }
 
-auto RayTracingShaderProgramCreateInfo::CustomizeMaxRecursionDepth(uint32_t inMaxDepth) -> RayTracingShaderProgramCreateInfo&
-{
-	m_maxRayRecursionDepth = inMaxDepth;
-
-	return *this;
-}
-
-auto RayTracingShaderProgramCreateInfo::CustomizePipelineCache(VkPipelineCache inCache) -> RayTracingShaderProgramCreateInfo&
-{
-	m_vkPipelineCache = inCache;
-
-	return *this;
-}
-
 auto RayTracingShaderProgram::GetLayout() const -> const PipelineLayout&
 {
 	return m_pipelineLayout;
-}
-
-void RayTracingShaderProgramCreateInfo::_ValidateGroupName(std::string_view inName) const
-{
-	CHECK_TRUE(!inName.empty(), "Ray tracing shader group name is empty!");
-	CHECK_TRUE(std::none_of(m_shaderGroups.begin(), m_shaderGroups.end(), [&](const auto& group) -> bool
-	    { return group.name == inName; }), "Duplicate ray tracing shader group name: " + std::string(inName));
-}
-
-auto RayTracingShaderProgramCreateInfo::_RegisterShader(const ShaderDetail::Request& shader) -> uint32_t
-{
-	const auto index = static_cast<uint32_t>(m_shaders.size());
-	m_shaders.push_back(shader);
-	return index;
-}
-
-auto RayTracingShaderProgramCreateInfo::_AddGeneralShaderGroup(std::string_view inName,
-    const ShaderDetail::Request& inInfo, ShaderTableType inType) -> RayTracingShaderProgramCreateInfo&
-{
-	_ValidateGroupName(inName);
-	const auto previousShaderCount = m_shaders.size();
-	try
-	{
-		VkRayTracingShaderGroupCreateInfoKHR record{VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR};
-		record.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-		record.generalShader = _RegisterShader(inInfo);
-		record.closestHitShader = VK_SHADER_UNUSED_KHR;
-		record.anyHitShader = VK_SHADER_UNUSED_KHR;
-		record.intersectionShader = VK_SHADER_UNUSED_KHR;
-		m_shaderGroups.push_back({std::string(inName), inType, record});
-	}
-	catch (...)
-	{
-		m_shaders.resize(previousShaderCount);
-		throw;
-	}
-	return *this;
-}
-
-auto RayTracingShaderProgramCreateInfo::_AddHitShaderGroup(std::string_view inName,
-    const std::optional<ShaderDetail::Request>& inClosestHit, const ShaderDetail::Request* inIntersection,
-    const std::optional<ShaderDetail::Request>& inAnyHit) -> RayTracingShaderProgramCreateInfo&
-{
-	_ValidateGroupName(inName);
-	const auto previousShaderCount = m_shaders.size();
-	try
-	{
-		VkRayTracingShaderGroupCreateInfoKHR record{VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR};
-		record.type = inIntersection ? VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR :
-		    VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-		record.generalShader = VK_SHADER_UNUSED_KHR;
-		record.closestHitShader = inClosestHit ? _RegisterShader(*inClosestHit) : VK_SHADER_UNUSED_KHR;
-		record.intersectionShader = inIntersection ? _RegisterShader(*inIntersection) : VK_SHADER_UNUSED_KHR;
-		record.anyHitShader = inAnyHit ? _RegisterShader(*inAnyHit) : VK_SHADER_UNUSED_KHR;
-		m_shaderGroups.push_back({std::string(inName), ShaderTableType::Hit, record});
-	}
-	catch (...)
-	{
-		m_shaders.resize(previousShaderCount);
-		throw;
-	}
-	return *this;
-}
-
-auto RayTracingShaderProgramCreateInfo::AddRayGenerationShaderGroup(
-    std::string_view name, std::string_view file) -> RayTracingShaderProgramCreateInfo&
-{
-	return _AddGeneralShaderGroup(name, ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_RAYGEN_BIT_KHR), ShaderTableType::RayGeneration);
-}
-
-auto RayTracingShaderProgramCreateInfo::AddMissShaderGroup(
-    std::string_view name, std::string_view file) -> RayTracingShaderProgramCreateInfo&
-{
-	return _AddGeneralShaderGroup(name, ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_MISS_BIT_KHR), ShaderTableType::Miss);
-}
-
-auto RayTracingShaderProgramCreateInfo::AddCallableShaderGroup(
-    std::string_view name, std::string_view file) -> RayTracingShaderProgramCreateInfo&
-{
-	return _AddGeneralShaderGroup(name, ShaderDetail::MakeRequest(file, VK_SHADER_STAGE_CALLABLE_BIT_KHR), ShaderTableType::Callable);
-}
-
-auto RayTracingShaderProgramCreateInfo::AddTriangleHitShaderGroup(std::string_view name,
-    std::optional<std::string_view> closestFile, std::optional<std::string_view> anyFile) -> RayTracingShaderProgramCreateInfo&
-{
-	const auto closest = ShaderDetail::MakeOptionalRequest(closestFile, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
-	const auto any = ShaderDetail::MakeOptionalRequest(anyFile, VK_SHADER_STAGE_ANY_HIT_BIT_KHR);
-	return _AddHitShaderGroup(name, closest, nullptr, any);
-}
-
-auto RayTracingShaderProgramCreateInfo::AddProceduralHitShaderGroup(std::string_view name,
-    std::optional<std::string_view> closestFile, std::string_view intersectionFile,
-    std::optional<std::string_view> anyFile) -> RayTracingShaderProgramCreateInfo&
-{
-	const auto closest = ShaderDetail::MakeOptionalRequest(closestFile, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
-	const auto intersection = ShaderDetail::MakeRequest(intersectionFile, VK_SHADER_STAGE_INTERSECTION_BIT_KHR);
-	const auto any = ShaderDetail::MakeOptionalRequest(anyFile, VK_SHADER_STAGE_ANY_HIT_BIT_KHR);
-	return _AddHitShaderGroup(name, closest, &intersection, any);
 }

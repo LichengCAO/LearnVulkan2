@@ -29,6 +29,11 @@ endif()
 #show folder in IDE
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
+include(cmake/rhi_host.cmake)
+if(NOT LEARN_VULKAN_BUILD_DEVICE)
+    return()
+endif()
+
 #add_subdirectory(src)
 configure_file (
     "${PROJECT_SOURCE_DIR}/src/config.h.in"
@@ -53,6 +58,7 @@ macro(source_group_by_dir source_files)
 endmacro(source_group_by_dir)
 
 file(GLOB_RECURSE SOURCES "src/*.cpp")
+list(REMOVE_ITEM SOURCES ${RHI_HOST_SOURCES})
 file(GLOB_RECURSE HEADERS "src/*.h" "src/*.hpp")
 list(FILTER SOURCES EXCLUDE REGEX "/build[^/]*/")
 list(FILTER HEADERS EXCLUDE REGEX "/build[^/]*/")
@@ -119,6 +125,7 @@ set_target_properties(ExternalLibs PROPERTIES FOLDER "ThirdParty")
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "./src/")
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${SHADERC_INCLUDE_DIR}")
 target_link_libraries(${CMAKE_PROJECT_NAME} PUBLIC ExternalLibs)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE rhi_host)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE "${SHADERC_LIBRARY}")
 if(SHADERC_RUNTIME_LIBRARY)
     add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD

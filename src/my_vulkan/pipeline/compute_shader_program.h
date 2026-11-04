@@ -4,19 +4,7 @@
 #include "private/shader.h"
 #include "resource/descriptor.h"
 
-class ComputeShaderProgramCreateInfo final
-{
-private:
-	friend class ComputeShaderProgram;
-
-	std::string m_spirvFile;
-	VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;
-
-public:
-	auto Reset() -> ComputeShaderProgramCreateInfo&;
-	auto SetShader(std::string_view inSpirv) -> ComputeShaderProgramCreateInfo&;
-	auto CustomizePipelineCache(VkPipelineCache inCache) -> ComputeShaderProgramCreateInfo&;
-};
+#include "shader_program_create_info.h"
 
 class ComputeShaderProgram final
 {

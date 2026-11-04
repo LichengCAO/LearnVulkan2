@@ -34,6 +34,7 @@ class MyDevice final
     friend struct ResourceSubmissionTestProbe;
 	friend struct ShaderBindingTestProbe;
 	friend struct ResourceLifetimeTestProbe;
+	friend struct CreateInfoFinalizeTestProbe;
 private:
 	struct QueueFamilyIndices
 	{
@@ -63,6 +64,9 @@ private:
 
 	vkb::Instance		m_instance;
 	vkb::PhysicalDevice m_physicalDevice;
+	VkPhysicalDeviceProperties m_cachedPhysicalDeviceProperties{};
+	VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_cachedRayTracingProperties{
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR };
 	vkb::Device			m_device;
 	vkb::DispatchTable	m_dispatchTable;
 	vkb::Swapchain		m_swapchain;
@@ -200,6 +204,7 @@ public:
 	auto IsPipelineCacheValid(const VkPipelineCacheHeaderVersionOne& inCacheHeader) const -> bool;
 
 	void GetPhysicalDeviceRayTracingProperties(VkPhysicalDeviceRayTracingPipelinePropertiesKHR& outProperties) const;
+	auto GetCachedPhysicalDeviceProperties() const -> const VkPhysicalDeviceProperties&;
 
 	auto GetVkDevice()->VkDevice { return vkDevice; };
 

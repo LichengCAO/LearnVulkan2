@@ -392,47 +392,6 @@ VkAttachmentDescription AttachmentDescriptionBuilder::Build() const
 }
 #endif
 
-auto GraphicsShaderProgramCreateInfo::Reset() -> GraphicsShaderProgramCreateInfo&
-{
-	m_shaders.clear();
-	m_defaultColors.clear();
-	m_defaultDepth.reset();
-	return *this;
-}
-
-auto GraphicsShaderProgramCreateInfo::_AddShader(std::string_view file, VkShaderStageFlagBits stage) -> GraphicsShaderProgramCreateInfo&
-{
-	CHECK_TRUE(std::none_of(m_shaders.begin(), m_shaders.end(), [stage](const auto& shader) -> bool
-	    { return shader.stage == stage; }), "Duplicate graphics shader stage!");
-	m_shaders.push_back(ShaderDetail::MakeRequest(file, stage));
-	return *this;
-}
-
-auto GraphicsShaderProgramCreateInfo::AddVertexShader(std::string_view file) -> GraphicsShaderProgramCreateInfo&
-{
-	return _AddShader(file, VK_SHADER_STAGE_VERTEX_BIT);
-}
-
-auto GraphicsShaderProgramCreateInfo::AddFragmentShader(std::string_view file) -> GraphicsShaderProgramCreateInfo&
-{
-	return _AddShader(file, VK_SHADER_STAGE_FRAGMENT_BIT);
-}
-
-auto GraphicsShaderProgramCreateInfo::AddGeometryShader(std::string_view file) -> GraphicsShaderProgramCreateInfo&
-{
-	return _AddShader(file, VK_SHADER_STAGE_GEOMETRY_BIT);
-}
-
-auto GraphicsShaderProgramCreateInfo::AddTaskShader(std::string_view file) -> GraphicsShaderProgramCreateInfo&
-{
-	return _AddShader(file, VK_SHADER_STAGE_TASK_BIT_EXT);
-}
-
-auto GraphicsShaderProgramCreateInfo::AddMeshShader(std::string_view file) -> GraphicsShaderProgramCreateInfo&
-{
-	return _AddShader(file, VK_SHADER_STAGE_MESH_BIT_EXT);
-}
-
 void GraphicsPipelineStateInfo::Reset()
 {
 	m_vertexBindingDescriptions.clear();
@@ -471,28 +430,16 @@ GraphicsShaderProgram::~GraphicsShaderProgram()
 
 void GraphicsShaderProgram::Create(const GraphicsShaderProgramCreateInfo& inCreateInfo)
 {
-	CHECK_TRUE(!inCreateInfo.m_shaders.empty(), "Graphics shader program needs shaders!");
+	CHECK_TRUE(inCreateInfo.IsFinalized(), "GraphicsShaderProgramCreateInfo must be finalized before Create!");
 	CHECK_TRUE(m_cachedGraphicsPipelines.empty(), "Graphics shader program already has cached pipelines!");
 	CHECK_TRUE(GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE, "Graphics shader program already created!");
 
-	auto hasStage = [&](VkShaderStageFlagBits stage) -> bool
-	{
-		return std::any_of(inCreateInfo.m_shaders.begin(), inCreateInfo.m_shaders.end(),
-		    [stage](const auto& shader) -> bool { return shader.stage == stage; });
-	};
-	const bool vertex = hasStage(VK_SHADER_STAGE_VERTEX_BIT);
-	const bool geometry = hasStage(VK_SHADER_STAGE_GEOMETRY_BIT);
-	const bool mesh = hasStage(VK_SHADER_STAGE_MESH_BIT_EXT);
-	const bool task = hasStage(VK_SHADER_STAGE_TASK_BIT_EXT);
-	CHECK_TRUE(!(vertex || geometry) || !(mesh || task), "Traditional and mesh graphics stages cannot be mixed!");
-	CHECK_TRUE(!task || mesh, "Task shader requires a mesh shader!");
-	CHECK_TRUE(vertex || mesh, "Graphics program requires a vertex or mesh shader!");
 	try
 	{
-		auto resolved = ShaderDetail::Resolve(inCreateInfo.m_shaders, m_shaderModules);
-		m_shaderStages = std::move(resolved.stages);
-		m_pipelineLayout.Create(resolved.reflection);
-		_CreateDefaults(inCreateInfo, resolved.reflection);
+		const auto& data = *inCreateInfo.m_finalized;
+		ShaderDetail::CreateStages(data.shaders, m_shaderModules, m_shaderStages);
+		m_pipelineLayout.Create(data.layout);
+		_CreateDefaults(inCreateInfo);
 	}
 	catch (...)
 	{
@@ -675,169 +622,19 @@ auto GraphicsShaderProgram::GetVkPipeline(const GraphicsPipelineStateInfo& inSta
 	return pipeline;
 }
 
-namespace
+void GraphicsShaderProgram::_CreateDefaults(const GraphicsShaderProgramCreateInfo& info)
 {
-	auto VertexFormatSize(VkFormat format) -> uint32_t
-	{
-		if (format >= VK_FORMAT_R16_UINT && format <= VK_FORMAT_R16_SFLOAT)
-			return 2;
-		if (format >= VK_FORMAT_R16G16_UINT && format <= VK_FORMAT_R16G16_SFLOAT)
-			return 4;
-		if (format >= VK_FORMAT_R16G16B16_UINT && format <= VK_FORMAT_R16G16B16_SFLOAT)
-			return 6;
-		if (format >= VK_FORMAT_R16G16B16A16_UINT && format <= VK_FORMAT_R16G16B16A16_SFLOAT)
-			return 8;
-		if (format >= VK_FORMAT_R32_UINT && format <= VK_FORMAT_R32G32B32A32_SFLOAT)
-			return 4 * (1 + (static_cast<uint32_t>(format) - VK_FORMAT_R32_UINT) / 3);
-		// 64-bit inputs have extra location rules: use an explicit vertex layout.
-		return 0;
-	}
-	auto IsDepthFormat(VkFormat format) -> bool
-	{
-		return format >= VK_FORMAT_D16_UNORM && format <= VK_FORMAT_D32_SFLOAT_S8_UINT && format != VK_FORMAT_S8_UINT;
-	}
-	auto NumericCategory(VkFormat format) -> uint32_t
-	{
-		switch (format)
-		{
-		case VK_FORMAT_R8_UINT:
-		case VK_FORMAT_R8G8_UINT:
-		case VK_FORMAT_R8G8B8_UINT:
-		case VK_FORMAT_B8G8R8_UINT:
-		case VK_FORMAT_R8G8B8A8_UINT:
-		case VK_FORMAT_B8G8R8A8_UINT:
-		case VK_FORMAT_A8B8G8R8_UINT_PACK32:
-		case VK_FORMAT_A2R10G10B10_UINT_PACK32:
-		case VK_FORMAT_A2B10G10R10_UINT_PACK32:
-		case VK_FORMAT_R16_UINT:
-		case VK_FORMAT_R16G16_UINT:
-		case VK_FORMAT_R16G16B16_UINT:
-		case VK_FORMAT_R16G16B16A16_UINT:
-		case VK_FORMAT_R32_UINT:
-		case VK_FORMAT_R32G32_UINT:
-		case VK_FORMAT_R32G32B32_UINT:
-		case VK_FORMAT_R32G32B32A32_UINT:
-			return 1;
-		case VK_FORMAT_R8_SINT:
-		case VK_FORMAT_R8G8_SINT:
-		case VK_FORMAT_R8G8B8_SINT:
-		case VK_FORMAT_B8G8R8_SINT:
-		case VK_FORMAT_R8G8B8A8_SINT:
-		case VK_FORMAT_B8G8R8A8_SINT:
-		case VK_FORMAT_A8B8G8R8_SINT_PACK32:
-		case VK_FORMAT_A2R10G10B10_SINT_PACK32:
-		case VK_FORMAT_A2B10G10R10_SINT_PACK32:
-		case VK_FORMAT_R16_SINT:
-		case VK_FORMAT_R16G16_SINT:
-		case VK_FORMAT_R16G16B16_SINT:
-		case VK_FORMAT_R16G16B16A16_SINT:
-		case VK_FORMAT_R32_SINT:
-		case VK_FORMAT_R32G32_SINT:
-		case VK_FORMAT_R32G32B32_SINT:
-		case VK_FORMAT_R32G32B32A32_SINT:
-			return 2;
-		default:
-			return 0;
-		}
-	}
-} // namespace
-auto GraphicsShaderProgramCreateInfo::SetDefaultColorAttachment(
-    uint32_t location, VkFormat format, VkImageLayout finalLayout) -> GraphicsShaderProgramCreateInfo&
-{
-	CHECK_TRUE(format != VK_FORMAT_UNDEFINED && format != VK_FORMAT_MAX_ENUM && !IsDepthFormat(format) &&
-	               format != VK_FORMAT_S8_UINT,
-	    "Invalid color attachment format!");
-	CHECK_TRUE(finalLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ||
-	               finalLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR || finalLayout == VK_IMAGE_LAYOUT_GENERAL ||
-	               finalLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ||
-	               finalLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-	    "Unsupported default color final layout!");
-	m_defaultColors[location] = {format, finalLayout};
-	return *this;
+    const auto& data = *info.m_finalized;
+    m_defaultState.m_vertexBindingDescriptions = data.vertexBindings;
+    m_defaultState.m_vertexAttributeDescriptions = data.vertexAttributes;
+    m_automaticVertexInputSupported = data.automaticVertexInputSupported;
+    if (!data.defaultRenderPass) return;
+    m_defaultRenderPass = std::make_unique<RenderPass>();
+    m_defaultRenderPass->Create(*data.defaultRenderPass);
+    m_defaultState.m_renderPass = m_defaultRenderPass->_GetSnapshot();
+    if (m_automaticVertexInputSupported) GetVkPipeline({});
 }
-auto GraphicsShaderProgramCreateInfo::SetDefaultDepthAttachment(VkFormat format) -> GraphicsShaderProgramCreateInfo&
-{
-	CHECK_TRUE(IsDepthFormat(format), "Invalid depth attachment format!");
-	m_defaultDepth = format;
-	return *this;
-}
-void GraphicsShaderProgram::_CreateDefaults(const GraphicsShaderProgramCreateInfo& info,
-    const ShaderProgramReflection& reflection)
-{
-	const auto byLocation = [](const auto& left, const auto& right) -> bool { return left.location < right.location; };
-	auto inputs = reflection.GetInput(VK_SHADER_STAGE_VERTEX_BIT);
-	std::sort(inputs.begin(), inputs.end(), byLocation);
-	uint32_t stride = 0;
-	for (size_t i = 0; i < inputs.size(); ++i)
-	{
-		const auto& [name, location, format] = inputs[i];
-		const uint32_t size = VertexFormatSize(format);
-		if (!size || (i > 0 && inputs[i - 1].location == location))
-		{
-			m_automaticVertexInputSupported = false;
-			break;
-		}
-		m_defaultState.m_vertexAttributeDescriptions.push_back({location, 0, format, stride});
-		stride += size;
-	}
-	if (stride && m_automaticVertexInputSupported)
-		m_defaultState.m_vertexBindingDescriptions.push_back({0, stride, VK_VERTEX_INPUT_RATE_VERTEX});
-	if (info.m_defaultColors.empty() && !info.m_defaultDepth)
-		return;
 
-	auto outputs = reflection.GetOutput(VK_SHADER_STAGE_FRAGMENT_BIT);
-	std::sort(outputs.begin(), outputs.end(), byLocation);
-	CHECK_TRUE(std::adjacent_find(outputs.begin(), outputs.end(),
-	    [](const auto& left, const auto& right) -> bool { return left.location == right.location; }) == outputs.end(),
-	    "Default render pass requires unique fragment output locations!");
-	CHECK_TRUE(
-	    outputs.size() == info.m_defaultColors.size(), "Default color attachments must cover all fragment outputs!");
-	RenderPassCreateInfo passInfo;
-	SubpassDescription subpass;
-	for (const auto& output : outputs)
-	{
-		const auto location = output.location;
-		const auto format = output.format;
-		const auto it = info.m_defaultColors.find(location);
-		CHECK_TRUE(it != info.m_defaultColors.end(), "Missing default color attachment location!");
-		CHECK_TRUE(format != VK_FORMAT_UNDEFINED, "Default render pass requires simple fragment outputs!");
-		CHECK_TRUE(NumericCategory(format) == NumericCategory(it->second.format),
-		    "Fragment output and attachment numeric types differ!");
-		const std::string name = output.name.empty() ? "color" + std::to_string(location) : output.name;
-		AttachmentDescription attachment;
-		VkClearValue clear{};
-		attachment.CustomizeFormat(it->second.format, clear);
-		attachment.CustomizeFinalLayout(it->second.finalLayout);
-		passInfo.AddAttachment(name, attachment);
-		subpass.AddColorAttachment(location, name);
-	}
-	if (info.m_defaultDepth)
-	{
-		AttachmentDescription attachment;
-		VkClearValue clear{};
-		clear.depthStencil = {1.0f, 0};
-		attachment.CustomizeFormat(*info.m_defaultDepth, clear);
-		attachment.CustomizeFinalLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-		passInfo.AddAttachment("__depth", attachment);
-		subpass.AddDepthStencilAttachment("__depth");
-	}
-	VkPipelineStageFlags stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	VkAccessFlags access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	if (info.m_defaultDepth)
-	{
-		stages |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		access |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-	}
-	subpass.CustomizeAvailableState(stages, access);
-	subpass.AddExternalDependency(stages, access);
-	passInfo.AddSubpass("default", subpass);
-	m_defaultRenderPass = std::make_unique<RenderPass>();
-	m_defaultRenderPass->Create(passInfo);
-	m_defaultState.m_renderPass = m_defaultRenderPass->_GetSnapshot();
-	// Complex vertex layouts remain available through the explicit pipeline-state path.
-	if (m_automaticVertexInputSupported)
-		GetVkPipeline({});
-}
 auto GraphicsShaderProgram::_ResolveState(const GraphicsPipelineStateInfo& input) const -> GraphicsPipelineStateInfo
 {
 	auto state = input;

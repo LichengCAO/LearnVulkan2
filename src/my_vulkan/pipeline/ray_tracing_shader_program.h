@@ -9,14 +9,7 @@ class RayTracingShaderProgram;
 class RayTracingShaderProgramCreateInfo;
 class CommandBuffer;
 
-enum class ShaderTableType : uint8_t
-{
-	RayGeneration = 0,
-	Miss = 1,
-	Hit = 2,
-	Callable = 3,
-	Max = 4
-};
+#include "shader_program_create_info.h"
 
 class RayTracingShaderGroupSet
 {
@@ -96,44 +89,7 @@ public:
 	void Destroy();
 };
 
-class RayTracingShaderProgramCreateInfo final
-{
-	friend class RayTracingShaderProgram;
-	struct ShaderGroup
-	{
-		std::string name;
-		ShaderTableType type;
-		VkRayTracingShaderGroupCreateInfoKHR record;
-	};
-	std::vector<ShaderDetail::Request> m_shaders;
-	std::vector<ShaderGroup> m_shaderGroups;
-	uint32_t m_maxRayRecursionDepth = 1u;
-	VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;
-
-	void _ValidateGroupName(std::string_view inName) const;
-	auto _RegisterShader(const ShaderDetail::Request& inShader) -> uint32_t;
-	auto _AddGeneralShaderGroup(std::string_view inName, const ShaderDetail::Request& inShader, ShaderTableType inType) -> RayTracingShaderProgramCreateInfo&;
-	auto _AddHitShaderGroup(std::string_view inName, const std::optional<ShaderDetail::Request>& inClosestHit,
-	    const ShaderDetail::Request* inIntersection, const std::optional<ShaderDetail::Request>& inAnyHit) -> RayTracingShaderProgramCreateInfo&;
-
-public:
-	// Optional, default: 1
-	auto CustomizeMaxRecursionDepth(uint32_t inMaxDepth) -> RayTracingShaderProgramCreateInfo&;
-
-	// Optional, default: VK_NULL_HANDLE
-	auto CustomizePipelineCache(VkPipelineCache inCache) -> RayTracingShaderProgramCreateInfo&;
-
-	auto AddRayGenerationShaderGroup(std::string_view inName, std::string_view inSpirv) -> RayTracingShaderProgramCreateInfo&;
-	auto AddMissShaderGroup(std::string_view inName, std::string_view inSpirv) -> RayTracingShaderProgramCreateInfo&;
-	auto AddCallableShaderGroup(std::string_view inName, std::string_view inSpirv) -> RayTracingShaderProgramCreateInfo&;
-	auto AddTriangleHitShaderGroup(std::string_view inName,
-	    std::optional<std::string_view> inClosestHitSpirv = std::nullopt,
-	    std::optional<std::string_view> inAnyHitSpirv = std::nullopt) -> RayTracingShaderProgramCreateInfo&;
-	auto AddProceduralHitShaderGroup(std::string_view inName,
-	    std::optional<std::string_view> inClosestHitSpirv,
-	    std::string_view inIntersectionSpirv,
-	    std::optional<std::string_view> inAnyHitSpirv = std::nullopt) -> RayTracingShaderProgramCreateInfo&;
-};
+#include "shader_program_create_info.h"
 
 class RayTracingShaderProgram
 {

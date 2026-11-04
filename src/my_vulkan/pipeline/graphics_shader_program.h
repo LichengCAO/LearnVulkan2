@@ -32,32 +32,7 @@ public:
 	void SetRenderPassSubpass(const RenderPass& inRenderPass, uint32_t inSubpassIndex = 0);
 };
 
-class GraphicsShaderProgramCreateInfo final
-{
-	friend class GraphicsShaderProgram;
-	friend class CommandBuffer;
-
-private:
-	struct ColorAttachment
-	{
-		VkFormat format;
-		VkImageLayout finalLayout;
-	};
-	std::vector<ShaderDetail::Request> m_shaders;
-	auto _AddShader(std::string_view inSpirv, VkShaderStageFlagBits inStage) -> GraphicsShaderProgramCreateInfo&;
-	std::map<uint32_t, ColorAttachment> m_defaultColors;
-	std::optional<VkFormat> m_defaultDepth;
-
-public:
-	auto SetDefaultColorAttachment(uint32_t inLocation, VkFormat inFormat, VkImageLayout inFinalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) -> GraphicsShaderProgramCreateInfo&;
-	auto SetDefaultDepthAttachment(VkFormat inFormat) -> GraphicsShaderProgramCreateInfo&;
-	auto Reset() -> GraphicsShaderProgramCreateInfo&;
-	auto AddVertexShader(std::string_view inSpirv) -> GraphicsShaderProgramCreateInfo&;
-	auto AddFragmentShader(std::string_view inSpirv) -> GraphicsShaderProgramCreateInfo&;
-	auto AddGeometryShader(std::string_view inSpirv) -> GraphicsShaderProgramCreateInfo&;
-	auto AddTaskShader(std::string_view inSpirv) -> GraphicsShaderProgramCreateInfo&;
-	auto AddMeshShader(std::string_view inSpirv) -> GraphicsShaderProgramCreateInfo&;
-};
+#include "shader_program_create_info.h"
 
 class GraphicsShaderProgram final
 {
@@ -77,7 +52,7 @@ private:
 	bool m_automaticVertexInputSupported = true;
 
 private:
-	void _CreateDefaults(const GraphicsShaderProgramCreateInfo& inInfo, const ShaderProgramReflection& inReflection);
+	void _CreateDefaults(const GraphicsShaderProgramCreateInfo& inInfo);
 	auto _ResolveState(const GraphicsPipelineStateInfo& inState) const -> GraphicsPipelineStateInfo;
 	auto _CreateVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) const -> VkPipeline;
 	auto _HashGraphicsPipelineStateInfo(const GraphicsPipelineStateInfo& inStateInfo) const -> size_t;
