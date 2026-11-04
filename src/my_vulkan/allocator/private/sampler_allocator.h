@@ -1,6 +1,8 @@
 #pragma once
 #include "resource/sampler.h"
 
+// Owns cached native samplers until Destroy. All cache access is externally
+// synchronized by the owner; borrowed Sampler wrappers do not retain entries.
 class SamplerAllocator final
 {
 private:
@@ -11,41 +13,25 @@ private:
 		auto operator==(const SamplerInfo& inOther) const->bool;
 	};
 
-	struct SamplerEntry
-	{
-		VkSampler vkSampler = VK_NULL_HANDLE;
-		SamplerInfo info{};
-		uint32_t refCount = 0;
-		uint32_t nextId = static_cast<uint32_t>(~0);
-	};
-
 	struct SamplerInfoHash
 	{
 		auto operator()(const SamplerInfo& inInfo) const->std::size_t;
 	};
 
 private:
-	std::unordered_map<SamplerInfo, uint32_t, SamplerInfoHash> m_mapInfoToIndex;
-	std::unordered_map<VkSampler, uint32_t> m_mapSamplerToIndex;
-	std::vector<SamplerEntry> m_vecSamplerEntries;
-	uint32_t m_currentId = static_cast<uint32_t>(~0);
-
-private:
-	auto _AllocateSamplerWithResult(const SamplerInfo& inInfo)->std::pair<VkSampler, VkResult>;
+	std::unordered_map<SamplerInfo, VkSampler, SamplerInfoHash> m_mapInfoToSampler;
 
 public:
 	SamplerAllocator() = default;
 	SamplerAllocator(const SamplerAllocator&) = delete;
-	SamplerAllocator& operator=(const SamplerAllocator&) = delete;
-	~SamplerAllocator();
+	auto operator=(const SamplerAllocator&) -> SamplerAllocator& = delete;
+	~SamplerAllocator() noexcept;
 
-	auto Create()->void;
+	void Create();
 
 	auto AllocateSamplerWithResult(const SamplerCreateInfo& inCreateInfo)->std::pair<VkSampler, VkResult>;
 
 	auto AllocateSampler(const SamplerCreateInfo& inCreateInfo)->VkSampler;
 
-	auto FreeSampler(VkSampler& inoutSampler)->void;
-
-	auto Destroy()->void;
+	void Destroy() noexcept;
 };

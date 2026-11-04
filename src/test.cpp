@@ -1855,6 +1855,7 @@ void RunResourceLifetimeTests();
 void RunResourceSubmissionTests();
 void RunDescriptorPoolTests();
 auto RunDescriptorPoolFatalCase(std::string_view argument) -> int;
+void RunSamplerCreationTests();
 
 auto main(int argc, char** argv) -> int
 {
@@ -1872,6 +1873,7 @@ auto main(int argc, char** argv) -> int
 		RunResourceLifetimeTests();
 		RunResourceSubmissionTests();
 		RunDescriptorPoolTests();
+		RunSamplerCreationTests();
 #ifdef LEARN_VULKAN_HAS_SHADER_BINDING_TESTS
 		RunShaderBindingTests();
 #endif

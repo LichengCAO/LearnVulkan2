@@ -1,6 +1,4 @@
 #include "sampler.h"
-#include "device.h"
-#include "allocator/private/sampler_allocator.h"
 
 SamplerCreateInfo::SamplerCreateInfo()
 {
@@ -98,27 +96,7 @@ auto SamplerCreateInfo::GetVkSamplerCreateInfo() const->const VkSamplerCreateInf
 	return m_createInfo;
 }
 
-Sampler::~Sampler()
-{
-	assert(m_vkSampler == VK_NULL_HANDLE);
-}
-
-auto Sampler::Create(const SamplerCreateInfo& inCreateInfo)->void
-{
-	CHECK_TRUE(m_vkSampler == VK_NULL_HANDLE, "Sampler already created!");
-
-	m_vkSampler = MyDevice::GetInstance().GetSamplerAllocator()->AllocateSampler(inCreateInfo);
-}
-
-auto Sampler::Destroy()->void
-{
-	if (m_vkSampler != VK_NULL_HANDLE)
-	{
-		MyDevice::GetInstance().GetSamplerAllocator()->FreeSampler(m_vkSampler);
-	}
-}
-
-auto Sampler::GetVkSampler() const->VkSampler
+auto Sampler::GetVkSampler() const noexcept -> VkSampler
 {
 	return m_vkSampler;
 }

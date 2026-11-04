@@ -4,7 +4,7 @@
 
 class DescriptorSetLayoutCreateInfo final
 {
-    friend class DescriptorSetLayout;
+    friend class MyDevice;
     friend class PipelineLayout;
     friend class PipelineLayoutCreateInfo;
     std::unordered_map<uint32_t, VkDescriptorSetLayoutBinding> m_descriptorBindings;

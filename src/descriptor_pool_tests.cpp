@@ -4,9 +4,11 @@
 #include "my_vulkan/resource/descriptor.h"
 #include "my_vulkan/resource/private/dynamic_descriptor_pool.h"
 #include <atomic>
+#include <barrier>
 #include <mutex>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <cstdlib>
 #include <exception>
 #include <string_view>
@@ -18,11 +20,6 @@
 #endif
 
 auto RunDescriptorPoolFatalCase(std::string_view argument) -> int;
-
-static_assert(!std::is_copy_constructible_v<DescriptorSet>);
-static_assert(std::is_nothrow_move_constructible_v<DescriptorSet>);
-static_assert(std::is_nothrow_move_assignable_v<DescriptorSet>);
-static_assert(std::is_nothrow_destructible_v<DescriptorSet>);
 
 struct DescriptorPoolTestProbe
 {
@@ -55,6 +52,11 @@ struct NativeState
     VkResult createResult = VK_SUCCESS, allocateResult = VK_SUCCESS;
     VkResult freeResult = VK_SUCCESS, resetResult = VK_SUCCESS;
     uint32_t failResetCall = 0;
+    uint32_t layoutAttempts = 0, layoutCreates = 0, layoutDestroys = 0;
+    VkResult layoutResult = VK_SUCCESS;
+    const std::thread::id layoutApiThread = std::this_thread::get_id();
+    std::atomic_uint layoutWorkerCalls{0};
+    std::unordered_map<VkDescriptorSetLayout, std::vector<VkDescriptorSetLayoutBinding>> layouts;
     bool throwUpdate = false;
     std::atomic_bool overlap{false};
     std::mutex mutex;
@@ -70,9 +72,32 @@ struct NativeCall
     NativeCall() { if (state->active.fetch_add(1) != 0) state->overlap = true; std::this_thread::yield(); }
     ~NativeCall() { --state->active; }
 };
-auto VKAPI_PTR CreateLayout(VkDevice, const VkDescriptorSetLayoutCreateInfo*, const VkAllocationCallbacks*, VkDescriptorSetLayout* output) -> VkResult
-{ *output = Handle<VkDescriptorSetLayout>(state->next++); return VK_SUCCESS; }
-void VKAPI_PTR DestroyLayout(VkDevice, VkDescriptorSetLayout, const VkAllocationCallbacks*) {}
+auto VKAPI_PTR CreateLayout(VkDevice device, const VkDescriptorSetLayoutCreateInfo* info,
+    const VkAllocationCallbacks*, VkDescriptorSetLayout* output) -> VkResult
+{
+    if (std::this_thread::get_id() != state->layoutApiThread) ++state->layoutWorkerCalls;
+    std::lock_guard lock(state->mutex);
+    ++state->layoutAttempts;
+    CHECK_TRUE(device == Handle<VkDevice>(1) && info->sType == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        "Layout creation must use its live Device and initialized native info!");
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    if (info->bindingCount != 0) bindings.assign(info->pBindings, info->pBindings + info->bindingCount);
+    for (size_t index = 1; index < bindings.size(); ++index)
+        CHECK_TRUE(bindings[index - 1].binding < bindings[index].binding, "Native layout bindings must be sorted!");
+    if (state->layoutResult != VK_SUCCESS) return state->layoutResult;
+    *output = Handle<VkDescriptorSetLayout>(state->next++);
+    state->layouts.emplace(*output, std::move(bindings));
+    ++state->layoutCreates;
+    return VK_SUCCESS;
+}
+void VKAPI_PTR DestroyLayout(VkDevice device, VkDescriptorSetLayout layout, const VkAllocationCallbacks*)
+{
+    if (std::this_thread::get_id() != state->layoutApiThread) ++state->layoutWorkerCalls;
+    std::lock_guard lock(state->mutex);
+    CHECK_TRUE(device == Handle<VkDevice>(1) && state->layouts.erase(layout) == 1,
+        "Each cached native layout must be destroyed exactly once with its owning Device!");
+    ++state->layoutDestroys;
+}
 auto VKAPI_PTR CreatePool(VkDevice, const VkDescriptorPoolCreateInfo* info, const VkAllocationCallbacks*, VkDescriptorPool* output) -> VkResult
 {
     std::lock_guard lock(state->mutex);
@@ -86,7 +111,12 @@ auto VKAPI_PTR CreatePool(VkDevice, const VkDescriptorPoolCreateInfo* info, cons
     return VK_SUCCESS;
 }
 void VKAPI_PTR DestroyPool(VkDevice, VkDescriptorPool pool, const VkAllocationCallbacks*)
-{ ++state->destroys; state->pages.erase(pool); }
+{
+    NativeCall call;
+    std::lock_guard lock(state->mutex);
+    std::erase_if(state->sets, [pool](const auto& entry) -> bool { return entry.second == pool; });
+    ++state->destroys; state->pages.erase(pool);
+}
 auto VKAPI_PTR Allocate(VkDevice, const VkDescriptorSetAllocateInfo* info, VkDescriptorSet* output) -> VkResult
 {
     NativeCall call;
@@ -123,6 +153,7 @@ auto VKAPI_PTR Reset(VkDevice, VkDescriptorPool pool, VkDescriptorPoolResetFlags
 }
 void VKAPI_PTR Update(VkDevice, uint32_t count, const VkWriteDescriptorSet* writes, uint32_t copyCount, const VkCopyDescriptorSet*)
 {
+    std::lock_guard lock(state->mutex);
     ++state->updates;
     CHECK_TRUE(count != 0 && writes != nullptr && copyCount == 0, "Descriptor update must publish its write array!");
     for (uint32_t i = 0; i < count; ++i)
@@ -173,13 +204,21 @@ struct Environment
     ~Environment()
     {
         auto allocator = DescriptorPoolTestProbe::Exchange(std::move(previousAllocator));
-        allocator->Destroy(); allocator.reset();
+        if (allocator) allocator->Destroy();
+        allocator.reset();
         MyDevice::GetInstance().vkDevice = previousDevice;
         vkCreateDescriptorSetLayout = previousLayout; vkDestroyDescriptorSetLayout = previousDestroyLayout;
         vkCreateDescriptorPool = previousCreate; vkDestroyDescriptorPool = previousDestroy;
         vkAllocateDescriptorSets = previousAllocate; vkFreeDescriptorSets = previousFree;
         vkResetDescriptorPool = previousReset; vkUpdateDescriptorSets = previousUpdate;
         state = nullptr;
+    }
+    void DestroyLayoutCache()
+    {
+        auto allocator = DescriptorPoolTestProbe::Exchange({});
+        if (!allocator) return;
+        allocator->Destroy();
+        allocator->Destroy();
     }
 };
 template<class F> void ExpectFailure(F&& function)
@@ -188,95 +227,255 @@ template<class F> void ExpectFailure(F&& function)
     try { function(); } catch (const std::exception&) { failed = true; }
     CHECK_TRUE(failed, "Descriptor operation should reject this request!");
 }
-template<class T = DescriptorPool> void TestReferenceCountedPoolLifetime()
+void TestLayoutCacheAndBorrowedMetadata()
 {
-    if constexpr (!std::is_base_of_v<RefCounted, T>)
+    DescriptorSetLayout surviving;
     {
-        CHECK_TRUE(false, "DescriptorPool must support reference-counted ownership!");
+        Environment environment;
+        auto& device = MyDevice::GetInstance();
+        VkDescriptorSetLayout handle = VK_NULL_HANDLE;
+        {
+            DescriptorSetLayoutCreateInfo info;
+            info.SetBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 2);
+            info.SetBinding(1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_FRAGMENT_BIT);
+            DescriptorSetLayout first;
+            device.GetOrCreateDescriptorSetLayout(first, info);
+            handle = first.GetVkDescriptorSetLayout();
+            const auto& native = state->layouts.at(handle);
+            CHECK_TRUE(native.size() == 2 && native[0].binding == 1 && native[1].binding == 4 && native[1].descriptorCount == 2,
+                "Device must sort and preserve sparse native layout bindings!");
+            surviving = first;
+            DescriptorSetLayout copied(first);
+            DescriptorSetLayout moved(std::move(copied));
+            DescriptorSetLayout assigned;
+            assigned = std::move(moved);
+            first = {};
+            copied = {};
+            CHECK_TRUE(assigned.GetVkDescriptorSetLayout() == handle &&
+                assigned.GetVkDescriptorSetLayoutBinding(4).descriptorCount == 2 && state->layoutDestroys == 0,
+                "Layout copy, move and clear must preserve other values without touching native lifetime!");
+            DescriptorSetLayoutCreateInfo reordered;
+            reordered.SetBinding(1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_FRAGMENT_BIT);
+            reordered.SetBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 2);
+            DescriptorSetLayout same;
+            device.GetOrCreateDescriptorSetLayout(same, reordered);
+            CHECK_TRUE(same.GetVkDescriptorSetLayout() == handle && state->layoutAttempts == 1,
+                "Equivalent layout descriptions must share the cached handle regardless of setting order!");
+            for (int variant = 0; variant < 4; ++variant)
+            {
+                auto changed = info;
+                if (variant == 0) changed.SetBinding(4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 2);
+                if (variant == 1) changed.SetBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT, 2);
+                if (variant == 2) changed.SetBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 3);
+                if (variant == 3) changed.SetBinding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+                DescriptorSetLayout distinct;
+                device.GetOrCreateDescriptorSetLayout(distinct, changed);
+                CHECK_TRUE(distinct.GetVkDescriptorSetLayout() != handle, "Each layout binding field must participate in cache identity!");
+            }
+            info.SetBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT, 7);
+        }
+        CHECK_TRUE(surviving.GetVkDescriptorSetLayout() == handle &&
+            surviving.GetVkDescriptorSetLayoutBinding(4).descriptorCount == 2 &&
+            surviving.GetVkDescriptorSetLayoutBinding(4).stageFlags == VK_SHADER_STAGE_COMPUTE_BIT,
+            "A layout must retain its binding snapshot after input mutation or destruction!");
+        surviving = {};
+        DescriptorSetLayoutCreateInfo original;
+        original.SetBinding(1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_FRAGMENT_BIT);
+        original.SetBinding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 2);
+        device.GetOrCreateDescriptorSetLayout(surviving, original);
+        CHECK_TRUE(surviving.GetVkDescriptorSetLayout() == handle && state->layoutCreates == 5 && state->layoutDestroys == 0,
+            "The cache must survive destruction of every previous layout wrapper!");
+        DescriptorSetLayout empty, sameEmpty;
+        device.GetOrCreateDescriptorSetLayout(empty, {});
+        device.GetOrCreateDescriptorSetLayout(sameEmpty, {});
+        CHECK_TRUE(empty.GetVkDescriptorSetLayout() != VK_NULL_HANDLE && empty.GetVkDescriptorSetLayout() == sameEmpty.GetVkDescriptorSetLayout() &&
+            state->layouts.at(empty.GetVkDescriptorSetLayout()).empty(), "Empty layouts must be valid and cached!");
+        environment.DestroyLayoutCache();
+        CHECK_TRUE(state->layoutCreates == 6 && state->layoutDestroys == 6 && state->layouts.empty(),
+            "Cache destruction and repeated cleanup must destroy each native layout exactly once!");
+        CHECK_TRUE(surviving.GetVkDescriptorSetLayout() == handle && surviving.GetVkDescriptorSetLayoutBinding(4).descriptorCount == 2,
+            "Cache destruction must not mutate borrowed wrapper values!");
     }
-    else
+    surviving = {};
+}
+void TestLayoutDeviceGuardsAndRetry()
+{
+    Environment environment;
+    auto& device = MyDevice::GetInstance();
+    DescriptorSetLayoutCreateInfo info;
+    info.SetBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+    DescriptorSetLayout layout;
+    device.vkDevice = VK_NULL_HANDLE;
+    ExpectFailure([&] { device.GetOrCreateDescriptorSetLayout(layout, info); });
+    device.vkDevice = Handle<VkDevice>(1);
+    auto allocator = DescriptorPoolTestProbe::Exchange({});
+    ExpectFailure([&] { device.GetOrCreateDescriptorSetLayout(layout, info); });
+    static_cast<void>(DescriptorPoolTestProbe::Exchange(std::move(allocator)));
+    auto previous = DescriptorPoolTestProbe::Exchange(std::make_unique<DescriptorSetLayoutAllocator>());
+    ExpectFailure([&] { device.GetOrCreateDescriptorSetLayout(layout, info); });
+    static_cast<void>(DescriptorPoolTestProbe::Exchange(std::move(previous)));
+    CHECK_TRUE(layout.GetVkDescriptorSetLayout() == VK_NULL_HANDLE && state->layoutAttempts == 0,
+        "An unavailable Device or allocator must reject creation before native calls!");
+    state->layoutResult = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    ExpectFailure([&] { device.GetOrCreateDescriptorSetLayout(layout, info); });
+    ExpectFailure([&] { static_cast<void>(layout.GetVkDescriptorSetLayoutBinding(2)); });
+    CHECK_TRUE(layout.GetVkDescriptorSetLayout() == VK_NULL_HANDLE && state->layouts.empty() && state->layoutDestroys == 0,
+        "Native failure must leave the output and its metadata empty without a cached native object!");
+    state->layoutResult = VK_SUCCESS;
+    device.GetOrCreateDescriptorSetLayout(layout, info);
+    const auto handle = layout.GetVkDescriptorSetLayout();
+    state->layoutResult = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    const auto calls = state->layoutAttempts;
+    ExpectFailure([&] { device.GetOrCreateDescriptorSetLayout(layout, {}); });
+    CHECK_TRUE(layout.GetVkDescriptorSetLayout() == handle && layout.GetVkDescriptorSetLayoutBinding(2).descriptorCount == 1 &&
+        state->layoutAttempts == calls, "Duplicate creation must preserve the existing layout before native calls!");
+    DescriptorSetLayout cached;
+    device.GetOrCreateDescriptorSetLayout(cached, info);
+    CHECK_TRUE(cached.GetVkDescriptorSetLayout() == handle && state->layoutAttempts == calls,
+        "A cache hit must not enter a failing native creation path!");
+    auto changed = info;
+    changed.SetBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 2);
+    DescriptorSetLayout retry;
+    ExpectFailure([&] { device.GetOrCreateDescriptorSetLayout(retry, changed); });
+    state->layoutResult = VK_SUCCESS;
+    device.GetOrCreateDescriptorSetLayout(retry, changed);
+    CHECK_TRUE(retry.GetVkDescriptorSetLayout() != handle && retry.GetVkDescriptorSetLayoutBinding(2).descriptorCount == 2,
+        "A failed new description must be retryable without corrupting old cache entries!");
+}
+void TestLayoutValueOperationsDuringCacheCreation()
+{
+    Environment environment;
+    auto& device = MyDevice::GetInstance();
+    DescriptorSetLayoutCreateInfo info;
+    info.SetBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+    DescriptorSetLayout source;
+    device.GetOrCreateDescriptorSetLayout(source, info);
+    const auto handle = source.GetVkDescriptorSetLayout();
+    std::barrier start(5);
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 4; ++i) threads.emplace_back([&]
+    {
+        start.arrive_and_wait();
+        for (int j = 0; j < 100; ++j)
+        {
+            DescriptorSetLayout copy(source);
+            DescriptorSetLayout moved(std::move(copy));
+            CHECK_TRUE(moved.GetVkDescriptorSetLayout() == handle && moved.GetVkDescriptorSetLayoutBinding(0).descriptorCount == 1,
+                "Independent wrapper operations must preserve their binding metadata!");
+            moved = {};
+        }
+    });
+    start.arrive_and_wait();
+    for (uint32_t count = 2; count <= 21; ++count)
+    {
+        info.SetBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, count);
+        DescriptorSetLayout created;
+        device.GetOrCreateDescriptorSetLayout(created, info);
+    }
+    for (auto& thread : threads) thread.join();
+    CHECK_TRUE(state->layoutCreates == 21 && state->layoutDestroys == 0 && state->layoutWorkerCalls == 0,
+        "Only the externally serialized cache owner may call native layout APIs; wrapper operations remain host-only!");
+}
+void TestOutstandingAllocationCleanup()
+{
+    Environment environment;
+    DescriptorSetLayout layout; MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layout, {});
+    auto pool = MakeIntrusive<DescriptorPool>(); pool->Create();
+    for (int i = 0; i < 3; ++i) static_cast<void>(pool->Allocate(layout, {}));
+    CHECK_TRUE(state->freeAttempts == 0 && state->destroys == 0 && state->sets.size() == 3,
+        "The pool must retain allocations even when callers discard their handles!");
+    pool.reset();
+    CHECK_TRUE(state->destroys == state->creates && state->sets.empty() && state->freeAttempts == 0,
+        "Pool destruction must reclaim abandoned allocations without individual frees!");
+}
+void TestReferenceCountedPoolLifetime()
+{
+    static_assert(std::is_base_of_v<RefCounted, DescriptorPool>);
+    VkDescriptorSet dangling = VK_NULL_HANDLE;
     {
         Environment environment;
         DescriptorSetLayoutCreateInfo info;
         info.SetBinding(0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT);
-        DescriptorSetLayout layout; layout.Create(info);
+        DescriptorSetLayout layout; MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layout, info);
         uint32_t destroyedViews = 0;
-        auto view = DescriptorPoolTestProbe::ImageViewForTest([&](VkImageView) { ++destroyedViews; });
+        auto view = DescriptorPoolTestProbe::ImageViewForTest([&](VkImageView)
+        {
+            CHECK_TRUE(state->pages.empty(), "Destroy native pools before releasing their retained views!");
+            ++destroyedViews;
+        });
         DescriptorSetDesc description; description.SetImage(0, view);
-        auto pool = MakeIntrusive<T>(); pool->Create();
+        auto pool = MakeIntrusive<DescriptorPool>(); pool->Create();
         auto otherOwner = pool;
-        auto first = pool->Allocate(layout, description);
-        auto second = pool->Allocate(layout, description);
-        auto destinationPool = MakeIntrusive<T>(); destinationPool->Create();
-        auto destination = destinationPool->Allocate(layout, description);
-        destinationPool.reset();
+        dangling = pool->Allocate(layout, description);
+        const auto handle = dangling;
         description = {}; view.Reset();
         pool.reset();
-        CHECK_TRUE(state->destroys == 0, "An independent pool owner must keep native pages alive!");
+        CHECK_TRUE(state->destroys == 0 && destroyedViews == 0, "An independent owner must keep the pool and its views alive!");
         otherOwner.reset();
-        CHECK_TRUE(state->destroys == 0 && destroyedViews == 0,
-            "Live sets must retain their pool and image views after external owners release it!");
-        const auto handle = first.GetVkDescriptorSet();
-        DescriptorSet moved(std::move(first));
-        CHECK_TRUE(!first.IsValid() && moved.GetVkDescriptorSet() == handle,
-            "Moving a set must retain its pool after external owners release it!");
-        destination = std::move(moved);
-        CHECK_TRUE(!moved.IsValid() && state->frees == 1 && state->destroys == 1 && destroyedViews == 0,
-            "Move assignment must free its previous set while preserving the source pool!");
-        second = {};
-        CHECK_TRUE(state->frees == 2 && state->destroys == 1 && destroyedViews == 0,
-            "Releasing one set must preserve the pool and views retained by another set!");
-        destination = {};
-        CHECK_TRUE(state->frees == 3 && state->destroys == 2 && state->pages.empty() && state->sets.empty(),
-            "Releasing the last set must free it before destroying its pool exactly once!");
-        CHECK_TRUE(destroyedViews == 1, "Releasing the last set must release its retained image view!");
+        CHECK_TRUE(state->destroys == 1 && destroyedViews == 1 && state->sets.empty() && state->pages.empty(),
+            "A borrowed set must not retain its pool; final owner release reclaims remaining allocations!");
+        CHECK_TRUE(state->freeAttempts == 0 && dangling == handle,
+            "Pool destruction invalidates borrowed handles without individual frees or clearing caller variables!");
     }
 }
-void TestOwnership()
+void TestExplicitFree()
 {
     Environment environment;
-    DescriptorSetLayout layout; layout.Create({});
+    DescriptorSetLayoutCreateInfo info;
+    info.SetBinding(0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT);
+    DescriptorSetLayout layout; MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layout, info);
+    uint32_t destroyedViews = 0;
+    auto view = DescriptorPoolTestProbe::ImageViewForTest([&](VkImageView) { ++destroyedViews; });
+    DescriptorSetDesc description; description.SetImage(0, view);
     auto first = MakeIntrusive<DescriptorPool>();
     auto second = MakeIntrusive<DescriptorPool>(); first->Create(); second->Create();
-    DescriptorSet empty;
-    CHECK_TRUE(!empty.IsValid() && empty.GetVkDescriptorSet() == VK_NULL_HANDLE, "Default set must be empty!");
-    {
-        auto a = first->Allocate(layout, {});
-        auto b = second->Allocate(layout, {});
-        auto handle = a.GetVkDescriptorSet();
-        DescriptorSet moved(std::move(a));
-        CHECK_TRUE(!a.IsValid() && moved.GetVkDescriptorSet() == handle, "Move must transfer the native set!");
-        moved = std::move(moved);
-        CHECK_TRUE(moved.IsValid(), "Self move must preserve ownership!");
-        b = std::move(moved);
-        CHECK_TRUE(state->frees == 1 && !moved.IsValid(), "Move assignment must free its previous set!");
-        CHECK_TRUE(state->destroys == 0, "Pool owners must retain native pages while sets are alive!");
-        b = {};
-        CHECK_TRUE(state->frees == 2, "Assigning empty must free the set exactly once!");
-        auto scoped = first->Allocate(layout, {});
-    }
-    CHECK_TRUE(state->frees == 3, "Scope exit must free the native set!");
-    auto additionalOwner = first;
-    first.reset(); second.reset();
-    CHECK_TRUE(state->destroys == 1, "An additional pool owner must retain native pages even without live sets!");
-    auto retained = additionalOwner->Allocate(layout, {});
-    additionalOwner.reset();
-    CHECK_TRUE(state->destroys == 1, "A set allocated through a remaining owner must retain its pool!");
-    retained = {};
-    CHECK_TRUE(state->frees == 4 && state->destroys == 2 && state->pages.empty() && state->sets.empty(),
-        "The final reference must free its set before destroying native pages exactly once!");
+    VkDescriptorSet empty = VK_NULL_HANDLE;
+    first->Free(empty);
+    auto uncreated = MakeIntrusive<DescriptorPool>();
+    uncreated->Free(empty);
+    auto set = first->Allocate(layout, description);
+    auto independent = first->Allocate(layout, description);
+    CHECK_TRUE(set != independent, "User allocations must not deduplicate descriptions!");
+    first->Free(independent);
+    description = {}; view.Reset();
+    const auto handle = set;
+    const auto attempts = state->freeAttempts;
+    ExpectFailure([&] { second->Free(set); });
+    ExpectFailure([&] { uncreated->Free(set); });
+    auto unknown = Handle<VkDescriptorSet>(99999);
+    ExpectFailure([&] { first->Free(unknown); });
+    CHECK_TRUE(state->freeAttempts == attempts && set == handle && destroyedViews == 0,
+        "A foreign or uncreated pool must reject Free before native calls without changing the set!");
+    CHECK_TRUE(unknown == Handle<VkDescriptorSet>(99999), "An unregistered handle must be rejected without changing it!");
+    state->freeResult = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    ExpectFailure([&] { first->Free(set); });
+    CHECK_TRUE(state->freeAttempts == attempts + 1 && state->sets.contains(handle) &&
+        set == handle && destroyedViews == 0,
+        "Failed explicit Free must retain the allocation, handle and image views for retry!");
+    state->freeResult = VK_SUCCESS;
+    auto oldCopy = set;
+    first->Free(set);
+    CHECK_TRUE(set == VK_NULL_HANDLE && state->frees == 2 && state->sets.empty() && destroyedViews == 1,
+        "Successful Free must release its allocation and dependencies and clear the set!");
+    first->Free(set);
+    CHECK_TRUE(state->freeAttempts == attempts + 2, "Free on a null handle must be a native no-op!");
+    // No intervening allocation can reuse this handle value.
+    ExpectFailure([&] { first->Free(oldCopy); });
+    CHECK_TRUE(oldCopy == handle && state->freeAttempts == attempts + 2,
+        "An old handle copy must be rejected before native Free when its allocation is no longer tracked!");
 }
 void TestGrowthAndFailures()
 {
     Environment environment;
-    DescriptorSetLayout layout; layout.Create({});
+    DescriptorSetLayout layout; MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layout, {});
     auto pool = MakeIntrusive<DescriptorPool>(); pool->Create();
-    std::vector<DescriptorSet> sets;
+    std::vector<VkDescriptorSet> sets;
     for (int i = 0; i < 5; ++i) sets.push_back(pool->Allocate(layout, {}));
     CHECK_TRUE(state->creates == 3, "Full descriptor pages must roll over!");
+    for (auto& set : sets) pool->Free(set);
     sets.clear();
     const auto creates = state->creates;
-    auto reused = pool->Allocate(layout, {}); reused = {};
+    auto reused = pool->Allocate(layout, {}); pool->Free(reused);
     CHECK_TRUE(state->creates == creates, "Freed capacity must be reusable!");
     state->allocateResult = VK_ERROR_OUT_OF_DEVICE_MEMORY;
     const auto allocations = state->allocations;
@@ -297,16 +496,16 @@ void TestGrowthAndFailures()
 
     DescriptorSetLayoutCreateInfo largeInfo;
     largeInfo.SetBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 5000);
-    DescriptorSetLayout large; large.Create(largeInfo);
+    DescriptorSetLayout large; MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(large, largeInfo);
     auto growing = MakeIntrusive<DescriptorPool>(); growing->Create();
     auto largeSet = growing->Allocate(large, {});
     CHECK_TRUE(state->maxStorage >= 5000, "Native budget must fit an oversized layout!");
-    largeSet = {}; growing.reset();
+    growing->Free(largeSet); growing.reset();
 
     DescriptorSetLayoutCreateInfo overflowingInfo;
     overflowingInfo.SetBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, UINT32_MAX);
     overflowingInfo.SetBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 1);
-    DescriptorSetLayout overflowing; overflowing.Create(overflowingInfo);
+    DescriptorSetLayout overflowing; MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(overflowing, overflowingInfo);
     auto checked = MakeIntrusive<DescriptorPool>(); checked->Create();
     const auto callsBefore = state->creates;
     ExpectFailure([&] { auto ignored = checked->Allocate(overflowing, {}); });
@@ -325,7 +524,7 @@ void TestDynamicAndRollback()
     DescriptorSetLayoutCreateInfo info;
     info.SetBinding(0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT);
     info.SetBinding(1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT);
-    DescriptorSetLayout layout; layout.Create(info);
+    DescriptorSetLayout layout; MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layout, info);
     uint32_t destroyedViews = 0;
     auto view = DescriptorPoolTestProbe::ImageViewForTest([&](VkImageView) { ++destroyedViews; });
     DescriptorSetDesc description;
@@ -339,12 +538,12 @@ void TestDynamicAndRollback()
     VulkanDetail::DynamicDescriptorPool dynamic; dynamic.Create();
     state->throwUpdate = true;
     const auto frees = state->frees;
-    ExpectFailure([&] { static_cast<void>(dynamic.GetOrAllocateDescriptorSet(layout, description)); });
+    ExpectFailure([&] { static_cast<void>(dynamic.GetOrAllocateTransient(layout, description)); });
     CHECK_TRUE(state->frees == frees, "Dynamic failure must not individually free native sets!");
     state->throwUpdate = false;
     const auto afterFailedPublication = state->allocations;
     const auto updatesAfterFailure = state->updates;
-    const auto first = dynamic.GetOrAllocateDescriptorSet(layout, description);
+    const auto first = dynamic.GetOrAllocateTransient(layout, description);
     CHECK_TRUE(state->allocations == afterFailedPublication + 1 && state->updates == updatesAfterFailure + 1,
         "A failed dynamic write must not publish a cache entry!");
     for (const auto& [handle, page] : state->pages)
@@ -352,42 +551,105 @@ void TestDynamicAndRollback()
             "Dynamic pools must omit individual-free flags!");
     DescriptorSetDesc reordered; reordered.SetImage(1, view); reordered.SetImage(0, view);
     const auto allocations = state->allocations;
-    CHECK_TRUE(dynamic.GetOrAllocateDescriptorSet(layout, reordered) == first && state->allocations == allocations,
+    CHECK_TRUE(dynamic.GetOrAllocateTransient(layout, reordered) == first && state->allocations == allocations,
         "Equivalent dynamic descriptions must share a cached set!");
     for (uint32_t i = 0; i < 5; ++i)
     {
         DescriptorSetDesc distinct;
         distinct.SetImage(0, view, static_cast<VkImageLayout>(VK_IMAGE_LAYOUT_GENERAL + i));
         state->expectedLayouts[0] = static_cast<VkImageLayout>(VK_IMAGE_LAYOUT_GENERAL + i);
-        static_cast<void>(dynamic.GetOrAllocateDescriptorSet(layout, distinct));
+        static_cast<void>(dynamic.GetOrAllocateTransient(layout, distinct));
     }
     state->expectedLayouts[0] = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     CHECK_TRUE(state->creates >= 4, "Dynamic sets must also roll over full native pages!");
     const auto creates = state->creates;
     dynamic.Reset();
-    static_cast<void>(dynamic.GetOrAllocateDescriptorSet(layout, description));
+    static_cast<void>(dynamic.GetOrAllocateTransient(layout, description));
     CHECK_TRUE(state->creates == creates && state->frees == frees, "Reset must reuse dynamic pages without individual frees!");
     dynamic.Destroy();
     auto retaining = MakeIntrusive<DescriptorPool>(); retaining->Create();
     auto retained = retaining->Allocate(layout, description);
     view.Reset(); description = {}; reordered = {};
-    CHECK_TRUE(destroyedViews == 0, "Live public sets must retain image views independently of descriptions!");
-    retained = {};
+    CHECK_TRUE(destroyedViews == 0, "Pool allocation records must retain image views independently of descriptions!");
+    retaining->Free(retained);
     CHECK_TRUE(destroyedViews == 1, "Freeing the last set must release its retained image view!");
     retaining.reset();
 }
-void TestConcurrentOwnership()
+void TestExternallySynchronizedPoolAccess()
 {
     Environment environment;
     state->limit = 1000;
-    DescriptorSetLayout layout; layout.Create({});
+    DescriptorSetLayout layout; MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layout, {});
     auto pool = MakeIntrusive<DescriptorPool>(); pool->Create();
+    std::mutex poolMutex;
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 4; ++i) threads.emplace_back([&, owner = pool]
+    {
+        for (int j = 0; j < 100; ++j)
+        {
+            VkDescriptorSet set = VK_NULL_HANDLE;
+            {
+                std::lock_guard lock(poolMutex);
+                set = owner->Allocate(layout, {});
+            }
+            std::this_thread::yield();
+            {
+                std::lock_guard lock(poolMutex);
+                owner->Free(set);
+            }
+        }
+    });
+    for (auto& thread : threads) thread.join();
+    CHECK_TRUE(!state->overlap && state->allocations == 400 && state->frees == 400 && state->sets.empty(),
+        "Caller serialization must protect allocation and release through the same pool!");
+    pool.reset();
+    CHECK_TRUE(state->creates == 1 && state->destroys == 1, "Serialized access must reuse and finally destroy its native page!");
+}
+void TestIndependentPoolsOnDifferentThreads()
+{
+    Environment environment;
+    DescriptorSetLayoutCreateInfo info;
+    info.SetBinding(0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT);
+    DescriptorSetLayout layout; MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layout, info);
+    uint32_t destroyedViews = 0;
+    auto view = DescriptorPoolTestProbe::ImageViewForTest([&](VkImageView) { ++destroyedViews; });
+    DescriptorSetDesc description; description.SetImage(0, view);
+    std::barrier start(4);
     std::vector<std::thread> threads;
     for (int i = 0; i < 4; ++i) threads.emplace_back([&]
-    { for (int j = 0; j < 100; ++j) { auto set = pool->Allocate(layout, {}); } });
+    {
+        start.arrive_and_wait();
+        auto pool = MakeIntrusive<DescriptorPool>(); pool->Create();
+        for (int j = 0; j < 100; ++j)
+        {
+            auto set = pool->Allocate(layout, description);
+            pool->Free(set);
+        }
+    });
     for (auto& thread : threads) thread.join();
-    CHECK_TRUE(!state->overlap && state->frees == 400, "Public native allocation and free must be synchronized!");
-    pool.reset();
+    CHECK_TRUE(state->creates == 4 && state->destroys == 4 && state->pages.empty(),
+        "Independent pools must each own and destroy their native pages on their calling thread!");
+    CHECK_TRUE(state->allocations == 400 && state->updates == 400 && state->frees == 400 && state->sets.empty(),
+        "Independent pools must allocate, write and return every set to its source pool!");
+    CHECK_TRUE(destroyedViews == 0, "Worker releases must preserve the externally retained image view!");
+    description = {}; view.Reset();
+    CHECK_TRUE(destroyedViews == 1, "The shared view must be released after all worker references disappear!");
+}
+void TestPoolOwnershipHandoff()
+{
+    Environment environment;
+    DescriptorSetLayout layout; MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layout, {});
+    auto pool = MakeIntrusive<DescriptorPool>(); pool->Create();
+    auto set = pool->Allocate(layout, {});
+    std::thread worker([&, owner = std::move(pool), set = std::exchange(set, VK_NULL_HANDLE)]() mutable
+    {
+        CHECK_TRUE(set != VK_NULL_HANDLE && state->destroys == 0, "Explicit owner handoff must keep the borrowed set usable!");
+        owner->Free(set);
+        owner.reset();
+    });
+    worker.join();
+    CHECK_TRUE(set == VK_NULL_HANDLE && state->frees == 1 && state->destroys == 1 && state->pages.empty() && state->sets.empty(),
+        "A pool may be explicitly freed and destroyed on another thread after exclusive ownership handoff!");
 }
 void TestPartialDynamicResetFailure()
 {
@@ -395,17 +657,17 @@ void TestPartialDynamicResetFailure()
     state->limit = 1;
     DescriptorSetLayoutCreateInfo info;
     info.SetBinding(0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT);
-    DescriptorSetLayout layout; layout.Create(info);
+    DescriptorSetLayout layout; MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layout, info);
     uint32_t destroyedViews = 0;
     VulkanDetail::DynamicDescriptorPool dynamic; dynamic.Create();
     // The empty description is deliberately cached so failure must reject a cache hit too.
-    static_cast<void>(dynamic.GetOrAllocateDescriptorSet(layout, {}));
+    static_cast<void>(dynamic.GetOrAllocateTransient(layout, {}));
     auto view = DescriptorPoolTestProbe::ImageViewForTest([&](VkImageView) { ++destroyedViews; });
     DescriptorSetDesc description; description.SetImage(0, view);
-    static_cast<void>(dynamic.GetOrAllocateDescriptorSet(layout, description));
+    static_cast<void>(dynamic.GetOrAllocateTransient(layout, description));
     description.SetImage(0, view, VK_IMAGE_LAYOUT_GENERAL);
     state->expectedLayouts[0] = VK_IMAGE_LAYOUT_GENERAL;
-    static_cast<void>(dynamic.GetOrAllocateDescriptorSet(layout, description));
+    static_cast<void>(dynamic.GetOrAllocateTransient(layout, description));
     CHECK_TRUE(state->creates == 3, "Partial reset regression needs multiple native pages!");
     description = {}; view.Reset();
     CHECK_TRUE(destroyedViews == 0, "Dynamic cache must retain the view before reset!");
@@ -416,11 +678,11 @@ void TestPartialDynamicResetFailure()
         "A partial native reset must clear all cached descriptions and retained views!");
     const auto allocations = state->allocations;
     const auto creates = state->creates;
-    ExpectFailure([&] { static_cast<void>(dynamic.GetOrAllocateDescriptorSet(layout, {})); });
+    ExpectFailure([&] { static_cast<void>(dynamic.GetOrAllocateTransient(layout, {})); });
     CHECK_TRUE(state->allocations == allocations && state->creates == creates,
         "Failed reset must reject cached and new allocations before native calls!");
     dynamic.Destroy(); dynamic.Create();
-    static_cast<void>(dynamic.GetOrAllocateDescriptorSet(layout, {}));
+    static_cast<void>(dynamic.GetOrAllocateTransient(layout, {}));
     CHECK_TRUE(state->allocations == allocations + 1, "Destroy/Create must recover from a partial reset failure!");
     dynamic.Destroy();
 }
@@ -463,21 +725,25 @@ void ExpectFatalChild(std::string_view argument)
 }
 void TestFatalContracts()
 {
-    ExpectFatalChild("--descriptor-fatal-free");
+    ExpectFatalChild("--descriptor-fatal-rollback");
 }
 }
 auto RunDescriptorPoolFatalCase(std::string_view argument) -> int
 {
-    if (argument != "--descriptor-fatal-free") return -1;
+    if (argument != "--descriptor-fatal-rollback") return -1;
     std::set_terminate(FatalTerminationHandler);
     try
     {
         Environment environment;
-        DescriptorSetLayout layout; layout.Create({});
+        DescriptorSetLayoutCreateInfo info;
+        info.SetBinding(0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT);
+        DescriptorSetLayout layout; MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layout, info);
+        auto view = DescriptorPoolTestProbe::ImageViewForTest([](VkImageView) {});
+        DescriptorSetDesc description; description.SetImage(0, view);
         auto pool = MakeIntrusive<DescriptorPool>(); pool->Create();
-        auto set = pool->Allocate(layout, {});
+        state->throwUpdate = true;
         state->freeResult = VK_ERROR_OUT_OF_DEVICE_MEMORY;
-        set = {};
+        auto set = pool->Allocate(layout, description);
         // Returning normally or throwing is a failed death test.
         std::_Exit(UnexpectedFatalExitCode);
     }
@@ -485,11 +751,17 @@ auto RunDescriptorPoolFatalCase(std::string_view argument) -> int
 }
 void RunDescriptorPoolTests()
 {
+    TestLayoutCacheAndBorrowedMetadata();
+    TestLayoutDeviceGuardsAndRetry();
+    TestLayoutValueOperationsDuringCacheCreation();
+    TestOutstandingAllocationCleanup();
     TestReferenceCountedPoolLifetime();
-    TestOwnership();
+    TestExplicitFree();
     TestGrowthAndFailures();
     TestDynamicAndRollback();
-    TestConcurrentOwnership();
+    TestExternallySynchronizedPoolAccess();
+    TestIndependentPoolsOnDifferentThreads();
+    TestPoolOwnershipHandoff();
     TestPartialDynamicResetFailure();
     TestFatalContracts();
 }

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <limits>
 #include "image.h"
+#include "resource/descriptor.h"
 #include "allocator/private/memory_allocator.h"
 #include "allocator/private/descriptor_set_layout_allocator.h"
 #include "allocator/private/render_pass_allocator.h"
@@ -776,14 +777,33 @@ auto MyDevice::GetRenderPassAllocator() -> RenderPassAllocator*
 	return m_uptrRenderPassAllocator.get();
 }
 
-auto MyDevice::GetDescriptorSetLayoutAllocator() -> DescriptorSetLayoutAllocator*
+void MyDevice::GetOrCreateDescriptorSetLayout(DescriptorSetLayout& outLayout,
+	const DescriptorSetLayoutCreateInfo& inCreateInfo)
 {
-	return m_uptrDescriptorSetLayoutAllocator.get();
+	CHECK_TRUE(outLayout.m_vkDescriptorSetLayout == VK_NULL_HANDLE, "Descriptor set layout is already created!");
+	CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Descriptor set layout creation requires a live device!");
+	CHECK_TRUE(m_uptrDescriptorSetLayoutAllocator != nullptr, "Descriptor set layout allocator is not created!");
+	auto bindings = inCreateInfo.m_descriptorBindings;
+	std::vector<VkDescriptorSetLayoutBinding> sorted;
+	const auto* nativeBindings = inCreateInfo.m_finalizedBindings.get();
+	if (nativeBindings == nullptr)
+	{
+		sorted.reserve(bindings.size());
+		for (const auto& [index, binding] : bindings) sorted.push_back(binding);
+		std::sort(sorted.begin(), sorted.end(), [](const auto& lhs, const auto& rhs) -> bool { return lhs.binding < rhs.binding; });
+		nativeBindings = &sorted;
+	}
+	const auto handle = m_uptrDescriptorSetLayoutAllocator->GetOrCreate(*nativeBindings);
+	outLayout.m_descriptorBindings.swap(bindings);
+	outLayout.m_vkDescriptorSetLayout = handle;
 }
 
-auto MyDevice::GetSamplerAllocator()->SamplerAllocator*
+void MyDevice::GetOrCreateSampler(Sampler& outSampler, const SamplerCreateInfo& inCreateInfo)
 {
-	return m_uptrSamplerAllocator.get();
+	CHECK_TRUE(outSampler.m_vkSampler == VK_NULL_HANDLE, "Sampler already created!");
+	CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Sampler creation requires a live device!");
+	CHECK_TRUE(m_uptrSamplerAllocator != nullptr, "Sampler allocator is not created!");
+	outSampler.m_vkSampler = m_uptrSamplerAllocator->AllocateSampler(inCreateInfo);
 }
 
 VkFence MyDevice::CreateVkFence(

@@ -16,7 +16,6 @@
 后续候选是：
 
 - `BufferView`、`ImageView`
-- `Sampler`
 
 ## Granite 的模式
 
@@ -42,14 +41,14 @@ Granite 使用 `Util::IntrusivePtrEnabled<T>` 加 `Util::IntrusivePtr<T>`。资�
 
 当前两类加速结构已经继承 `RefCounted`，析构时调用幂等的 `Destroy()`；后续仍需在真正使用 `IntrusivePtr` 时统一其引用链和 BLAS/TLAS 描述的所有权语义。
 
-### `Sampler`
+### `Sampler`（不再作为 RefCounted 候选）
 
-Granite 将 sampler 做成线程安全 handle。`my_vulkan` 的 `SamplerAllocator` 已经维护缓存条目的 `refCount`，因此需要先决定对象引用计数是否替代、还是配合 allocator 内部计数，不能直接机械套用。
+`Sampler` 现在是只保存 `VkSampler` 的可复制借用值，复制、移动、赋空和析构均不管理 native 生命周期。`SamplerAllocator` 按描述缓存句柄，由 `MyDevice` 销毁时统一回收，不再维护包装对象的引用计数。缓存访问采用外部同步；具体使用约束见 [Sampler ownership](resource_lifetimes.md#sampler-ownership)。
 
 ## 暂不改造的类型
 
 - `MyDevice`、各类 allocator、`CommandQueue`、`CommandPool`：设备级独占对象，由 `MyDevice` 统一管理。
-- `DescriptorSet`：实际 Vulkan descriptor set 由 descriptor pool 管理，当前对象不拥有独立销毁责任。
+- `VkDescriptorSet`：直接使用 native 句柄，由 `DescriptorPool` 显式分配和回收，不另设 RefCounted 包装。
 - `DescriptorState`、`DescriptorSetState`、各种 `CreateInfo`、pipeline state：值语义或短期构造状态。
 - `CommandBuffer`：当前是命令描述数据，不拥有 Vulkan command buffer。
 - `ShaderModule`、`PipelineLayout`、`RenderPass`、`Framebuffer` 和 ShaderProgram：目前主要由 program 或 RenderGraph 独占，暂时没有资源共享带来的同等收益。

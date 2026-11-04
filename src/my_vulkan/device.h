@@ -13,6 +13,8 @@ class GraphicsPipelineAllocator;
 class ComputePipelineAllocator;
 class RayTracingPipelineAllocator;
 class SamplerAllocator;
+class DescriptorSetLayout;
+class DescriptorSetLayoutCreateInfo;
 
 struct UserInput
 {
@@ -35,6 +37,7 @@ class MyDevice final
 	friend struct ResourceLifetimeTestProbe;
 	friend struct CreateInfoFinalizeTestProbe;
 	friend struct DescriptorPoolTestProbe;
+	friend struct SamplerCreationTestProbe;
 private:
 	struct QueueFamilyIndices
 	{
@@ -178,9 +181,15 @@ public:
 	MemoryAllocator* GetMemoryAllocator();
 	auto GetRenderPassAllocator() -> RenderPassAllocator*;
 
-	auto GetDescriptorSetLayoutAllocator() -> DescriptorSetLayoutAllocator*;
+	// Caller excludes concurrent access to this device's descriptor layout cache,
+	// including cache destruction. Wrapper value operations do not access it.
+	// The target must be empty; success publishes its handle and binding snapshot.
+	void GetOrCreateDescriptorSetLayout(DescriptorSetLayout& outLayout,
+		const DescriptorSetLayoutCreateInfo& inCreateInfo);
 
-	auto GetSamplerAllocator()->SamplerAllocator*;
+	// Caller excludes concurrent access to this device's sampler cache, including
+	// cache destruction. Borrowed Sampler value operations do not access it.
+	void GetOrCreateSampler(Sampler& outSampler, const SamplerCreateInfo& inCreateInfo);
 
 	// Get queue family index by the function,
 	// https://github.com/KhronosGroup/Vulkan-Guide/blob/main/chapters/queues.adoc

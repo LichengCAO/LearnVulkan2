@@ -101,10 +101,94 @@ commands.AppendCommand([nativeView](VkCommandBuffer commandBuffer)
 KeepAlive preserves the native resource version, not the facade's C++ address.
 References captured by a callback must separately remain valid until CPU
 recording completes. Device and allocator lifetimes must cover all surviving
-resource values. Cache mutation and final resource release follow the existing
-device-thread convention.
+resource values. Resource types not yet migrated to the RHI threading policy
+retain their existing device-thread restrictions for cache mutation and final
+resource release.
 
-Buffer, Sampler, Program, acceleration structure and other resource ownership
+Buffer, Program, acceleration structure and other resource ownership
 contracts remain unchanged. Image layout transitions and access synchronization
 remain explicit. Dynamic rendering and imageless framebuffers are outside this
 change.
+
+## Sampler ownership
+
+Sampler is a borrowed handle value. Create it through MyDevice's externally
+synchronized creation entry point:
+
+```cpp
+Sampler sampler;
+device.GetOrCreateSampler(sampler, SamplerCreateInfo{});
+Sampler copy = sampler;
+const auto nativeSampler = copy.GetVkSampler(); // borrowed
+sampler = {}; // clears this value; the cache still owns nativeSampler
+```
+
+Sampler stores only `VkSampler` and has no public `Create()`, `Destroy()`, or
+`Reset()`. Default construction produces a null handle. Copy and move copy the
+handle without changing the move source. Assignment and default destruction do
+not allocate or release resources, access Device state, or wait for the GPU.
+Creation rejects an already initialized target without changing it. Failed
+creation leaves an empty target and permits retry.
+
+SamplerAllocator owns a cache from normalized descriptions to native handles.
+Equivalent descriptions reuse the cached handle even after all wrappers have
+disappeared. MyDevice destroys the entire cache during device teardown; there
+is no per-wrapper release, Reset, or eviction. Each cache entry balances one
+successful native creation, including entries whose handle values are equal.
+Failure to publish a cache entry immediately rolls back that native creation.
+
+The allocator has no internal locks. Callers exclude concurrent access to the
+same sampler cache, including creation, lookup, and cache destruction. Sampler
+value operations access no cache and may run on independent values on other
+threads. Conflicting accesses to the same wrapper still require exclusion.
+
+Borrowed values do not keep MyDevice alive. Finish all native uses, including
+GPU execution, before its sampler cache is destroyed. Values may still exist
+afterward, but their handles must not be used with Vulkan; no validity tracking
+is added. Their subsequent destruction remains a host-only operation.
+
+DescriptorSetDesc and ShaderResources still borrow the Sampler wrapper by
+reference. That wrapper must remain alive and stable through host description
+resolution and descriptor-write construction. After the native handle has been
+copied into descriptors, its validity follows the Device cache's lifetime.
+
+## Descriptor set layout ownership
+
+DescriptorSetLayout borrows a native handle from the Device cache and owns a
+snapshot of its binding metadata. Create a value through the Device:
+
+```cpp
+DescriptorSetLayoutCreateInfo info;
+info.SetBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+DescriptorSetLayout layout;
+device.GetOrCreateDescriptorSetLayout(layout, info);
+auto copy = layout;
+layout = {}; // clears this value; copy retains its handle and binding metadata
+```
+
+There is no object-level Create, Destroy or Reset. Copy and move preserve the
+existing value semantics; their resulting values own their binding information.
+Assignment and destruction release only host storage and never access the
+Device or cache. Clear a value with assignment to `{}`. Creating into a nonempty
+target is rejected without changing it; a failed creation leaves an empty target
+and permits retry. The input description may be modified or destroyed afterward.
+
+Equivalent descriptions share a native layout regardless of binding insertion
+order. Native layouts, including empty ones used for sparse set indices, remain
+cached after all wrappers disappear. Device teardown destroys the cache; wrapper
+values do not keep it alive. Complete every native use before cache destruction.
+Surviving wrappers are safe to clear or destroy, but their old handles are
+invalid and no validity tracking is provided.
+
+Callers serialize creation, cache lookup and cache destruction on the same
+Device descriptor-layout cache. Independent wrapper operations access no cache
+and may run on other threads; modifying the same wrapper still requires
+exclusion. This synchronization is separate from the sampler cache and from
+descriptor-pool allocation and release. Other resource classes retain their
+existing restrictions until their own migration.
+
+DescriptorSetLayoutCreateInfo does not require a new Finalize step. Device
+creation sorts directly supplied bindings and reuses the immutable ordered
+binding arrays already prepared by PipelineLayoutCreateInfo::Finalize. Its
+public allocator getter is removed; internal cache access stays behind the
+Device creation entry point.

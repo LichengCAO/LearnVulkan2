@@ -41,11 +41,20 @@ PipelineLayout layout;
 layout.Create(info);
 ```
 
-To use reflection, call `info.SetReflection(reflection).Finalize()`, then `layout.Create(info)`. The old `layout.Create(reflection)` overload is removed. Sparse set indices retain empty layout descriptions. Native descriptor layouts are allocated during Device Create.
+To use reflection, call `info.SetReflection(reflection).Finalize()`, then `layout.Create(info)`. The old `layout.Create(reflection)` overload is removed. Sparse set indices retain empty layout descriptions. PipelineLayout's Device creation obtains its native descriptor layouts through `MyDevice::GetOrCreateDescriptorSetLayout()`, reusing the ordered binding snapshots produced by Finalize.
+
+Standalone DescriptorSetLayoutCreateInfo keeps its existing SetBinding interface
+and does not require Finalize. Create a wrapper with
+`device.GetOrCreateDescriptorSetLayout(layout, info)`; it owns its binding snapshot
+and borrows the native handle held by the Device cache. It has no public Create,
+Destroy or Reset; clear the value with `layout = {}`. See
+[descriptor set layout ownership](resource_lifetimes.md#descriptor-set-layout-ownership)
+for its external synchronization and lifetime contract. PipelineLayout itself
+retains its current Create/Destroy interface pending its separate migration.
 
 RenderPassCreateInfo::Finalize resolves attachment/subpass names, validates samples and resolve attachments, and owns the arrays and derived metadata. RenderPass::Create consumes that snapshot. Generated default render passes and automatic vertex layouts are finalized as part of GraphicsShaderProgramCreateInfo::Finalize.
 
-Simple Buffer/Image/Sampler CreateInfos retain their previous usage. Command recording, asynchronous recording dispatch, queue submission, explicit waits and resource retention retain their existing semantics. Finalization itself does not introduce GPU synchronization.
+Simple Buffer/Image/Sampler CreateInfos do not require Finalize. Samplers are created through `MyDevice::GetOrCreateSampler(sampler, info)` as borrowed handle values owned by the Device cache; see [Sampler ownership](resource_lifetimes.md#sampler-ownership). Command recording, asynchronous recording dispatch, queue submission, explicit waits and resource retention retain their existing semantics. Finalization itself does not introduce GPU synchronization.
 
 ## Independent Host build
 

@@ -11,21 +11,22 @@ class BufferView;
 class ImageView;
 class Sampler;
 class TopLevelAccelStruct;
-class DescriptorSet;
 class DescriptorSetLayout;
-class DescriptorSetLayoutAllocator;
 class DescriptorPool;
 class PipelineLayout;
 namespace VulkanDetail { class DynamicDescriptorPool; }
 
 #include "pipeline/pipeline_layout_create_info.h"
 
+// Native layout borrowed from the Device cache, with an owned binding snapshot.
+// Copy, move, assignment and destruction do not access the Device or its cache.
+// Keep the Device cache alive for native use; assignment to {} clears this value.
 class DescriptorSetLayout final
 {
 	// Pipeline can have multiple DescriptorSetLayout,
 	// when execute the pipeline we need to provide DescriptorSets for each of the DescriptorSetLayout in order
 	friend class DescriptorPool;
-	friend class DescriptorSetLayoutAllocator;
+	friend class MyDevice;
 	friend class VulkanDetail::DynamicDescriptorPool;
 	friend class PipelineLayout;
 
@@ -39,11 +40,7 @@ public:
 	auto operator=(const DescriptorSetLayout&) -> DescriptorSetLayout& = default;
 	DescriptorSetLayout(DescriptorSetLayout&&) noexcept = default;
 	auto operator=(DescriptorSetLayout&&) noexcept -> DescriptorSetLayout& = default;
-	~DescriptorSetLayout();
-
-	void Create(const DescriptorSetLayoutCreateInfo& inCreateInfo);
-
-	void Destroy();
+	~DescriptorSetLayout() = default;
 
 	auto GetVkDescriptorSetLayout() const -> VkDescriptorSetLayout;
 
@@ -155,17 +152,16 @@ public:
 	    std::string_view inName, const TopLevelAccelStruct& inAccelerationStructure, uint32_t inArrayElement = 0);
 };
 
-// Owns multiple native pools. Create with MakeIntrusive; allocated sets retain
-// their pool until they are released. Distinct sets may be allocated/released
-// concurrently after Create. Create and access to the same set require
-// caller-side exclusion. The last strong reference destroys the native pools.
+// Owns multiple native pools. Create with MakeIntrusive; returned native handles
+// do not retain the pool. No internal synchronization or thread
+// affinity: callers serialize Create, Allocate, Free and final pool destruction.
+// Independent pools may run concurrently when their dependencies satisfy their
+// own contracts. The last strong reference destroys all remaining allocations.
 class DescriptorPool final : public RefCounted
 {
-	friend class DescriptorSet;
 private:
 	struct Impl;
 	std::unique_ptr<Impl> m_impl;
-	void _Free(VkDescriptorSet inSet) noexcept;
 	~DescriptorPool() noexcept override;
 
 public:
@@ -176,26 +172,9 @@ public:
 	auto operator=(DescriptorPool&&) -> DescriptorPool& = delete;
 	void Create();
 	[[nodiscard]] auto Allocate(const DescriptorSetLayout& inLayout,
-		const DescriptorSetDesc& inDesc) -> DescriptorSet;
-};
-
-// Owns one allocation and retains its pool. The caller completes GPU use before
-// releasing the set; scope exit never waits. The native getter is borrowed.
-class DescriptorSet final
-{
-private:
-	friend class DescriptorPool;
-	IntrusivePtr<DescriptorPool> m_pool;
-	VkDescriptorSet m_vkDescriptorSet = VK_NULL_HANDLE;
-	void _Release() noexcept;
-
-public:
-	DescriptorSet() noexcept = default;
-	DescriptorSet(const DescriptorSet&) = delete;
-	auto operator=(const DescriptorSet&) -> DescriptorSet& = delete;
-	DescriptorSet(DescriptorSet&& inOther) noexcept;
-	auto operator=(DescriptorSet&& inOther) noexcept -> DescriptorSet&;
-	~DescriptorSet() noexcept;
-	auto IsValid() const noexcept -> bool;
-	auto GetVkDescriptorSet() const noexcept -> VkDescriptorSet;
+		const DescriptorSetDesc& inDesc) -> VkDescriptorSet;
+	// Free an allocation from this pool after GPU completion. Success clears the
+	// argument and invalidates all copies; failure leaves it unchanged. A null
+	// handle is a no-op. Handles without a record in this pool are rejected.
+	void Free(VkDescriptorSet& inOutSet);
 };

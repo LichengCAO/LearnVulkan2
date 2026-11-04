@@ -277,7 +277,7 @@ struct CommandBuffer::BindingCommand final : Command
 			{
 				if (resourceLayout->GetVkDescriptorBindings()[set].empty())
 					continue;
-				sets.emplace_back(set, allocator.GetOrAllocateDescriptorSet(
+				sets.emplace_back(set, allocator.GetOrAllocateTransient(
 					resourceLayout->GetDescriptorSetLayout(set), descriptions[set]));
 			}
 		}

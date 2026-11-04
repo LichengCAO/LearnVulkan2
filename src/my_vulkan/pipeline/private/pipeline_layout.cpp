@@ -29,7 +29,7 @@ void PipelineLayout::Create(const PipelineLayoutCreateInfo& inCreateInfo)
 	for (size_t index = 0; index < layouts.size(); ++index)
 	{
 		// Empty descriptions still create layouts to preserve sparse set indices.
-		layouts[index].Create(data.layouts[index]);
+		MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layouts[index], data.layouts[index]);
 		descriptorSetLayouts.push_back(layouts[index].GetVkDescriptorSetLayout());
 	}
 

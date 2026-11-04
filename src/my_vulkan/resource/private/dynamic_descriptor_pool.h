@@ -27,7 +27,9 @@ public:
 	void Create();
 	void Reset();
 	void Destroy();
-	[[nodiscard]] auto GetOrAllocateDescriptorSet(const DescriptorSetLayout& inLayout,
+	// Reuse equivalent bindings or allocate a borrowed set until Reset/Destroy.
+	// Transient lifetime follows this pool's recycling cycle; never Free singly.
+	[[nodiscard]] auto GetOrAllocateTransient(const DescriptorSetLayout& inLayout,
 		const DescriptorSetDesc& inDesc) -> VkDescriptorSet;
 };
 }

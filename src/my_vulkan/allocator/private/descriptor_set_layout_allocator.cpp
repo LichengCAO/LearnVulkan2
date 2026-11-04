@@ -1,9 +1,7 @@
 #include "descriptor_set_layout_allocator.h"
 
-#include "my_vulkan/device.h"
 #include "utility/hash_util.h"
 
-#include <algorithm>
 #include <type_traits>
 
 namespace
@@ -20,30 +18,10 @@ namespace
 		HashEnum(seed, binding.descriptorType);
 		hash_combine(seed, binding.descriptorCount);
 		hash_combine(seed, binding.stageFlags);
-		// Immutable samplers are currently rejected by DescriptorSetLayout::SetBinding.
+		// DescriptorSetLayoutCreateInfo::SetBinding does not expose immutable samplers.
 		CHECK_TRUE(binding.pImmutableSamplers == nullptr, "Immutable samplers are not supported by the layout allocator!");
 	}
 
-}
-
-auto DescriptorSetLayoutAllocator::_GetSortedBindings(
-	const DescriptorSetLayout& inLayout) const
-	-> std::vector<VkDescriptorSetLayoutBinding>
-{
-	std::vector<VkDescriptorSetLayoutBinding> sortedBindings;
-	sortedBindings.reserve(inLayout.m_descriptorBindings.size());
-	for (const auto& entry : inLayout.m_descriptorBindings)
-	{
-		sortedBindings.push_back(entry.second);
-	}
-	std::sort(
-		sortedBindings.begin(),
-		sortedBindings.end(),
-		[](const VkDescriptorSetLayoutBinding& lhs, const VkDescriptorSetLayoutBinding& rhs)
-		{
-			return lhs.binding < rhs.binding;
-		});
-	return sortedBindings;
 }
 
 auto DescriptorSetLayoutAllocator::_HashBindings(
@@ -100,14 +78,7 @@ void DescriptorSetLayoutAllocator::Create(VkDevice inDevice)
 	m_vkDevice = inDevice;
 }
 
-auto DescriptorSetLayoutAllocator::Allocate(
-	const DescriptorSetLayout& inLayout) -> VkDescriptorSetLayout
-{
-	const std::vector<VkDescriptorSetLayoutBinding> layoutBindings = _GetSortedBindings(inLayout);
-	return Allocate(layoutBindings);
-}
-
-auto DescriptorSetLayoutAllocator::Allocate(
+auto DescriptorSetLayoutAllocator::GetOrCreate(
     const std::vector<VkDescriptorSetLayoutBinding>& layoutBindings) -> VkDescriptorSetLayout
 {
 	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Descriptor set layout allocator is not created!");

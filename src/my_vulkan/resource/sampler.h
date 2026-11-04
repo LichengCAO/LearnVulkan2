@@ -2,13 +2,13 @@
 #include "common.h"
 
 class SamplerAllocator;
+class MyDevice;
 
 class SamplerCreateInfo final
 {
 private:
 	VkSamplerCreateInfo m_createInfo{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
 
-	friend class Sampler;
 	friend class SamplerAllocator;
 
 public:
@@ -38,20 +38,22 @@ public:
 	auto GetVkSamplerCreateInfo() const->const VkSamplerCreateInfo&;
 };
 
+// Borrowed handle value. Copy, move, assignment, and destruction do not access
+// the device or release native resources. The handle is usable only while its
+// owning MyDevice sampler cache remains alive.
 class Sampler final
 {
+	friend class MyDevice;
 private:
 	VkSampler m_vkSampler = VK_NULL_HANDLE;
 
 public:
-	Sampler() = default;
-	Sampler(const Sampler&) = delete;
-	Sampler& operator=(const Sampler&) = delete;
-	~Sampler();
+	Sampler() noexcept = default;
+	Sampler(const Sampler&) noexcept = default;
+	Sampler(Sampler&&) noexcept = default;
+	auto operator=(const Sampler&) noexcept -> Sampler& = default;
+	auto operator=(Sampler&&) noexcept -> Sampler& = default;
+	~Sampler() noexcept = default;
 
-	auto Create(const SamplerCreateInfo& inCreateInfo)->void;
-
-	auto Destroy()->void;
-
-	auto GetVkSampler() const->VkSampler;
+	auto GetVkSampler() const noexcept -> VkSampler;
 };

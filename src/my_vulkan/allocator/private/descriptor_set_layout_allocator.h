@@ -1,6 +1,6 @@
 #pragma once
 
-#include "my_vulkan/resource/descriptor.h"
+#include "common.h"
 
 class DescriptorSetLayoutAllocator final
 {
@@ -14,9 +14,6 @@ private:
 	VkDevice m_vkDevice = VK_NULL_HANDLE;
 	std::unordered_map<uint64_t, std::vector<CacheEntry>> m_cache;
 
-	auto _GetSortedBindings(
-		const DescriptorSetLayout& inLayout) const
-		-> std::vector<VkDescriptorSetLayoutBinding>;
 	auto _HashBindings(
 		const std::vector<VkDescriptorSetLayoutBinding>& inLayoutBindings) const
 		-> uint64_t;
@@ -28,11 +25,12 @@ private:
 public:
 	DescriptorSetLayoutAllocator() = default;
 	DescriptorSetLayoutAllocator(const DescriptorSetLayoutAllocator&) = delete;
-	DescriptorSetLayoutAllocator& operator=(const DescriptorSetLayoutAllocator&) = delete;
+	auto operator=(const DescriptorSetLayoutAllocator&) -> DescriptorSetLayoutAllocator& = delete;
 	~DescriptorSetLayoutAllocator();
 
 	void Create(VkDevice inDevice);
-	auto Allocate(const DescriptorSetLayout& inLayout) -> VkDescriptorSetLayout;
-	auto Allocate(const std::vector<VkDescriptorSetLayoutBinding>& inSortedBindings) -> VkDescriptorSetLayout;
+	// Input bindings are sorted; callers serialize access to this cache, including
+	// its destruction. Returned native handles remain owned by the cache.
+	auto GetOrCreate(const std::vector<VkDescriptorSetLayoutBinding>& inSortedBindings) -> VkDescriptorSetLayout;
 	void Destroy();
 };

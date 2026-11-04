@@ -2,7 +2,6 @@
 
 #include "../allocator/private/descriptor_pool_pages.h"
 #include "private/dynamic_descriptor_pool.h"
-#include "../allocator/private/descriptor_set_layout_allocator.h"
 #include "../device.h"
 #include "../pipeline/pipeline_layout.h"
 #include "acceleration_structure.h"
@@ -16,7 +15,6 @@
 #include <cstdint>
 #include <stdexcept>
 #include <limits>
-#include <mutex>
 #include <utility>
 #include <type_traits>
 
@@ -211,35 +209,6 @@ namespace
 }
 
 
-DescriptorSetLayout::~DescriptorSetLayout() = default;
-
-void DescriptorSetLayout::Create(const DescriptorSetLayoutCreateInfo& inCreateInfo)
-{
-	CHECK_TRUE(m_vkDescriptorSetLayout == VK_NULL_HANDLE, "Descriptor set layout is already created!");
-	auto bindings = inCreateInfo.m_descriptorBindings;
-	DescriptorSetLayoutAllocator* allocator = MyDevice::GetInstance().GetDescriptorSetLayoutAllocator();
-	CHECK_TRUE(allocator != nullptr, "Descriptor set layout allocator is not created!");
-	VkDescriptorSetLayout handle = VK_NULL_HANDLE;
-	if (inCreateInfo.m_finalizedBindings)
-		handle = allocator->Allocate(*inCreateInfo.m_finalizedBindings);
-	else
-	{
-		std::vector<VkDescriptorSetLayoutBinding> sorted;
-		sorted.reserve(bindings.size());
-		for (const auto& [index, binding] : bindings) sorted.push_back(binding);
-		std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) -> bool { return a.binding < b.binding; });
-		handle = allocator->Allocate(sorted);
-	}
-	m_descriptorBindings = std::move(bindings);
-	m_vkDescriptorSetLayout = handle;
-}
-
-void DescriptorSetLayout::Destroy()
-{
-	m_vkDescriptorSetLayout = VK_NULL_HANDLE;
-	m_descriptorBindings.clear();
-}
-
 auto DescriptorSetLayout::GetVkDescriptorSetLayout() const -> VkDescriptorSetLayout
 {
 	return m_vkDescriptorSetLayout;
@@ -392,7 +361,6 @@ struct DescriptorPool::Impl
 		VulkanDetail::DescriptorPoolAllocation allocation;
 		std::vector<ImageView> imageViews;
 	};
-	std::mutex mutex;
 	VulkanDetail::DescriptorPoolPages pages;
 	std::unordered_map<VkDescriptorSet, Record> allocations;
 };
@@ -401,10 +369,10 @@ DescriptorPool::DescriptorPool() noexcept = default;
 
 DescriptorPool::~DescriptorPool() noexcept
 {
-	// At the last strong reference, no set or allocation/free operation remains.
-	if (m_impl && !m_impl->allocations.empty())
-		DescriptorFailure("Descriptor pool destroyed with outstanding allocations");
-	// Impl owns the native pages and releases them through its destructor.
+	if (!m_impl) return;
+	// Reclaim remaining native sets before dropping their retained dependencies.
+	m_impl->pages.Destroy();
+	m_impl->allocations.clear();
 }
 
 void DescriptorPool::Create()
@@ -415,7 +383,7 @@ void DescriptorPool::Create()
 	m_impl = std::move(created);
 }
 
-auto DescriptorPool::Allocate(const DescriptorSetLayout& inLayout, const DescriptorSetDesc& inDesc) -> DescriptorSet
+auto DescriptorPool::Allocate(const DescriptorSetLayout& inLayout, const DescriptorSetDesc& inDesc) -> VkDescriptorSet
 {
 	CHECK_TRUE(m_impl, "Descriptor pool must be created before allocation!");
 	CHECK_TRUE(inLayout.m_vkDescriptorSetLayout != VK_NULL_HANDLE, "Descriptor allocation requires a created layout!");
@@ -428,7 +396,6 @@ auto DescriptorPool::Allocate(const DescriptorSetLayout& inLayout, const Descrip
 		if (const auto* image = std::get_if<DescriptorSetDesc::ImageBinding>(&item.resource))
 			imageViews.push_back(image->imageView);
 
-	std::lock_guard lock(m_impl->mutex);
 	const auto allocation = m_impl->pages.Allocate(inLayout.m_vkDescriptorSetLayout, requirements);
 	try
 	{
@@ -443,58 +410,19 @@ auto DescriptorPool::Allocate(const DescriptorSetLayout& inLayout, const Descrip
 		catch (...) { DescriptorFailure("Failed to roll back descriptor allocation"); }
 		throw;
 	}
-	DescriptorSet result;
-	result.m_pool = IntrusivePtr<DescriptorPool>(this);
-	result.m_vkDescriptorSet = allocation.descriptorSet;
-	return result;
+	return allocation.descriptorSet;
 }
 
-void DescriptorPool::_Free(VkDescriptorSet inSet) noexcept
+void DescriptorPool::Free(VkDescriptorSet& inOutSet)
 {
-	try
-	{
-		CHECK_TRUE(m_impl, "Descriptor pool no longer exists!");
-		std::lock_guard lock(m_impl->mutex);
-		const auto found = m_impl->allocations.find(inSet);
-		CHECK_TRUE(found != m_impl->allocations.end(), "Descriptor set does not belong to this pool!");
-		m_impl->pages.Free(found->second.allocation);
-		m_impl->allocations.erase(found);
-	}
-	catch (const std::exception& error) { DescriptorFailure(error.what()); }
-	catch (...) { DescriptorFailure("Failed to release descriptor set"); }
+	if (inOutSet == VK_NULL_HANDLE) return;
+	CHECK_TRUE(m_impl, "Descriptor pool must be created before release!");
+	const auto found = m_impl->allocations.find(inOutSet);
+	CHECK_TRUE(found != m_impl->allocations.end(), "Descriptor set allocation is not tracked by this pool!");
+	m_impl->pages.Free(found->second.allocation);
+	m_impl->allocations.erase(found);
+	inOutSet = VK_NULL_HANDLE;
 }
-
-DescriptorSet::DescriptorSet(DescriptorSet&& inOther) noexcept
-	: m_pool(std::move(inOther.m_pool)),
-	  m_vkDescriptorSet(std::exchange(inOther.m_vkDescriptorSet, VK_NULL_HANDLE))
-{
-}
-
-auto DescriptorSet::operator=(DescriptorSet&& inOther) noexcept -> DescriptorSet&
-{
-	if (this != &inOther)
-	{
-		_Release();
-		m_pool = std::move(inOther.m_pool);
-		m_vkDescriptorSet = std::exchange(inOther.m_vkDescriptorSet, VK_NULL_HANDLE);
-	}
-	return *this;
-}
-
-DescriptorSet::~DescriptorSet() noexcept { _Release(); }
-
-void DescriptorSet::_Release() noexcept
-{
-	if (m_vkDescriptorSet == VK_NULL_HANDLE) return;
-	m_pool->_Free(m_vkDescriptorSet);
-	m_vkDescriptorSet = VK_NULL_HANDLE;
-	// _Free has returned and released the pool mutex before the last strong
-	// reference can destroy the pool here.
-	m_pool.reset();
-}
-
-auto DescriptorSet::IsValid() const noexcept -> bool { return m_vkDescriptorSet != VK_NULL_HANDLE; }
-auto DescriptorSet::GetVkDescriptorSet() const noexcept -> VkDescriptorSet { return m_vkDescriptorSet; }
 
 namespace VulkanDetail
 {
@@ -557,7 +485,7 @@ auto DynamicDescriptorPool::_HashDescriptorSetDesc(const DescriptorSetDesc& inDe
 	return hash;
 }
 
-auto DynamicDescriptorPool::GetOrAllocateDescriptorSet(const DescriptorSetLayout& inLayout,
+auto DynamicDescriptorPool::GetOrAllocateTransient(const DescriptorSetLayout& inLayout,
 	const DescriptorSetDesc& inDesc) -> VkDescriptorSet
 {
 	CHECK_TRUE(m_impl, "Dynamic descriptor pool must be created before allocation!");
