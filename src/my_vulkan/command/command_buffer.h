@@ -1,6 +1,6 @@
 #pragma once
 #include "common.h"
-#include "command.h"
+#include "private/command.h"
 #include <span>
 #include <variant>
 #include "pipeline/graphics_shader_program.h"
@@ -17,6 +17,7 @@ class TopLevelAccelStruct;
 class BottomLevelAccelStructCreateInfo;
 class TopLevelAccelStructCreateInfo;
 struct VkAccelStructBuildInfo;
+namespace VulkanDetail { class DynamicDescriptorPool; }
 
 // Member commands own CPU parameters and native image/rendering resource versions.
 // Other GPU resources remain caller-owned. Callbacks own their captures;
@@ -56,7 +57,7 @@ private:
     RayTracingShaderProgram* m_rayTracingProgram = nullptr;
     struct BindingCommand;
 
-    void _PrepareCommands(DynamicDescriptorSetAllocator& inAllocator, QueueFamilyType inQueue);
+    void _PrepareCommands(VulkanDetail::DynamicDescriptorPool& inAllocator, QueueFamilyType inQueue);
     void _BindShaderResources(const PipelineLayout& inLayout, VkPipelineBindPoint inBindPoint,
         const ShaderResources& inResources);
     void _AppendCommand(const Command& inCommand);

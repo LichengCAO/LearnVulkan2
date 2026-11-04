@@ -5,13 +5,12 @@
 #include <algorithm>
 #include <limits>
 #include "image.h"
-#include "memory_allocator.h"
-#include "allocator/descriptor_set_layout_allocator.h"
-#include "allocator/descriptor_set_allocator.h"
-#include "render_pass_allocator.h"
-#include "pipeline_layout_allocator.h"
-#include "pipeline_allocator.h"
-#include "allocator/sampler_allocator.h"
+#include "allocator/private/memory_allocator.h"
+#include "allocator/private/descriptor_set_layout_allocator.h"
+#include "allocator/private/render_pass_allocator.h"
+#include "allocator/private/pipeline_layout_allocator.h"
+#include "allocator/private/pipeline_allocator.h"
+#include "allocator/private/sampler_allocator.h"
 #include <iomanip>
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
@@ -615,18 +614,6 @@ VkFormat MyDevice::FindSupportFormat(const std::vector<VkFormat>& candidates, Vk
 	throw std::runtime_error("Failed to find supported format!");
 }
 
-void MyDevice::_CreateDescriptorSetAllocator()
-{
-	descriptorAllocator = std::make_unique<DescriptorSetAllocator>();
-	descriptorAllocator->Create();
-}
-
-void MyDevice::_DestroyDescriptorSetAllocator()
-{
-	descriptorAllocator->Destroy();
-	descriptorAllocator.reset();
-}
-
 void MyDevice::_CreateDescriptorSetLayoutAllocator()
 {
 	m_uptrDescriptorSetLayoutAllocator = std::make_unique<DescriptorSetLayoutAllocator>();
@@ -735,13 +722,11 @@ void MyDevice::Create()
 	_CreatePipelineAllocators();
 	_CreateSwapchain();
 	_CreateDescriptorSetLayoutAllocator();
-	_CreateDescriptorSetAllocator();
 	m_initialized = true;
 }
 
 void MyDevice::Destroy()
 {
-	_DestroyDescriptorSetAllocator();
 	_DestroyDescriptorSetLayoutAllocator();
 	_DestroySwapchain();
 	_DestroyPipelineAllocators();
@@ -794,11 +779,6 @@ auto MyDevice::GetRenderPassAllocator() -> RenderPassAllocator*
 auto MyDevice::GetDescriptorSetLayoutAllocator() -> DescriptorSetLayoutAllocator*
 {
 	return m_uptrDescriptorSetLayoutAllocator.get();
-}
-
-DescriptorSetAllocator* MyDevice::GetDescriptorSetAllocator()
-{
-	return descriptorAllocator.get();
 }
 
 auto MyDevice::GetSamplerAllocator()->SamplerAllocator*
@@ -1043,6 +1023,11 @@ VkDescriptorSet MyDevice::AllocateDescriptorSet(VkDescriptorSetLayout inLayout, 
 VkResult MyDevice::ResetDescriptorPool(VkDescriptorPool inDescriptorPool, VkDescriptorPoolResetFlags inFlags)
 {
 	return vkResetDescriptorPool(vkDevice, inDescriptorPool, inFlags);
+}
+
+auto MyDevice::FreeDescriptorSet(VkDescriptorPool inPool, VkDescriptorSet inSet) -> VkResult
+{
+	return vkFreeDescriptorSets(vkDevice, inPool, 1, &inSet);
 }
 
 void MyDevice::UpdateDescriptorSets(const std::vector<VkWriteDescriptorSet>& inWriteUpdates, const std::vector<VkCopyDescriptorSet>& inCopyUpdates)

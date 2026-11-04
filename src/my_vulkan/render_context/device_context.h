@@ -3,8 +3,9 @@
 #include "common.h"
 #include "common_enums.h"
 #include "command_buffer.h"
-#include "render_context/submission_manager.h"
-#include "render_context/frame_slot.h"
+#include "render_context/synchronization.h"
+#include "render_context/private/submission_manager.h"
+#include "render_context/private/frame_slot.h"
 #include <span>
 
 class SwapchainImage;

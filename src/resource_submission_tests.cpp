@@ -2,7 +2,7 @@
 #include "my_vulkan/device.h"
 #include "my_vulkan/command/command_buffer.h"
 #include "my_vulkan/render_context/device_context.h"
-#include "my_vulkan/render_context/frame_slot.h"
+#include "my_vulkan/render_context/private/frame_slot.h"
 
 #include <set>
 #include <utility>

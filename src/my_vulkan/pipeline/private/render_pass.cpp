@@ -1,7 +1,7 @@
 #include "../render_pass.h"
 #include "device.h"
 #include "resource/image.h"
-#include "allocator/render_pass_allocator.h"
+#include "allocator/private/render_pass_allocator.h"
 
 #include <algorithm>
 

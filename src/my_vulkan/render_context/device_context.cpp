@@ -1,6 +1,6 @@
 #include "render_context/device_context.h"
 
-#include "render_context/submission_manager.h"
+#include "render_context/private/submission_manager.h"
 #include "device.h"
 
 #include <algorithm>

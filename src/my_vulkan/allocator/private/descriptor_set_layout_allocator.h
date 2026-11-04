@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../resource/descriptor.h"
+#include "my_vulkan/resource/descriptor.h"
 
 class DescriptorSetLayoutAllocator final
 {

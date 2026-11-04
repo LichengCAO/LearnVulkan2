@@ -2,6 +2,7 @@
 #include "command_buffer.h"
 #include "device.h"
 #include "resource/image.h"
+#include "resource/private/dynamic_descriptor_pool.h"
 
 namespace
 {
@@ -246,7 +247,7 @@ struct CommandBuffer::BindingCommand final : Command
 	mutable std::vector<std::pair<uint32_t, VkDescriptorSet>> sets;
 	mutable bool prepared = false;
 
-	void _Prepare(DynamicDescriptorSetAllocator& allocator, QueueFamilyType queue) const
+	void _Prepare(VulkanDetail::DynamicDescriptorPool& allocator, QueueFamilyType queue) const
 	{
 		CHECK_TRUE(queue == QueueFamilyType::GRAPHICS ||
 		               (queue == QueueFamilyType::COMPUTE && bindPoint != VK_PIPELINE_BIND_POINT_GRAPHICS),
@@ -276,10 +277,8 @@ struct CommandBuffer::BindingCommand final : Command
 			{
 				if (resourceLayout->GetVkDescriptorBindings()[set].empty())
 					continue;
-				DynamicDescriptorSetAllocator::AllocateInfo info;
-				info.SetLayout(resourceLayout->GetDescriptorSetLayout(set));
-				info.SetDescriptorSetDesc(descriptions[set]);
-				sets.emplace_back(set, allocator.GetOrAllocateDescriptorSet(info));
+				sets.emplace_back(set, allocator.GetOrAllocateDescriptorSet(
+					resourceLayout->GetDescriptorSetLayout(set), descriptions[set]));
 			}
 		}
 		prepared = true;
@@ -413,7 +412,7 @@ void CommandBuffer::KeepAlive(const Framebuffer& inFramebuffer)
     CHECK_TRUE(reference.get() != nullptr, "Framebuffer was not created!");
     m_resourceReferences.push_back(std::move(reference));
 }
-void CommandBuffer::_PrepareCommands(DynamicDescriptorSetAllocator& allocator, QueueFamilyType queue)
+void CommandBuffer::_PrepareCommands(VulkanDetail::DynamicDescriptorPool& allocator, QueueFamilyType queue)
 {
 	for (const auto* command : m_commands)
 		if (const auto* binding = dynamic_cast<const BindingCommand*>(command))

@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include "my_vulkan/intrusive_ptr.h"
 #include "image.h"
 #include <cstdint>
 #include <map>
@@ -13,9 +14,9 @@ class TopLevelAccelStruct;
 class DescriptorSet;
 class DescriptorSetLayout;
 class DescriptorSetLayoutAllocator;
-class DescriptorSetAllocator;
-class DynamicDescriptorSetAllocator;
+class DescriptorPool;
 class PipelineLayout;
+namespace VulkanDetail { class DynamicDescriptorPool; }
 
 #include "pipeline/pipeline_layout_create_info.h"
 
@@ -23,9 +24,9 @@ class DescriptorSetLayout final
 {
 	// Pipeline can have multiple DescriptorSetLayout,
 	// when execute the pipeline we need to provide DescriptorSets for each of the DescriptorSetLayout in order
-	friend class DescriptorSet;
+	friend class DescriptorPool;
 	friend class DescriptorSetLayoutAllocator;
-	friend class DynamicDescriptorSetAllocator;
+	friend class VulkanDetail::DynamicDescriptorPool;
 	friend class PipelineLayout;
 
 private:
@@ -54,8 +55,8 @@ class DescriptorSetDesc final
 	friend class CommandBuffer;
 	friend struct ShaderBindingTestProbe;
 	friend class ShaderResources;
-	friend class DescriptorSet;
-	friend class DynamicDescriptorSetAllocator;
+	friend class DescriptorPool;
+	friend class VulkanDetail::DynamicDescriptorPool;
 
 	struct BufferBinding final
 	{
@@ -154,84 +155,47 @@ public:
 	    std::string_view inName, const TopLevelAccelStruct& inAccelerationStructure, uint32_t inArrayElement = 0);
 };
 
-class DescriptorSetCreateInfo final
+// Owns multiple native pools. Create with MakeIntrusive; allocated sets retain
+// their pool until they are released. Distinct sets may be allocated/released
+// concurrently after Create. Create and access to the same set require
+// caller-side exclusion. The last strong reference destroys the native pools.
+class DescriptorPool final : public RefCounted
 {
 	friend class DescriptorSet;
 private:
-	DescriptorSetLayout m_descriptorSetLayout{};
-	DescriptorSetDesc m_descriptorSetDesc{};
+	struct Impl;
+	std::unique_ptr<Impl> m_impl;
+	void _Free(VkDescriptorSet inSet) noexcept;
+	~DescriptorPool() noexcept override;
 
 public:
-	void SetDescriptorSetLayout(DescriptorSetLayout inLayout) { m_descriptorSetLayout = std::move(inLayout); }
-	void SetDescriptorSetDesc(DescriptorSetDesc inDesc) { m_descriptorSetDesc = std::move(inDesc); }
+	DescriptorPool() noexcept;
+	DescriptorPool(const DescriptorPool&) = delete;
+	DescriptorPool(DescriptorPool&&) = delete;
+	auto operator=(const DescriptorPool&) -> DescriptorPool& = delete;
+	auto operator=(DescriptorPool&&) -> DescriptorPool& = delete;
+	void Create();
+	[[nodiscard]] auto Allocate(const DescriptorSetLayout& inLayout,
+		const DescriptorSetDesc& inDesc) -> DescriptorSet;
 };
 
+// Owns one allocation and retains its pool. The caller completes GPU use before
+// releasing the set; scope exit never waits. The native getter is borrowed.
 class DescriptorSet final
 {
 private:
-	friend class DynamicDescriptorSetAllocator;
-
+	friend class DescriptorPool;
+	IntrusivePtr<DescriptorPool> m_pool;
 	VkDescriptorSet m_vkDescriptorSet = VK_NULL_HANDLE;
-	DescriptorSetLayout m_descriptorSetLayout{};
-	DescriptorSetDesc m_descriptorSetDesc{};
+	void _Release() noexcept;
 
 public:
-	DescriptorSet() = default;
-	~DescriptorSet();
-
-	void Create(const DescriptorSetCreateInfo& inCreateInfo);
-
-	void Destroy();
-
-	auto GetVkDescriptorSet() const -> VkDescriptorSet;
-};
-
-class DynamicDescriptorSetAllocator final
-{
-	friend struct ShaderBindingTestProbe;
-private:
-	struct CachedDescriptorSetInfo
-	{
-		struct Entry
-		{
-			DescriptorSetDesc description;
-			VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-		};
-		std::unordered_map<size_t, std::vector<Entry>> mapHashToDescriptorSet;
-	};
-
-public:
-	class AllocateInfo final
-	{
-		friend class DynamicDescriptorSetAllocator;
-
-	private:
-		VkDescriptorSetLayout m_vkDescriptorSetLayout = VK_NULL_HANDLE;
-		DescriptorSetLayout m_descriptorSetLayout{};
-		DescriptorSetDesc m_descriptorSetDesc{};
-
-	public:
-		void SetLayout(VkDescriptorSetLayout inLayout) { m_vkDescriptorSetLayout = inLayout; m_descriptorSetLayout = {}; }
-		void SetLayout(DescriptorSetLayout inLayout);
-		void SetDescriptorSetDesc(const DescriptorSetDesc& inDesc) { m_descriptorSetDesc = inDesc; }
-	};
-
-private:
-	std::unique_ptr<DescriptorSetAllocator> m_uptrDescriptorSetAllocator;
-	std::unordered_map<VkDescriptorSetLayout, CachedDescriptorSetInfo> m_cachedDescriptorSets;
-
-	private:
-	auto _AllocateDescriptorSet(const AllocateInfo& inAllocateInfo) -> VkDescriptorSet;
-	auto _GetCachedDescriptorSet(const AllocateInfo& inAllocateInfo) -> std::optional<VkDescriptorSet>;
-	auto _HashDescriptorSetDesc(const DescriptorSetDesc& inDesc) const -> size_t;
-	auto _HashDescriptorBindingInfo(const DescriptorSetDesc::DescriptorBindingInfo& inInfo) const -> size_t;
-	void _WriteDescriptorSet(VkDescriptorSet inDescriptorSet, const AllocateInfo& inAllocateInfo);
-
-public:
-	DynamicDescriptorSetAllocator();
-	~DynamicDescriptorSetAllocator();
-	void Create();
-	void Reset();
-	auto GetOrAllocateDescriptorSet(const AllocateInfo& inAllocateInfo) -> VkDescriptorSet;
-	void Destroy();
+	DescriptorSet() noexcept = default;
+	DescriptorSet(const DescriptorSet&) = delete;
+	auto operator=(const DescriptorSet&) -> DescriptorSet& = delete;
+	DescriptorSet(DescriptorSet&& inOther) noexcept;
+	auto operator=(DescriptorSet&& inOther) noexcept -> DescriptorSet&;
+	~DescriptorSet() noexcept;
+	auto IsValid() const noexcept -> bool;
+	auto GetVkDescriptorSet() const noexcept -> VkDescriptorSet;
 };

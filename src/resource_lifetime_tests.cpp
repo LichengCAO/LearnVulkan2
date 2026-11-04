@@ -1,6 +1,6 @@
 #include "common.h"
 #include "my_vulkan/device.h"
-#include "my_vulkan/allocator/render_pass_allocator.h"
+#include "my_vulkan/allocator/private/render_pass_allocator.h"
 #include "my_vulkan/command/command_buffer.h"
 #include "my_vulkan/resource/descriptor.h"
 #include <algorithm>

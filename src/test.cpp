@@ -1,5 +1,6 @@
 #include "common.h"
-#include "my_vulkan/render_context/submission_manager.h"
+#include <string_view>
+#include "my_vulkan/render_context/private/submission_manager.h"
 
 #if MY_VULKAN_ENABLE_RENDER_GRAPH
 #include "utility/render_graph/render_graph.h"
@@ -1852,9 +1853,16 @@ void RunHostCreateInfoFinalizeTests();
 void RunRenderPassFinalizeTests();
 void RunResourceLifetimeTests();
 void RunResourceSubmissionTests();
+void RunDescriptorPoolTests();
+auto RunDescriptorPoolFatalCase(std::string_view argument) -> int;
 
-auto main() -> int
+auto main(int argc, char** argv) -> int
 {
+	if (argc == 2)
+	{
+		const int fatalResult = RunDescriptorPoolFatalCase(argv[1]);
+		if (fatalResult >= 0) return fatalResult;
+	}
 	try
 	{
 		RunCreateInfoFinalizeTests();
@@ -1863,6 +1871,7 @@ auto main() -> int
 		RunCommandBufferTests();
 		RunResourceLifetimeTests();
 		RunResourceSubmissionTests();
+		RunDescriptorPoolTests();
 #ifdef LEARN_VULKAN_HAS_SHADER_BINDING_TESTS
 		RunShaderBindingTests();
 #endif

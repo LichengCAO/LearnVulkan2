@@ -1,6 +1,6 @@
 #pragma once
 #include <common.h>
-#include "resource/vulkan_handle_resource.h"
+#include "resource/private/vulkan_handle_resource.h"
 
 class RenderPassAllocator final
 {

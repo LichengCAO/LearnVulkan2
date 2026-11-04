@@ -1,5 +1,5 @@
 #include "my_vulkan/command/command_buffer.h"
-#include "my_vulkan/render_context/frame_slot.h"
+#include "my_vulkan/render_context/private/frame_slot.h"
 #include "my_vulkan/resource/acceleration_structure.h"
 #include "my_vulkan/resource/image.h"
 #include "my_vulkan/pipeline/render_pass.h"

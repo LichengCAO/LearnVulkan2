@@ -1,7 +1,7 @@
 #pragma once
 #include "common.h"
 #include "resource/image.h"
-#include "resource/vulkan_handle_resource.h"
+#include "resource/private/vulkan_handle_resource.h"
 #include "render_pass_create_info.h"
 
 class ImageView;

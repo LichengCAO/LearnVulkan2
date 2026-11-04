@@ -2,13 +2,13 @@
 
 #include "submission_manager.h"
 #include "common_enums.h"
-#include "command_pool.h"
+#include "command/command_pool.h"
 #include "utility/task_scheduler.h"
-#include "resource/vulkan_handle_resource.h"
+#include "resource/private/vulkan_handle_resource.h"
 
 class CommandBuffer;
 class DeviceContext;
-class DynamicDescriptorSetAllocator;
+namespace VulkanDetail { class DynamicDescriptorPool; }
 class Command;
 
 // Internal frame-slot implementation owned and coordinated by DeviceContext.
@@ -62,7 +62,7 @@ private:
     std::array<ThreadCommandPools, SubmissionFrontier::MAX_QUEUE_COUNT> m_commandPools;
     std::unordered_map<uint64_t, std::unique_ptr<RecordingTask>> m_recordTasks;
     uint64_t m_nextRecordingSerial = 1;
-    std::unique_ptr<DynamicDescriptorSetAllocator> m_descriptorAllocator;
+    std::unique_ptr<VulkanDetail::DynamicDescriptorPool> m_dynamicDescriptorPool;
 
 private:
     void _RunCompletionCallbacks();

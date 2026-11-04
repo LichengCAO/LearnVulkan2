@@ -6,7 +6,7 @@
 
 #include "buffer.h"
 #include "command_buffer.h"
-#include "render_context/submission_manager.h"
+#include "render_context/private/submission_manager.h"
 #include "device.h"
 #include "graphics_shader_program.h"
 #include "image.h"

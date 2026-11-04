@@ -1,6 +1,6 @@
 #include "buffer.h"
 #include "device.h"
-#include "memory_allocator.h"
+#include "allocator/private/memory_allocator.h"
 #include "utils.h"
 
 Buffer::~Buffer()

@@ -1,8 +1,9 @@
 #include "frame_slot.h"
 
 #include "command/command_buffer.h"
-#include "command/command.h"
+#include "command/private/command.h"
 #include "render_context/device_context.h"
+#include "resource/private/dynamic_descriptor_pool.h"
 
 #include <limits>
 
@@ -194,9 +195,9 @@ void FrameSlot::ResetForReuse(DeviceContext& inDeviceContext)
         m_recordTasks.empty(),
         "Cannot reuse a frame context while recording tickets remain unconsumed!");
     _Wait(inDeviceContext);
-    if (m_descriptorAllocator)
+    if (m_dynamicDescriptorPool)
     {
-        m_descriptorAllocator->Reset();
+        m_dynamicDescriptorPool->Reset();
     }
 
     for (ThreadCommandPools& queuePools : m_commandPools)
@@ -311,12 +312,12 @@ auto FrameSlot::DispatchRecording(
         CHECK_TRUE(std::holds_alternative<std::monostate>(buffer.m_renderingScopeState),
             "Command buffer has an active rendering scope!");
         if (!buffer.m_hasProgramBindings) continue;
-        if (!m_descriptorAllocator)
+        if (!m_dynamicDescriptorPool)
         {
-            m_descriptorAllocator = std::make_unique<DynamicDescriptorSetAllocator>();
-            m_descriptorAllocator->Create();
+            m_dynamicDescriptorPool = std::make_unique<VulkanDetail::DynamicDescriptorPool>();
+            m_dynamicDescriptorPool->Create();
         }
-        buffer._PrepareCommands(*m_descriptorAllocator, inQueue);
+        buffer._PrepareCommands(*m_dynamicDescriptorPool, inQueue);
     }
     auto batches = _BuildRecordingBatches(inBuffers);
 

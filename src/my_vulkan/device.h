@@ -7,7 +7,6 @@
 
 class MemoryAllocator;
 class DescriptorSetLayoutAllocator;
-class DescriptorSetAllocator;
 class RenderPassAllocator;
 class PipelineLayoutAllocator;
 class GraphicsPipelineAllocator;
@@ -35,6 +34,7 @@ class MyDevice final
 	friend struct ShaderBindingTestProbe;
 	friend struct ResourceLifetimeTestProbe;
 	friend struct CreateInfoFinalizeTestProbe;
+	friend struct DescriptorPoolTestProbe;
 private:
 	struct QueueFamilyIndices
 	{
@@ -81,7 +81,6 @@ private:
 	std::vector<std::unique_ptr<SwapchainImage>> m_uptrSwapchainImages;
 	std::unique_ptr<MemoryAllocator> m_uptrMemoryAllocator;
 	std::unique_ptr<DescriptorSetLayoutAllocator> m_uptrDescriptorSetLayoutAllocator;
-	std::unique_ptr<DescriptorSetAllocator> descriptorAllocator;
 	std::unique_ptr<RenderPassAllocator> m_uptrRenderPassAllocator;
 	std::unique_ptr<PipelineLayoutAllocator> m_uptrPipelineLayoutAllocator;
 	std::unique_ptr<GraphicsPipelineAllocator> m_uptrGraphicsPipelineAllocator;
@@ -107,8 +106,6 @@ private:
 	void _CreateSurface();
 	void _SelectPhysicalDevice();
 	void _CreateLogicalDevice();
-	void _CreateDescriptorSetAllocator();
-	void _DestroyDescriptorSetAllocator();
 	void _CreateDescriptorSetLayoutAllocator();
 	void _DestroyDescriptorSetLayoutAllocator();
 	void _CreateRenderPassAllocator();
@@ -182,8 +179,6 @@ public:
 	auto GetRenderPassAllocator() -> RenderPassAllocator*;
 
 	auto GetDescriptorSetLayoutAllocator() -> DescriptorSetLayoutAllocator*;
-
-	DescriptorSetAllocator* GetDescriptorSetAllocator();
 
 	auto GetSamplerAllocator()->SamplerAllocator*;
 
@@ -267,6 +262,7 @@ public:
 		const void* inNextPtr = nullptr);
 
 	VkResult ResetDescriptorPool(VkDescriptorPool inDescriptorPool, VkDescriptorPoolResetFlags inFlags = 0);
+	auto FreeDescriptorSet(VkDescriptorPool inPool, VkDescriptorSet inSet) -> VkResult;
 
 	// https://docs.vulkan.org/refpages/latest/refpages/source/vkUpdateDescriptorSets.html
 	void UpdateDescriptorSets(

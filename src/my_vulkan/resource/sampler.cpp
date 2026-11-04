@@ -1,6 +1,6 @@
 #include "sampler.h"
 #include "device.h"
-#include "allocator/sampler_allocator.h"
+#include "allocator/private/sampler_allocator.h"
 
 SamplerCreateInfo::SamplerCreateInfo()
 {

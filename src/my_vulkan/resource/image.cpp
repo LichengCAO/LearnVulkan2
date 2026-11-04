@@ -1,6 +1,6 @@
 #include "image.h"
 #include "device.h"
-#include "memory_allocator.h"
+#include "allocator/private/memory_allocator.h"
 #include <algorithm>
 //#ifndef STB_IMAGE_IMPLEMENTATION
 //#define STB_IMAGE_IMPLEMENTATION

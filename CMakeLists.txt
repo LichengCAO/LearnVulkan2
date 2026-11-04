@@ -137,8 +137,8 @@ macro(include_directories_by_dir source_files)
     if(MSVC)
         set(sgbd_cur_dir ${CMAKE_CURRENT_SOURCE_DIR})
         foreach(sgbd_file ${${source_files}})
-            # Pipeline internals use explicit paths instead of a global include directory.
-            if(sgbd_file MATCHES "/my_vulkan/pipeline/private/")
+            # Internal headers use explicit paths instead of global include directories.
+            if(sgbd_file MATCHES "/my_vulkan/[^/]+/private/")
                 continue()
             endif()
             string(REGEX REPLACE ${sgbd_cur_dir}/\(.*\) \\1 sgbd_fpath ${sgbd_file})

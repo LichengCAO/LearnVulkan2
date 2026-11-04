@@ -1,6 +1,6 @@
 #pragma once
 #include "common.h"
-#include "vulkan_handle_resource.h"
+#include "private/vulkan_handle_resource.h"
 
 class Buffer;
 class Image;
@@ -145,7 +145,7 @@ public:
 
 	friend class Image;
 	friend class RenderPass;
-	friend class DynamicDescriptorSetAllocator;
+	friend struct DescriptorPoolTestProbe;
 	friend class Framebuffer;
 	friend class CommandBuffer;
 	friend class RenderGraphInstance;
