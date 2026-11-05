@@ -65,27 +65,15 @@ MemoryAllocator::~MemoryAllocator()
 		vmaDestroyAllocator(m_vmaAllocator);
 }
 
-void MemoryAllocator::AllocateForVkImage(VkImage _vkImage, VkMemoryPropertyFlags _flags)
+auto MemoryAllocator::AllocateForVkImage(VkImage image, VkMemoryPropertyFlags flags) -> VulkanDetail::MemoryAllocation
 {
-	VmaAllocationCreateInfo allocCreateInfo{};
-	VmaAllocation allocResult = nullptr;
-	VmaAllocationInfo allocInfo{};
-
-	allocCreateInfo.usage = _ToVmaMemoryUsage(_flags);
-
-	VK_CHECK(vmaAllocateMemoryForImage(m_vmaAllocator, _vkImage, &allocCreateInfo, &allocResult, &allocInfo), "Failed to allocate memory!");
-
-	try
-	{
-		VK_CHECK(vmaBindImageMemory(m_vmaAllocator, allocResult, _vkImage), "Failed to bind image memory!");
-		const auto [iter, inserted] = m_mapVkImageToAllocation.emplace(_vkImage, allocResult);
-		CHECK_TRUE(inserted, "Image memory is already allocated!");
-	}
-	catch (...)
-	{
-		vmaFreeMemory(m_vmaAllocator, allocResult);
-		throw;
-	}
+    CHECK_TRUE(IsValid() && image != VK_NULL_HANDLE, "Invalid image allocation dependencies!");
+    VmaAllocationCreateInfo info{}; info.usage = _ToVmaMemoryUsage(flags);
+    VmaAllocation native = nullptr;
+    VK_CHECK(vmaAllocateMemoryForImage(m_vmaAllocator, image, &info, &native, nullptr), "Failed to allocate image memory!");
+    VulkanDetail::MemoryAllocation allocation(m_vmaAllocator, native);
+    VK_CHECK(vmaBindImageMemory(m_vmaAllocator, native, image), "Failed to bind image memory!");
+    return allocation;
 }
 
 auto MemoryAllocator::AllocateForVkBuffer(VkBuffer _vkBuffer, VkMemoryPropertyFlags _flags, VkDeviceSize _alignment) -> VulkanDetail::MemoryAllocation
@@ -114,12 +102,6 @@ auto MemoryAllocator::AllocateForVkBuffer(VkBuffer _vkBuffer, VkMemoryPropertyFl
 	return allocation;
 }
 
-void MemoryAllocator::FreeMemory(VkImage _vkImage)
-{
-	CHECK_TRUE(m_mapVkImageToAllocation.find(_vkImage) != m_mapVkImageToAllocation.end(), "The image isn't allocate by this allocator!");
-	vmaFreeMemory(m_vmaAllocator, m_mapVkImageToAllocation.at(_vkImage));
-	m_mapVkImageToAllocation.erase(_vkImage);
-}
 
 namespace VulkanDetail
 {

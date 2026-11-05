@@ -1,10 +1,11 @@
 # Resource ownership and rendering descriptions
 
-Native images and views are owned by `VulkanDetail::VulkanHandleResource<T>`, a
-`RefCounted` heap object held through `IntrusivePtr<T>`. Its destructor releases
-the native object before releasing parent dependencies. This ownership does not
-insert synchronization or wait for GPU work. Native render passes and
-framebuffers instead belong solely to the Device's private render-target cache.
+Native images belong to `VulkanDetail::ImageResource`, held through
+`IntrusivePtr<T>`. Native image views and swapchain generations use
+`VulkanDetail::VulkanHandleResource<T>`, whose destructor releases the native
+object before releasing parent dependencies. This ownership does not insert
+synchronization or wait for GPU work. Native render passes and framebuffers
+instead belong solely to the Device's private render-target cache.
 
 ## Buffer ownership
 
@@ -56,22 +57,57 @@ creation, movement and reference counting do not synchronize GPU memory access.
 
 Keep Device and VmaAllocator alive until all Buffers are released, and complete
 GPU use before final release. Device/allocator initialization, destruction and
-recreation require exclusive access. This migration leaves Image on its existing
-allocation map and external synchronization contract; it does not make Image
-creation or final resource release safe without that coordination. Buffer command
-and descriptor retention behavior is unchanged.
+recreation require exclusive access. Buffer command and descriptor retention
+behavior is unchanged. Buffer and Image allocations now travel with their
+resource owners; MemoryAllocator keeps no native-handle allocation tables.
 
 ## Image values and resource versions
 
-`Image` is a noncopyable facade with explicit `Create()` and `Destroy()`.
-Creation publishes a new version only after creation succeeds; `Destroy()` clears
-its view cache and releases its current version. `ImageView` is a copyable value
-that retains the native image and allocation. `Reset()` drops that value's
-reference; other copies remain valid. References point to native resource
-objects, never back to facade objects or their caches.
+`Image` is a noncopyable, nonmovable RefCounted facade with synchronous public
+`Create()` and a `noexcept` destructor. It has no public `Destroy()` or release
+alias; use scope or release an external owner to end its lifetime. Create only
+accepts an empty target and publishes after native creation, allocation, binding
+and resource construction all succeed. Repeated Create fails before native work
+and preserves the existing image, information and cached views. Failed creation
+leaves an empty target and permits retry.
 
-ImageView information is a snapshot: rebuilding the original Image cannot change
-an old view's handle, dimensions, format or subresource range.
+Reconstruction uses a new Image owner. `ImageView` is a copyable value retaining
+its original native view, image and allocation, even after the original Image
+facade is destroyed. Its `Reset()` drops that value's reference; other copies
+remain valid. References point to resource objects, never back to facades or
+their caches.
+
+```cpp
+ImageCreateInfo info;
+info.SetUsage(VK_IMAGE_USAGE_SAMPLED_BIT);
+info.CustomizeSize2D(512, 512);
+ImageView retained;
+{
+    auto image = MakeIntrusive<Image>();
+    image->Create(info);
+    retained = image->View();
+} // retained still owns the native view, image and allocation
+// Complete all native uses before releasing the last retained reference.
+retained.Reset();
+```
+
+ImageCreateInfo needs no Finalize. Explicit dimensions do not read swapchain
+state; default two-dimensional dimensions use the current nonzero swapchain
+extent, which the caller keeps stable during creation. Invalid required fields
+and basic dimension/type/mip/sample combinations fail before native creation.
+
+Private ImageResource owns an ImageStorage containing the saved creating
+VkDevice, native handle, native-ownership flag, MemoryAllocation and optional
+swapchain-generation reference. Public Image headers expose no VMA types. VMA
+allocation is returned directly from AllocateForVkImage; no handle-to-allocation
+lookup or separate FreeMemory(VkImage) path exists. An owned native image is
+destroyed before its allocation is freed, using saved dependencies without a
+MyDevice singleton lookup. Views retain their ImageResource, ensuring native
+view destruction precedes native image destruction. Native creation, resource
+construction and cache-publication failures release unpublished resources.
+
+ImageView information is a snapshot: creating a replacement Image owner cannot
+change an old view's handle, dimensions, format or subresource range.
 `ImageView::Information::width/height/depth` are mip zero dimensions of the source
 image. `GetViewSize()` returns dimensions at the selected base mip. Remaining
 mip/layer counts are resolved when the view is created.
@@ -83,10 +119,27 @@ IDs are non-owning and provide no validity tracking.
 
 `Image::View()` caches views with strong references. `ClearViewCache()` drops
 only those references and does not invalidate external views or wait for GPU
-work. Image destruction and successful replacement creation clear the cache.
-Native swapchain images retain their swapchain generation; replacement creation
-passes the previous native swapchain to Vulkan. Acquire and present apply only
-to the current generation.
+work. Image destruction drops its cache and current resource references; external
+references can keep both native objects and allocation alive. View creation uses
+the parent resource's saved VkDevice and publishes complete metadata and resource
+ownership together; a failed request preserves prior cached entries.
+
+Private swapchain import also requires an empty target. Its native image is
+borrowed: it has no VMA allocation and is never passed to vkDestroyImage. It
+retains its swapchain generation; replacing the swapchain releases old wrappers,
+while surviving views retain the old generation. Native replacement passes the
+previous native swapchain to Vulkan. Acquire, present and semaphore management
+continue to apply to the current generation with their existing contracts.
+
+After Device initialization, independent ordinary Images may create, cache views
+and release concurrently. Callers exclude conflicting access to one Image/view
+cache and one ImageView wrapper. Independent copied view values can be released
+on separate threads; VMA handles allocation synchronization and no RHI allocator
+locks are added. Swapchain recreation, acquire/present and final generation
+release still require coordination of their related shared state. Keep Device
+and allocator alive through every resource reference, exclude teardown/recreation
+from related operations, and complete GPU uses before the final native release.
+No Image/view release waits for GPU completion implicitly.
 
 ## Rendering descriptions and native cache
 

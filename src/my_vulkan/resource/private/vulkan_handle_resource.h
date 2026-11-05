@@ -60,7 +60,22 @@ public:
 	auto GetResourceId() const noexcept -> uint64_t { return m_resourceId; }
 };
 
-using ImageResource = VulkanHandleResource<VkImage>;
 using ImageViewResource = VulkanHandleResource<VkImageView>;
 using SwapchainResource = VulkanHandleResource<VkSwapchainKHR>;
+struct ImageStorage;
+class ImageResource final : public RefCounted
+{
+    std::unique_ptr<ImageStorage> m_storage;
+    const uint64_t m_resourceId = _AllocateResourceId();
+public:
+    explicit ImageResource(std::unique_ptr<ImageStorage> storage);
+    ~ImageResource() noexcept override;
+    ImageResource(const ImageResource&) = delete;
+    ImageResource(ImageResource&&) = delete;
+    auto operator=(const ImageResource&) -> ImageResource& = delete;
+    auto operator=(ImageResource&&) -> ImageResource& = delete;
+    auto GetHandle() const noexcept -> VkImage;
+    auto GetDevice() const noexcept -> VkDevice;
+    auto GetResourceId() const noexcept -> uint64_t { return m_resourceId; }
+};
 }

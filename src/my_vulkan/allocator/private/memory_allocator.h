@@ -41,7 +41,6 @@ class MemoryAllocator
 private:
 	VmaAllocator m_vmaAllocator = nullptr;
 	VkDevice m_device = VK_NULL_HANDLE;
-	std::unordered_map<VkImage, VmaAllocation> m_mapVkImageToAllocation;
 
 private:
 	static auto _ToVmaMemoryUsage(VkMemoryPropertyFlags _propertyFlags) -> VmaMemoryUsage;
@@ -54,7 +53,7 @@ public:
 	virtual ~MemoryAllocator();
 
 	// Allocate memory and then bind it to m_vkImage
-	void AllocateForVkImage(VkImage _vkImage, VkMemoryPropertyFlags _flags);
+	[[nodiscard]] auto AllocateForVkImage(VkImage _vkImage, VkMemoryPropertyFlags _flags) -> VulkanDetail::MemoryAllocation;
 
 	// Allocate memory and then bind it to m_vkBuffer, 
 	// the address of the buffer will align with _alignment if it's not 0
@@ -63,7 +62,6 @@ public:
 	[[nodiscard]] auto AllocateForVkBuffer(VkBuffer _vkBuffer, VkMemoryPropertyFlags _flags, VkDeviceSize _alignment = 0) -> VulkanDetail::MemoryAllocation;
 	auto IsValid() const noexcept -> bool { return m_vmaAllocator != nullptr; }
 
-	void FreeMemory(VkImage _vkImage);
 
 
 	friend class MyDevice;

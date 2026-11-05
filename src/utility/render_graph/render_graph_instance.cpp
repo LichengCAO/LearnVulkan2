@@ -297,7 +297,7 @@ void RenderGraphInstance::_DestroyInternalResources()
 	{
 		if (image != nullptr)
 		{
-			image->Destroy();
+			image = nullptr;
 		}
 	}
 	m_internalImages.clear();

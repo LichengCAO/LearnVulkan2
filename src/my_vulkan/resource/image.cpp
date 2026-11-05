@@ -1,22 +1,24 @@
 #include "image.h"
 #include "device.h"
 #include "allocator/private/memory_allocator.h"
+#include "private/image_storage.h"
 #include <algorithm>
 //#ifndef STB_IMAGE_IMPLEMENTATION
 //#define STB_IMAGE_IMPLEMENTATION
 //#endif defined in tinyglTF
 
-Image::~Image()
-{
-	Destroy();
-}
+Image::~Image() noexcept = default;
 
 void Image::Create(const ImageCreateInfo& inCreateInfo)
 {
+	CHECK_TRUE(!m_resource, "Image is already created!");
 	VkImageCreateInfo imageInfo{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 	auto& device = MyDevice::GetInstance();
+	auto* allocator = device.GetMemoryAllocator();
+	CHECK_TRUE(device.vkDevice != VK_NULL_HANDLE && allocator && allocator->IsValid(), "Image requires initialized Device and allocator!");
 	Information infoToFill{};
-	const auto swapchainSize = device.GetSwapchainExtent();
+	VkExtent2D swapchainSize{};
+	if (!inCreateInfo.m_optWidth || !inCreateInfo.m_optHeight) swapchainSize = device.GetSwapchainExtent();
 
 	imageInfo.imageType = inCreateInfo.m_type;
 	imageInfo.arrayLayers = inCreateInfo.m_optArrayLayers.value_or(1);
@@ -31,6 +33,18 @@ void Image::Create(const ImageCreateInfo& inCreateInfo)
 	imageInfo.usage = inCreateInfo.m_usage;
 	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	imageInfo.tiling = inCreateInfo.m_optTiling.value_or(VK_IMAGE_TILING_OPTIMAL);
+	CHECK_TRUE(imageInfo.format != VK_FORMAT_UNDEFINED, "Image format must be defined!");
+	CHECK_TRUE(imageInfo.usage && imageInfo.extent.width && imageInfo.extent.height && imageInfo.extent.depth && imageInfo.mipLevels && imageInfo.arrayLayers, "Image dimensions, usage, mips and layers must be nonzero!");
+	const auto samples = static_cast<uint32_t>(imageInfo.samples);
+	CHECK_TRUE(samples && !(samples & (samples - 1)) && samples <= VK_SAMPLE_COUNT_64_BIT, "Invalid image sample count!");
+	uint32_t maxDimension = std::max({imageInfo.extent.width, imageInfo.extent.height, imageInfo.extent.depth});
+	uint32_t maxMips = 0; for (; maxDimension; maxDimension >>= 1) ++maxMips;
+	CHECK_TRUE(imageInfo.mipLevels <= maxMips, "Too many image mip levels!");
+	CHECK_TRUE(imageInfo.imageType >= VK_IMAGE_TYPE_1D && imageInfo.imageType <= VK_IMAGE_TYPE_3D, "Invalid image type!");
+	CHECK_TRUE(imageInfo.imageType != VK_IMAGE_TYPE_1D || (imageInfo.extent.height == 1 && imageInfo.extent.depth == 1), "Invalid 1D extent!");
+	CHECK_TRUE(imageInfo.imageType != VK_IMAGE_TYPE_2D || imageInfo.extent.depth == 1, "Invalid 2D extent!");
+	CHECK_TRUE(imageInfo.imageType != VK_IMAGE_TYPE_3D || imageInfo.arrayLayers == 1, "3D images require one array layer!");
+	CHECK_TRUE(samples == 1 || (imageInfo.imageType == VK_IMAGE_TYPE_2D && imageInfo.mipLevels == 1 && imageInfo.tiling == VK_IMAGE_TILING_OPTIMAL), "Invalid multisample image combination!");
 
 	infoToFill.imageType = imageInfo.imageType;
 	infoToFill.width = imageInfo.extent.width;
@@ -44,31 +58,14 @@ void Image::Create(const ImageCreateInfo& inCreateInfo)
 	infoToFill.samples = imageInfo.samples;
 	infoToFill.isSwapchainImage = false;
 	infoToFill.memoryProperty = inCreateInfo.m_optMemoryProperty.value_or(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	const VkImage image = device.CreateImage(imageInfo);
-	auto* allocator = device.GetMemoryAllocator();
-	bool allocated = false;
-	IntrusivePtr<VulkanDetail::ImageResource> resource;
-	try
-	{
-		allocator->AllocateForVkImage(image, infoToFill.memoryProperty);
-		allocated = true;
-		resource = MakeIntrusive<VulkanDetail::ImageResource>(image,
-			[vkDevice = device.vkDevice, allocator](VkImage inImage)
-			{
-				vkDestroyImage(vkDevice, inImage, nullptr);
-				allocator->FreeMemory(inImage);
-			});
-	}
-	catch (...)
-	{
-		vkDestroyImage(device.vkDevice, image, nullptr);
-		if (allocated)
-		{
-			allocator->FreeMemory(image);
-		}
-		throw;
-	}
-	ClearViewCache();
+	auto storage = std::make_unique<VulkanDetail::ImageStorage>();
+	storage->device = device.vkDevice;
+	VkImage native = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateImage(storage->device, &imageInfo, nullptr, &native), "Failed to create image!");
+	storage->image = native;
+	storage->ownsNative = true;
+	storage->allocation = allocator->AllocateForVkImage(native, infoToFill.memoryProperty);
+	auto resource = MakeIntrusive<VulkanDetail::ImageResource>(std::move(storage));
 	m_resource = std::move(resource);
 	m_imageInformation = infoToFill;
 }
@@ -76,6 +73,7 @@ void Image::Create(const ImageCreateInfo& inCreateInfo)
 void Image::_ImportSwapchain(VkImage inImage, VkImageUsageFlags inUsage, VkFormat inFormat,
 	VkExtent2D inExtent, const IntrusivePtr<VulkanDetail::SwapchainResource>& inOwner)
 {
+	CHECK_TRUE(!m_resource, "Image is already created!");
 	CHECK_TRUE(inImage != VK_NULL_HANDLE && inOwner, "Imported image requires its swapchain owner!");
 	Information infoToFill{};
 
@@ -92,18 +90,13 @@ void Image::_ImportSwapchain(VkImage inImage, VkImageUsageFlags inUsage, VkForma
 	infoToFill.usage = inUsage;
 	infoToFill.width = inExtent.width;
 
-	auto resource = MakeIntrusive<VulkanDetail::ImageResource>(inImage, nullptr,
-		std::vector<VulkanDetail::ResourceReference>{ inOwner });
-	ClearViewCache();
+	auto storage = std::make_unique<VulkanDetail::ImageStorage>();
+	storage->device = MyDevice::GetInstance().vkDevice;
+	storage->image = inImage;
+	storage->generation = inOwner;
+	auto resource = MakeIntrusive<VulkanDetail::ImageResource>(std::move(storage));
 	m_resource = std::move(resource);
 	m_imageInformation = infoToFill;
-}
-
-void Image::Destroy()
-{
-	ClearViewCache();
-	m_resource.reset();
-	m_imageInformation = {};
 }
 
 void Image::ClearViewCache()
@@ -272,8 +265,9 @@ void ImageView::_Create(const Image& inImage, const ImageViewInfo& inCreateInfo)
 {
 	CHECK_TRUE(!m_resource, "Image view already created!");
 
-	auto& infoToFill = m_viewInformation;
-	auto& device = MyDevice::GetInstance();
+	Information infoToFill{};
+	CHECK_TRUE(inImage.m_resource, "Image must exist!");
+	const auto device = inImage.m_resource->GetDevice();
 	VkImageViewCreateInfo viewInfo{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
 	const auto& imageInfo = inImage.GetImageInformation();
 	CHECK_TRUE(inCreateInfo.m_baseMipLevel < imageInfo.mipLevels, "Base mip level out of range!");
@@ -339,18 +333,20 @@ void ImageView::_Create(const Image& inImage, const ImageViewInfo& inCreateInfo)
 	viewInfo.subresourceRange.baseArrayLayer = infoToFill.baseArrayLayer;
 	viewInfo.subresourceRange.layerCount = infoToFill.layerCount;
 
-	const VkImageView imageView = device.CreateImageView(viewInfo);
+	auto dependencies = std::vector<VulkanDetail::ResourceReference>{ inImage._GetResourceReference() };
+	VkImageView imageView = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateImageView(device, &viewInfo, nullptr, &imageView), "Failed to create image view!");
 	try
 	{
 		m_resource = MakeIntrusive<VulkanDetail::ImageViewResource>(imageView,
-			[vkDevice = device.vkDevice](VkImageView inView) { vkDestroyImageView(vkDevice, inView, nullptr); },
-			std::vector<VulkanDetail::ResourceReference>{ inImage._GetResourceReference() });
+			[device](VkImageView inView) { vkDestroyImageView(device, inView, nullptr); }, std::move(dependencies));
 	}
 	catch (...)
 	{
-		device.DestroyImageView(imageView);
+		vkDestroyImageView(device, imageView, nullptr);
 		throw;
 	}
+	m_viewInformation = infoToFill;
 }
 
 void ImageView::Reset() noexcept

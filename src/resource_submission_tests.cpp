@@ -6,6 +6,7 @@
 #include "my_vulkan/pipeline/render_pass_desc.h"
 #include "my_vulkan/pipeline/framebuffer_desc.h"
 #include "my_vulkan/allocator/private/render_target_cache.h"
+#include "my_vulkan/resource/private/image_storage.h"
 
 #include <set>
 #include <utility>
@@ -115,6 +116,13 @@ struct ResourceSubmissionTestProbe
 
     static VKAPI_ATTR auto VKAPI_CALL _DeviceWaitIdle(VkDevice) -> VkResult { return VK_SUCCESS; }
 
+    static VKAPI_ATTR void VKAPI_CALL _DestroyImage(VkDevice inDevice, VkImage inImage, const VkAllocationCallbacks*)
+    {
+        CHECK_TRUE(inDevice == reinterpret_cast<VkDevice>(uintptr_t(1)) &&
+            inImage == reinterpret_cast<VkImage>(uintptr_t(101)), "Unexpected retained image destruction!");
+        ++*activeHooks->destroyed;
+    }
+
     struct HookScope
     {
         HookState state;
@@ -124,6 +132,7 @@ struct ResourceSubmissionTestProbe
         PFN_vkQueueSubmit2 queueSubmit = vkQueueSubmit2;
         PFN_vkWaitForFences waitForFences = vkWaitForFences;
         PFN_vkDeviceWaitIdle deviceWaitIdle = vkDeviceWaitIdle;
+        PFN_vkDestroyImage destroyImage = vkDestroyImage;
         VkDevice device = VK_NULL_HANDLE;
         std::array<VkQueue, 3> queues{};
 
@@ -144,6 +153,7 @@ struct ResourceSubmissionTestProbe
             vkQueueSubmit2 = _QueueSubmit;
             vkWaitForFences = _WaitForFences;
             vkDeviceWaitIdle = _DeviceWaitIdle;
+            vkDestroyImage = _DestroyImage;
         }
 
         HookScope(const HookScope&) = delete;
@@ -162,6 +172,7 @@ struct ResourceSubmissionTestProbe
             vkQueueSubmit2 = queueSubmit;
             vkWaitForFences = waitForFences;
             vkDeviceWaitIdle = deviceWaitIdle;
+            vkDestroyImage = destroyImage;
             activeHooks = nullptr;
         }
     };
@@ -184,8 +195,13 @@ struct ResourceSubmissionTestProbe
     static auto _ExplicitKeepAliveBuffers(int& inDestroyed, bool inView) -> std::vector<CommandBuffer>
     {
         Image image;
-        image.m_resource = MakeIntrusive<VulkanDetail::ImageResource>(
-            reinterpret_cast<VkImage>(uintptr_t(101)), [&inDestroyed](VkImage) { ++inDestroyed; });
+        CHECK_TRUE(activeHooks && activeHooks->destroyed == &inDestroyed,
+            "Explicit KeepAlive fixture requires active native lifetime hooks!");
+        auto storage = std::make_unique<VulkanDetail::ImageStorage>();
+        storage->device = MyDevice::GetInstance().vkDevice;
+        storage->image = reinterpret_cast<VkImage>(uintptr_t(101));
+        storage->ownsNative = true;
+        image.m_resource = MakeIntrusive<VulkanDetail::ImageResource>(std::move(storage));
         std::vector<CommandBuffer> buffers(1);
         if (inView)
         {

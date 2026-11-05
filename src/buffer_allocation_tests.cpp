@@ -1,4 +1,5 @@
 #include "my_vulkan/resource/buffer.h"
+#include "my_vulkan/resource/image.h"
 #include "my_vulkan/resource/private/buffer_storage.h"
 #include "my_vulkan/device.h"
 #include <atomic>
@@ -11,6 +12,8 @@
 
 struct BufferAllocationTestProbe
 {
+    static auto SwapExtent(VkExtent2D extent) -> VkExtent2D
+    { return std::exchange(MyDevice::GetInstance().m_swapchain.extent, extent); }
     static auto TakeAllocator() -> std::unique_ptr<MemoryAllocator>
     { return std::move(MyDevice::GetInstance().m_uptrMemoryAllocator); }
     static void PutAllocator(std::unique_ptr<MemoryAllocator> allocator)
@@ -45,9 +48,11 @@ static_assert(std::is_nothrow_move_constructible_v<VulkanDetail::MemoryAllocatio
 
 #ifdef _DEBUG
 thread_local bool failPublication = false;
-auto FailPublication(int kind, void*, size_t, int, long, const unsigned char*, int) -> int
+thread_local int publicationCountdown = 0;
+auto FailPublication(int kind, void*, size_t size, int block, long, const unsigned char*, int) -> int
 {
-    if (kind == _HOOK_ALLOC && failPublication) { failPublication = false; return 0; }
+    if (block == _CRT_BLOCK || size == sizeof(std::_Container_proxy)) return 1;
+    if (kind == _HOOK_ALLOC && failPublication && publicationCountdown-- <= 0) { failPublication = false; return 0; }
     return 1;
 }
 #endif
@@ -61,6 +66,12 @@ struct NativeState final
     std::unordered_map<VkBuffer, Binding> bindings;
     std::unordered_map<VkDeviceMemory, std::vector<uint8_t>> memories;
     std::unordered_map<VkBufferView, VkBuffer> views;
+    std::unordered_map<VkImage, VkImageCreateInfo> images;
+    std::unordered_map<VkImage, Binding> imageBindings;
+    std::unordered_map<VkImageView, VkImage> imageViews;
+    uint32_t imageCreates = 0, imageDestroys = 0, imageViewCreates = 0, imageViewDestroys = 0;
+    bool failImage = false, failImageView = false, failImagePublication = false;
+    bool failImageCachePublication = false;
     uint32_t creates = 0, destroys = 0, maps = 0, unmaps = 0, waits = 0;
     uint32_t viewCreates = 0, viewDestroys = 0;
     bool failCreate = false, failAllocate = false, failBind = false, failMap = false, failView = false;
@@ -112,6 +123,8 @@ void VKAPI_PTR FreeMemory(VkDevice, VkDeviceMemory memory, const VkAllocationCal
     std::lock_guard lock(active->mutex);
     for (const auto& [buffer, binding] : active->bindings)
         if (binding.memory == memory) active->badOrder = true;
+    for (const auto& [image, binding] : active->imageBindings)
+        if (binding.memory == memory) active->badOrder = true;
     if (active->memories.erase(memory) != 1) active->badOrder = true;
 }
 auto VKAPI_PTR BindBuffer(VkDevice, VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize offset) -> VkResult
@@ -154,11 +167,52 @@ void VKAPI_PTR MemoryProperties(VkPhysicalDevice, VkPhysicalDeviceMemoryProperti
         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0 };
 }
 auto VKAPI_PTR Flush(VkDevice, uint32_t, const VkMappedMemoryRange*) -> VkResult { return VK_SUCCESS; }
-auto VKAPI_PTR CreateImage(VkDevice, const VkImageCreateInfo*, const VkAllocationCallbacks*, VkImage*) -> VkResult
-{ return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
-void VKAPI_PTR DestroyImage(VkDevice, VkImage, const VkAllocationCallbacks*) {}
+auto VKAPI_PTR CreateImage(VkDevice device, const VkImageCreateInfo* info, const VkAllocationCallbacks*, VkImage* out) -> VkResult
+{
+    std::lock_guard lock(active->mutex);
+    CHECK_TRUE(device == active->expectedDevice);
+    ++active->imageCreates;
+    if (active->failImage) { *out = Handle<VkImage>(99999); return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
+    *out = Handle<VkImage>(active->next++); active->images.emplace(*out, *info); return VK_SUCCESS;
+}
+void VKAPI_PTR DestroyImage(VkDevice device, VkImage image, const VkAllocationCallbacks*)
+{
+    const bool alive = !active->requireAllocationOnDestroy || BufferAllocationTestProbe::AllocationCount() != 0;
+    std::lock_guard lock(active->mutex);
+    if (!alive || device != active->expectedDevice || active->images.erase(image) != 1) active->badOrder = true;
+    for (const auto& [view, owner] : active->imageViews) if (owner == image) active->badOrder = true;
+    active->imageBindings.erase(image); ++active->imageDestroys;
+}
 void VKAPI_PTR ImageRequirements(VkDevice, VkImage, VkMemoryRequirements* out) { *out = {256, 64, 1}; }
-auto VKAPI_PTR BindImage(VkDevice, VkImage, VkDeviceMemory, VkDeviceSize) -> VkResult { return VK_SUCCESS; }
+auto VKAPI_PTR BindImage(VkDevice, VkImage image, VkDeviceMemory memory, VkDeviceSize offset) -> VkResult
+{
+    std::lock_guard lock(active->mutex);
+    if (active->failBind) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    active->imageBindings.emplace(image, NativeState::Binding{memory, offset});
+#ifdef _DEBUG
+    if (active->failImagePublication) failPublication = true;
+#endif
+    return VK_SUCCESS;
+}
+auto VKAPI_PTR CreateImageView(VkDevice device, const VkImageViewCreateInfo* info, const VkAllocationCallbacks*, VkImageView* out) -> VkResult
+{
+    std::lock_guard lock(active->mutex); CHECK_TRUE(device == active->expectedDevice);
+    ++active->imageViewCreates;
+    if (active->failImageView) { *out = Handle<VkImageView>(99999); return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
+    *out = Handle<VkImageView>(active->next++); active->imageViews.emplace(*out, info->image);
+#ifdef _DEBUG
+    if (active->failViewPublication || active->failImageCachePublication)
+    { publicationCountdown = active->failImageCachePublication ? 1 : 0; failPublication = true; }
+#endif
+    return VK_SUCCESS;
+}
+void VKAPI_PTR DestroyImageView(VkDevice device, VkImageView view, const VkAllocationCallbacks*)
+{
+    std::lock_guard lock(active->mutex);
+    const auto found = active->imageViews.find(view);
+    if (device != active->expectedDevice || found == active->imageViews.end() || !active->images.contains(found->second)) active->badOrder = true;
+    active->imageViews.erase(view); ++active->imageViewDestroys;
+}
 void VKAPI_PTR CopyBuffer(VkCommandBuffer, VkBuffer, VkBuffer, uint32_t, const VkBufferCopy*) {}
 auto VKAPI_PTR InstanceProc(VkInstance, const char*) -> PFN_vkVoidFunction { return nullptr; }
 auto VKAPI_PTR DeviceProc(VkDevice, const char*) -> PFN_vkVoidFunction { return nullptr; }
@@ -204,7 +258,7 @@ auto VKAPI_PTR Wait(VkDevice) -> VkResult { ++active->waits; return VK_SUCCESS; 
     X(vkGetImageMemoryRequirements, ImageRequirements) X(vkBindImageMemory, BindImage) \
     X(vkCmdCopyBuffer, CopyBuffer) X(vkGetInstanceProcAddr, InstanceProc) X(vkGetDeviceProcAddr, DeviceProc) \
     X(vkGetBufferDeviceAddress, Address) X(vkCreateBufferView, CreateView) X(vkDestroyBufferView, DestroyView) \
-    X(vkDeviceWaitIdle, Wait)
+    X(vkDeviceWaitIdle, Wait) X(vkCreateImageView, CreateImageView) X(vkDestroyImageView, DestroyImageView)
 
 struct Hooks final
 {
@@ -233,7 +287,7 @@ struct Hooks final
     ~Hooks() noexcept(false)
     {
         BufferAllocationTestProbe::PutAllocator(nullptr);
-        const bool clean = state.buffers.empty() && state.views.empty() && state.memories.empty() && !state.badOrder && state.waits == 0;
+        const bool clean = state.buffers.empty() && state.views.empty() && state.images.empty() && state.imageViews.empty() && state.memories.empty() && !state.badOrder && state.waits == 0;
         auto& owner = MyDevice::GetInstance();
         BufferAllocationTestProbe::PutAllocator(std::move(allocator));
         owner.vkDevice = device; owner.vkInstance = instance; owner.vkPhysicalDevice = physicalDevice;
@@ -380,12 +434,16 @@ void TestAllocationAlignmentAndUnmap()
     }
     CHECK_TRUE(hooks.state.maps == 2 && hooks.state.unmaps == 2,
         "Unmap must clear cached mapping so a subsequent Map maps again!");
-    const auto image = Handle<VkImage>(777);
+    VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    VkImage image = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateImage(hooks.state.expectedDevice, &imageInfo, nullptr, &image));
     const auto before = BufferAllocationTestProbe::AllocationCount();
-    allocator->AllocateForVkImage(image, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    CHECK_TRUE(BufferAllocationTestProbe::AllocationCount() == before + 1, "Legacy Image allocation path must remain intact!");
-    allocator->FreeMemory(image);
-    CHECK_TRUE(BufferAllocationTestProbe::AllocationCount() == before, "Legacy Image free must remain intact!");
+    {
+        auto allocation = allocator->AllocateForVkImage(image, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        CHECK_TRUE(BufferAllocationTestProbe::AllocationCount() == before + 1, "Image allocation record must own VMA allocation!");
+        vkDestroyImage(hooks.state.expectedDevice, image, nullptr);
+    }
+    CHECK_TRUE(BufferAllocationTestProbe::AllocationCount() == before, "Image allocation record must free VMA allocation!");
 }
 
 void TestViews()
@@ -458,10 +516,128 @@ void TestIndependentThreads()
     if (!failures.empty()) std::rethrow_exception(failures.front());
     CHECK_TRUE(BufferAllocationTestProbe::AllocationCount() == 0, "Sequential thread handoff must preserve ownership!");
 }
+
+auto ImageInfo() -> ImageCreateInfo
+{
+    ImageCreateInfo info; info.SetUsage(VK_IMAGE_USAGE_SAMPLED_BIT); info.CustomizeSize2D(16, 8);
+    info.CustomizeMipLevels(3); info.CustomizeArrayLayers(2); return info;
+}
+
+void TestImageValidationAndRollback()
+{
+    static_assert(!HasDestroy<Image> && !std::is_move_constructible_v<Image> && std::is_nothrow_destructible_v<Image>);
+    Hooks hooks;
+    Image image;
+    CHECK_TRUE(!image.IsValid() && image.GetVkImage() == VK_NULL_HANDLE);
+    ExpectFailure([&] { image.Create(ImageCreateInfo{}); });
+    auto invalid = ImageInfo(); invalid.CustomizeSize2D(0, 8); ExpectFailure([&] { image.Create(invalid); });
+    invalid = ImageInfo(); invalid.CustomizeMipLevels(6); ExpectFailure([&] { image.Create(invalid); });
+    invalid = ImageInfo(); invalid.CustomizeMipLevels(0); ExpectFailure([&] { image.Create(invalid); });
+    invalid = ImageInfo(); invalid.CustomizeArrayLayers(0); ExpectFailure([&] { image.Create(invalid); });
+    invalid = ImageInfo(); invalid.CustomizeSampleCount(VK_SAMPLE_COUNT_4_BIT); ExpectFailure([&] { image.Create(invalid); });
+    invalid = ImageInfo(); invalid.CustomizeSize3D(8, 8, 8); ExpectFailure([&] { image.Create(invalid); });
+    invalid = ImageInfo(); invalid.CustomizeSampleCount(static_cast<VkSampleCountFlagBits>(3)); ExpectFailure([&] { image.Create(invalid); });
+    auto allocator = BufferAllocationTestProbe::TakeAllocator();
+    ExpectFailure([&] { image.Create(ImageInfo()); });
+    BufferAllocationTestProbe::PutAllocator(std::move(allocator));
+    MyDevice::GetInstance().vkDevice = VK_NULL_HANDLE; ExpectFailure([&] { image.Create(ImageInfo()); });
+    MyDevice::GetInstance().vkDevice = hooks.state.expectedDevice;
+    CHECK_TRUE(hooks.state.imageCreates == 0, "Invalid Image inputs must reject before native calls!");
+    for (auto flag : {&hooks.state.failImage, &hooks.state.failAllocate, &hooks.state.failBind})
+    {
+        *flag = true; ExpectFailure([&] { image.Create(ImageInfo()); }); *flag = false;
+        CHECK_TRUE(!image.IsValid() && image.GetImageInformation().width == 0 && hooks.state.images.empty() && BufferAllocationTestProbe::AllocationCount() == 0);
+    }
+#ifdef _DEBUG
+    const auto previous = _CrtSetAllocHook(FailPublication);
+    hooks.state.failImagePublication = true;
+    ExpectFailure([&] { image.Create(ImageInfo()); });
+    failPublication = false; hooks.state.failImagePublication = false; _CrtSetAllocHook(previous);
+    CHECK_TRUE(!image.IsValid() && hooks.state.images.empty() && BufferAllocationTestProbe::AllocationCount() == 0,
+        "Image wrapper allocation failure must roll back bound native storage!");
+#endif
+    image.Create(ImageInfo()); auto view = image.View();
+    const auto native = image.GetVkImage(); const auto calls = hooks.state.imageCreates;
+    ExpectFailure([&] { image.Create(ImageInfo()); });
+    CHECK_TRUE(image.GetVkImage() == native && image.GetImageInformation().width == 16 && image.View() == view && calls == hooks.state.imageCreates);
+}
+
+void TestImageViewsAndOwners()
+{
+    Hooks hooks; hooks.state.requireAllocationOnDestroy = true;
+    ImageView retained;
+    {
+        auto image = std::make_unique<Image>(); image->Create(ImageInfo());
+        retained = image->View(); const auto identity = retained.GetResourceId();
+        auto copy = retained; CHECK_TRUE(copy.GetResourceId() == identity);
+        ImageViewInfo slice; slice.CustomizeMipLevels(1, 1); slice.CustomizeArrayLayers(1, 1);
+        hooks.state.failImageView = true; ExpectFailure([&] { image->View(slice); }); hooks.state.failImageView = false;
+#ifdef _DEBUG
+        const auto previous = _CrtSetAllocHook(FailPublication); hooks.state.failViewPublication = true;
+        ExpectFailure([&] { image->View(slice); });
+        failPublication = false; hooks.state.failViewPublication = false; _CrtSetAllocHook(previous);
+        const auto cacheHook = _CrtSetAllocHook(FailPublication); hooks.state.failImageCachePublication = true;
+        ExpectFailure([&] { image->View(slice); });
+        failPublication = false; publicationCountdown = 0; hooks.state.failImageCachePublication = false; _CrtSetAllocHook(cacheHook);
+#endif
+        CHECK_TRUE(image->View() == retained, "Failed view publication must preserve cached entries!");
+        auto sub = image->View(slice); CHECK_TRUE(sub.GetViewSize().width == 8 && sub.GetViewSize().height == 4 && sub.GetImageSubresourceRange().layerCount == 1);
+        image->ClearViewCache(); CHECK_TRUE(retained.IsValid());
+        auto recreated = image->View(); CHECK_TRUE(recreated.GetResourceId() != identity);
+        image.reset(); CHECK_TRUE(hooks.state.imageDestroys == 0 && BufferAllocationTestProbe::AllocationCount() == 1);
+        Image rebuilt; rebuilt.Create(ImageInfo()); CHECK_TRUE(rebuilt.GetVkImage() != retained.GetVkImage());
+    }
+    CHECK_TRUE(hooks.state.imageDestroys == 1 && BufferAllocationTestProbe::AllocationCount() == 1);
+    MyDevice::GetInstance().vkDevice = Handle<VkDevice>(9);
+    retained.Reset(); CHECK_TRUE(hooks.state.imageDestroys == 2 && BufferAllocationTestProbe::AllocationCount() == 0);
+    MyDevice::GetInstance().vkDevice = hooks.state.expectedDevice;
+    {
+        Image one; auto info = ImageInfo(); info.CustomizeSize1D(16); info.CustomizeArrayLayers(1); one.Create(info);
+        CHECK_TRUE(one.View().GetImageViewInformation().type == VK_IMAGE_VIEW_TYPE_1D);
+        Image three; info.CustomizeSize3D(16, 8, 4); three.Create(info);
+        CHECK_TRUE(three.View().GetImageViewInformation().type == VK_IMAGE_VIEW_TYPE_3D);
+        Image multisample; info.CustomizeSize2D(8, 8); info.CustomizeMipLevels(1); info.CustomizeSampleCount(VK_SAMPLE_COUNT_4_BIT); multisample.Create(info);
+        CHECK_TRUE(multisample.GetImageInformation().samples == VK_SAMPLE_COUNT_4_BIT);
+    }
+    const auto oldExtent = BufferAllocationTestProbe::SwapExtent({32, 24});
+    {
+        Image image; ImageCreateInfo info; info.SetUsage(VK_IMAGE_USAGE_SAMPLED_BIT); image.Create(info);
+        CHECK_TRUE(image.GetImageSize().width == 32 && image.GetImageSize().height == 24);
+    }
+    BufferAllocationTestProbe::SwapExtent({0, 0});
+    {
+        Image explicitImage; explicitImage.Create(ImageInfo());
+        Image defaultImage; ImageCreateInfo info; info.SetUsage(VK_IMAGE_USAGE_SAMPLED_BIT);
+        ExpectFailure([&] { defaultImage.Create(info); });
+    }
+    BufferAllocationTestProbe::SwapExtent(oldExtent);
+}
+
+void TestImageThreads()
+{
+    Hooks hooks; std::mutex mutex; std::vector<std::exception_ptr> failures; std::vector<std::thread> workers;
+    for (int i = 0; i < 4; ++i) workers.emplace_back([&]
+    {
+        try { for (int n = 0; n < 16; ++n) { Image image; image.Create(ImageInfo()); auto view = image.View(); auto copy = view; image.ClearViewCache(); CHECK_TRUE(view == copy); } }
+        catch (...) { std::lock_guard lock(mutex); failures.push_back(std::current_exception()); }
+    });
+    for (auto& worker : workers) worker.join();
+    if (!failures.empty()) std::rethrow_exception(failures.front());
+    auto image = std::make_unique<Image>(); ImageView view;
+    std::thread create([&] { try { image->Create(ImageInfo()); view = image->View(); } catch (...) { failures.push_back(std::current_exception()); } }); create.join();
+    if (!failures.empty()) std::rethrow_exception(failures.front());
+    auto copy = view; image.reset();
+    std::thread first([value = std::move(copy)]() mutable { value.Reset(); });
+    std::thread second([value = std::move(view)]() mutable { value.Reset(); }); first.join(); second.join();
+    CHECK_TRUE(BufferAllocationTestProbe::AllocationCount() == 0 && hooks.state.images.empty());
+}
 }
 
 void RunBufferAllocationTests()
 {
+    TestImageValidationAndRollback();
+    TestImageViewsAndOwners();
+    TestImageThreads();
     TestLifecycleAndMove();
     TestValidationAndFailureRetry();
     TestAllocationAlignmentAndUnmap();

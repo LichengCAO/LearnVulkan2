@@ -153,6 +153,9 @@ public:
 	friend struct ResourceSubmissionTestProbe;
 };
 
+// Owns a resource version; copied ImageViews can keep it alive after this facade.
+// Independent ordinary Images may be used concurrently. Exclude conflicting
+// access to one Image/view cache and keep Device/allocator alive through release.
 class Image : public RefCounted
 {
 	friend struct CommandBufferTestProbe;
@@ -196,11 +199,13 @@ public:
 	Image(Image&&) = delete;
 	auto operator=(const Image&) -> Image& = delete;
 	auto operator=(Image&&) -> Image& = delete;
-	virtual ~Image();
+	// Releases references without waiting for GPU work.
+	~Image() noexcept override;
 
+	// Requires an empty target. Failure preserves the target and permits retry.
 	void Create(const ImageCreateInfo& inCreateInfo);
 
-	void Destroy();
+	// Drops cached references; external ImageViews retain their resources.
 	void ClearViewCache();
 
 	auto View(const ImageViewInfo& inCreateInfo = {}) const -> ImageView;

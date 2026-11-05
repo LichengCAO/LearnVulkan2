@@ -4,6 +4,7 @@
 #include "my_vulkan/command/command_buffer.h"
 #include "my_vulkan/pipeline/framebuffer_desc.h"
 #include "my_vulkan/resource/descriptor.h"
+#include "my_vulkan/resource/private/image_storage.h"
 #include <algorithm>
 #include <barrier>
 #include <thread>
@@ -28,13 +29,17 @@ struct ResourceLifetimeTestProbe
 {
     template<typename T>
     static auto Handle(uintptr_t value) -> T { return reinterpret_cast<T>(value); }
-    static void SetImage(Image& image, uintptr_t handle, uint32_t width, uint32_t height,
+    static void SetImage(Image& inImage, uintptr_t handle, uint32_t width, uint32_t height,
         uint32_t mips, uint32_t layers, VkFormat format, VkImageUsageFlags usage,
-        VkSampleCountFlagBits samples, std::function<void(VkImage)> destroy)
+        VkSampleCountFlagBits samples)
     {
-        image.Destroy();
-        image.m_resource = MakeIntrusive<VulkanDetail::ImageResource>(Handle<VkImage>(handle), std::move(destroy));
-        auto& info = image.m_imageInformation;
+        CHECK_TRUE(!inImage.IsValid(), "Image fixture must start with an empty owner!");
+        auto storage = std::make_unique<VulkanDetail::ImageStorage>();
+        storage->device = MyDevice::GetInstance().vkDevice;
+        storage->image = Handle<VkImage>(handle);
+        storage->ownsNative = true;
+        inImage.m_resource = MakeIntrusive<VulkanDetail::ImageResource>(std::move(storage));
+        auto& info = inImage.m_imageInformation;
         info.width = width; info.height = height; info.depth = 1;
         info.mipLevels = mips; info.arrayLayers = layers;
         info.format = format; info.usage = usage; info.samples = samples;
@@ -48,14 +53,14 @@ struct ResourceLifetimeTestProbe
         return previous;
     }
     static void ClearAllocator() { MyDevice::GetInstance().m_uptrRenderTargetCache->Destroy(); }
-    static void ImportSwapchain(Image& image, uintptr_t handle,
+    static void ImportSwapchain(Image& inImage, uintptr_t handle,
         const IntrusivePtr<VulkanDetail::SwapchainResource>& owner)
     {
-        image._ImportSwapchain(Handle<VkImage>(handle), VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        inImage._ImportSwapchain(Handle<VkImage>(handle), VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
             VK_FORMAT_R8G8B8A8_UNORM, {64, 32}, owner);
     }
     static auto Snapshot(const RenderPassDesc& pass) -> VulkanDetail::RenderPassSnapshot { return pass._GetSnapshot(); }
-    static auto CacheSize(const Image& image) -> size_t { return image.m_imageViews.size(); }
+    static auto CacheSize(const Image& inImage) -> size_t { return inImage.m_imageViews.size(); }
     static void Append(CommandBuffer& destination, CommandBuffer&& source) { destination._Append(std::move(source)); }
     static void Record(const CommandBuffer& commands)
     {
@@ -92,7 +97,7 @@ struct HostAllocationFailureScope final
 struct NativeState
 {
     uintptr_t nextView = 1000, nextPass = 2000, nextFramebuffer = 3000;
-    uint32_t viewCreates = 0, framebufferCreates = 0, passCreates = 0;
+    uint32_t imageCreates = 0, viewCreates = 0, framebufferCreates = 0, passCreates = 0;
     bool failImage = false, failView = false, failPass = false, failFramebuffer = false;
     bool failFramebufferPublication = false;
     std::set<VkRenderPass> livePasses;
@@ -108,8 +113,13 @@ NativeState* nativeState = nullptr;
 
 auto VKAPI_PTR CreateImage(VkDevice, const VkImageCreateInfo*, const VkAllocationCallbacks*, VkImage*) -> VkResult
 {
+    ++nativeState->imageCreates;
     CHECK_TRUE(nativeState->failImage, "A successful image test must avoid real memory allocation!");
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+}
+void VKAPI_PTR DestroyImage(VkDevice, VkImage value, const VkAllocationCallbacks*)
+{
+    nativeState->destroyed.push_back(reinterpret_cast<uintptr_t>(value));
 }
 auto VKAPI_PTR CreateView(VkDevice, const VkImageViewCreateInfo*, const VkAllocationCallbacks*, VkImageView* output) -> VkResult
 {
@@ -170,6 +180,7 @@ struct NativeEnvironment
 {
     NativeState state;
     PFN_vkCreateImage previousImage = vkCreateImage;
+    PFN_vkDestroyImage previousDestroyImage = vkDestroyImage;
     PFN_vkCreateImageView previousView = vkCreateImageView;
     PFN_vkDestroyImageView previousDestroyView = vkDestroyImageView;
     PFN_vkCreateRenderPass previousPass = vkCreateRenderPass;
@@ -183,7 +194,8 @@ struct NativeEnvironment
     NativeEnvironment()
     {
         nativeState = &state;
-        vkCreateImage = CreateImage; vkCreateImageView = CreateView; vkDestroyImageView = DestroyView;
+        vkCreateImage = CreateImage; vkDestroyImage = DestroyImage;
+        vkCreateImageView = CreateView; vkDestroyImageView = DestroyView;
         vkCreateRenderPass = CreatePass; vkDestroyRenderPass = DestroyPass;
         vkCreateFramebuffer = CreateFramebuffer; vkDestroyFramebuffer = DestroyFramebuffer;
         vkCmdBeginRenderPass = BeginPass; vkCmdEndRenderPass = EndPass;
@@ -197,7 +209,8 @@ struct NativeEnvironment
         auto allocator = ResourceLifetimeTestProbe::ExchangeAllocator(std::move(previousAllocator));
         allocator.reset();
         MyDevice::GetInstance().vkDevice = previousDevice;
-        vkCreateImage = previousImage; vkCreateImageView = previousView; vkDestroyImageView = previousDestroyView;
+        vkCreateImage = previousImage; vkDestroyImage = previousDestroyImage;
+        vkCreateImageView = previousView; vkDestroyImageView = previousDestroyView;
         vkCreateRenderPass = previousPass; vkDestroyRenderPass = previousDestroyPass;
         vkCreateFramebuffer = previousFramebuffer; vkDestroyFramebuffer = previousDestroyFramebuffer;
         vkCmdBeginRenderPass = previousBegin; vkCmdEndRenderPass = previousEnd;
@@ -218,13 +231,12 @@ auto WasDestroyed(uintptr_t handle) -> bool
 {
     return std::find(nativeState->destroyed.begin(), nativeState->destroyed.end(), handle) != nativeState->destroyed.end();
 }
-void FakeImage(Image& image, uintptr_t handle, uint32_t width = 128, uint32_t height = 64,
+void FakeImage(Image& inImage, uintptr_t handle, uint32_t width = 128, uint32_t height = 64,
     uint32_t mips = 4, uint32_t layers = 4, VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
     VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT)
 {
-    ResourceLifetimeTestProbe::SetImage(image, handle, width, height, mips, layers, format, usage, samples,
-        [](VkImage value) { nativeState->destroyed.push_back(reinterpret_cast<uintptr_t>(value)); });
+    ResourceLifetimeTestProbe::SetImage(inImage, handle, width, height, mips, layers, format, usage, samples);
 }
 auto SingleMip(uint32_t mip = 0, uint32_t baseLayer = 0, uint32_t layers = VK_REMAINING_ARRAY_LAYERS) -> ImageViewInfo
 {
@@ -302,10 +314,10 @@ void TestConcurrentImageViewResourceIdentityAllocation()
 void TestImageViewCacheSnapshotsAndFailures()
 {
     NativeEnvironment environment;
-    Image image;
-    FakeImage(image, 10);
-    auto view = image.View(SingleMip(1, 1, 3));
-    auto copy = image.View(SingleMip(1, 1));
+    auto image = std::make_unique<Image>();
+    FakeImage(*image, 10);
+    auto view = image->View(SingleMip(1, 1, 3));
+    auto copy = image->View(SingleMip(1, 1));
     CHECK_TRUE(view == copy && environment.state.viewCreates == 1, "Resolved image view ranges must share the strong cache!");
     CHECK_TRUE(view.GetResourceId() != 0 && view.GetResourceId() == copy.GetResourceId(),
         "ImageView copies and exact cache hits must retain the same nonzero native resource identity!");
@@ -327,40 +339,44 @@ void TestImageViewCacheSnapshotsAndFailures()
     CHECK_TRUE(view.GetImageViewInformation().width == 128 && view.GetViewSize().width == 64 &&
         view.GetViewSize().height == 32 && view.GetImageViewInformation().layerCount == 3,
         "View snapshots must preserve mip-zero size and resolve selected mip/layer dimensions!");
-    image.ClearViewCache();
+    image->ClearViewCache();
     CHECK_TRUE(!WasDestroyed(oldHandle) && !WasDestroyed(10), "Clearing the cache must preserve external view owners!");
-    auto replacement = image.View(SingleMip(1, 1, 3));
+    auto replacement = image->View(SingleMip(1, 1, 3));
     CHECK_TRUE(!(replacement == view) && replacement.GetResourceId() != view.GetResourceId(),
         "A cleared cache must create a new native view version and resource identity!");
-    const auto cacheSize = ResourceLifetimeTestProbe::CacheSize(image);
+    const auto cacheSize = ResourceLifetimeTestProbe::CacheSize(*image);
     const auto createCount = environment.state.viewCreates;
     for (const auto info : {SingleMip(0, 0, 0), SingleMip(0, UINT32_MAX, 1), SingleMip(UINT32_MAX), SingleMip(0, 1, UINT32_MAX - 1)})
-        ExpectFailure([&] { (void)image.View(info); });
+        ExpectFailure([&] { (void)image->View(info); });
     ImageViewInfo zeroMips;
     zeroMips.CustomizeMipLevels(0, 0);
-    ExpectFailure([&] { (void)image.View(zeroMips); });
+    ExpectFailure([&] { (void)image->View(zeroMips); });
     ImageViewInfo overflowMips;
     overflowMips.CustomizeMipLevels(1, UINT32_MAX - 1);
-    ExpectFailure([&] { (void)image.View(overflowMips); });
-    CHECK_TRUE(ResourceLifetimeTestProbe::CacheSize(image) == cacheSize && environment.state.viewCreates == createCount &&
-        image.View(SingleMip(1, 1, 3)) == replacement, "Rejected ranges must leave the image cache and current version unchanged!");
+    ExpectFailure([&] { (void)image->View(overflowMips); });
+    CHECK_TRUE(ResourceLifetimeTestProbe::CacheSize(*image) == cacheSize && environment.state.viewCreates == createCount &&
+        image->View(SingleMip(1, 1, 3)) == replacement, "Rejected ranges must leave the image cache and current version unchanged!");
     environment.state.failView = true;
-    ExpectFailure([&] { (void)image.View(SingleMip(2)); });
+    ExpectFailure([&] { (void)image->View(SingleMip(2)); });
     environment.state.failView = false;
-    CHECK_TRUE(ResourceLifetimeTestProbe::CacheSize(image) == cacheSize, "Failed native view creation must not enter the cache!");
-    environment.state.failImage = true;
+    CHECK_TRUE(ResourceLifetimeTestProbe::CacheSize(*image) == cacheSize, "Failed native view creation must not enter the cache!");
     ImageCreateInfo createInfo;
     createInfo.CustomizeSize2D(16, 16);
     createInfo.SetUsage(VK_IMAGE_USAGE_SAMPLED_BIT);
-    ExpectFailure([&] { image.Create(createInfo); });
-    CHECK_TRUE(image.GetVkImage() == ResourceLifetimeTestProbe::Handle<VkImage>(10) &&
-        image.View(SingleMip(1, 1, 3)) == replacement, "Failed image replacement must preserve the old native image and cache!");
-    FakeImage(image, 11, 32, 16, 1, 1);
+    const auto imageCreates = environment.state.imageCreates;
+    ExpectFailure([&] { image->Create(createInfo); });
+    CHECK_TRUE(image->GetVkImage() == ResourceLifetimeTestProbe::Handle<VkImage>(10) &&
+        image->View(SingleMip(1, 1, 3)) == replacement && environment.state.imageCreates == imageCreates,
+        "Repeated image creation must reject before native work and preserve the image and cache!");
+    image.reset();
+    auto rebuilt = std::make_unique<Image>();
+    FakeImage(*rebuilt, 11, 32, 16, 1, 1);
     CHECK_TRUE(view.GetVkImage() == ResourceLifetimeTestProbe::Handle<VkImage>(10) &&
-        view.GetImageViewInformation().width == 128 && view.GetImageViewInformation().baseMipLevel == 1,
-        "Replacing an image facade must not mutate surviving view snapshots!");
-    image.Destroy();
-    CHECK_TRUE(!image.IsValid() && !WasDestroyed(10), "Image destruction must preserve surviving native view versions!");
+        view.GetImageViewInformation().width == 128 && view.GetImageViewInformation().baseMipLevel == 1 &&
+        rebuilt->GetVkImage() == ResourceLifetimeTestProbe::Handle<VkImage>(11),
+        "A new image owner must not mutate surviving view snapshots!");
+    rebuilt.reset();
+    CHECK_TRUE(!image && !WasDestroyed(10), "Image destruction must preserve surviving native view versions!");
     copy.Reset();
     replacement.Reset();
     CHECK_TRUE(!WasDestroyed(10), "The final external view must retain its native image!");
@@ -478,13 +494,13 @@ void TestFramebufferCreationDependencies()
 void TestRenderTargetCacheTeardownReleasesAllNativeObjects()
 {
     NativeEnvironment environment;
-    Image image;
-    FakeImage(image, 90, 32, 32, 1, 1);
+    auto image = std::make_unique<Image>();
+    FakeImage(*image, 90, 32, 32, 1, 1);
     RenderPassDesc pass, loadPass;
     CreateColorPass(pass);
     CreateColorPass(loadPass, VK_FORMAT_R8G8B8A8_UNORM, VK_ATTACHMENT_LOAD_OP_LOAD);
     FramebufferDesc info;
-    info.SetImageView("0", image.View(SingleMip()));
+    info.SetImageView("0", image->View(SingleMip()));
     FramebufferDesc smaller = info;
     smaller.CustomizeSize(16, 16);
     auto& device = MyDevice::GetInstance();
@@ -510,8 +526,8 @@ void TestRenderTargetCacheTeardownReleasesAllNativeObjects()
 void TestRenderPassSnapshotsCompatibilityAndBorrowedCommands()
 {
     NativeEnvironment environment;
-    Image image;
-    FakeImage(image, 30, 80, 40, 1, 1);
+    auto image = std::make_unique<Image>();
+    FakeImage(*image, 30, 80, 40, 1, 1);
     auto clearPass = std::make_unique<RenderPassDesc>();
     auto loadPass = std::make_unique<RenderPassDesc>();
     auto differentPass = std::make_unique<RenderPassDesc>();
@@ -527,7 +543,7 @@ void TestRenderPassSnapshotsCompatibilityAndBorrowedCommands()
         !snapshot.IsCompatibleWith(ResourceLifetimeTestProbe::Snapshot(*differentPass)),
         "Render pass compatibility must accept CLEAR/LOAD variants and reject changed attachment formats!");
     FramebufferDesc info;
-    info.SetImageView("0", image.View(SingleMip()));
+    info.SetImageView("0", image->View(SingleMip()));
     CommandBuffer commands;
     commands.BeginRenderPass(*clearPass, info, 0, 0, 80, 40);
     commands.EndRenderPass();
@@ -569,16 +585,16 @@ void TestRenderPassSnapshotsCompatibilityAndBorrowedCommands()
 void TestDescriptorBindingsOwnTemporaryAndCopiedViews()
 {
     NativeEnvironment environment;
-    Image image;
-    FakeImage(image, 40, 32, 32, 1, 1);
+    auto image = std::make_unique<Image>();
+    FakeImage(*image, 40, 32, 32, 1, 1);
     DescriptorSetDesc binding;
-    binding.SetImage(0, image.View(SingleMip()));
-    const auto viewHandle = reinterpret_cast<uintptr_t>(image.View(SingleMip()).GetVkImageView());
+    binding.SetImage(0, image->View(SingleMip()));
+    const auto viewHandle = reinterpret_cast<uintptr_t>(image->View(SingleMip()).GetVkImageView());
     auto copy = binding;
     ShaderResources named;
-    named.SetImage("texture", image.View(SingleMip()));
+    named.SetImage("texture", image->View(SingleMip()));
     auto namedCopy = named;
-    binding = {}; named.Clear(); image.Destroy();
+    binding = {}; named.Clear(); image.reset();
     CHECK_TRUE(!WasDestroyed(viewHandle) && !WasDestroyed(40), "Descriptor copies must own temporary image-view values!");
     copy = {};
     CHECK_TRUE(!WasDestroyed(viewHandle), "Shader resource copies must independently retain their view!");
@@ -589,12 +605,12 @@ void TestDescriptorBindingsOwnTemporaryAndCopiedViews()
 void TestFramebufferDoesNotRetainAttachment()
 {
     NativeEnvironment environment;
-    Image image;
-    FakeImage(image, 70, 32, 32, 1, 1);
+    auto image = std::make_unique<Image>();
+    FakeImage(*image, 70, 32, 32, 1, 1);
     RenderPassDesc pass;
     CreateColorPass(pass);
     FramebufferDesc info;
-    auto view = image.View(SingleMip());
+    auto view = image->View(SingleMip());
     const auto viewHandle = reinterpret_cast<uintptr_t>(view.GetVkImageView());
     info.SetImageView("0", view);
     auto copiedInfo = info;
@@ -603,7 +619,7 @@ void TestFramebufferDoesNotRetainAttachment()
     commands.BeginRenderPass(pass, info, 0, 0, 32, 32);
     commands.EndRenderPass();
     view.Reset();
-    image.Destroy();
+    image.reset();
     CHECK_TRUE(WasDestroyed(viewHandle) && WasDestroyed(70) &&
         !WasDestroyed(reinterpret_cast<uintptr_t>(framebuffer)),
         "Framebuffer descriptions, copies, native cache entries and queued commands must not retain borrowed attachments!");
@@ -614,20 +630,21 @@ void TestFramebufferDoesNotRetainAttachment()
 void TestFramebufferIdentitySurvivesNativeHandleReuse()
 {
     NativeEnvironment environment;
-    Image image;
-    FakeImage(image, 71, 32, 32, 1, 1);
+    auto image = std::make_unique<Image>();
+    FakeImage(*image, 71, 32, 32, 1, 1);
     RenderPassDesc pass;
     CreateColorPass(pass);
-    auto oldView = image.View(SingleMip());
+    auto oldView = image->View(SingleMip());
     const auto rawView = reinterpret_cast<uintptr_t>(oldView.GetVkImageView());
     const auto oldId = oldView.GetResourceId();
     FramebufferDesc oldInfo;
     oldInfo.SetImageView("0", oldView);
     const auto oldFramebuffer = MyDevice::GetInstance().GetOrCreateFramebuffer(pass, oldInfo);
-    oldInfo.Reset(); oldView.Reset(); image.Destroy();
-    FakeImage(image, 72, 32, 32, 1, 1);
+    oldInfo.Reset(); oldView.Reset(); image.reset();
+    image = std::make_unique<Image>();
+    FakeImage(*image, 72, 32, 32, 1, 1);
     environment.state.nextView = rawView;
-    auto newView = image.View(SingleMip());
+    auto newView = image->View(SingleMip());
     FramebufferDesc newInfo;
     newInfo.SetImageView("0", newView);
     const auto newFramebuffer = MyDevice::GetInstance().GetOrCreateFramebuffer(pass, newInfo);
@@ -640,9 +657,9 @@ void TestFramebufferIdentitySurvivesNativeHandleReuse()
 void TestExplicitCommandKeepAliveRetainsAttachments()
 {
     NativeEnvironment environment;
-    Image image;
-    FakeImage(image, 73, 32, 32, 1, 1);
-    auto view = image.View(SingleMip());
+    auto image = std::make_unique<Image>();
+    FakeImage(*image, 73, 32, 32, 1, 1);
+    auto view = image->View(SingleMip());
     const auto viewHandle = reinterpret_cast<uintptr_t>(view.GetVkImageView());
     RenderPassDesc pass;
     CreateColorPass(pass);
@@ -652,7 +669,7 @@ void TestExplicitCommandKeepAliveRetainsAttachments()
     commands.KeepAlive(view);
     commands.BeginRenderPass(pass, info, 0, 0, 32, 32);
     commands.EndRenderPass();
-    view.Reset(); info.Reset(); image.Destroy();
+    view.Reset(); info.Reset(); image.reset();
     CHECK_TRUE(!WasDestroyed(viewHandle) && !WasDestroyed(73),
         "Explicit ImageView KeepAlive must retain its native image and view while commands own it!");
     ResourceLifetimeTestProbe::Prepare(commands);
@@ -663,10 +680,11 @@ void TestExplicitCommandKeepAliveRetainsAttachments()
     CHECK_TRUE(WasDestroyed(viewHandle) && WasDestroyed(73),
         "Discarding commands must release their explicit attachment ownership!");
 
-    FakeImage(image, 74, 16, 16, 1, 1);
+    image = std::make_unique<Image>();
+    FakeImage(*image, 74, 16, 16, 1, 1);
     CommandBuffer imageOwner;
-    imageOwner.KeepAlive(image);
-    image.Destroy();
+    imageOwner.KeepAlive(*image);
+    image.reset();
     CHECK_TRUE(!WasDestroyed(74), "Explicit Image KeepAlive must retain its native image!");
     imageOwner = {};
     CHECK_TRUE(WasDestroyed(74), "Discarding explicit Image KeepAlive must release the native image!");
@@ -676,12 +694,12 @@ void TestFramebufferPublicationFailureAndRetry()
 {
 #if defined(_MSC_VER) && defined(_DEBUG)
     NativeEnvironment environment;
-    Image image;
-    FakeImage(image, 75, 32, 32, 1, 1);
+    auto image = std::make_unique<Image>();
+    FakeImage(*image, 75, 32, 32, 1, 1);
     RenderPassDesc pass;
     CreateColorPass(pass);
     FramebufferDesc info;
-    info.SetImageView("0", image.View(SingleMip()));
+    info.SetImageView("0", image->View(SingleMip()));
     auto& device = MyDevice::GetInstance();
     const auto existing = device.GetOrCreateFramebuffer(pass, info);
     FramebufferDesc smaller = info;
@@ -709,12 +727,12 @@ void TestFramebufferPublicationFailureAndRetry()
 void TestConcurrentFramebufferCacheRequests()
 {
     NativeEnvironment environment;
-    Image image;
-    FakeImage(image, 76, 32, 32, 1, 1);
+    auto image = std::make_unique<Image>();
+    FakeImage(*image, 76, 32, 32, 1, 1);
     RenderPassDesc pass;
     CreateColorPass(pass);
     FramebufferDesc info;
-    info.SetImageView("0", image.View(SingleMip()));
+    info.SetImageView("0", image->View(SingleMip()));
     std::vector<VkFramebuffer> handles(8, VK_NULL_HANDLE);
     std::vector<std::exception_ptr> failures(handles.size());
     std::vector<std::thread> workers;
@@ -740,20 +758,28 @@ void TestSwapchainViewsRetainTheirOriginalGeneration()
     auto oldGeneration = MakeIntrusive<VulkanDetail::SwapchainResource>(
         ResourceLifetimeTestProbe::Handle<VkSwapchainKHR>(51),
         [&oldDestroyed](VkSwapchainKHR) { ++oldDestroyed; });
-    Image image;
-    ResourceLifetimeTestProbe::ImportSwapchain(image, 52, oldGeneration);
-    auto oldView = image.View();
+    auto image = std::make_unique<Image>();
+    ResourceLifetimeTestProbe::ImportSwapchain(*image, 52, oldGeneration);
+    auto oldView = image->View();
+    const auto viewCreates = environment.state.viewCreates;
+    ExpectFailure([&] { ResourceLifetimeTestProbe::ImportSwapchain(*image, 53, oldGeneration); });
+    CHECK_TRUE(image->GetVkImage() == ResourceLifetimeTestProbe::Handle<VkImage>(52) &&
+        image->GetImageInformation().isSwapchainImage && image->GetImageSize().width == 64 &&
+        image->View() == oldView && environment.state.viewCreates == viewCreates &&
+        ResourceLifetimeTestProbe::CacheSize(*image) == 1,
+        "Duplicate swapchain import must preserve the original resource, information and cached views!");
     oldGeneration.reset();
-    image.Destroy();
+    image.reset();
     CHECK_TRUE(oldDestroyed == 0, "A retained view must retain the old swapchain generation!");
 
     auto newGeneration = MakeIntrusive<VulkanDetail::SwapchainResource>(
         ResourceLifetimeTestProbe::Handle<VkSwapchainKHR>(61),
         [&newDestroyed](VkSwapchainKHR) { ++newDestroyed; });
-    ResourceLifetimeTestProbe::ImportSwapchain(image, 62, newGeneration);
-    auto newView = image.View();
+    image = std::make_unique<Image>();
+    ResourceLifetimeTestProbe::ImportSwapchain(*image, 62, newGeneration);
+    auto newView = image->View();
     newGeneration.reset();
-    image.Destroy();
+    image.reset();
     CHECK_TRUE(oldView.GetVkImage() == ResourceLifetimeTestProbe::Handle<VkImage>(52) &&
         newView.GetVkImage() == ResourceLifetimeTestProbe::Handle<VkImage>(62),
         "Rebuilding imported images must preserve separate native generations!");
@@ -762,6 +788,9 @@ void TestSwapchainViewsRetainTheirOriginalGeneration()
         "Releasing the old view must release only its own swapchain generation!");
     newView.Reset();
     CHECK_TRUE(newDestroyed == 1, "The new swapchain generation must also release exactly once!");
+    CHECK_TRUE(!WasDestroyed(52) && !WasDestroyed(53) && !WasDestroyed(62) &&
+        environment.state.imageCreates == 0,
+        "Imported swapchain images must stay borrowed and never be created or destroyed individually!");
 }
 
 void TestBorrowedRenderTargetsDoNotRetainSwapchainGeneration()
@@ -771,9 +800,9 @@ void TestBorrowedRenderTargetsDoNotRetainSwapchainGeneration()
     auto generation = MakeIntrusive<VulkanDetail::SwapchainResource>(
         ResourceLifetimeTestProbe::Handle<VkSwapchainKHR>(81),
         [&generationDestroys](VkSwapchainKHR) { ++generationDestroys; });
-    Image image;
-    ResourceLifetimeTestProbe::ImportSwapchain(image, 82, generation);
-    auto view = image.View();
+    auto image = std::make_unique<Image>();
+    ResourceLifetimeTestProbe::ImportSwapchain(*image, 82, generation);
+    auto view = image->View();
     RenderPassDesc pass;
     CreateColorPass(pass);
     FramebufferDesc info;
@@ -782,7 +811,7 @@ void TestBorrowedRenderTargetsDoNotRetainSwapchainGeneration()
     CommandBuffer commands;
     commands.BeginRenderPass(pass, info, 0, 0, 64, 32);
     commands.EndRenderPass();
-    generation.reset(); view.Reset(); image.Destroy();
+    generation.reset(); view.Reset(); image.reset();
     CHECK_TRUE(generationDestroys == 1 && !WasDestroyed(reinterpret_cast<uintptr_t>(framebuffer)),
         "Borrowed framebuffer metadata, native cache entries and queued commands must not retain a swapchain generation!");
     commands = {}; info.Reset();

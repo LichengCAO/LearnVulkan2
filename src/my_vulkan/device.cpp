@@ -412,7 +412,6 @@ void MyDevice::_DestroySwapchain()
 	{
 		if (uptrImage.get() != nullptr)
 		{
-			uptrImage->Destroy();
 			uptrImage.reset();
 		}
 	}
@@ -568,7 +567,6 @@ void MyDevice::_UpdateSwapchainImages()
 	{
 		if (uptrImage.get() != nullptr)
 		{
-			uptrImage->Destroy();
 			uptrImage.reset();
 		}
 	}

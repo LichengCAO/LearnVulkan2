@@ -9,6 +9,7 @@
 #include <concepts>
 #include <cstring>
 #include "my_vulkan/resource/private/buffer_storage.h"
+#include "my_vulkan/resource/private/image_storage.h"
 
 struct CommandBufferTestProbe
 {
@@ -18,6 +19,12 @@ struct CommandBufferTestProbe
         buffer.m_storage = std::make_unique<VulkanDetail::BufferStorage>();
         buffer.m_storage->buffer = handle;
         buffer.m_storage->allocation.m_mappedMemory = mapped;
+    }
+    static void SetBorrowedImage(Image& image, VkImage handle)
+    {
+        auto storage = std::make_unique<VulkanDetail::ImageStorage>();
+        storage->image = handle;
+        image.m_resource = MakeIntrusive<VulkanDetail::ImageResource>(std::move(storage));
     }
     template<typename T>
     static auto Handle(uintptr_t inValue) -> T { return reinterpret_cast<T>(inValue); }
@@ -41,8 +48,8 @@ struct CommandBufferTestProbe
             SetBorrowedBuffer(src, Handle<VkBuffer>(101));
             SetBorrowedBuffer(dst, Handle<VkBuffer>(102));
             src.m_bufferInformation.size = dst.m_bufferInformation.size = 1024 * 1024;
-            image.m_resource = MakeIntrusive<VulkanDetail::ImageResource>(Handle<VkImage>(201), nullptr);
-            otherImage.m_resource = MakeIntrusive<VulkanDetail::ImageResource>(Handle<VkImage>(202), nullptr);
+            SetBorrowedImage(image, Handle<VkImage>(201));
+            SetBorrowedImage(otherImage, Handle<VkImage>(202));
             image.m_imageInformation.mipLevels = otherImage.m_imageInformation.mipLevels = 8;
             image.m_imageInformation.arrayLayers = otherImage.m_imageInformation.arrayLayers = 6;
             VkClearValue clear{};
