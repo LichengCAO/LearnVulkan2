@@ -5,20 +5,46 @@
 #pragma pop_macro("max")
 
 class MyDevice;
+class MemoryAllocator;
+struct CommandBufferTestProbe;
+struct ShaderBindingTestProbe;
+
+namespace VulkanDetail
+{
+// Owns one VMA allocation and borrows its allocator. Independent records may be
+// used concurrently; one record and allocator teardown require caller exclusion.
+class MemoryAllocation final
+{
+    friend class ::MemoryAllocator;
+    friend struct ::CommandBufferTestProbe;
+    friend struct ::ShaderBindingTestProbe;
+    VmaAllocator m_allocator = nullptr;
+    VmaAllocation m_allocation = nullptr;
+    void* m_mappedMemory = nullptr;
+    MemoryAllocation(VmaAllocator allocator, VmaAllocation allocation) noexcept;
+public:
+    MemoryAllocation() noexcept = default;
+    MemoryAllocation(const MemoryAllocation&) = delete;
+    auto operator=(const MemoryAllocation&) -> MemoryAllocation& = delete;
+    MemoryAllocation(MemoryAllocation&& other) noexcept;
+    auto operator=(MemoryAllocation&& other) noexcept -> MemoryAllocation&;
+    ~MemoryAllocation() noexcept;
+    auto Map() -> void*;
+    void Unmap() noexcept;
+    auto IsValid() const noexcept -> bool { return m_allocation != nullptr; }
+};
+}
 
 class MemoryAllocator
 {
+    friend struct BufferAllocationTestProbe;
 private:
-	std::unique_ptr<VmaAllocator> m_uptrVmaAllocator;
+	VmaAllocator m_vmaAllocator = nullptr;
+	VkDevice m_device = VK_NULL_HANDLE;
 	std::unordered_map<VkImage, VmaAllocation> m_mapVkImageToAllocation;
-	std::unordered_map<VkBuffer, VmaAllocation> m_mapVkBufferToAllocation;
 
 private:
-	static VmaMemoryUsage _ToVmaMemoryUsage(VkMemoryPropertyFlags _propertyFlags);
-
-	VkDevice _GetVkDevice() const;
-
-	VmaAllocator* _GetPtrVmaAllocator();
+	static auto _ToVmaMemoryUsage(VkMemoryPropertyFlags _propertyFlags) -> VmaMemoryUsage;
 
 	MemoryAllocator(); // I only want allocator to be created by MyDevice for now
 
@@ -32,17 +58,13 @@ public:
 
 	// Allocate memory and then bind it to m_vkBuffer, 
 	// the address of the buffer will align with _alignment if it's not 0
-	void AllocateForVkBuffer(VkBuffer _vkBuffer, VkMemoryPropertyFlags _flags, VkDeviceSize _alignment = 0);
-
-	// Map m_vkBuffer(host coherent) to host
-	void MapVkBufferToHost(VkBuffer _vkBuffer, void*& _outHostAddress);
-
-	// Unmap m_vkBuffer
-	void UnmapVkBuffer(VkBuffer _vkBuffer);
+	// Completes synchronously; VMA provides internal allocation synchronization.
+	// Keep the allocator alive and exclude its teardown through final record release.
+	[[nodiscard]] auto AllocateForVkBuffer(VkBuffer _vkBuffer, VkMemoryPropertyFlags _flags, VkDeviceSize _alignment = 0) -> VulkanDetail::MemoryAllocation;
+	auto IsValid() const noexcept -> bool { return m_vmaAllocator != nullptr; }
 
 	void FreeMemory(VkImage _vkImage);
 
-	void FreeMemory(VkBuffer _vkBuffer);
 
 	friend class MyDevice;
 };

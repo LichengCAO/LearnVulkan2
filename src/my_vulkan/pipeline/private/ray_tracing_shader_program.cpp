@@ -205,7 +205,6 @@ void ShaderBindingTable::Destroy()
 {
 	if (m_uptrBuffer)
 	{
-		m_uptrBuffer->Destroy();
 		m_uptrBuffer.reset();
 	}
 	m_groupSet.Reset();

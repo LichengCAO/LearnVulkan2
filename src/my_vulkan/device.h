@@ -56,6 +56,7 @@ class MyDevice final
 	friend struct DescriptorPoolTestProbe;
 	friend struct SamplerCreationTestProbe;
 	friend struct CommandBufferTestProbe;
+	friend struct BufferAllocationTestProbe;
 	friend class GraphicsShaderProgram;
 	friend class BeginRenderPassCommand;
 private:

@@ -7,6 +7,7 @@ class Buffer;
 class BufferView;
 class CommandBuffer;
 class MemoryAllocator;
+namespace VulkanDetail { struct BufferStorage; }
 
 class BufferViewInfo final
 {
@@ -38,13 +39,19 @@ public:
 private:
 	Information m_viewInformation{};
 	VkBufferView m_vkBufferView = VK_NULL_HANDLE;
+	VkDevice m_device = VK_NULL_HANDLE;
 
 private:
 	void _Create(const Buffer& inBuffer, const BufferViewInfo& inCreateInfo);
-	void _Destroy();
+	void _Destroy() noexcept;
 
 public:
-	~BufferView();
+	BufferView() = default;
+	BufferView(const BufferView&) = delete;
+	auto operator=(const BufferView&) -> BufferView& = delete;
+	BufferView(BufferView&&) = delete;
+	auto operator=(BufferView&&) -> BufferView& = delete;
+	~BufferView() noexcept;
 
 	auto GetBufferViewInformation() const->const Information&;
 	auto GetVkBufferView() const->VkBufferView;
@@ -58,29 +65,29 @@ private:
 	std::optional<VkDeviceSize> m_optAlignment;
 	VkMemoryPropertyFlags m_memoryProperty = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 	VkSharingMode m_sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	VkDeviceSize m_bufferSize;
-	VkBufferUsageFlags m_usage;
+	VkDeviceSize m_bufferSize = 0;
+	VkBufferUsageFlags m_usage = 0;
 
 	friend class Buffer;
 
 public:
 	// Reset optional values to default, clear other values to zero
-	BufferCreateInfo& Reset();
+	auto Reset() -> BufferCreateInfo&;
 
 	// Set buffer size, mandatory
-	BufferCreateInfo& SetBufferSize(VkDeviceSize inSize);
+	auto SetBufferSize(VkDeviceSize inSize) -> BufferCreateInfo&;
 
 	// Set buffer usage, mandatory
-	BufferCreateInfo& SetBufferUsage(VkBufferUsageFlags inUsage);
+	auto SetBufferUsage(VkBufferUsageFlags inUsage) -> BufferCreateInfo&;
 
 	// Optional, default: VK_SHARING_MODE_EXCLUSIVE
-	BufferCreateInfo& CustomizeSharingMode(VkSharingMode inSharingMode);
+	auto CustomizeSharingMode(VkSharingMode inSharingMode) -> BufferCreateInfo&;
 
 	// Optional, default: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-	BufferCreateInfo& CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperties);
+	auto CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperties) -> BufferCreateInfo&;
 
 	// Optional, for buffers that have alignment requirement
-	BufferCreateInfo& CustomizeAlignment(VkDeviceSize inAlignment);
+	auto CustomizeAlignment(VkDeviceSize inAlignment) -> BufferCreateInfo&;
 };
 
 class Buffer final : public RefCounted
@@ -99,55 +106,52 @@ public:
 
 private:
 	Information m_bufferInformation{};
-	void* m_mappedMemory = nullptr; // we store this value, since mapping is not free
-	VkBuffer m_vkBuffer = VK_NULL_HANDLE;
+	std::unique_ptr<VulkanDetail::BufferStorage> m_storage;
 	std::vector<std::unique_ptr<BufferView>> m_uptrBufferViews;
 
 private:
-	MemoryAllocator* _GetMemoryAllocator() const;
-	
-	void _AllocateMemory();
-	
-	void _FreeMemory();
-
-	void _MapHostMemory();
-
-	void _UnmapHostMemory();
-
 	// Map the memory and copy from host-visible, host-coherent memory.
 	void _CopyFromHostWithMappedMemory(const void* src, size_t bufferOffset, size_t size);
 
-	BufferView* _FindView(const BufferViewInfo& inCreateInfo) const;
+	auto _FindView(const BufferViewInfo& inCreateInfo) const -> BufferView*;
 
 	void _DestroyViews();
 
 public:
+	// After Device initialization, independent Buffers may be created, mapped,
+	// viewed and released concurrently. Callers exclude conflicting access to
+	// one Buffer and keep its Device/allocator alive through final release.
+	// Native GPU uses must complete before release; destruction never waits.
 	Buffer();
 	
-	Buffer(Buffer&& _toMove);
+	Buffer(Buffer&& _toMove) noexcept;
 	
-	Buffer(Buffer& _toCopy) = delete;
+	Buffer(const Buffer& _toCopy) = delete;
+	auto operator=(const Buffer&) -> Buffer& = delete;
+	auto operator=(Buffer&&) -> Buffer& = delete;
 	
-	virtual ~Buffer();
+	~Buffer() noexcept override;
 
 	void Create(const BufferCreateInfo& inCreateInfo);
 	
-	void Destroy();
+	auto IsValid() const noexcept -> bool;
 
 	// Copy from host memory. Requires host-visible, host-coherent memory.
 	void CopyFromHost(const void* src, size_t bufferOffset, size_t size);
 
+	// Borrowed cached view; remains valid until this Buffer's final release.
 	auto View(const BufferViewInfo& inCreateInfo)->const BufferView*;
 
 	// Get buffer information
-	const Buffer::Information& GetBufferInformation() const;
+	auto GetBufferInformation() const -> const Buffer::Information&;
 	
 	// Get device address of the buffer, require VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
-	VkDeviceAddress GetDeviceAddress() const;
+	auto GetDeviceAddress() const -> VkDeviceAddress;
 
 	// Get default VkDescriptorBufferInfo, with offset = 0, range = bufferSize
-	VkDescriptorBufferInfo GetDescriptorBufferInfo() const;
+	auto GetDescriptorBufferInfo() const -> VkDescriptorBufferInfo;
 
 	// Get device handle of this buffer
-	VkBuffer GetVkBuffer() const;
+	auto GetVkBuffer() const -> VkBuffer;
+	friend class BufferView;
 };

@@ -8,9 +8,17 @@
 #include "my_vulkan/device.h"
 #include <concepts>
 #include <cstring>
+#include "my_vulkan/resource/private/buffer_storage.h"
 
 struct CommandBufferTestProbe
 {
+    static void ClearBorrowedBuffer(Buffer& buffer) { buffer.m_storage.reset(); }
+    static void SetBorrowedBuffer(Buffer& buffer, VkBuffer handle, void* mapped = nullptr)
+    {
+        buffer.m_storage = std::make_unique<VulkanDetail::BufferStorage>();
+        buffer.m_storage->buffer = handle;
+        buffer.m_storage->allocation.m_mappedMemory = mapped;
+    }
     template<typename T>
     static auto Handle(uintptr_t inValue) -> T { return reinterpret_cast<T>(inValue); }
 
@@ -30,8 +38,8 @@ struct CommandBufferTestProbe
 
         Resources()
         {
-            src.m_vkBuffer = Handle<VkBuffer>(101);
-            dst.m_vkBuffer = Handle<VkBuffer>(102);
+            SetBorrowedBuffer(src, Handle<VkBuffer>(101));
+            SetBorrowedBuffer(dst, Handle<VkBuffer>(102));
             src.m_bufferInformation.size = dst.m_bufferInformation.size = 1024 * 1024;
             image.m_resource = MakeIntrusive<VulkanDetail::ImageResource>(Handle<VkImage>(201), nullptr);
             otherImage.m_resource = MakeIntrusive<VulkanDetail::ImageResource>(Handle<VkImage>(202), nullptr);
@@ -54,7 +62,7 @@ struct CommandBufferTestProbe
             framebuffer.m_layers = 1;
             layout.m_vkPipelineLayout = Handle<VkPipelineLayout>(303);
             table.m_uptrBuffer = std::make_unique<Buffer>();
-            table.m_uptrBuffer->m_vkBuffer = Handle<VkBuffer>(104);
+            SetBorrowedBuffer(*table.m_uptrBuffer, Handle<VkBuffer>(104));
             table.m_uptrBuffer->m_bufferInformation.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
             table.m_tables[0] = { 2, 0, 0, 64 };
             table.m_tables[1] = { 2, 0, 256, 64 };
@@ -67,9 +75,9 @@ struct CommandBufferTestProbe
 
         ~Resources()
         {
-            src.m_vkBuffer = dst.m_vkBuffer = VK_NULL_HANDLE;
+            ClearBorrowedBuffer(src); ClearBorrowedBuffer(dst);
             layout.m_vkPipelineLayout = VK_NULL_HANDLE;
-            table.m_uptrBuffer->m_vkBuffer = VK_NULL_HANDLE;
+            ClearBorrowedBuffer(*table.m_uptrBuffer);
             table.m_uptrBuffer.reset();
             bottomSrc.m_vkAccelStruct = bottomDst.m_vkAccelStruct = VK_NULL_HANDLE;
             topSrc.m_vkAccelStruct = topDst.m_vkAccelStruct = VK_NULL_HANDLE;
@@ -148,16 +156,14 @@ struct CommandBufferTestProbe
         ExternalBuffer(uintptr_t inHandle, VkDeviceSize inSize, VkBufferUsageFlags inUsage,
             void* inMapped = nullptr, VkMemoryPropertyFlags inMemory = 0)
         {
-            buffer.m_vkBuffer = Handle<VkBuffer>(inHandle);
+            SetBorrowedBuffer(buffer, Handle<VkBuffer>(inHandle), inMapped);
             buffer.m_bufferInformation.size = inSize;
             buffer.m_bufferInformation.usage = inUsage;
             buffer.m_bufferInformation.memoryProperty = inMemory;
-            buffer.m_mappedMemory = inMapped;
         }
         ~ExternalBuffer()
         {
-            buffer.m_vkBuffer = VK_NULL_HANDLE;
-            buffer.m_mappedMemory = nullptr;
+            ClearBorrowedBuffer(buffer);
         }
     };
     static void PrepareBottom(BottomLevelAccelStruct& inResource,
@@ -1423,6 +1429,14 @@ namespace
 
 void RunCommandBufferTests()
 {
+    {
+        CommandBufferTestProbe::ExternalBuffer source(801, 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        Buffer moved(std::move(source.buffer));
+        const bool emptied = source.buffer.GetBufferInformation().size == 0;
+        // The fixture borrowed this handle; remove it before either destructor runs.
+        CommandBufferTestProbe::ClearBorrowedBuffer(moved);
+        CHECK_TRUE(emptied, "Moving a Buffer must empty the source information!");
+    }
     TestEmptyInstanceUploadNeedsNoDeviceResources<TopLevelAccelStructCreateInfo, TopLevelAccelStruct>();
     TestHostDescriptionSnapshotAndSizeQuery();
     TestObjectBlasCommandsUseExternalBuffersAndSnapshots();

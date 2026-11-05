@@ -25,9 +25,9 @@ Granite 使用 `Util::IntrusivePtrEnabled<T>` 加 `Util::IntrusivePtr<T>`。资�
 
 ## 第一批改造对象
 
-`Buffer` 和 `Image` 都封装真实 Vulkan 资源及其内存，并已经拥有幂等的 `Destroy()`。它们还被 RenderGraph 以 `Buffer*`/`Image*` 形式保存，存在跨录制、编译和提交阶段的生命周期边界，因此最值得先改造。
+`Buffer` 和 `Image` 都封装真实 Vulkan 资源及其内存，并已继承 `RefCounted`。RenderGraph 仍以 `Buffer*`/`Image*` 形式保存它们，跨录制、编译和提交阶段的裸指针生命周期仍由调用者保证。
 
-当前阶段只让这两个类继承 `RefCounted`，并让析构函数调用 `Destroy()`。现有栈对象和 `unique_ptr<Buffer>`/`unique_ptr<Image>` 仍然兼容；RenderGraph 的裸指针 API 暂不改变。
+`Buffer` 保留公开 `Create()`，移除公开 `Destroy()`，析构通过私有存储释放 native buffer 和随资源持有的 allocation；不同 Buffer 可并发使用，见 [Buffer ownership](resource_lifetimes.md#buffer-ownership)。`Image` 暂时保留公开 `Create/Destroy` 和现有分配表。栈对象和 `unique_ptr` 仍然兼容；RenderGraph 的裸指针接口不变。
 
 ## 后续候选
 
@@ -59,4 +59,4 @@ Granite 使用 `Util::IntrusivePtrEnabled<T>` 加 `Util::IntrusivePtr<T>`。资�
 
 `src/my_vulkan/ref_counted.h` 中的计数器初始值为 `0`，`IntrusivePtr(T*)` 构造时再执行一次 `AddRef()`；Granite 的计数器从 `1` 开始，并采用不同的初始所有权语义。后续正式把资源容器改成 `IntrusivePtr` 前，必须统一这套规则，并补充自定义 deleter（尤其是 swapchain image）。
 
-引用计数对象析构时会自动释放 Vulkan 资源，因此 `Destroy()` 必须保持幂等；同时必须确保 `MyDevice` 的生命周期晚于所有资源 handle。
+引用计数对象的最后一个强引用释放时会自动销毁其拥有的 Vulkan 资源。仍提供 `Destroy()` 的类型需保持其幂等性；已迁移的 Buffer 只通过 RAII 释放。同时必须确保 Device 和 allocator 覆盖资源生命周期，以及最终释放前 GPU 使用已完成。

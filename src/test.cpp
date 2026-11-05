@@ -1863,6 +1863,7 @@ void RunDescriptorPoolTests();
 auto RunDescriptorPoolFatalCase(std::string_view argument) -> int;
 void RunSamplerCreationTests();
 void RunCommandPoolTests();
+void RunBufferAllocationTests();
 
 auto main(int argc, char** argv) -> int
 {
@@ -1882,6 +1883,7 @@ auto main(int argc, char** argv) -> int
 		RunDescriptorPoolTests();
 		RunSamplerCreationTests();
 		RunCommandPoolTests();
+		RunBufferAllocationTests();
 #ifdef LEARN_VULKAN_HAS_SHADER_BINDING_TESTS
 		RunShaderBindingTests();
 #endif

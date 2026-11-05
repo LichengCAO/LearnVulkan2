@@ -4,7 +4,7 @@
 #include "vk_mem_alloc.h"
 #include "utils.h"
 
-VmaMemoryUsage MemoryAllocator::_ToVmaMemoryUsage(VkMemoryPropertyFlags _propertyFlags)
+auto MemoryAllocator::_ToVmaMemoryUsage(VkMemoryPropertyFlags _propertyFlags) -> VmaMemoryUsage
 {
 	// from nvidia ray tracing tutorial
 	if ((_propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
@@ -16,16 +16,6 @@ VmaMemoryUsage MemoryAllocator::_ToVmaMemoryUsage(VkMemoryPropertyFlags _propert
 	return VMA_MEMORY_USAGE_UNKNOWN;
 }
 
-VkDevice MemoryAllocator::_GetVkDevice() const
-{
-	return MyDevice::GetInstance().vkDevice;
-}
-
-VmaAllocator* MemoryAllocator::_GetPtrVmaAllocator()
-{
-	return m_uptrVmaAllocator.get();
-}
-
 MemoryAllocator::MemoryAllocator()
 {
 	// https://stackoverflow.com/questions/73512602/using-vulkan-memory-allocator-with-volk
@@ -33,7 +23,8 @@ MemoryAllocator::MemoryAllocator()
 	MyDevice& device = MyDevice::GetInstance();
 	VmaVulkanFunctions volkFuncs{};
 	
-	m_uptrVmaAllocator = std::make_unique<VmaAllocator>();
+	CHECK_TRUE(device.vkDevice != VK_NULL_HANDLE && device.vkInstance != VK_NULL_HANDLE &&
+		device.vkPhysicalDevice != VK_NULL_HANDLE, "MemoryAllocator requires an initialized Device!");
 
 	volkFuncs.vkAllocateMemory = vkAllocateMemory;
 	volkFuncs.vkBindBufferMemory = vkBindBufferMemory;
@@ -62,16 +53,16 @@ MemoryAllocator::MemoryAllocator()
 	createInfo.physicalDevice = device.vkPhysicalDevice;
 	createInfo.pVulkanFunctions = &volkFuncs;
 
-	vmaCreateAllocator(&createInfo, m_uptrVmaAllocator.get());
+	VmaAllocator allocator = nullptr;
+	VK_CHECK(vmaCreateAllocator(&createInfo, &allocator), "Failed to create memory allocator!");
+	m_vmaAllocator = allocator;
+	m_device = device.vkDevice;
 }
 
 MemoryAllocator::~MemoryAllocator()
 {
-	if (m_uptrVmaAllocator.get() != nullptr)
-	{
-		vmaDestroyAllocator(*m_uptrVmaAllocator);
-		m_uptrVmaAllocator.reset();
-	}
+	if (m_vmaAllocator != nullptr)
+		vmaDestroyAllocator(m_vmaAllocator);
 }
 
 void MemoryAllocator::AllocateForVkImage(VkImage _vkImage, VkMemoryPropertyFlags _flags)
@@ -82,23 +73,24 @@ void MemoryAllocator::AllocateForVkImage(VkImage _vkImage, VkMemoryPropertyFlags
 
 	allocCreateInfo.usage = _ToVmaMemoryUsage(_flags);
 
-	VK_CHECK(vmaAllocateMemoryForImage(*_GetPtrVmaAllocator(), _vkImage, &allocCreateInfo, &allocResult, &allocInfo), "Failed to allocate memory!");
+	VK_CHECK(vmaAllocateMemoryForImage(m_vmaAllocator, _vkImage, &allocCreateInfo, &allocResult, &allocInfo), "Failed to allocate memory!");
 
 	try
 	{
-		VK_CHECK(vmaBindImageMemory(*_GetPtrVmaAllocator(), allocResult, _vkImage), "Failed to bind image memory!");
+		VK_CHECK(vmaBindImageMemory(m_vmaAllocator, allocResult, _vkImage), "Failed to bind image memory!");
 		const auto [iter, inserted] = m_mapVkImageToAllocation.emplace(_vkImage, allocResult);
 		CHECK_TRUE(inserted, "Image memory is already allocated!");
 	}
 	catch (...)
 	{
-		vmaFreeMemory(*_GetPtrVmaAllocator(), allocResult);
+		vmaFreeMemory(m_vmaAllocator, allocResult);
 		throw;
 	}
 }
 
-void MemoryAllocator::AllocateForVkBuffer(VkBuffer _vkBuffer, VkMemoryPropertyFlags _flags, VkDeviceSize _alignment)
+auto MemoryAllocator::AllocateForVkBuffer(VkBuffer _vkBuffer, VkMemoryPropertyFlags _flags, VkDeviceSize _alignment) -> VulkanDetail::MemoryAllocation
 {
+	CHECK_TRUE(IsValid() && _vkBuffer != VK_NULL_HANDLE, "Invalid buffer allocation dependencies!");
 	VmaAllocationCreateInfo allocCreateInfo{};
 	VmaAllocation allocResult = nullptr;
 	VmaAllocationInfo allocInfo{};
@@ -108,39 +100,66 @@ void MemoryAllocator::AllocateForVkBuffer(VkBuffer _vkBuffer, VkMemoryPropertyFl
 	if (_alignment > 0)
 	{
 		VkMemoryRequirements req;
-		vkGetBufferMemoryRequirements(_GetVkDevice(), _vkBuffer, &req);
+		vkGetBufferMemoryRequirements(m_device, _vkBuffer, &req);
 		req.alignment = std::max(common_utils::AlignUp(req.alignment, _alignment), _alignment);
-		VK_CHECK(vmaAllocateMemory(*_GetPtrVmaAllocator(), &req, &allocCreateInfo, &allocResult, &allocInfo), "Failed to allocate memory!");
+		VK_CHECK(vmaAllocateMemory(m_vmaAllocator, &req, &allocCreateInfo, &allocResult, &allocInfo), "Failed to allocate memory!");
 	}
 	else
 	{
-		VK_CHECK(vmaAllocateMemoryForBuffer(*_GetPtrVmaAllocator(), _vkBuffer, &allocCreateInfo, &allocResult, &allocInfo), "Failed to allocate memory!");
+		VK_CHECK(vmaAllocateMemoryForBuffer(m_vmaAllocator, _vkBuffer, &allocCreateInfo, &allocResult, &allocInfo), "Failed to allocate memory!");
 	}
 
-	vmaBindBufferMemory(*_GetPtrVmaAllocator(), allocResult, _vkBuffer);
-	m_mapVkBufferToAllocation.insert({ _vkBuffer, allocResult });
-}
-
-void MemoryAllocator::MapVkBufferToHost(VkBuffer _vkBuffer, void*& _outHostAddress)
-{
-	vmaMapMemory(*_GetPtrVmaAllocator(), m_mapVkBufferToAllocation.at(_vkBuffer), &_outHostAddress);
-}
-
-void MemoryAllocator::UnmapVkBuffer(VkBuffer _vkBuffer)
-{
-	vmaUnmapMemory(*_GetPtrVmaAllocator(), m_mapVkBufferToAllocation.at(_vkBuffer));
+	VulkanDetail::MemoryAllocation allocation(m_vmaAllocator, allocResult);
+	VK_CHECK(vmaBindBufferMemory(m_vmaAllocator, allocResult, _vkBuffer), "Failed to bind buffer memory!");
+	return allocation;
 }
 
 void MemoryAllocator::FreeMemory(VkImage _vkImage)
 {
 	CHECK_TRUE(m_mapVkImageToAllocation.find(_vkImage) != m_mapVkImageToAllocation.end(), "The image isn't allocate by this allocator!");
-	vmaFreeMemory(*_GetPtrVmaAllocator(), m_mapVkImageToAllocation.at(_vkImage));
+	vmaFreeMemory(m_vmaAllocator, m_mapVkImageToAllocation.at(_vkImage));
 	m_mapVkImageToAllocation.erase(_vkImage);
 }
 
-void MemoryAllocator::FreeMemory(VkBuffer _vkBuffer)
+namespace VulkanDetail
 {
-	CHECK_TRUE(m_mapVkBufferToAllocation.find(_vkBuffer) != m_mapVkBufferToAllocation.end(), "The buffer isn't allocate by this allocator!");
-	vmaFreeMemory(*_GetPtrVmaAllocator(), m_mapVkBufferToAllocation.at(_vkBuffer));
-	m_mapVkBufferToAllocation.erase(_vkBuffer);
+MemoryAllocation::MemoryAllocation(VmaAllocator allocator, VmaAllocation allocation) noexcept
+    : m_allocator(allocator), m_allocation(allocation) {}
+MemoryAllocation::MemoryAllocation(MemoryAllocation&& other) noexcept
+    : m_allocator(std::exchange(other.m_allocator, nullptr)),
+      m_allocation(std::exchange(other.m_allocation, nullptr)),
+      m_mappedMemory(std::exchange(other.m_mappedMemory, nullptr)) {}
+auto MemoryAllocation::operator=(MemoryAllocation&& other) noexcept -> MemoryAllocation&
+{
+    if (this != &other)
+    {
+        Unmap();
+        if (m_allocation) vmaFreeMemory(m_allocator, m_allocation);
+        m_allocator = std::exchange(other.m_allocator, nullptr);
+        m_allocation = std::exchange(other.m_allocation, nullptr);
+        m_mappedMemory = std::exchange(other.m_mappedMemory, nullptr);
+    }
+    return *this;
+}
+MemoryAllocation::~MemoryAllocation() noexcept
+{
+    Unmap();
+    if (m_allocation) vmaFreeMemory(m_allocator, m_allocation);
+}
+auto MemoryAllocation::Map() -> void*
+{
+    if (!m_mappedMemory)
+    {
+        CHECK_TRUE(IsValid(), "Cannot map an empty allocation!");
+        void* mapped = nullptr;
+        VK_CHECK(vmaMapMemory(m_allocator, m_allocation, &mapped), "Failed to map buffer memory!");
+        m_mappedMemory = mapped;
+    }
+    return m_mappedMemory;
+}
+void MemoryAllocation::Unmap() noexcept
+{
+    if (m_mappedMemory && m_allocation) vmaUnmapMemory(m_allocator, m_allocation);
+    m_mappedMemory = nullptr;
+}
 }

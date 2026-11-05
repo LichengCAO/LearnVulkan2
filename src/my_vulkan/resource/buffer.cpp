@@ -2,16 +2,27 @@
 #include "device.h"
 #include "allocator/private/memory_allocator.h"
 #include "utils.h"
+#include "private/buffer_storage.h"
 
-Buffer::~Buffer()
+Buffer::~Buffer() noexcept
 {
-	Destroy();
+	_DestroyViews();
 }
 
 void Buffer::Create(const BufferCreateInfo& inCreateInfo)
 {
+	CHECK_TRUE(!IsValid(), "Buffer is already created!");
+	CHECK_TRUE(inCreateInfo.m_bufferSize > 0 && inCreateInfo.m_usage != 0, "Buffer size and usage are required!");
+	CHECK_TRUE(inCreateInfo.m_sharingMode == VK_SHARING_MODE_EXCLUSIVE,
+		"Buffer creation currently supports exclusive sharing only!");
+	CHECK_TRUE(!inCreateInfo.m_optAlignment ||
+		(*inCreateInfo.m_optAlignment & (*inCreateInfo.m_optAlignment - 1)) == 0, "Invalid buffer alignment!");
 	auto& device = MyDevice::GetInstance();
-	auto& bufferToFill = m_bufferInformation;
+	auto* allocator = device.GetMemoryAllocator();
+	CHECK_TRUE(device.vkDevice != VK_NULL_HANDLE && allocator && allocator->IsValid(), "Buffer requires an initialized Device and allocator!");
+	auto storage = std::make_unique<VulkanDetail::BufferStorage>();
+	storage->device = device.vkDevice;
+	Information bufferToFill{};
 	VkBufferCreateInfo bufferInfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
 	bufferInfo.size = inCreateInfo.m_bufferSize;
 	bufferInfo.usage = inCreateInfo.m_usage;
@@ -21,72 +32,19 @@ void Buffer::Create(const BufferCreateInfo& inCreateInfo)
 	bufferToFill.size = inCreateInfo.m_bufferSize;
 	bufferToFill.usage = inCreateInfo.m_usage;
 	bufferToFill.optAlignment = inCreateInfo.m_optAlignment;
-	m_vkBuffer = device.CreateBuffer(bufferInfo);
-	_AllocateMemory();
-}
-
-void Buffer::Destroy()
-{
-	_DestroyViews();
-
-	if (m_vkBuffer != VK_NULL_HANDLE)
-	{
-		_FreeMemory();
-		MyDevice::GetInstance().DestroyBuffer(m_vkBuffer);
-		m_vkBuffer = VK_NULL_HANDLE;
-	}
-}
-
-MemoryAllocator* Buffer::_GetMemoryAllocator() const
-{
-	return MyDevice::GetInstance().GetMemoryAllocator();
-}
-
-void Buffer::_AllocateMemory()
-{	
-	MemoryAllocator* pAllocator = _GetMemoryAllocator();
-	if (m_bufferInformation.optAlignment.has_value())
-	{
-		pAllocator->AllocateForVkBuffer(m_vkBuffer, m_bufferInformation.memoryProperty, m_bufferInformation.optAlignment.value());
-	}
-	else
-	{
-		pAllocator->AllocateForVkBuffer(m_vkBuffer, m_bufferInformation.memoryProperty);
-	}
-}
-
-void Buffer::_FreeMemory()
-{
-	MemoryAllocator* pAllocator = _GetMemoryAllocator();
-	if (m_mappedMemory != nullptr)
-	{
-		pAllocator->UnmapVkBuffer(m_vkBuffer);
-		m_mappedMemory = nullptr;
-	}
-	pAllocator->FreeMemory(m_vkBuffer);
-}
-
-void Buffer::_MapHostMemory()
-{
-	MemoryAllocator* pAllocator = _GetMemoryAllocator();
-	CHECK_TRUE(CONTAIN_BITS(m_bufferInformation.memoryProperty, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT), "Unmappable buffer!");
-	pAllocator->MapVkBufferToHost(m_vkBuffer, m_mappedMemory);
-}
-
-void Buffer::_UnmapHostMemory()
-{
-	MemoryAllocator* pAllocator = _GetMemoryAllocator();
-	pAllocator->UnmapVkBuffer(m_vkBuffer);
+	VkBuffer native = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateBuffer(storage->device, &bufferInfo, nullptr, &native), "Failed to create a VkBuffer!");
+	storage->buffer = native;
+	storage->allocation = allocator->AllocateForVkBuffer(storage->buffer, bufferToFill.memoryProperty,
+		bufferToFill.optAlignment.value_or(0));
+	m_bufferInformation = bufferToFill;
+	m_storage = std::move(storage);
 }
 
 void Buffer::_CopyFromHostWithMappedMemory(const void* src, size_t bufferOffset, size_t size)
 {
-	if (m_mappedMemory == nullptr)
-	{
-		MemoryAllocator* pAllocator = _GetMemoryAllocator();
-		pAllocator->MapVkBufferToHost(m_vkBuffer, m_mappedMemory);
-	}
-	uint8_t* pMapped = (uint8_t*)m_mappedMemory;
+	CHECK_TRUE(IsValid(), "Cannot copy into an empty Buffer!");
+	uint8_t* pMapped = static_cast<uint8_t*>(m_storage->allocation.Map());
 	pMapped += bufferOffset;
 	memcpy((void*)pMapped, src, size);
 }
@@ -95,14 +53,11 @@ Buffer::Buffer()
 {
 }
 
-Buffer::Buffer(Buffer&& _toMove)
+Buffer::Buffer(Buffer&& _toMove) noexcept
 {
-	m_vkBuffer = _toMove.m_vkBuffer;
-	m_mappedMemory = _toMove.m_mappedMemory;
-	m_bufferInformation = _toMove.m_bufferInformation;
+	m_storage = std::move(_toMove.m_storage);
+	m_bufferInformation = std::exchange(_toMove.m_bufferInformation, Information{});
 	m_uptrBufferViews = std::move(_toMove.m_uptrBufferViews);
-	_toMove.m_vkBuffer = VK_NULL_HANDLE;
-	_toMove.m_mappedMemory = nullptr;
 }
 
 void Buffer::CopyFromHost(const void* src, size_t bufferOffset, size_t size)
@@ -122,74 +77,75 @@ void Buffer::CopyFromHost(const void* src, size_t bufferOffset, size_t size)
 	_CopyFromHostWithMappedMemory(src, bufferOffset, size);
 }
 
-const Buffer::Information& Buffer::GetBufferInformation() const
+auto Buffer::GetBufferInformation() const -> const Buffer::Information&
 {
 	return m_bufferInformation;
 }
 
-VkDeviceAddress Buffer::GetDeviceAddress() const
+auto Buffer::GetDeviceAddress() const -> VkDeviceAddress
 {
 	VkBufferDeviceAddressInfo info{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
-	auto& device = MyDevice::GetInstance();
 	
 	info.pNext = nullptr;
-	info.buffer = m_vkBuffer;
+	info.buffer = GetVkBuffer();
 
-	CHECK_TRUE(m_vkBuffer != VK_NULL_HANDLE);
+	CHECK_TRUE(IsValid());
 	CHECK_TRUE(
 		CONTAIN_BITS(m_bufferInformation.usage, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT), 
 		"Maybe VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT need to be added!");
 
-	return device.GetBufferDeviceAddress(info);
+	return vkGetBufferDeviceAddress(m_storage->device, &info);
 }
 
-VkDescriptorBufferInfo Buffer::GetDescriptorBufferInfo() const
+auto Buffer::GetDescriptorBufferInfo() const -> VkDescriptorBufferInfo
 {
 	VkDescriptorBufferInfo result{};
 
-	result.buffer = m_vkBuffer;
+	result.buffer = GetVkBuffer();
 	result.offset = 0;
 	result.range = m_bufferInformation.size;
 
 	return result;
 }
 
-VkBuffer Buffer::GetVkBuffer() const
+auto Buffer::GetVkBuffer() const -> VkBuffer
 {
-	return m_vkBuffer;
+	return m_storage ? m_storage->buffer : VK_NULL_HANDLE;
 }
 
-BufferCreateInfo& BufferCreateInfo::Reset()
+auto Buffer::IsValid() const noexcept -> bool { return m_storage && m_storage->buffer != VK_NULL_HANDLE; }
+
+auto BufferCreateInfo::Reset() -> BufferCreateInfo&
 {
 	*this = BufferCreateInfo{};
 	return *this;
 }
 
-BufferCreateInfo& BufferCreateInfo::SetBufferSize(VkDeviceSize inSize)
+auto BufferCreateInfo::SetBufferSize(VkDeviceSize inSize) -> BufferCreateInfo&
 {
 	m_bufferSize = inSize;
 	return *this;
 }
 
-BufferCreateInfo& BufferCreateInfo::SetBufferUsage(VkBufferUsageFlags inUsage)
+auto BufferCreateInfo::SetBufferUsage(VkBufferUsageFlags inUsage) -> BufferCreateInfo&
 {
 	m_usage = inUsage;
 	return *this;
 }
 
-BufferCreateInfo& BufferCreateInfo::CustomizeSharingMode(VkSharingMode inSharingMode)
+auto BufferCreateInfo::CustomizeSharingMode(VkSharingMode inSharingMode) -> BufferCreateInfo&
 {
 	m_sharingMode = inSharingMode;
 	return *this;
 }
 
-BufferCreateInfo& BufferCreateInfo::CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperties)
+auto BufferCreateInfo::CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperties) -> BufferCreateInfo&
 {
 	m_memoryProperty = inMemoryProperties;
 	return *this;
 }
 
-BufferCreateInfo& BufferCreateInfo::CustomizeAlignment(VkDeviceSize inAlignment)
+auto BufferCreateInfo::CustomizeAlignment(VkDeviceSize inAlignment) -> BufferCreateInfo&
 {
 	m_optAlignment = inAlignment;
 	return *this;
@@ -217,9 +173,9 @@ auto BufferViewInfo::CustomizeBufferRange(VkDeviceSize inOffset, VkDeviceSize in
 	return *this;
 }
 
-BufferView* Buffer::_FindView(const BufferViewInfo& inCreateInfo) const
+auto Buffer::_FindView(const BufferViewInfo& inCreateInfo) const -> BufferView*
 {
-	CHECK_TRUE(m_vkBuffer != VK_NULL_HANDLE, "Buffer must be created before requesting a buffer view!");
+	CHECK_TRUE(IsValid(), "Buffer must be created before requesting a buffer view!");
 	CHECK_TRUE(inCreateInfo.m_format != VK_FORMAT_UNDEFINED, "Buffer view format must be set!");
 	CHECK_TRUE(inCreateInfo.m_offset < m_bufferInformation.size, "Buffer view offset out of range!");
 
@@ -228,7 +184,7 @@ BufferView* Buffer::_FindView(const BufferViewInfo& inCreateInfo) const
 		: inCreateInfo.m_range;
 
 	CHECK_TRUE(resolvedRange > 0, "Buffer view range must be greater than 0!");
-	CHECK_TRUE((inCreateInfo.m_offset + resolvedRange) <= m_bufferInformation.size, "Buffer view range out of range!");
+	CHECK_TRUE(resolvedRange <= m_bufferInformation.size - inCreateInfo.m_offset, "Buffer view range out of range!");
 	CHECK_TRUE(
 		CONTAIN_BITS(m_bufferInformation.usage, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) ||
 		CONTAIN_BITS(m_bufferInformation.usage, VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT),
@@ -275,9 +231,9 @@ auto Buffer::View(const BufferViewInfo& inCreateInfo)->const BufferView*
 	return result;
 }
 
-BufferView::~BufferView()
+BufferView::~BufferView() noexcept
 {
-	assert(m_vkBufferView == VK_NULL_HANDLE);
+	_Destroy();
 }
 
 void BufferView::_Create(const Buffer& inBuffer, const BufferViewInfo& inCreateInfo)
@@ -293,13 +249,13 @@ void BufferView::_Create(const Buffer& inBuffer, const BufferViewInfo& inCreateI
 
 	CHECK_TRUE(inCreateInfo.m_format != VK_FORMAT_UNDEFINED, "Buffer view format must be set!");
 	CHECK_TRUE(resolvedRange > 0, "Buffer view range must be greater than 0!");
-	CHECK_TRUE((inCreateInfo.m_offset + resolvedRange) <= bufferInfo.size, "Buffer view range out of range!");
+	CHECK_TRUE(resolvedRange <= bufferInfo.size - inCreateInfo.m_offset, "Buffer view range out of range!");
 	CHECK_TRUE(
 		CONTAIN_BITS(bufferInfo.usage, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) ||
 		CONTAIN_BITS(bufferInfo.usage, VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT),
 		"This buffer cannot have buffer views!");
 
-	auto& device = MyDevice::GetInstance();
+	m_device = inBuffer.m_storage->device;
 	VkBufferViewCreateInfo createInfo{ VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO };
 
 	m_viewInformation.vkBuffer = inBuffer.GetVkBuffer();
@@ -312,16 +268,16 @@ void BufferView::_Create(const Buffer& inBuffer, const BufferViewInfo& inCreateI
 	createInfo.offset = m_viewInformation.offset;
 	createInfo.range = m_viewInformation.range;
 
-	m_vkBufferView = device.CreateBufferView(createInfo);
+	VkBufferView native = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateBufferView(m_device, &createInfo, nullptr, &native), "Failed to create buffer view!");
+	m_vkBufferView = native;
 }
 
-void BufferView::_Destroy()
+void BufferView::_Destroy() noexcept
 {
 	if (m_vkBufferView != VK_NULL_HANDLE)
 	{
-		auto& device = MyDevice::GetInstance();
-
-		device.DestroyBufferView(m_vkBufferView);
+		vkDestroyBufferView(m_device, m_vkBufferView, nullptr);
 		m_vkBufferView = VK_NULL_HANDLE;
 	}
 	m_viewInformation = BufferView::Information{};

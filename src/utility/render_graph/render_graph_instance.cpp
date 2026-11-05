@@ -302,13 +302,6 @@ void RenderGraphInstance::_DestroyInternalResources()
 	}
 	m_internalImages.clear();
 
-	for (auto& buffer : m_internalBuffers)
-	{
-		if (buffer != nullptr)
-		{
-			buffer->Destroy();
-		}
-	}
 	m_internalBuffers.clear();
 }
 

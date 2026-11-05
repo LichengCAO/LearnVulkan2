@@ -6,6 +6,61 @@ the native object before releasing parent dependencies. This ownership does not
 insert synchronization or wait for GPU work. Native render passes and
 framebuffers instead belong solely to the Device's private render-target cache.
 
+## Buffer ownership
+
+`Buffer` retains synchronous public `Create(const BufferCreateInfo&)` and its
+`RefCounted` base. It has no public `Destroy()` or release alias. Its `noexcept`
+destructor releases owned resources; use scope or an external owner's `reset()`
+for early release. Other strong references keep the Buffer alive. `IsValid()`
+reports whether this Buffer owns a native buffer. Copying and assignment are
+disabled; the `noexcept` move constructor transfers storage, information and
+the view cache, leaving the source empty without transferring reference counts.
+Move only when callers can preserve the existing facade-address and reference
+lifetime requirements.
+
+```cpp
+BufferCreateInfo info{};
+info.SetBufferSize(4096);
+info.SetBufferUsage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+auto buffer = MakeIntrusive<Buffer>();
+buffer->Create(info);
+// Record, submit, and complete all native uses before the final release.
+buffer.reset();
+```
+
+CreateInfo does not require Finalize. Size and usage default to zero so omitted
+required values are rejected. Creation checks an empty target, valid inputs and
+available Device/allocator before native work. It creates and binds in temporary
+storage and publishes only on success. Duplicate creation preserves the old
+buffer and views; a failed creation leaves an empty target and permits retry.
+
+Private `BufferStorage` owns the creating VkDevice, VkBuffer and a move-only
+`MemoryAllocation`. Public headers do not expose VMA types. MemoryAllocation owns
+one VmaAllocation and borrows its originating VmaAllocator; it maps directly from
+that allocation and caches a single mapped address. Repeated host writes reuse
+the mapping. A mapping failure leaves no cached address and permits retry.
+Neither mapping nor release looks up VkBuffer in an allocation table.
+
+`View()` retains its borrowed-pointer interface and per-Buffer cache. Views do
+not independently retain the parent Buffer; callers keep it alive and coordinate
+cache access. Creation and cache publication failures release unpublished views.
+Cleanup destroys BufferViews, unmaps owned mappings, destroys VkBuffer, and then
+frees its allocation. Saved creation dependencies are used for release, without
+a MyDevice singleton lookup or implicit GPU wait.
+
+After Device initialization, independent Buffers may create, map, write, create
+views and release on different threads. One Buffer, its allocation, and its view
+cache require exclusion of conflicting accesses. Different resources share VMA's
+internally synchronized allocator; the RHI adds no allocator lock. Resource
+creation, movement and reference counting do not synchronize GPU memory access.
+
+Keep Device and VmaAllocator alive until all Buffers are released, and complete
+GPU use before final release. Device/allocator initialization, destruction and
+recreation require exclusive access. This migration leaves Image on its existing
+allocation map and external synchronization contract; it does not make Image
+creation or final resource release safe without that coordination. Buffer command
+and descriptor retention behavior is unchanged.
+
 ## Image values and resource versions
 
 `Image` is a noncopyable facade with explicit `Create()` and `Destroy()`.
@@ -152,7 +207,7 @@ all native uses before Device/cache teardown, and keep Device and allocation
 dependencies alive through final Image/ImageView release. Resource types not yet
 migrated to the RHI threading policy retain their existing restrictions.
 
-Buffer, Program and acceleration structure ownership remains unchanged. Image
+Rendering descriptions do not change Program or acceleration structure ownership. Image
 layout transitions and access synchronization remain explicit. Dynamic rendering
 and imageless framebuffers are outside this change. The disabled RenderGraph
 path receives only call-site migration; this change does not enable it.
