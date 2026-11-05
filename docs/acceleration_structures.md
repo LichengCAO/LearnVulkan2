@@ -10,6 +10,13 @@ Geometry descriptions are independent types. `SetTriangles` and `SetAabbs`
 copy the complete list and select its geometry type. Buffer references are
 borrowed. Setters do not query Vulkan or resolve device addresses.
 
+BLAS `Create()` requires an empty target; repeated creation rejects before native
+queries and preserves the existing object. `IsValid()` reports native ownership.
+There is no public `Destroy()`: scope or external owner release destroys the
+native AS before its backing Buffer/allocation, without a GPU wait. Independent
+BLAS instances can create and release concurrently; keep Device/allocator alive
+and exclude conflicting operations on one instance. See [BLAS ownership](resource_lifetimes.md#blas-ownership).
+
 The following uses an existing `vertexBuffer` with
 `VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`:
@@ -63,6 +70,11 @@ Buffer's device address, and the resulting absolute address must meet alignment
 requirements. A zero scratch requirement accepts an uncreated scratch Buffer.
 
 ## TLAS: explicit host upload
+
+TLAS has the same empty-target Create and RAII release contract as BLAS, including
+`IsValid()` and no public `Destroy()`. Independent instances may create and release
+concurrently; same-instance conflicts require caller exclusion. Empty instance
+lists remain supported. See [TLAS ownership](resource_lifetimes.md#tlas-ownership).
 
 `SetInstances` copies CPU descriptions without resolving BLAS addresses.
 `TopLevelAccelStruct::WriteInstances` is static: no TLAS object is required.
@@ -127,7 +139,7 @@ Update supports identical source/destination (in-place) or compatible distinct A
 objects, and requires an earlier GPU build with `ALLOW_UPDATE`. Host creation
 does not imply that build has executed. The caller preserves Vulkan's update
 constraints on index contents, topology and active/inactive primitives.
-Changing layout or counts requires recreating the AS and building it again.
+Changing layout or counts requires creating a new AS owner and building it again.
 
 The existing `BuildAccelerationStructuresKHR(span<const VkAccelStructBuildInfo>)`
 batch interface and typed Copy overloads remain available. A single batch is for

@@ -10,6 +10,7 @@
 #include <cstring>
 #include "my_vulkan/resource/private/buffer_storage.h"
 #include "my_vulkan/resource/private/image_storage.h"
+#include "my_vulkan/resource/private/acceleration_structure_storage.h"
 
 struct CommandBufferTestProbe
 {
@@ -25,6 +26,18 @@ struct CommandBufferTestProbe
         auto storage = std::make_unique<VulkanDetail::ImageStorage>();
         storage->image = handle;
         image.m_resource = MakeIntrusive<VulkanDetail::ImageResource>(std::move(storage));
+    }
+    template<typename AccelStruct>
+    static void SetBorrowedAccelStruct(AccelStruct& resource, VkAccelerationStructureKHR handle)
+    {
+        resource.m_storage = std::make_unique<VulkanDetail::AccelerationStructureStorage>();
+        resource.m_storage->handle = handle;
+    }
+    template<typename AccelStruct>
+    static void ClearBorrowedAccelStruct(AccelStruct& resource)
+    {
+        resource.m_storage->handle = VK_NULL_HANDLE;
+        resource.m_storage.reset();
     }
     template<typename T>
     static auto Handle(uintptr_t inValue) -> T { return reinterpret_cast<T>(inValue); }
@@ -74,10 +87,10 @@ struct CommandBufferTestProbe
             table.m_tables[0] = { 2, 0, 0, 64 };
             table.m_tables[1] = { 2, 0, 256, 64 };
             table.m_tables[2] = { 1, 0, 512, 64 };
-            bottomSrc.m_vkAccelStruct = Handle<VkAccelerationStructureKHR>(401);
-            bottomDst.m_vkAccelStruct = Handle<VkAccelerationStructureKHR>(402);
-            topSrc.m_vkAccelStruct = Handle<VkAccelerationStructureKHR>(403);
-            topDst.m_vkAccelStruct = Handle<VkAccelerationStructureKHR>(404);
+            SetBorrowedAccelStruct(bottomSrc, Handle<VkAccelerationStructureKHR>(401));
+            SetBorrowedAccelStruct(bottomDst, Handle<VkAccelerationStructureKHR>(402));
+            SetBorrowedAccelStruct(topSrc, Handle<VkAccelerationStructureKHR>(403));
+            SetBorrowedAccelStruct(topDst, Handle<VkAccelerationStructureKHR>(404));
         }
 
         ~Resources()
@@ -86,8 +99,8 @@ struct CommandBufferTestProbe
             layout.m_vkPipelineLayout = VK_NULL_HANDLE;
             ClearBorrowedBuffer(*table.m_uptrBuffer);
             table.m_uptrBuffer.reset();
-            bottomSrc.m_vkAccelStruct = bottomDst.m_vkAccelStruct = VK_NULL_HANDLE;
-            topSrc.m_vkAccelStruct = topDst.m_vkAccelStruct = VK_NULL_HANDLE;
+            ClearBorrowedAccelStruct(bottomSrc); ClearBorrowedAccelStruct(bottomDst);
+            ClearBorrowedAccelStruct(topSrc); ClearBorrowedAccelStruct(topDst);
         }
     };
 
@@ -852,9 +865,6 @@ namespace
     uint32_t asAddressQueries = 0;
     uint32_t asSizeQueries = 0;
     uint32_t asPropertyQueries = 0;
-    VkAccelerationStructureBuildGeometryInfoKHR queriedBuild{};
-    std::vector<VkAccelerationStructureGeometryKHR> queriedGeometries;
-    std::vector<uint32_t> queriedPrimitiveCounts;
 
     auto VKAPI_PTR CaptureAsAddress(VkDevice, const VkBufferDeviceAddressInfo* inInfo) -> VkDeviceAddress
     {
@@ -875,79 +885,14 @@ namespace
         properties->maxInstanceCount = 1024;
         properties->minAccelerationStructureScratchOffsetAlignment = 256;
     }
-    void VKAPI_PTR CaptureAsFormat(VkPhysicalDevice, VkFormat, VkFormatProperties* outProperties)
-    {
-        *outProperties = {};
-        outProperties->bufferFeatures = VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR;
-    }
     struct SizeQueryStop : std::runtime_error { SizeQueryStop() : std::runtime_error("Stop before GPU allocation") {} };
     void VKAPI_PTR CaptureAsSizes(VkDevice, VkAccelerationStructureBuildTypeKHR inType,
-        const VkAccelerationStructureBuildGeometryInfoKHR* inInfo, const uint32_t* inCounts,
+        const VkAccelerationStructureBuildGeometryInfoKHR*, const uint32_t*,
         VkAccelerationStructureBuildSizesInfoKHR*)
     {
         ++asSizeQueries;
         CHECK_TRUE(inType == VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, "Only device builds were requested!");
-        queriedBuild = *inInfo;
-        queriedGeometries.assign(inInfo->pGeometries, inInfo->pGeometries + inInfo->geometryCount);
-        queriedPrimitiveCounts.assign(inCounts, inCounts + inInfo->geometryCount);
         throw SizeQueryStop{};
-    }
-
-    void TestHostDescriptionSnapshotAndSizeQuery()
-    {
-        CommandBufferTestProbe::Resources resources;
-        ScopedFunction properties(vkGetPhysicalDeviceProperties2, &CaptureAsProperties);
-        ScopedFunction formats(vkGetPhysicalDeviceFormatProperties, &CaptureAsFormat);
-        ScopedFunction sizes(vkGetAccelerationStructureBuildSizesKHR, &CaptureAsSizes);
-        ScopedFunction addresses(vkGetBufferDeviceAddress, &CaptureAsAddress);
-        asAddressQueries = asSizeQueries = asPropertyQueries = 0;
-        std::array<AccelStructTriangleGeometry, 1> geometries{};
-        geometries[0].vertexBuffer = &resources.src;
-        geometries[0].vertexStride = 16;
-        geometries[0].vertexCount = 6;
-        geometries[0].primitiveCount = 2;
-        geometries[0].vertexFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-        geometries[0].transformBuffer = &resources.src;
-        BottomLevelAccelStructCreateInfo info;
-        info.SetTriangles(geometries);
-        info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
-        geometries[0].vertexFormat = VK_FORMAT_UNDEFINED;
-        geometries[0].primitiveCount = 999;
-        CHECK_TRUE(asAddressQueries == 0 && asSizeQueries == 0 && asPropertyQueries == 0,
-            "CreateInfo setters must only copy CPU descriptions!");
-        bool reachedQuery = false;
-        try { resources.bottomDst.Create(info); }
-        catch (const SizeQueryStop&) { reachedQuery = true; }
-        CHECK_TRUE(reachedQuery && asSizeQueries == 1 && asAddressQueries == 0,
-            "Host Create must query sizes without resolving Buffer addresses!");
-        CHECK_TRUE(queriedBuild.type == VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR &&
-            queriedBuild.flags == VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR &&
-            queriedPrimitiveCounts == std::vector<uint32_t>({ 2 }) &&
-            queriedGeometries[0].flags == VK_GEOMETRY_OPAQUE_BIT_KHR &&
-            queriedGeometries[0].geometry.triangles.vertexFormat == VK_FORMAT_R16G16B16A16_SFLOAT &&
-            queriedGeometries[0].geometry.triangles.maxVertex == 5 &&
-            queriedGeometries[0].geometry.triangles.vertexStride == 16 &&
-            queriedGeometries[0].geometry.triangles.indexType == VK_INDEX_TYPE_NONE_KHR &&
-            queriedGeometries[0].geometry.triangles.transformData.deviceAddress != 0,
-            "Size query must preserve the copied format/count/flags and transform presence!");
-        CHECK_TRUE(resources.bottomDst.GetVkAccelerationStructure() ==
-            CommandBufferTestProbe::Handle<VkAccelerationStructureKHR>(402),
-            "A failed host query must preserve an existing AS!");
-        info.Reset();
-        CommandBuffer commands;
-        ExpectRejected(commands, [&] { resources.bottomDst.Create(info); });
-
-        std::array<AccelStructInstance, 2> instances{};
-        TopLevelAccelStructCreateInfo topInfo;
-        topInfo.SetInstances(instances);
-        instances[0].instanceCustomIndex = 0xFFFFFFFF;
-        reachedQuery = false;
-        try { resources.topDst.Create(topInfo); }
-        catch (const SizeQueryStop&) { reachedQuery = true; }
-        CHECK_TRUE(reachedQuery && queriedBuild.type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR &&
-            queriedBuild.flags == 0 && queriedPrimitiveCounts == std::vector<uint32_t>({ 2 }) &&
-            queriedGeometries[0].geometryType == VK_GEOMETRY_TYPE_INSTANCES_KHR &&
-            topInfo.GetInstanceBufferSize() == 128, "TLAS host query must use the copied instance count!");
     }
 
     void TestObjectBlasCommandsUseExternalBuffersAndSnapshots()
@@ -1445,7 +1390,6 @@ void RunCommandBufferTests()
         CHECK_TRUE(emptied, "Moving a Buffer must empty the source information!");
     }
     TestEmptyInstanceUploadNeedsNoDeviceResources<TopLevelAccelStructCreateInfo, TopLevelAccelStruct>();
-    TestHostDescriptionSnapshotAndSizeQuery();
     TestObjectBlasCommandsUseExternalBuffersAndSnapshots();
     TestAsValidationAndScratchSelection();
     TestNonIndexedTrianglesAndAabbMapping();

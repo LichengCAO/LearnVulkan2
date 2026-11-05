@@ -24,6 +24,7 @@ private:
 	std::unordered_map<std::string, GroupData> m_groups;
 	friend class MyDevice;
 	friend class RayTracingShaderProgram;
+		friend struct BufferAllocationTestProbe;
 
 public:
 	void Reset();
@@ -69,10 +70,17 @@ private:
 
 public:
 	ShaderBindingTable();
-	~ShaderBindingTable();
+		~ShaderBindingTable() noexcept;
 	ShaderBindingTable(const ShaderBindingTable& _other) = delete;
 	auto operator=(const ShaderBindingTable& _other) -> ShaderBindingTable& = delete;
+		ShaderBindingTable(ShaderBindingTable&&) = delete;
+		auto operator=(ShaderBindingTable&&) -> ShaderBindingTable& = delete;
+		auto IsValid() const noexcept -> bool;
 
+		// Synchronous creation requires an empty target and copies group metadata. Independent
+		// instances may create/use/release concurrently with stable Device/allocator/properties.
+		// Exclude conflicting access to one table (including Commit/region reads); complete GPU
+		// uses before release. Create does not upload records; Commit remains explicit.
 	void Create(const ShaderBindingTableCreateInfo& inCreateInfo);
 	auto SetShaderTableBinding(ShaderTableType inType, uint32_t inBinding, std::string_view inGroupName,
 	    const uint8_t* inData, size_t inDataSize) -> ShaderBindingTable&;
@@ -87,7 +95,6 @@ public:
 	}
 	void Commit();
 	auto GetShaderTableRegion(ShaderTableType inType, uint32_t inOffset = 0) const -> VkStridedDeviceAddressRegionKHR;
-	void Destroy();
 };
 
 #include "shader_program_create_info.h"

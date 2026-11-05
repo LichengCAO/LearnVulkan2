@@ -39,7 +39,7 @@ Granite 使用 `Util::IntrusivePtrEnabled<T>` 加 `Util::IntrusivePtr<T>`。资�
 
 `BottomLevelAccelStruct` 和 `TopLevelAccelStruct` 内部持有 backing `Buffer`，并可能被跨帧或异步光追构建路径引用。TLAS 描述当前保存 BLAS 裸指针，后续 handle 化时应同时审视这条引用链。
 
-当前两类加速结构已经继承 `RefCounted`，析构时调用幂等的 `Destroy()`；后续仍需在真正使用 `IntrusivePtr` 时统一其引用链和 BLAS/TLAS 描述的所有权语义。
+两类加速结构都已继承 `RefCounted`，保留只接受空目标的公开 `Create()`，移除公开 `Destroy()`，由 `noexcept` 析构通过共享的私有存储依次释放 native AS 和 backing Buffer。不同 AS 实例可并发创建和最终释放，见 [BLAS ownership](resource_lifetimes.md#blas-ownership) 和 [TLAS ownership](resource_lifetimes.md#tlas-ownership)。命令、几何输入和 TLAS 中 BLAS 裸指针的保活语义保持不变。
 
 ### `Sampler`（不再作为 RefCounted 候选）
 
@@ -53,10 +53,11 @@ Granite 使用 `Util::IntrusivePtrEnabled<T>` 加 `Util::IntrusivePtr<T>`。资�
 - `DescriptorState`、`DescriptorSetState`、各种 `CreateInfo`、pipeline state：值语义或短期构造状态。
 - `CommandBuffer`：当前是命令描述数据，不拥有 Vulkan command buffer。
 - `PipelineLayout`：拥有独立的 Host 元数据并借用 Device 缓存句柄，复制和析构不管理 native 生命周期，不增加 RefCounted；见 [Pipeline layout ownership](resource_lifetimes.md#pipeline-layout-ownership)。
+- `ShaderBindingTable`：保持非 RefCounted、不可复制/移动的独占所有者，保留只接受空目标的 Create，由 RAII 释放 backing Buffer 和 Host 数据；见 [SBT ownership](resource_lifetimes.md#sbt-ownership)。
 - `ShaderModule`、`RenderPass`、`Framebuffer` 和 ShaderProgram：保留各自现有所有权模式，本轮不增加 RefCounted。
 
 ## 兼容性风险
 
 `src/my_vulkan/ref_counted.h` 中的计数器初始值为 `0`，`IntrusivePtr(T*)` 构造时再执行一次 `AddRef()`；Granite 的计数器从 `1` 开始，并采用不同的初始所有权语义。后续正式把资源容器改成 `IntrusivePtr` 前，必须统一这套规则，并补充自定义 deleter（尤其是 swapchain image）。
 
-引用计数对象的最后一个强引用释放时会自动销毁其拥有的 Vulkan 资源。仍提供 `Destroy()` 的类型需保持其幂等性；已迁移的 Buffer/Image 通过 RAII 释放各自拥有的资源或引用。同时必须确保 Device 和 allocator 覆盖资源生命周期，以及最终 native 释放前 GPU 使用已完成。
+引用计数对象的最后一个强引用释放时会自动销毁其拥有的 Vulkan 资源。仍提供 `Destroy()` 的类型需保持其幂等性；已迁移的 Buffer/Image/BLAS/TLAS 通过 RAII 释放各自拥有的资源或引用。同时必须确保 Device 和 allocator 覆盖资源生命周期，以及最终 native 释放前 GPU 使用已完成。

@@ -7,6 +7,7 @@
 class CommandBuffer;
 class BottomLevelAccelStruct;
 class TopLevelAccelStruct;
+namespace VulkanDetail { struct AccelerationStructureStorage; }
 
 // Low-level batch input. The command snapshots both arrays when appended.
 struct VkAccelStructBuildInfo
@@ -87,9 +88,8 @@ class BottomLevelAccelStruct final : public RefCounted
     friend class CommandBuffer;
     friend struct CommandBufferTestProbe;
 private:
-    VkAccelerationStructureKHR m_vkAccelStruct = VK_NULL_HANDLE;
+    std::unique_ptr<VulkanDetail::AccelerationStructureStorage> m_storage;
     VkBuildAccelerationStructureFlagsKHR m_flags = 0;
-    std::unique_ptr<Buffer> m_uptrBuffer;
     VkDeviceAddress m_accelStructReference = 0;
     VkAccelerationStructureBuildSizesInfoKHR m_buildSizes{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
     VkDeviceSize m_scratchAlignment = 1;
@@ -99,12 +99,20 @@ private:
     auto _BuildInfo(const BottomLevelAccelStructCreateInfo& inInfo,
         const BottomLevelAccelStruct* inSrc, Buffer& inScratchBuffer, VkDeviceSize inScratchOffset) const -> VkAccelStructBuildInfo;
 public:
-    ~BottomLevelAccelStruct() override;
-    // Host only: queries sizes and creates the handle/backing Buffer. Caller synchronizes recreation.
+    BottomLevelAccelStruct();
+    ~BottomLevelAccelStruct() noexcept override;
+    BottomLevelAccelStruct(const BottomLevelAccelStruct&) = delete;
+    auto operator=(const BottomLevelAccelStruct&) -> BottomLevelAccelStruct& = delete;
+    BottomLevelAccelStruct(BottomLevelAccelStruct&&) = delete;
+    auto operator=(BottomLevelAccelStruct&&) -> BottomLevelAccelStruct& = delete;
+    // Synchronous creation requires an empty target. Independent instances may create/release
+    // concurrently; callers exclude conflicting access to one instance and keep Device,
+    // allocator and native dispatch alive and stable through final release. Complete GPU use
+    // before release. Geometry buffers and command inputs remain borrowed.
     void Create(const BottomLevelAccelStructCreateInfo& inCreateInfo);
-    void Destroy();
+    auto IsValid() const noexcept -> bool;
     auto GetDeviceAddress() const noexcept -> VkDeviceAddress { return m_accelStructReference; }
-    auto GetVkAccelerationStructure() const noexcept -> VkAccelerationStructureKHR { return m_vkAccelStruct; }
+    auto GetVkAccelerationStructure() const noexcept -> VkAccelerationStructureKHR;
     auto GetVkBuildAccelerationStructureFlags() const noexcept -> VkBuildAccelerationStructureFlagsKHR { return m_flags; }
     auto GetBuildSizes() const noexcept -> const VkAccelerationStructureBuildSizesInfoKHR& { return m_buildSizes; }
     auto GetScratchAlignment() const noexcept -> VkDeviceSize { return m_scratchAlignment; }
@@ -115,9 +123,8 @@ class TopLevelAccelStruct final : public RefCounted
     friend class CommandBuffer;
     friend struct CommandBufferTestProbe;
 private:
-    VkAccelerationStructureKHR m_vkAccelStruct = VK_NULL_HANDLE;
+    std::unique_ptr<VulkanDetail::AccelerationStructureStorage> m_storage;
     VkBuildAccelerationStructureFlagsKHR m_flags = 0;
-    std::unique_ptr<Buffer> m_uptrBuffer;
     VkAccelerationStructureBuildSizesInfoKHR m_buildSizes{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
     VkDeviceSize m_scratchAlignment = 1;
     VkAccelStructBuildInfo m_layout;
@@ -127,14 +134,22 @@ private:
         const Buffer& inInstanceBuffer, VkDeviceSize inInstanceOffset,
         Buffer& inScratchBuffer, VkDeviceSize inScratchOffset) const -> VkAccelStructBuildInfo;
 public:
-    ~TopLevelAccelStruct() override;
+    TopLevelAccelStruct();
+    ~TopLevelAccelStruct() noexcept override;
+    TopLevelAccelStruct(const TopLevelAccelStruct&) = delete;
+    auto operator=(const TopLevelAccelStruct&) -> TopLevelAccelStruct& = delete;
+    TopLevelAccelStruct(TopLevelAccelStruct&&) = delete;
+    auto operator=(TopLevelAccelStruct&&) -> TopLevelAccelStruct& = delete;
+    // Synchronous creation requires an empty target. Independent instances may create/release
+    // concurrently with stable Device, allocator and dispatch. Exclude same-instance conflicts
+    // and finish GPU use before release; instance/BLAS/build inputs remain borrowed.
     void Create(const TopLevelAccelStructCreateInfo& inCreateInfo);
-    void Destroy();
+    auto IsValid() const noexcept -> bool;
     // Host only. No TLAS object is required; destination may be a staging Buffer.
     // Non-null BLAS references must already have a valid device address.
     static void WriteInstances(const TopLevelAccelStructCreateInfo& inInfo,
         Buffer& inDstBuffer, VkDeviceSize inOffset = 0);
-    auto GetVkAccelerationStructure() const noexcept -> VkAccelerationStructureKHR { return m_vkAccelStruct; }
+    auto GetVkAccelerationStructure() const noexcept -> VkAccelerationStructureKHR;
     auto GetVkBuildAccelerationStructureFlags() const noexcept -> VkBuildAccelerationStructureFlagsKHR { return m_flags; }
     auto GetBuildSizes() const noexcept -> const VkAccelerationStructureBuildSizesInfoKHR& { return m_buildSizes; }
     auto GetScratchAlignment() const noexcept -> VkDeviceSize { return m_scratchAlignment; }

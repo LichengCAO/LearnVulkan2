@@ -1,5 +1,7 @@
 #include "acceleration_structure.h"
 #include "device.h"
+#include "private/acceleration_structure_storage.h"
+#include "../allocator/private/memory_allocator.h"
 #include <limits>
 
 namespace
@@ -173,17 +175,6 @@ namespace
         return buffer;
     }
 
-    auto CreateHandle(const Buffer& inBuffer, VkDeviceSize inSize, VkAccelerationStructureTypeKHR inType)
-        -> VkAccelerationStructureKHR
-    {
-        VkAccelerationStructureCreateInfoKHR info{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
-        info.type = inType;
-        info.size = inSize;
-        info.buffer = inBuffer.GetVkBuffer();
-        auto handle = MyDevice::GetInstance().CreateAccelerationStructure(info);
-        CHECK_TRUE(handle != VK_NULL_HANDLE, "Acceleration structure creation returned a null handle!");
-        return handle;
-    }
 }
 
 void BottomLevelAccelStructCreateInfo::SetTriangles(std::span<const AccelStructTriangleGeometry> inGeometries)
@@ -338,28 +329,35 @@ auto TopLevelAccelStruct::_Describe(const TopLevelAccelStructCreateInfo& inInfo)
 
 void BottomLevelAccelStruct::Create(const BottomLevelAccelStructCreateInfo& inCreateInfo)
 {
+    CHECK_TRUE(!IsValid(), "BLAS Create requires an empty target!");
+    auto& device = MyDevice::GetInstance();
+    CHECK_TRUE(device.vkDevice != VK_NULL_HANDLE && device.vkPhysicalDevice != VK_NULL_HANDLE &&
+        device.GetMemoryAllocator() != nullptr && device.GetMemoryAllocator()->IsValid(),
+        "BLAS creation requires initialized Device dependencies!");
+    CHECK_TRUE(vkGetPhysicalDeviceProperties2 && vkGetPhysicalDeviceFormatProperties &&
+        vkGetAccelerationStructureBuildSizesKHR && vkCreateAccelerationStructureKHR &&
+        vkDestroyAccelerationStructureKHR && vkGetAccelerationStructureDeviceAddressKHR,
+        "BLAS creation requires acceleration structure entrypoints!");
     auto layout = _Describe(inCreateInfo, false);
     const auto properties = QueryProperties(layout);
     const auto sizes = QuerySizes(layout);
-    auto buffer = CreateBackingBuffer(sizes.accelerationStructureSize);
-    auto handle = CreateHandle(*buffer, sizes.accelerationStructureSize, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR);
-    VkDeviceAddress address = 0;
-    try
-    {
-        VkAccelerationStructureDeviceAddressInfoKHR addressInfo{
-            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR };
-        addressInfo.accelerationStructure = handle;
-        address = MyDevice::GetInstance().GetAccelerationStructureDeviceAddress(addressInfo);
-        CHECK_TRUE(address != 0, "BLAS device address is invalid!");
-    }
-    catch (...)
-    {
-        vkDestroyAccelerationStructureKHR(MyDevice::GetInstance().vkDevice, handle, nullptr);
-        throw;
-    }
-    Destroy();
-    m_vkAccelStruct = handle;
-    m_uptrBuffer = std::move(buffer);
+    auto storage = std::make_unique<VulkanDetail::AccelerationStructureStorage>();
+    storage->device = device.vkDevice;
+    storage->buffer = CreateBackingBuffer(sizes.accelerationStructureSize);
+    VkAccelerationStructureCreateInfoKHR nativeInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
+    nativeInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    nativeInfo.size = sizes.accelerationStructureSize;
+    nativeInfo.buffer = storage->buffer->GetVkBuffer();
+    VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateAccelerationStructureKHR(storage->device, &nativeInfo, nullptr, &handle));
+    CHECK_TRUE(handle != VK_NULL_HANDLE, "Acceleration structure creation returned a null handle!");
+    storage->handle = handle;
+    VkAccelerationStructureDeviceAddressInfoKHR addressInfo{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR };
+    addressInfo.accelerationStructure = handle;
+    const auto address = vkGetAccelerationStructureDeviceAddressKHR(storage->device, &addressInfo);
+    CHECK_TRUE(address != 0, "BLAS device address is invalid!");
+    m_storage = std::move(storage);
     m_accelStructReference = address;
     m_flags = inCreateInfo.m_flags;
     m_buildSizes = sizes;
@@ -369,14 +367,29 @@ void BottomLevelAccelStruct::Create(const BottomLevelAccelStructCreateInfo& inCr
 
 void TopLevelAccelStruct::Create(const TopLevelAccelStructCreateInfo& inCreateInfo)
 {
+    CHECK_TRUE(!IsValid(), "TLAS Create requires an empty target!");
+    auto& device = MyDevice::GetInstance();
+    CHECK_TRUE(device.vkDevice != VK_NULL_HANDLE && device.vkPhysicalDevice != VK_NULL_HANDLE &&
+        device.GetMemoryAllocator() != nullptr && device.GetMemoryAllocator()->IsValid(),
+        "TLAS creation requires initialized Device dependencies!");
+    CHECK_TRUE(vkGetPhysicalDeviceProperties2 && vkGetAccelerationStructureBuildSizesKHR &&
+        vkCreateAccelerationStructureKHR && vkDestroyAccelerationStructureKHR,
+        "TLAS creation requires acceleration structure entrypoints!");
     auto layout = _Describe(inCreateInfo);
     const auto properties = QueryProperties(layout);
     const auto sizes = QuerySizes(layout);
-    auto buffer = CreateBackingBuffer(sizes.accelerationStructureSize);
-    const auto handle = CreateHandle(*buffer, sizes.accelerationStructureSize, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR);
-    Destroy();
-    m_vkAccelStruct = handle;
-    m_uptrBuffer = std::move(buffer);
+    auto storage = std::make_unique<VulkanDetail::AccelerationStructureStorage>();
+    storage->device = device.vkDevice;
+    storage->buffer = CreateBackingBuffer(sizes.accelerationStructureSize);
+    VkAccelerationStructureCreateInfoKHR nativeInfo{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
+    nativeInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    nativeInfo.size = sizes.accelerationStructureSize;
+    nativeInfo.buffer = storage->buffer->GetVkBuffer();
+    VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateAccelerationStructureKHR(storage->device, &nativeInfo, nullptr, &handle));
+    CHECK_TRUE(handle != VK_NULL_HANDLE, "Acceleration structure creation returned a null handle!");
+    storage->handle = handle;
+    m_storage = std::move(storage);
     m_flags = inCreateInfo.m_flags;
     m_buildSizes = sizes;
     m_scratchAlignment = properties.minAccelerationStructureScratchOffsetAlignment;
@@ -387,12 +400,12 @@ auto BottomLevelAccelStruct::_BuildInfo(const BottomLevelAccelStructCreateInfo& 
     const BottomLevelAccelStruct* inSrc, Buffer& inScratchBuffer, VkDeviceSize inScratchOffset) const
     -> VkAccelStructBuildInfo
 {
-    CHECK_TRUE(m_vkAccelStruct != VK_NULL_HANDLE, "Destination BLAS is not created!");
+    CHECK_TRUE(IsValid(), "Destination BLAS is not created!");
     const auto layout = _Describe(inInfo, false);
     CHECK_TRUE(SameLayout(layout, m_layout), "BLAS build layout differs from its creation layout!");
     if (inSrc != nullptr)
     {
-        CHECK_TRUE(inSrc->m_vkAccelStruct != VK_NULL_HANDLE, "Source BLAS is not created!");
+        CHECK_TRUE(inSrc->IsValid(), "Source BLAS is not created!");
         CHECK_TRUE(CONTAIN_BITS(m_flags, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR) &&
             CONTAIN_BITS(inSrc->m_flags, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR),
             "BLAS update requires ALLOW_UPDATE!");
@@ -401,8 +414,8 @@ auto BottomLevelAccelStruct::_BuildInfo(const BottomLevelAccelStructCreateInfo& 
     auto result = _Describe(inInfo, true);
     auto& info = result.buildGeometryInfo;
     info.mode = inSrc == nullptr ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR : VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
-    info.srcAccelerationStructure = inSrc == nullptr ? VK_NULL_HANDLE : inSrc->m_vkAccelStruct;
-    info.dstAccelerationStructure = m_vkAccelStruct;
+    info.srcAccelerationStructure = inSrc == nullptr ? VK_NULL_HANDLE : inSrc->GetVkAccelerationStructure();
+    info.dstAccelerationStructure = GetVkAccelerationStructure();
     info.scratchData.deviceAddress = ScratchAddress(inScratchBuffer, inScratchOffset,
         inSrc == nullptr ? m_buildSizes.buildScratchSize : m_buildSizes.updateScratchSize, m_scratchAlignment);
     return result;
@@ -412,12 +425,12 @@ auto TopLevelAccelStruct::_BuildInfo(const TopLevelAccelStructCreateInfo& inInfo
     const Buffer& inInstanceBuffer, VkDeviceSize inInstanceOffset, Buffer& inScratchBuffer,
     VkDeviceSize inScratchOffset) const -> VkAccelStructBuildInfo
 {
-    CHECK_TRUE(m_vkAccelStruct != VK_NULL_HANDLE, "Destination TLAS is not created!");
+    CHECK_TRUE(IsValid(), "Destination TLAS is not created!");
     auto result = _Describe(inInfo);
     CHECK_TRUE(SameLayout(result, m_layout), "TLAS build layout differs from its creation layout!");
     if (inSrc != nullptr)
     {
-        CHECK_TRUE(inSrc->m_vkAccelStruct != VK_NULL_HANDLE, "Source TLAS is not created!");
+        CHECK_TRUE(inSrc->IsValid(), "Source TLAS is not created!");
         CHECK_TRUE(CONTAIN_BITS(m_flags, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR) &&
             CONTAIN_BITS(inSrc->m_flags, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR),
             "TLAS update requires ALLOW_UPDATE!");
@@ -427,8 +440,8 @@ auto TopLevelAccelStruct::_BuildInfo(const TopLevelAccelStructCreateInfo& inInfo
         inInstanceOffset, inInfo.GetInstanceBufferSize(), InputUsage, 16);
     auto& info = result.buildGeometryInfo;
     info.mode = inSrc == nullptr ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR : VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
-    info.srcAccelerationStructure = inSrc == nullptr ? VK_NULL_HANDLE : inSrc->m_vkAccelStruct;
-    info.dstAccelerationStructure = m_vkAccelStruct;
+    info.srcAccelerationStructure = inSrc == nullptr ? VK_NULL_HANDLE : inSrc->GetVkAccelerationStructure();
+    info.dstAccelerationStructure = GetVkAccelerationStructure();
     info.scratchData.deviceAddress = ScratchAddress(inScratchBuffer, inScratchOffset,
         inSrc == nullptr ? m_buildSizes.buildScratchSize : m_buildSizes.updateScratchSize, m_scratchAlignment);
     return result;
@@ -474,37 +487,16 @@ void TopLevelAccelStruct::WriteInstances(const TopLevelAccelStructCreateInfo& in
     inDstBuffer.CopyFromHost(instances.data(), static_cast<size_t>(inOffset), static_cast<size_t>(bytes));
 }
 
-BottomLevelAccelStruct::~BottomLevelAccelStruct()
-{
-    Destroy();
-}
+BottomLevelAccelStruct::BottomLevelAccelStruct() = default;
+BottomLevelAccelStruct::~BottomLevelAccelStruct() noexcept = default;
+auto BottomLevelAccelStruct::IsValid() const noexcept -> bool
+{ return GetVkAccelerationStructure() != VK_NULL_HANDLE; }
+auto BottomLevelAccelStruct::GetVkAccelerationStructure() const noexcept -> VkAccelerationStructureKHR
+{ return m_storage ? m_storage->handle : VK_NULL_HANDLE; }
 
-void BottomLevelAccelStruct::Destroy()
-{
-    if (m_vkAccelStruct != VK_NULL_HANDLE)
-        vkDestroyAccelerationStructureKHR(MyDevice::GetInstance().vkDevice, m_vkAccelStruct, nullptr);
-    m_vkAccelStruct = VK_NULL_HANDLE;
-    m_uptrBuffer.reset();
-    m_accelStructReference = 0;
-    m_flags = 0;
-    m_buildSizes = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
-    m_scratchAlignment = 1;
-    m_layout = {};
-}
-
-TopLevelAccelStruct::~TopLevelAccelStruct()
-{
-    Destroy();
-}
-
-void TopLevelAccelStruct::Destroy()
-{
-    if (m_vkAccelStruct != VK_NULL_HANDLE)
-        vkDestroyAccelerationStructureKHR(MyDevice::GetInstance().vkDevice, m_vkAccelStruct, nullptr);
-    m_vkAccelStruct = VK_NULL_HANDLE;
-    m_uptrBuffer.reset();
-    m_flags = 0;
-    m_buildSizes = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
-    m_scratchAlignment = 1;
-    m_layout = {};
-}
+TopLevelAccelStruct::TopLevelAccelStruct() = default;
+TopLevelAccelStruct::~TopLevelAccelStruct() noexcept = default;
+auto TopLevelAccelStruct::IsValid() const noexcept -> bool
+{ return GetVkAccelerationStructure() != VK_NULL_HANDLE; }
+auto TopLevelAccelStruct::GetVkAccelerationStructure() const noexcept -> VkAccelerationStructureKHR
+{ return m_storage ? m_storage->handle : VK_NULL_HANDLE; }

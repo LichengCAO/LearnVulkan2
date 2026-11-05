@@ -1,6 +1,7 @@
 #include "../ray_tracing_shader_program.h"
 #include "buffer.h"
 #include "device.h"
+#include "../../allocator/private/memory_allocator.h"
 #include <algorithm>
 #include <limits>
 
@@ -66,19 +67,19 @@ auto RayTracingShaderProgram::GetVkPipeline() const -> VkPipeline
 }
 
 ShaderBindingTable::ShaderBindingTable() = default;
-ShaderBindingTable::~ShaderBindingTable()
-{
-	assert(m_uptrBuffer == nullptr);
-}
+ShaderBindingTable::~ShaderBindingTable() noexcept = default;
+auto ShaderBindingTable::IsValid() const noexcept -> bool { return m_uptrBuffer != nullptr; }
 
 void ShaderBindingTable::Create(const ShaderBindingTableCreateInfo& inCreateInfo)
 {
 	CHECK_TRUE(m_uptrBuffer == nullptr, "Shader binding table already created!");
 	CHECK_TRUE(inCreateInfo.m_capacities[static_cast<size_t>(ShaderTableType::RayGeneration)].recordCount > 0,
 	    "Shader binding table needs at least one ray generation record!");
-	try
 	{
 		auto& device = MyDevice::GetInstance();
+		CHECK_TRUE(device.vkDevice != VK_NULL_HANDLE && device.vkPhysicalDevice != VK_NULL_HANDLE &&
+		    device.GetMemoryAllocator() && device.GetMemoryAllocator()->IsValid() && vkGetBufferDeviceAddress,
+		    "Shader binding table requires initialized Device dependencies!");
 		VkPhysicalDeviceRayTracingPipelinePropertiesKHR properties{};
 		device.GetPhysicalDeviceRayTracingProperties(properties);
 		CHECK_TRUE(properties.shaderGroupHandleSize > 0 && properties.shaderGroupHandleAlignment > 0 &&
@@ -94,21 +95,25 @@ void ShaderBindingTable::Create(const ShaderBindingTableCreateInfo& inCreateInfo
 			return (value + alignment - 1) & ~(alignment - 1);
 		};
 
-		m_groupSet = inCreateInfo.m_groupSet;
-		m_shaderGroupHandleSize = properties.shaderGroupHandleSize;
+		alignUp(0, properties.shaderGroupHandleAlignment);
+		alignUp(0, properties.shaderGroupBaseAlignment);
+		static_assert(std::is_nothrow_move_assignable_v<RayTracingShaderGroupSet>);
+		auto groupSet = inCreateInfo.m_groupSet;
+		const size_t handleSize = properties.shaderGroupHandleSize;
+		std::array<TableData, static_cast<size_t>(ShaderTableType::Max)> tables{};
 		VkDeviceSize totalSize = 0;
-		for (size_t index = 0; index < m_tables.size(); ++index)
+		for (size_t index = 0; index < tables.size(); ++index)
 		{
 			const auto& capacity = inCreateInfo.m_capacities[index];
-			auto& table = m_tables[index];
+			auto& table = tables[index];
 			table.recordCount = capacity.recordCount;
 			table.maxRecordDataSize = capacity.maxRecordDataSize;
 			if (table.recordCount == 0)
 				continue;
 
-			CHECK_TRUE(table.maxRecordDataSize <= std::numeric_limits<VkDeviceSize>::max() - m_shaderGroupHandleSize,
+			CHECK_TRUE(table.maxRecordDataSize <= std::numeric_limits<VkDeviceSize>::max() - handleSize,
 			    "Shader binding table record size overflow!");
-			const VkDeviceSize recordSize = m_shaderGroupHandleSize + table.maxRecordDataSize;
+			const VkDeviceSize recordSize = handleSize + table.maxRecordDataSize;
 			const VkDeviceSize strideAlignment = index == static_cast<size_t>(ShaderTableType::RayGeneration)
 			    ? std::max(properties.shaderGroupHandleAlignment, properties.shaderGroupBaseAlignment)
 			    : properties.shaderGroupHandleAlignment;
@@ -126,21 +131,21 @@ void ShaderBindingTable::Create(const ShaderBindingTableCreateInfo& inCreateInfo
 		}
 		CHECK_TRUE(totalSize > 0, "Shader binding table needs allocated records!");
 		CHECK_TRUE(totalSize <= std::numeric_limits<size_t>::max(), "Shader binding table is too large!");
-		m_hostData.assign(static_cast<size_t>(totalSize), 0u);
+		std::vector<uint8_t> hostData(static_cast<size_t>(totalSize), 0u);
 
 		BufferCreateInfo bufferInfo;
 		bufferInfo.SetBufferSize(totalSize)
 		    .SetBufferUsage(VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR)
 		    .CustomizeMemoryProperty(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 		    .CustomizeAlignment(properties.shaderGroupBaseAlignment);
-		m_uptrBuffer = std::make_unique<Buffer>();
-		m_uptrBuffer->Create(bufferInfo);
-		CHECK_TRUE(m_uptrBuffer->GetVkBuffer() != VK_NULL_HANDLE);
-	}
-	catch (...)
-	{
-		Destroy();
-		throw;
+		auto buffer = std::make_unique<Buffer>();
+		buffer->Create(bufferInfo);
+		CHECK_TRUE(buffer->GetVkBuffer() != VK_NULL_HANDLE);
+		m_groupSet = std::move(groupSet);
+		m_tables = tables;
+		m_hostData.swap(hostData);
+		m_shaderGroupHandleSize = handleSize;
+		m_uptrBuffer = std::move(buffer);
 	}
 }
 
@@ -199,18 +204,6 @@ auto ShaderBindingTable::GetShaderTableRegion(ShaderTableType inType, uint32_t i
 	const VkDeviceSize size = inType == ShaderTableType::RayGeneration
 	    ? table.stride : static_cast<VkDeviceSize>(table.recordCount) * table.stride;
 	return {m_uptrBuffer->GetDeviceAddress() + offset, table.stride, size};
-}
-
-void ShaderBindingTable::Destroy()
-{
-	if (m_uptrBuffer)
-	{
-		m_uptrBuffer.reset();
-	}
-	m_groupSet.Reset();
-	m_tables = {};
-	m_hostData.clear();
-	m_shaderGroupHandleSize = 0;
 }
 
 void RayTracingShaderProgram::_Create(const RayTracingShaderProgramCreateInfo& inCreateInfo)

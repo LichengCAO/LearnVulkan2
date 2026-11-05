@@ -141,6 +141,101 @@ and allocator alive through every resource reference, exclude teardown/recreatio
 from related operations, and complete GPU uses before the final native release.
 No Image/view release waits for GPU completion implicitly.
 
+## BLAS ownership
+
+`BottomLevelAccelStruct` retains synchronous public
+`Create(const BottomLevelAccelStructCreateInfo&)` and its `RefCounted` base.
+It is noncopyable and nonmovable, has a `noexcept` destructor, and exposes no
+public `Destroy()` or release alias. `IsValid()` reports whether it owns a
+native AS. Use scope or release an external owner's reference for early cleanup;
+other strong references keep the complete BLAS alive.
+
+Creation accepts only an empty target. Repeated Create fails before native
+queries or resource creation and preserves the existing handle, device address,
+flags, build sizes, scratch alignment and geometry layout. Rebuild with a new
+BLAS owner. CreateInfo keeps its current defaults and requires no Finalize.
+Creation checks Device, PhysicalDevice, allocator and required native entrypoints
+before queries, retains the existing geometry/device-limit validation, and
+publishes only after backing Buffer, native AS and nonzero address all succeed.
+Failures release temporary resources, leave an empty target and permit retry.
+
+Private `VulkanDetail::AccelerationStructureStorage` saves the creating VkDevice
+and owns the native AS and backing Buffer. The public header exposes no VMA
+types. Final release destroys the AS before releasing the Buffer, which then
+releases its allocation; cleanup uses saved creation dependencies without a
+MyDevice lookup. Creation does not execute a GPU Build, and destruction does not
+implicitly wait for GPU work.
+
+After Device initialization, independent BLAS instances may create and release
+concurrently, including final strong-reference releases on different threads.
+Callers exclude conflicting access to one BLAS and keep inputs stable during
+creation. VMA internal synchronization remains enabled; Device, allocator and
+native dispatch must remain valid through final release, and teardown/recreation
+must not overlap related operations. Finish all GPU uses before final release.
+
+Build/Update/Copy command descriptions keep their current snapshot behavior and
+do not automatically retain the BLAS or input buffers. Vertex/index/transform
+buffers, scratch buffers and TLAS references to BLAS remain borrowed; callers
+preserve the lifetimes needed for command enqueue, recording and GPU use.
+
+## TLAS ownership
+
+`TopLevelAccelStruct` follows the BLAS empty-target `Create()` and RAII contract:
+it is RefCounted, noncopyable/nonmovable, exposes `IsValid()` and has a `noexcept`
+destructor with no public `Destroy()` or release alias. Duplicate creation fails
+before native queries and preserves the existing handle, flags, build sizes,
+scratch alignment and layout. Rebuild with a new owner. Failures leave an empty
+object and allow retry.
+
+Both AS types own the same private `AccelerationStructureStorage`, which saves
+VkDevice and destroys native AS before its backing Buffer and allocation. TLAS
+creation validates initialized dependencies and its required native entrypoints,
+then prepares metadata and resources locally before publication. It does not
+query a BLAS address, upload instances or perform a GPU Build. An empty instance
+list remains supported.
+
+`WriteInstances` remains a separate static upload operation and never requires a
+TLAS owner. An empty list accepts an uncreated destination Buffer without accessing
+Device. Nonempty uploads retain their existing
+range, payload and BLAS-address validation. TLAS does not retain referenced BLAS
+objects, instance buffers or scratch buffers. Callers preserve their native
+lifetimes for all uses, including BLAS references used by a built TLAS.
+
+Independent TLAS instances can create and release concurrently, including final
+strong-reference release from any thread. Same-instance conflicts require caller
+exclusion. Keep Device/allocator/native dispatch stable and alive through final
+release, exclude teardown/recreation, and complete GPU work before release. No
+automatic retention, internal lock or GPU wait is introduced.
+
+## SBT ownership
+
+`ShaderBindingTable` retains synchronous `Create()`, record setters, `Commit()`
+and region queries. It is noncopyable/nonmovable and is not RefCounted. Its
+`noexcept` destructor releases the owned Buffer and Host data; there is no public
+`Destroy()` or release alias. Default destruction does not access MyDevice.
+Use scope or an external owner's `reset()` for early release; `IsValid()` reports
+whether it owns a created backing Buffer.
+
+Creation requires an empty target and initialized Device/allocator dependencies.
+It reads cached ray tracing properties and prepares group metadata, layouts,
+zeroed Host records and backing Buffer in temporary state before publishing.
+Failure leaves an empty, retryable target; duplicate creation preserves existing
+records, layout and uploaded data. Changing capacities requires a new SBT owner.
+Create does not implicitly Commit records.
+
+Group handles and record data are owned CPU copies, independent of the source
+CreateInfo or Program's lifetime. GPU execution still requires a live compatible
+pipeline. Record setters validate before writing; Commit uploads through Buffer
+and can be retried after a mapping failure. Capacity, payload, alignment and region
+semantics are described in [shader binding tables](shader_reflection_binding.md).
+
+Independent SBT instances may create, edit, upload, query and release on different
+threads under stable Device/allocator/cached-property dependencies. Callers
+exclude conflicting access to one SBT and complete all GPU uses before releasing
+it or updating records still in use. TraceRays snapshots region values without
+retaining the SBT or backing Buffer. Buffer's saved dependencies and VMA
+synchronization handle release; there is no implicit GPU wait or deferred cleanup.
+
 ## Rendering descriptions and native cache
 
 `RenderPassDesc` is noncopyable and nonmovable. Its `Finalize()` resolves names,

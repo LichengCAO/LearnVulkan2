@@ -277,8 +277,14 @@ GroupSet is reset or its pipeline is destroyed. GPU execution still requires the
 corresponding live pipeline.
 
 SetTableCapacity configures each region's record count and maximum extra payload size
-independently. Create allocates a fixed-size buffer and Host mirror; changing capacity
-requires recreating the SBT with a new CreateInfo, which has no Reset method.
+independently. Create allocates a fixed-size buffer and Host mirror, accepts only
+an empty target and publishes only after preparation succeeds. Duplicate creation
+preserves the existing records and allocation; failure leaves an empty target that
+can retry. Changing capacity requires a new SBT owner with a new CreateInfo, which
+has no Reset method. SBT exposes IsValid and has no public Destroy; its noexcept
+destructor releases the Buffer and Host metadata without waiting for GPU work.
+Independent SBT instances support concurrent use, while conflicting operations on
+one instance require caller exclusion. See [SBT ownership](resource_lifetimes.md#sbt-ownership).
 SetShaderTableBinding takes the table type explicitly and rejects mismatched group
 types, out-of-range bindings and oversized payloads. `binding` is the record position
 within that table, so different tables can use the same binding. Payload overloads

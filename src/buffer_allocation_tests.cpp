@@ -1,5 +1,7 @@
 #include "my_vulkan/resource/buffer.h"
 #include "my_vulkan/resource/image.h"
+#include "my_vulkan/resource/acceleration_structure.h"
+#include "my_vulkan/pipeline/ray_tracing_shader_program.h"
 #include "my_vulkan/resource/private/buffer_storage.h"
 #include "my_vulkan/device.h"
 #include <atomic>
@@ -12,6 +14,16 @@
 
 struct BufferAllocationTestProbe
 {
+    static auto SwapRtProperties(VkPhysicalDeviceRayTracingPipelinePropertiesKHR properties)
+        -> VkPhysicalDeviceRayTracingPipelinePropertiesKHR
+    { return std::exchange(MyDevice::GetInstance().m_cachedRayTracingProperties, properties); }
+    static auto Groups() -> RayTracingShaderGroupSet
+    {
+        RayTracingShaderGroupSet groups;
+        groups.m_groups.emplace("ray", RayTracingShaderGroupSet::GroupData{ShaderTableType::RayGeneration, {1,2,3,4}});
+        groups.m_groups.emplace("miss", RayTracingShaderGroupSet::GroupData{ShaderTableType::Miss, {5,6,7,8}});
+        return groups;
+    }
     static auto SwapExtent(VkExtent2D extent) -> VkExtent2D
     { return std::exchange(MyDevice::GetInstance().m_swapchain.extent, extent); }
     static auto TakeAllocator() -> std::unique_ptr<MemoryAllocator>
@@ -41,6 +53,9 @@ template<typename T> concept HasDestroy = requires(T& value) { value.Destroy(); 
 static_assert(!HasDestroy<Buffer> && !std::is_copy_constructible_v<Buffer> &&
     !std::is_move_assignable_v<Buffer> && !std::is_copy_assignable_v<Buffer>);
 static_assert(std::is_nothrow_move_constructible_v<Buffer> && std::is_nothrow_destructible_v<Buffer>);
+static_assert(!HasDestroy<BottomLevelAccelStruct> && !std::is_copy_constructible_v<BottomLevelAccelStruct> &&
+    !std::is_move_constructible_v<BottomLevelAccelStruct> && !std::is_copy_assignable_v<BottomLevelAccelStruct> &&
+    !std::is_move_assignable_v<BottomLevelAccelStruct> && std::is_nothrow_destructible_v<BottomLevelAccelStruct>);
 static_assert(!std::is_copy_constructible_v<BufferView> && !std::is_move_constructible_v<BufferView> &&
     !std::is_copy_assignable_v<BufferView> && !std::is_move_assignable_v<BufferView>);
 static_assert(std::is_nothrow_move_constructible_v<VulkanDetail::MemoryAllocation> &&
@@ -69,6 +84,11 @@ struct NativeState final
     std::unordered_map<VkImage, VkImageCreateInfo> images;
     std::unordered_map<VkImage, Binding> imageBindings;
     std::unordered_map<VkImageView, VkImage> imageViews;
+    std::unordered_map<VkAccelerationStructureKHR, VkBuffer> accelerationStructures;
+    uint32_t asProperties = 0, asFormats = 0, asSizes = 0, asCreates = 0, asAddresses = 0, asDestroys = 0;
+    bool failAsCreate = false, zeroAsAddress = false, zeroAsSize = false, badAsFormat = false, badAsLimits = false;
+    bool checkAsSnapshot = false, checkTlasSnapshot = false, nullAsCreate = false, badTlasLimits = false, zeroAsAlignment = false;
+    uint32_t bufferAddresses = 0;
     uint32_t imageCreates = 0, imageDestroys = 0, imageViewCreates = 0, imageViewDestroys = 0;
     bool failImage = false, failImageView = false, failImagePublication = false;
     bool failImageCachePublication = false;
@@ -100,6 +120,8 @@ void VKAPI_PTR DestroyBuffer(VkDevice device, VkBuffer buffer, const VkAllocatio
     if (!allocationAlive || (active->requireUnmappedOnDestroy && active->unmaps == 0)) active->badOrder = true;
     if (device != active->expectedDevice || active->buffers.erase(buffer) != 1) active->badOrder = true;
     for (const auto& [view, owner] : active->views)
+        if (owner == buffer) active->badOrder = true;
+    for (const auto& [handle, owner] : active->accelerationStructures)
         if (owner == buffer) active->badOrder = true;
     active->bindings.erase(buffer);
     ++active->destroys;
@@ -220,6 +242,7 @@ auto VKAPI_PTR Address(VkDevice device, const VkBufferDeviceAddressInfo* info) -
 {
     CHECK_TRUE(device == active->expectedDevice, "Device address must use the creating Device!");
     std::lock_guard lock(active->mutex);
+    ++active->bufferAddresses;
     const auto binding = active->bindings.at(info->buffer);
     return 0x100000 + binding.offset;
 }
@@ -248,6 +271,57 @@ void VKAPI_PTR DestroyView(VkDevice device, VkBufferView view, const VkAllocatio
 }
 auto VKAPI_PTR Wait(VkDevice) -> VkResult { ++active->waits; return VK_SUCCESS; }
 
+void VKAPI_PTR AsProperties(VkPhysicalDevice, VkPhysicalDeviceProperties2* out)
+{
+    std::lock_guard lock(active->mutex); ++active->asProperties;
+    auto* properties = static_cast<VkPhysicalDeviceAccelerationStructurePropertiesKHR*>(out->pNext);
+    properties->minAccelerationStructureScratchOffsetAlignment = active->zeroAsAlignment ? 0 : 256;
+    properties->maxGeometryCount = active->badAsLimits ? 0 : 32; properties->maxPrimitiveCount = 1024; properties->maxInstanceCount = active->badTlasLimits ? 0 : 1024;
+}
+void VKAPI_PTR AsFormats(VkPhysicalDevice, VkFormat, VkFormatProperties* out)
+{ std::lock_guard lock(active->mutex); ++active->asFormats; *out = {}; out->bufferFeatures = active->badAsFormat ? 0 : VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR; }
+void VKAPI_PTR AsSizes(VkDevice, VkAccelerationStructureBuildTypeKHR,
+    const VkAccelerationStructureBuildGeometryInfoKHR* info, const uint32_t* counts, VkAccelerationStructureBuildSizesInfoKHR* out)
+{
+    std::lock_guard lock(active->mutex); ++active->asSizes;
+    if (active->checkAsSnapshot)
+    {
+        const auto& triangle = info->pGeometries[0].geometry.triangles;
+        CHECK_TRUE(info->geometryCount == 1 && info->flags == VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR &&
+            counts[0] == 2 && triangle.vertexFormat == VK_FORMAT_R16G16B16A16_SFLOAT && triangle.vertexStride == 16 &&
+            triangle.maxVertex == 5 && triangle.indexType == VK_INDEX_TYPE_NONE_KHR && triangle.transformData.deviceAddress == 1 &&
+            triangle.vertexData.deviceAddress == 0 && active->bufferAddresses == 0,
+            "Size queries must use copied geometry layout without resolving input addresses!");
+    }
+    if (active->checkTlasSnapshot)
+        CHECK_TRUE(info->type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR && info->geometryCount == 1 &&
+            info->flags == VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR && counts[0] == 2 &&
+            info->pGeometries[0].geometryType == VK_GEOMETRY_TYPE_INSTANCES_KHR &&
+            info->pGeometries[0].geometry.instances.arrayOfPointers == VK_FALSE &&
+            info->pGeometries[0].geometry.instances.data.deviceAddress == 0 && active->bufferAddresses == 0 &&
+            active->asAddresses == 0 && active->maps == 0, "TLAS must snapshot host layout without resolving or uploading inputs!");
+    out->accelerationStructureSize = active->zeroAsSize ? 0 : 512; out->buildScratchSize = 256; out->updateScratchSize = 128;
+}
+auto VKAPI_PTR AsCreate(VkDevice device, const VkAccelerationStructureCreateInfoKHR* info,
+    const VkAllocationCallbacks*, VkAccelerationStructureKHR* out) -> VkResult
+{
+    std::lock_guard lock(active->mutex); CHECK_TRUE(device == active->expectedDevice);
+    ++active->asCreates;
+    if (active->failAsCreate) { *out = Handle<VkAccelerationStructureKHR>(99999); return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
+    if (active->nullAsCreate) { *out = VK_NULL_HANDLE; return VK_SUCCESS; }
+    *out = Handle<VkAccelerationStructureKHR>(active->next++);
+    active->accelerationStructures.emplace(*out, info->buffer); return VK_SUCCESS;
+}
+void VKAPI_PTR AsDestroy(VkDevice device, VkAccelerationStructureKHR handle, const VkAllocationCallbacks*)
+{
+    std::lock_guard lock(active->mutex);
+    const auto found = active->accelerationStructures.find(handle);
+    if (device != active->expectedDevice || found == active->accelerationStructures.end() || !active->buffers.contains(found->second)) active->badOrder = true;
+    active->accelerationStructures.erase(handle); ++active->asDestroys;
+}
+auto VKAPI_PTR AsAddress(VkDevice, const VkAccelerationStructureDeviceAddressInfoKHR*) -> VkDeviceAddress
+{ std::lock_guard lock(active->mutex); ++active->asAddresses; return active->zeroAsAddress ? 0 : 0x800000; }
+
 #define BUFFER_HOOKS(X) \
     X(vkCreateBuffer, CreateBuffer) X(vkDestroyBuffer, DestroyBuffer) \
     X(vkGetBufferMemoryRequirements, BufferRequirements) X(vkAllocateMemory, AllocateMemory) \
@@ -258,7 +332,10 @@ auto VKAPI_PTR Wait(VkDevice) -> VkResult { ++active->waits; return VK_SUCCESS; 
     X(vkGetImageMemoryRequirements, ImageRequirements) X(vkBindImageMemory, BindImage) \
     X(vkCmdCopyBuffer, CopyBuffer) X(vkGetInstanceProcAddr, InstanceProc) X(vkGetDeviceProcAddr, DeviceProc) \
     X(vkGetBufferDeviceAddress, Address) X(vkCreateBufferView, CreateView) X(vkDestroyBufferView, DestroyView) \
-    X(vkDeviceWaitIdle, Wait) X(vkCreateImageView, CreateImageView) X(vkDestroyImageView, DestroyImageView)
+    X(vkDeviceWaitIdle, Wait) X(vkCreateImageView, CreateImageView) X(vkDestroyImageView, DestroyImageView) \
+    X(vkGetPhysicalDeviceProperties2, AsProperties) X(vkGetPhysicalDeviceFormatProperties, AsFormats) \
+    X(vkGetAccelerationStructureBuildSizesKHR, AsSizes) X(vkCreateAccelerationStructureKHR, AsCreate) \
+    X(vkDestroyAccelerationStructureKHR, AsDestroy) X(vkGetAccelerationStructureDeviceAddressKHR, AsAddress)
 
 struct Hooks final
 {
@@ -287,7 +364,7 @@ struct Hooks final
     ~Hooks() noexcept(false)
     {
         BufferAllocationTestProbe::PutAllocator(nullptr);
-        const bool clean = state.buffers.empty() && state.views.empty() && state.images.empty() && state.imageViews.empty() && state.memories.empty() && !state.badOrder && state.waits == 0;
+        const bool clean = state.accelerationStructures.empty() && state.buffers.empty() && state.views.empty() && state.images.empty() && state.imageViews.empty() && state.memories.empty() && !state.badOrder && state.waits == 0;
         auto& owner = MyDevice::GetInstance();
         BufferAllocationTestProbe::PutAllocator(std::move(allocator));
         owner.vkDevice = device; owner.vkInstance = instance; owner.vkPhysicalDevice = physicalDevice;
@@ -635,6 +712,382 @@ void TestImageThreads()
 
 void RunBufferAllocationTests()
 {
+    static_assert(!HasDestroy<TopLevelAccelStruct> && !std::is_move_constructible_v<TopLevelAccelStruct> &&
+        !std::is_copy_constructible_v<TopLevelAccelStruct> && std::is_nothrow_destructible_v<TopLevelAccelStruct>);
+    static_assert(!HasDestroy<ShaderBindingTable> && !std::is_move_constructible_v<ShaderBindingTable> &&
+        !std::is_copy_constructible_v<ShaderBindingTable> && std::is_nothrow_destructible_v<ShaderBindingTable>);
+    {
+        Hooks hooks; TopLevelAccelStructCreateInfo info;
+        std::array<AccelStructInstance, 2> instances{};
+        info.SetInstances(instances); info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
+        instances[0].mask = 0x100; instances[1].accelStruct = reinterpret_cast<BottomLevelAccelStruct*>(1);
+        hooks.state.checkTlasSnapshot = true;
+        TopLevelAccelStruct tlas; tlas.Create(info);
+        CHECK_TRUE(tlas.GetBuildSizes().accelerationStructureSize == 512 && tlas.GetScratchAlignment() == 256 &&
+            info.GetInstanceCount() == 2 && info.GetInstanceBufferSize() == 128);
+    }
+    {
+        Hooks hooks; TopLevelAccelStruct tlas; TopLevelAccelStructCreateInfo info;
+        const auto empty = [&]
+        {
+            CHECK_TRUE(!tlas.IsValid() && tlas.GetVkBuildAccelerationStructureFlags() == 0 &&
+                tlas.GetBuildSizes().accelerationStructureSize == 0 && tlas.GetScratchAlignment() == 1 &&
+                hooks.state.accelerationStructures.empty() && hooks.state.buffers.empty() &&
+                BufferAllocationTestProbe::AllocationCount() == 0, "Failed TLAS creation must stay empty and retryable!");
+        };
+        auto& device = MyDevice::GetInstance();
+        device.vkDevice = VK_NULL_HANDLE; ExpectFailure([&] { tlas.Create(info); }); device.vkDevice = hooks.state.expectedDevice;
+        const auto physical = device.vkPhysicalDevice;
+        device.vkPhysicalDevice = VK_NULL_HANDLE; ExpectFailure([&] { tlas.Create(info); }); device.vkPhysicalDevice = physical;
+        auto allocator = BufferAllocationTestProbe::TakeAllocator(); ExpectFailure([&] { tlas.Create(info); });
+        BufferAllocationTestProbe::PutAllocator(std::move(allocator));
+#define TLAS_MISSING(name) { const auto saved = name; name = nullptr; ExpectFailure([&] { tlas.Create(info); }); name = saved; empty(); }
+        TLAS_MISSING(vkGetPhysicalDeviceProperties2)
+        TLAS_MISSING(vkGetAccelerationStructureBuildSizesKHR)
+        TLAS_MISSING(vkCreateAccelerationStructureKHR)
+        TLAS_MISSING(vkDestroyAccelerationStructureKHR)
+#undef TLAS_MISSING
+        CHECK_TRUE(hooks.state.asProperties == 0 && hooks.state.asCreates == 0);
+        for (auto flag : {&hooks.state.zeroAsSize, &hooks.state.failCreate, &hooks.state.failAllocate,
+            &hooks.state.failBind, &hooks.state.failAsCreate, &hooks.state.nullAsCreate})
+        { *flag = true; ExpectFailure([&] { tlas.Create(info); }); *flag = false; empty(); }
+        AccelStructInstance instance{}; info.SetInstances(std::span(&instance, 1));
+        for (auto flag : {&hooks.state.badTlasLimits, &hooks.state.zeroAsAlignment})
+        { *flag = true; ExpectFailure([&] { tlas.Create(info); }); *flag = false; empty(); }
+#ifdef _DEBUG
+        const auto oldHook = _CrtSetAllocHook(FailPublication);
+        uint32_t observedFailures = 0;
+        try
+        {
+            for (int countdown = 0; countdown < 3; ++countdown)
+            {
+                TopLevelAccelStruct candidate; publicationCountdown = countdown; failPublication = true;
+                try { candidate.Create(info); }
+                catch (const std::bad_alloc&)
+                {
+                    failPublication = false; ++observedFailures;
+                    CHECK_TRUE(!candidate.IsValid() && candidate.GetBuildSizes().accelerationStructureSize == 0 &&
+                        candidate.GetScratchAlignment() == 1 && hooks.state.buffers.empty() &&
+                        BufferAllocationTestProbe::AllocationCount() == 0);
+                }
+                failPublication = false;
+            }
+        }
+        catch (...) { failPublication = false; _CrtSetAllocHook(oldHook); throw; }
+        _CrtSetAllocHook(oldHook); CHECK_TRUE(observedFailures == 3);
+#endif
+        info.Reset();
+        const auto formats = vkGetPhysicalDeviceFormatProperties; const auto address = vkGetAccelerationStructureDeviceAddressKHR;
+        vkGetPhysicalDeviceFormatProperties = nullptr; vkGetAccelerationStructureDeviceAddressKHR = nullptr;
+        tlas.Create(info); CHECK_TRUE(tlas.IsValid() && hooks.state.asFormats == 0 && hooks.state.asAddresses == 0);
+        vkGetPhysicalDeviceFormatProperties = formats; vkGetAccelerationStructureDeviceAddressKHR = address;
+        device.vkDevice = Handle<VkDevice>(9);
+    }
+    {
+        Hooks hooks;
+        VkPhysicalDeviceRayTracingPipelinePropertiesKHR props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+        props.shaderGroupHandleSize = 4; props.shaderGroupHandleAlignment = 8; props.shaderGroupBaseAlignment = 64; props.maxShaderGroupStride = 128;
+        const auto oldProperties = BufferAllocationTestProbe::SwapRtProperties(props);
+        try
+        {
+            ShaderBindingTableCreateInfo info;
+            auto groups = BufferAllocationTestProbe::Groups();
+            info.SetShaderGroupSet(groups).SetTableCapacity(ShaderTableType::RayGeneration, 2, 4)
+                .SetTableCapacity(ShaderTableType::Miss, 2, 4);
+            groups.Reset();
+            ShaderBindingTable table;
+            CHECK_TRUE(!table.IsValid());
+            for (auto flag : {&hooks.state.failCreate, &hooks.state.failAllocate, &hooks.state.failBind})
+            { *flag = true; ExpectFailure([&] { table.Create(info); }); *flag = false; CHECK_TRUE(!table.IsValid() && hooks.state.buffers.empty()); }
+            const auto address = vkGetBufferDeviceAddress; vkGetBufferDeviceAddress = nullptr;
+            ExpectFailure([&] { table.Create(info); }); vkGetBufferDeviceAddress = address;
+            auto allocator = BufferAllocationTestProbe::TakeAllocator(); ExpectFailure([&] { table.Create(info); });
+            BufferAllocationTestProbe::PutAllocator(std::move(allocator));
+            auto& device = MyDevice::GetInstance();
+            device.vkDevice = VK_NULL_HANDLE; ExpectFailure([&] { table.Create(info); }); device.vkDevice = hooks.state.expectedDevice;
+            const auto physical = device.vkPhysicalDevice;
+            device.vkPhysicalDevice = VK_NULL_HANDLE; ExpectFailure([&] { table.Create(info); }); device.vkPhysicalDevice = physical;
+            for (auto member : {&VkPhysicalDeviceRayTracingPipelinePropertiesKHR::shaderGroupHandleSize,
+                &VkPhysicalDeviceRayTracingPipelinePropertiesKHR::shaderGroupHandleAlignment,
+                &VkPhysicalDeviceRayTracingPipelinePropertiesKHR::shaderGroupBaseAlignment,
+                &VkPhysicalDeviceRayTracingPipelinePropertiesKHR::maxShaderGroupStride})
+            {
+                auto invalidProps = props; invalidProps.*member = 0;
+                BufferAllocationTestProbe::SwapRtProperties(invalidProps); ExpectFailure([&] { table.Create(info); });
+                BufferAllocationTestProbe::SwapRtProperties(props);
+            }
+#ifdef _DEBUG
+            const auto oldHook = _CrtSetAllocHook(FailPublication); uint32_t observedFailures = 0;
+            try
+            {
+                for (int countdown = 0; countdown < 3; ++countdown)
+                {
+                    ShaderBindingTable candidate; publicationCountdown = countdown; failPublication = true;
+                    try { candidate.Create(info); }
+                    catch (const std::bad_alloc&)
+                    {
+                        failPublication = false; ++observedFailures;
+                        CHECK_TRUE(!candidate.IsValid() && hooks.state.buffers.empty() && BufferAllocationTestProbe::AllocationCount() == 0);
+                        ExpectFailure([&] { candidate.Commit(); });
+                        candidate.Create(info);
+                    }
+                    failPublication = false;
+                }
+            }
+            catch (...) { failPublication = false; _CrtSetAllocHook(oldHook); throw; }
+            _CrtSetAllocHook(oldHook); CHECK_TRUE(observedFailures == 3);
+#endif
+            ShaderBindingTableCreateInfo invalid;
+            ExpectFailure([&] { table.Create(invalid); });
+            invalid.SetTableCapacity(ShaderTableType::RayGeneration, 1, SIZE_MAX);
+            ExpectFailure([&] { table.Create(invalid); });
+            invalid = {}; invalid.SetTableCapacity(ShaderTableType::RayGeneration, 1, 0);
+            auto invalidProps = props; invalidProps.shaderGroupHandleAlignment = 3;
+            BufferAllocationTestProbe::SwapRtProperties(invalidProps);
+            ExpectFailure([&] { table.Create(invalid); }); BufferAllocationTestProbe::SwapRtProperties(props);
+            table.Create(info); info = {}; CHECK_TRUE(table.IsValid() && hooks.state.maps == 0);
+            const std::array<uint8_t,4> payload{9,10,11,12};
+            table.SetShaderTableBinding(ShaderTableType::RayGeneration, 0, "ray", payload.data(), payload.size());
+            table.SetShaderTableBinding(ShaderTableType::RayGeneration, 1, "ray");
+            table.SetShaderTableBinding(ShaderTableType::Miss, 0, "miss", payload.data(), payload.size());
+            const auto ray = table.GetShaderTableRegion(ShaderTableType::RayGeneration);
+            const auto ray1 = table.GetShaderTableRegion(ShaderTableType::RayGeneration, 1);
+            const auto miss = table.GetShaderTableRegion(ShaderTableType::Miss);
+            CHECK_TRUE(ray.deviceAddress % 64 == 0 && ray.stride == 64 && ray.size == 64 &&
+                ray1.deviceAddress == ray.deviceAddress + 64 && ray1.size == 64 &&
+                miss.deviceAddress == ray.deviceAddress + 128 && miss.stride == 8 && miss.size == 16 &&
+                table.GetShaderTableRegion(ShaderTableType::Hit).size == 0);
+            ExpectFailure([&] { table.SetShaderTableBinding(ShaderTableType::RayGeneration, 0, "miss"); });
+            ExpectFailure([&] { table.SetShaderTableBinding(ShaderTableType::RayGeneration, 0, "missing"); });
+            ExpectFailure([&] { table.SetShaderTableBinding(ShaderTableType::RayGeneration, 2, "ray"); });
+            ExpectFailure([&] { table.SetShaderTableBinding(ShaderTableType::RayGeneration, 0, "ray", nullptr, 1); });
+            ExpectFailure([&] { table.SetShaderTableBinding(ShaderTableType::RayGeneration, 0, "ray", payload.data(), 5); });
+            ExpectFailure([&] { table.GetShaderTableRegion(ShaderTableType::RayGeneration, 2); });
+            ExpectFailure([&] { table.GetShaderTableRegion(ShaderTableType::Miss, 1); });
+            const auto creates = hooks.state.creates;
+            ExpectFailure([&] { table.Create(ShaderBindingTableCreateInfo{}); });
+            CHECK_TRUE(hooks.state.creates == creates && table.GetShaderTableRegion(ShaderTableType::RayGeneration).deviceAddress == ray.deviceAddress);
+            hooks.state.failMap = true; ExpectFailure([&] { table.Commit(); }); hooks.state.failMap = false;
+            table.Commit();
+            const auto buffer = hooks.state.bindings.begin()->second;
+            auto& bytes = hooks.state.memories.at(buffer.memory);
+            CHECK_TRUE(bytes[buffer.offset] == 1 && bytes[buffer.offset+3] == 4 && bytes[buffer.offset+4] == 9 &&
+                bytes[buffer.offset+7] == 12 && bytes[buffer.offset+8] == 0 && bytes[buffer.offset+128] == 5);
+            table.SetShaderTableBinding(ShaderTableType::RayGeneration, 0, "ray"); table.Commit();
+            CHECK_TRUE(bytes[buffer.offset+4] == 0 && bytes[buffer.offset+63] == 0);
+        }
+        catch (...) { BufferAllocationTestProbe::SwapRtProperties(oldProperties); throw; }
+        BufferAllocationTestProbe::SwapRtProperties(oldProperties);
+    }
+    {
+        Hooks hooks;
+        VkPhysicalDeviceRayTracingPipelinePropertiesKHR props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+        props.shaderGroupHandleSize = 4; props.shaderGroupHandleAlignment = 8; props.shaderGroupBaseAlignment = 64; props.maxShaderGroupStride = 128;
+        const auto oldProperties = BufferAllocationTestProbe::SwapRtProperties(props);
+        TopLevelAccelStructCreateInfo tlasInfo;
+        ShaderBindingTableCreateInfo sbtInfo; sbtInfo.SetShaderGroupSet(BufferAllocationTestProbe::Groups())
+            .SetTableCapacity(ShaderTableType::RayGeneration, 1, 0);
+        std::mutex mutex; std::vector<std::exception_ptr> failures; std::vector<std::thread> workers;
+        for (int i = 0; i < 4; ++i) workers.emplace_back([&]
+        {
+            try
+            {
+                for (int n = 0; n < 16; ++n)
+                {
+                    TopLevelAccelStruct tlas; tlas.Create(tlasInfo);
+                    ShaderBindingTable table; table.Create(sbtInfo);
+                    table.SetShaderTableBinding(ShaderTableType::RayGeneration, 0, "ray"); table.Commit();
+                }
+            }
+            catch (...) { std::lock_guard lock(mutex); failures.push_back(std::current_exception()); }
+        });
+        for (auto& worker : workers) worker.join();
+        auto table = std::make_unique<ShaderBindingTable>();
+        std::thread sbtCreator([&]
+        {
+            try { table->Create(sbtInfo); table->SetShaderTableBinding(ShaderTableType::RayGeneration, 0, "ray"); }
+            catch (...) { failures.push_back(std::current_exception()); }
+        }); sbtCreator.join();
+        if (failures.empty())
+        {
+            std::thread sbtUser([&]
+            {
+                try { table->Commit(); CHECK_TRUE(table->GetShaderTableRegion(ShaderTableType::RayGeneration).size == 64); }
+                catch (...) { failures.push_back(std::current_exception()); }
+            }); sbtUser.join();
+        }
+        std::thread sbtReleaser([value = std::move(table)]() mutable { value.reset(); }); sbtReleaser.join();
+        BufferAllocationTestProbe::SwapRtProperties(oldProperties);
+        if (!failures.empty()) std::rethrow_exception(failures.front());
+        auto tlas = MakeIntrusive<TopLevelAccelStruct>();
+        std::thread creator([&] { try { tlas->Create(tlasInfo); } catch (...) { failures.push_back(std::current_exception()); } }); creator.join();
+        if (!failures.empty()) std::rethrow_exception(failures.front());
+        auto copy = tlas; tlas = nullptr; CHECK_TRUE(hooks.state.asDestroys == 64);
+        MyDevice::GetInstance().vkDevice = Handle<VkDevice>(9);
+        std::thread releaser([value = std::move(copy)]() mutable { value = nullptr; }); releaser.join();
+        MyDevice::GetInstance().vkDevice = hooks.state.expectedDevice;
+        CHECK_TRUE(hooks.state.asDestroys == 65 && hooks.state.accelerationStructures.empty() &&
+            hooks.state.buffers.empty() && BufferAllocationTestProbe::AllocationCount() == 0);
+    }
+    {
+        Hooks hooks;
+        TopLevelAccelStruct tlas; TopLevelAccelStructCreateInfo info;
+        tlas.Create(info);
+        const auto handle = tlas.GetVkAccelerationStructure();
+        const auto calls = hooks.state.asCreates, queries = hooks.state.asProperties, sizes = hooks.state.asSizes,
+            buffers = hooks.state.creates;
+        info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
+        bool rejected = false;
+        try { tlas.Create(info); } catch (const std::exception&) { rejected = true; }
+        CHECK_TRUE(rejected && calls == hooks.state.asCreates && queries == hooks.state.asProperties &&
+            sizes == hooks.state.asSizes && buffers == hooks.state.creates && handle == tlas.GetVkAccelerationStructure() &&
+            tlas.GetBuildSizes().accelerationStructureSize == 512 && tlas.GetBuildSizes().buildScratchSize == 256 &&
+            tlas.GetBuildSizes().updateScratchSize == 128 && tlas.GetScratchAlignment() == 256 &&
+            tlas.GetVkBuildAccelerationStructureFlags() == 0 && handle != VK_NULL_HANDLE,
+            "TLAS must reject duplicate creation before native work!");
+    }
+    {
+        Hooks hooks; Buffer input;
+        AccelStructTriangleGeometry geometry; geometry.vertexBuffer = &input; geometry.transformBuffer = &input;
+        geometry.vertexFormat = VK_FORMAT_R16G16B16A16_SFLOAT; geometry.vertexStride = 16; geometry.vertexCount = 6; geometry.primitiveCount = 2;
+        BottomLevelAccelStructCreateInfo info; info.SetTriangles(std::span(&geometry, 1));
+        info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
+        geometry.vertexFormat = VK_FORMAT_UNDEFINED; geometry.vertexCount = 0; geometry.primitiveCount = 0;
+        hooks.state.checkAsSnapshot = true;
+        BottomLevelAccelStruct blas; blas.Create(info);
+    }
+    // Catch leaked temporary ownership, poisoned native output adoption, and partial publication.
+    {
+        Hooks hooks;
+        Buffer input;
+        AccelStructTriangleGeometry geometry; geometry.vertexBuffer = &input; geometry.vertexStride = 12; geometry.vertexCount = 3; geometry.primitiveCount = 1;
+        BottomLevelAccelStructCreateInfo info; info.SetTriangles(std::span(&geometry, 1));
+        BottomLevelAccelStruct blas;
+        const auto empty = [&]
+        {
+            CHECK_TRUE(!blas.IsValid() && blas.GetVkAccelerationStructure() == VK_NULL_HANDLE && blas.GetDeviceAddress() == 0 &&
+                blas.GetVkBuildAccelerationStructureFlags() == 0 && blas.GetBuildSizes().accelerationStructureSize == 0 &&
+                blas.GetScratchAlignment() == 1 && hooks.state.accelerationStructures.empty() && hooks.state.buffers.empty() &&
+                BufferAllocationTestProbe::AllocationCount() == 0, "Failed BLAS creation must retain default state and release all allocations!");
+        };
+        empty();
+        ExpectFailure([&] { blas.Create(BottomLevelAccelStructCreateInfo{}); });
+        auto allocator = BufferAllocationTestProbe::TakeAllocator();
+        ExpectFailure([&] { blas.Create(info); });
+        BufferAllocationTestProbe::PutAllocator(std::move(allocator));
+        auto& device = MyDevice::GetInstance();
+        device.vkDevice = VK_NULL_HANDLE; ExpectFailure([&] { blas.Create(info); }); device.vkDevice = hooks.state.expectedDevice;
+        const auto physical = device.vkPhysicalDevice;
+        device.vkPhysicalDevice = VK_NULL_HANDLE; ExpectFailure([&] { blas.Create(info); }); device.vkPhysicalDevice = physical;
+#define MISSING_AS_ENTRY(name) { const auto saved = name; name = nullptr; ExpectFailure([&] { blas.Create(info); }); name = saved; }
+        MISSING_AS_ENTRY(vkGetPhysicalDeviceProperties2)
+        MISSING_AS_ENTRY(vkGetPhysicalDeviceFormatProperties)
+        MISSING_AS_ENTRY(vkGetAccelerationStructureBuildSizesKHR)
+        MISSING_AS_ENTRY(vkCreateAccelerationStructureKHR)
+        MISSING_AS_ENTRY(vkDestroyAccelerationStructureKHR)
+        MISSING_AS_ENTRY(vkGetAccelerationStructureDeviceAddressKHR)
+#undef MISSING_AS_ENTRY
+        CHECK_TRUE(hooks.state.asProperties == 0 && hooks.state.asSizes == 0 && hooks.state.creates == 0,
+            "Unavailable dependencies must reject before native BLAS queries or creation!");
+        for (auto flag : { &hooks.state.badAsFormat, &hooks.state.badAsLimits, &hooks.state.zeroAsSize,
+            &hooks.state.failCreate, &hooks.state.failAllocate, &hooks.state.failBind, &hooks.state.failAsCreate, &hooks.state.zeroAsAddress })
+        {
+            *flag = true; ExpectFailure([&] { blas.Create(info); }); *flag = false; empty();
+        }
+#ifdef _DEBUG
+        struct AllocationHookGuard final
+        {
+            _CRT_ALLOC_HOOK previous = _CrtSetAllocHook(FailPublication);
+            ~AllocationHookGuard() noexcept { failPublication = false; _CrtSetAllocHook(previous); }
+        } allocationHook;
+        uint32_t observedFailures = 0;
+        for (int countdown = 0; countdown < 5; ++countdown)
+        {
+            BottomLevelAccelStruct candidate;
+            publicationCountdown = countdown; failPublication = true;
+            try { candidate.Create(info); }
+            catch (const std::bad_alloc&)
+            {
+                failPublication = false;
+                ++observedFailures;
+                CHECK_TRUE(!candidate.IsValid() && candidate.GetVkAccelerationStructure() == VK_NULL_HANDLE &&
+                    candidate.GetDeviceAddress() == 0 && candidate.GetVkBuildAccelerationStructureFlags() == 0 &&
+                    candidate.GetBuildSizes().accelerationStructureSize == 0 && candidate.GetBuildSizes().buildScratchSize == 0 &&
+                    candidate.GetBuildSizes().updateScratchSize == 0 && candidate.GetScratchAlignment() == 1 &&
+                    hooks.state.accelerationStructures.empty() && hooks.state.buffers.empty() &&
+                    BufferAllocationTestProbe::AllocationCount() == 0,
+                    "Host allocation failure must leave the failed BLAS empty before its destructor runs!");
+            }
+            failPublication = false;
+        }
+        CHECK_TRUE(observedFailures > 0, "BLAS host allocation coverage must observe injected allocation failures!");
+        empty();
+#endif
+        blas.Create(info);
+        CHECK_TRUE(blas.IsValid() && blas.GetDeviceAddress() == 0x800000 && blas.GetBuildSizes().accelerationStructureSize == 512,
+            "BLAS must support retry after all native and host failures!");
+    }
+    // Catch incorrect saved-device release and premature release while strong owners remain.
+    {
+        Hooks hooks; hooks.state.requireAllocationOnDestroy = true;
+        Buffer input;
+        AccelStructAabbGeometry geometry; geometry.buffer = &input; geometry.primitiveCount = 1;
+        BottomLevelAccelStructCreateInfo info; info.SetAabbs(std::span(&geometry, 1));
+        auto blas = MakeIntrusive<BottomLevelAccelStruct>(); blas->Create(info);
+        auto copy = blas; blas = nullptr;
+        CHECK_TRUE(hooks.state.asDestroys == 0 && BufferAllocationTestProbe::AllocationCount() == 1);
+        MyDevice::GetInstance().vkDevice = Handle<VkDevice>(9); copy = nullptr;
+        MyDevice::GetInstance().vkDevice = hooks.state.expectedDevice;
+        CHECK_TRUE(hooks.state.asDestroys == 1 && hooks.state.destroys == 1 && BufferAllocationTestProbe::AllocationCount() == 0,
+            "Final strong release must synchronously destroy AS before Buffer and allocation using saved Device!");
+    }
+    // Catch accidental affinity/shared mutable allocation records during independent creation.
+    {
+        Hooks hooks; Buffer input;
+        AccelStructAabbGeometry geometry; geometry.buffer = &input; geometry.primitiveCount = 1;
+        BottomLevelAccelStructCreateInfo info; info.SetAabbs(std::span(&geometry, 1));
+        std::mutex mutex; std::vector<std::exception_ptr> failures; std::vector<std::thread> workers;
+        for (int n = 0; n < 4; ++n) workers.emplace_back([&]
+        {
+            try { for (int iteration = 0; iteration < 16; ++iteration) { BottomLevelAccelStruct blas; blas.Create(info); } }
+            catch (...) { std::lock_guard lock(mutex); failures.push_back(std::current_exception()); }
+        });
+        for (auto& worker : workers) worker.join();
+        if (!failures.empty()) std::rethrow_exception(failures.front());
+        auto blas = MakeIntrusive<BottomLevelAccelStruct>();
+        std::thread create([&] { try { blas->Create(info); } catch (...) { failures.push_back(std::current_exception()); } }); create.join();
+        if (!failures.empty()) std::rethrow_exception(failures.front());
+        auto copy = blas;
+        std::thread releaseFirst([value = std::move(blas)]() mutable { value = nullptr; });
+        std::thread releaseLast([value = std::move(copy)]() mutable { value = nullptr; });
+        releaseFirst.join(); releaseLast.join();
+        CHECK_TRUE(hooks.state.asCreates == 65 && hooks.state.asDestroys == 65 && BufferAllocationTestProbe::AllocationCount() == 0);
+    }
+    {
+        Hooks hooks;
+        Buffer input;
+        AccelStructTriangleGeometry geometry; geometry.vertexBuffer = &input; geometry.vertexStride = 12; geometry.vertexCount = 3; geometry.primitiveCount = 1;
+        BottomLevelAccelStructCreateInfo info; info.SetTriangles(std::span(&geometry, 1));
+        BottomLevelAccelStruct blas; blas.Create(info);
+        const auto handle = blas.GetVkAccelerationStructure();
+        const auto queries = hooks.state.asProperties;
+        const auto formats = hooks.state.asFormats, sizes = hooks.state.asSizes, creates = hooks.state.asCreates,
+            addresses = hooks.state.asAddresses, buffers = hooks.state.creates;
+        const auto address = blas.GetDeviceAddress();
+        const auto originalSizes = blas.GetBuildSizes();
+        const auto alignment = blas.GetScratchAlignment();
+        const auto flags = blas.GetVkBuildAccelerationStructureFlags();
+        info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
+        bool rejected = false; try { blas.Create(info); } catch (const std::exception&) { rejected = true; }
+        CHECK_TRUE(rejected && blas.GetVkAccelerationStructure() == handle && hooks.state.asProperties == queries &&
+            hooks.state.asFormats == formats && hooks.state.asSizes == sizes && hooks.state.asCreates == creates &&
+            hooks.state.asAddresses == addresses && hooks.state.creates == buffers && blas.GetDeviceAddress() == address &&
+            blas.GetVkBuildAccelerationStructureFlags() == flags && blas.GetScratchAlignment() == alignment &&
+            blas.GetBuildSizes().accelerationStructureSize == originalSizes.accelerationStructureSize &&
+            blas.GetBuildSizes().buildScratchSize == originalSizes.buildScratchSize &&
+            blas.GetBuildSizes().updateScratchSize == originalSizes.updateScratchSize,
+            "Duplicate BLAS Create must reject before native queries and preserve its original owner!");
+    }
     TestImageValidationAndRollback();
     TestImageViewsAndOwners();
     TestImageThreads();
