@@ -1,4 +1,5 @@
 #include "command.h"
+#include "device.h"
 
 void ExternalCommand::Record(VkCommandBuffer inVkCommandBuffer) const
 {
@@ -7,8 +8,21 @@ void ExternalCommand::Record(VkCommandBuffer inVkCommandBuffer) const
     m_parameters.record(inVkCommandBuffer);
 }
 
+void BeginRenderPassCommand::_Prepare() const
+{
+	if (m_prepared) return;
+	CHECK_TRUE(m_snapshot.description, "Render pass description is missing!");
+	auto& device = MyDevice::GetInstance();
+	const auto framebuffer = device._GetOrCreateFramebuffer(m_snapshot, m_framebuffer);
+	const auto renderPass = device._GetOrCreateRenderPass(m_snapshot);
+	m_parameters.framebuffer = framebuffer;
+	m_parameters.renderPass = renderPass;
+	m_prepared = true;
+}
+
 auto BeginRenderPassCommand::Record(VkCommandBuffer inVkCommandBuffer) const->void
 {
+	CHECK_TRUE(m_prepared, "Render pass command was not prepared!");
 	CHECK_TRUE(inVkCommandBuffer != VK_NULL_HANDLE, "Invalid command buffer!");
 	CHECK_TRUE(m_parameters.renderPass != VK_NULL_HANDLE, "Invalid render pass!");
 	CHECK_TRUE(m_parameters.framebuffer != VK_NULL_HANDLE, "Invalid framebuffer!");

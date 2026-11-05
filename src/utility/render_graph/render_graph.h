@@ -4,7 +4,8 @@
 #if MY_VULKAN_ENABLE_RENDER_GRAPH
 
 #include "command_buffer.h"
-#include "my_vulkan/pipeline/render_pass.h"
+#include "my_vulkan/pipeline/render_pass_desc.h"
+#include "my_vulkan/pipeline/framebuffer_desc.h"
 
 #include <unordered_set>
 

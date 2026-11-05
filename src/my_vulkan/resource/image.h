@@ -137,6 +137,8 @@ public:
 	auto GetImageSubresourceRange() const -> VkImageSubresourceRange;
 
 	auto GetVkImageView() const noexcept -> VkImageView;
+	// Copies identify the same resource; a recreated view receives a new identity.
+	auto GetResourceId() const noexcept -> uint64_t;
 	auto GetVkImage() const noexcept -> VkImage;
 	auto GetViewSize() const -> VkExtent3D;
 	auto IsValid() const noexcept -> bool;
@@ -144,18 +146,18 @@ public:
 	auto operator==(const ImageView& inOther) const noexcept -> bool;
 
 	friend class Image;
-	friend class RenderPass;
 	friend struct DescriptorPoolTestProbe;
-	friend class Framebuffer;
 	friend class CommandBuffer;
 	friend class RenderGraphInstance;
 	friend struct ResourceLifetimeTestProbe;
+	friend struct ResourceSubmissionTestProbe;
 };
 
 class Image : public RefCounted
 {
 	friend struct CommandBufferTestProbe;
 	friend struct ResourceLifetimeTestProbe;
+	friend struct ResourceSubmissionTestProbe;
 	friend class ImageView;
 	friend class CommandBuffer;
 	friend class RenderGraphInstance;

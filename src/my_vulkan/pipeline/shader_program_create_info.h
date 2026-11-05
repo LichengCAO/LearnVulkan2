@@ -1,6 +1,6 @@
 #pragma once
 #include "pipeline_layout_create_info.h"
-#include "render_pass_create_info.h"
+#include "render_pass_desc.h"
 #include "private/shader_module_create_info.h"
 
 class GraphicsShaderProgramCreateInfo final
@@ -17,7 +17,7 @@ private:
         std::vector<VkVertexInputBindingDescription> vertexBindings;
         std::vector<VkVertexInputAttributeDescription> vertexAttributes;
         bool automaticVertexInputSupported = true;
-        std::shared_ptr<const RenderPassCreateInfo> defaultRenderPass;
+        std::shared_ptr<const RenderPassDesc> defaultRenderPass;
     };
     std::vector<ShaderDetail::Request> m_shaders;
     std::map<uint32_t, ColorAttachment> m_defaultColors;

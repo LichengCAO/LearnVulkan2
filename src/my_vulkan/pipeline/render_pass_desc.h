@@ -5,9 +5,11 @@
 #include <utility>
 #include <variant>
 
+namespace VulkanDetail { struct RenderPassSnapshot; }
+
 class SubpassDescription final
 {
-    friend class RenderPassCreateInfo;
+    friend class RenderPassDesc;
 private:
     struct AttachmentReference final
     {
@@ -32,13 +34,18 @@ private:
     VkPipelineStageFlags m_availableStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkAccessFlags m_availableAccess = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 public:
-    void AddDepthStencilAttachment(std::string_view inAttachmentName,
+    void AddDepthStencilAttachment(
+		std::string_view inAttachmentName,
         VkImageLayout inFinalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-    void AddResolvedAttachment(uint32_t inOutputSlot, std::string_view inMultiSampleAttachmentName,
+    void AddResolvedAttachment(
+		uint32_t inOutputSlot, 
+		std::string_view inMultiSampleAttachmentName,
         std::string_view in1SampleAttachmentName,
         VkImageLayout inMultiSampleLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VkImageLayout in1SampleLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    void AddColorAttachment(uint32_t inOutputSlot, std::string_view inColorAttachmentName,
+    void AddColorAttachment(
+		uint32_t inOutputSlot, 
+		std::string_view inColorAttachmentName,
         VkImageLayout inColorLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     void AddPreserveAttachment(std::string_view inAttachmentName);
     void CustomizeAvailableState(VkPipelineStageFlags inStage, VkAccessFlags inAccess);
@@ -46,9 +53,14 @@ public:
     // inStage/inAccess describe where data must be visible for this subpass.
     // Use CustomizeAvailableState on the source subpass to describe where data is produced.
     // BY_REGION dependencies are local to overlapping framebuffer regions.
-    void AddDependencyOnSubpass(std::string_view inSrcSubpassName, VkPipelineStageFlags inStage,
-        VkAccessFlags inAccess, VkDependencyFlags inDependencyFlags = VK_DEPENDENCY_BY_REGION_BIT);
-    void AddExternalDependency(VkPipelineStageFlags inStage, VkAccessFlags inAccess,
+    void AddDependencyOnSubpass(
+		std::string_view inSrcSubpassName, 
+		VkPipelineStageFlags inStage,
+        VkAccessFlags inAccess, 
+		VkDependencyFlags inDependencyFlags = VK_DEPENDENCY_BY_REGION_BIT);
+    void AddExternalDependency(
+		VkPipelineStageFlags inStage, 
+		VkAccessFlags inAccess,
         VkDependencyFlags inDependencyFlags = 0);
     // Adds a self-dependency that permits vkCmdPipelineBarrier inside this subpass.
     // Any in-render-pass pipeline barrier must use scopes covered by this dependency.
@@ -65,7 +77,7 @@ public:
 
 class AttachmentDescription final
 {
-    friend class RenderPassCreateInfo;
+    friend class RenderPassDesc;
 private:
     VkAttachmentDescription m_description{};
     VkClearValue m_clearValue{};
@@ -83,7 +95,7 @@ public:
 
 namespace VulkanDetail
 {
-    // Owned CPU metadata. Native pointer views are assembled only by RenderPass::Create.
+    // Owned CPU metadata. Native pointer views are assembled only during Device creation.
     struct RenderPassDescription final
     {
         struct SubpassInfo
@@ -111,22 +123,30 @@ namespace VulkanDetail
     };
 }
 
-class RenderPassCreateInfo final
+class RenderPassDesc final
 {
-    friend class RenderPass;
+    friend class MyDevice;
     friend class GraphicsShaderProgramCreateInfo;
+    friend class CommandBuffer;
+    friend class GraphicsShaderProgram;
+    friend class GraphicsPipelineStateInfo;
+    friend struct ResourceLifetimeTestProbe;
 public:
-    RenderPassCreateInfo() = default;
-    RenderPassCreateInfo(const RenderPassCreateInfo&) = delete;
-    RenderPassCreateInfo(RenderPassCreateInfo&&) = delete;
-    auto operator=(const RenderPassCreateInfo&) -> RenderPassCreateInfo& = delete;
-    auto operator=(RenderPassCreateInfo&&) -> RenderPassCreateInfo& = delete;
-    ~RenderPassCreateInfo() = default;
+    RenderPassDesc() = default;
+    RenderPassDesc(const RenderPassDesc&) = delete;
+    RenderPassDesc(RenderPassDesc&&) = delete;
+    auto operator=(const RenderPassDesc&) -> RenderPassDesc& = delete;
+    auto operator=(RenderPassDesc&&) -> RenderPassDesc& = delete;
+    ~RenderPassDesc() = default;
     void AddSubpass(std::string_view inName, const SubpassDescription& inSubpass);
     void AddAttachment(std::string_view inName, const AttachmentDescription& inAttachment);
-    auto Finalize() -> RenderPassCreateInfo&;
+    auto Finalize() -> RenderPassDesc&;
     auto IsFinalized() const noexcept -> bool { return static_cast<bool>(m_description); }
+    auto GetSubpassCount() const -> uint32_t;
+    auto GetClearValues() const -> const std::vector<VkClearValue>&;
+    auto GetAttachmentIndex(std::string_view inName) const -> uint32_t;
 private:
+    auto _GetSnapshot() const -> VulkanDetail::RenderPassSnapshot;
     auto _GetAttachmentIndex(std::string_view inName) const -> uint32_t;
     auto _GetSubpassIndex(std::string_view inName) const -> uint32_t;
     std::vector<AttachmentDescription> m_attachments;

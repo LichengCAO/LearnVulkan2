@@ -50,7 +50,7 @@ public:
 	private:
 		RenderGraphInstance* m_pInstance = nullptr;
 		CommandBuffer* m_pCommandBuffer = nullptr;
-		const RenderPass* m_pRenderPass = nullptr;
+		const RenderPassDesc* m_pRenderPass = nullptr;
 		PassIndex m_currentPass = INVALID_INDEX;
 		uint32_t m_currentSubpass = INVALID_INDEX;
 		std::unordered_map<PassIndex, size_t> m_passToSubpass;
@@ -135,8 +135,8 @@ private:
 	struct ManagedRenderPass
 	{
 		std::vector<RenderGraph::SubmitBatch::ManagedAttachmentPlan> attachmentPlans;
-		std::unique_ptr<RenderPass> renderPass;
-		std::unique_ptr<Framebuffer> framebuffer;
+		std::unique_ptr<RenderPassDesc> renderPass;
+		std::unique_ptr<FramebufferDesc> framebuffer;
 		VkRect2D renderArea{};
 		std::vector<VkClearValue> defaultClearValues;
 	};

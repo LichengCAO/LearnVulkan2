@@ -14,7 +14,8 @@
 #include "pipeline/ray_tracing_shader_program.h"
 #include "allocator/private/memory_allocator.h"
 #include "allocator/private/descriptor_set_layout_allocator.h"
-#include "allocator/private/render_pass_allocator.h"
+#include "allocator/private/render_target_cache.h"
+#include "pipeline/private/render_target_description.h"
 #include "allocator/private/pipeline_layout_allocator.h"
 #include "allocator/private/pipeline_allocator.h"
 #include "allocator/private/sampler_allocator.h"
@@ -636,18 +637,20 @@ void MyDevice::_DestroyDescriptorSetLayoutAllocator()
 	}
 }
 
-void MyDevice::_CreateRenderPassAllocator()
+void MyDevice::_CreateRenderTargetCache()
 {
-	m_uptrRenderPassAllocator = std::make_unique<RenderPassAllocator>();
-	m_uptrRenderPassAllocator->Create(vkDevice);
+	std::lock_guard lock(m_renderTargetCacheMutex);
+	m_uptrRenderTargetCache = std::make_unique<VulkanDetail::RenderTargetCache>();
+	m_uptrRenderTargetCache->Create(vkDevice);
 }
 
-void MyDevice::_DestroyRenderPassAllocator()
+void MyDevice::_DestroyRenderTargetCache()
 {
-	if (m_uptrRenderPassAllocator != nullptr)
+	std::lock_guard lock(m_renderTargetCacheMutex);
+	if (m_uptrRenderTargetCache != nullptr)
 	{
-		m_uptrRenderPassAllocator->Destroy();
-		m_uptrRenderPassAllocator.reset();
+		m_uptrRenderTargetCache->Destroy();
+		m_uptrRenderTargetCache.reset();
 	}
 }
 
@@ -724,7 +727,7 @@ void MyDevice::Create()
 	_CreateLogicalDevice();
 	_CreateMemoryAllocator();
 	_CreateSamplerAllocator();
-	_CreateRenderPassAllocator();
+	_CreateRenderTargetCache();
 	_CreatePipelineLayoutAllocator();
 	_CreatePipelineAllocators();
 	_CreateSwapchain();
@@ -738,7 +741,7 @@ void MyDevice::Destroy()
 	_DestroySwapchain();
 	_DestroyPipelineAllocators();
 	_DestroyPipelineLayoutAllocator();
-	_DestroyRenderPassAllocator();
+	_DestroyRenderTargetCache();
 	_DestroySamplerAllocator();
 	_DestroyMemoryAllocator();
 	vkb::destroy_device(m_device);
@@ -778,9 +781,41 @@ MemoryAllocator* MyDevice::GetMemoryAllocator()
 	return m_uptrMemoryAllocator.get();
 }
 
-auto MyDevice::GetRenderPassAllocator() -> RenderPassAllocator*
+auto MyDevice::GetOrCreateRenderPass(const RenderPassDesc& inDescription) -> VkRenderPass
 {
-	return m_uptrRenderPassAllocator.get();
+	CHECK_TRUE(inDescription.IsFinalized(), "Render pass description must be finalized before creation!");
+	return _GetOrCreateRenderPass(inDescription._GetSnapshot());
+}
+
+auto MyDevice::GetOrCreateFramebuffer(const RenderPassDesc& inRenderPass,
+	const FramebufferDesc& inDescription) -> VkFramebuffer
+{
+	CHECK_TRUE(inRenderPass.IsFinalized(), "Render pass description must be finalized before framebuffer creation!");
+	const auto snapshot = inRenderPass._GetSnapshot();
+	const auto resolved = inDescription._Resolve(*snapshot.description);
+	return _GetOrCreateFramebuffer(snapshot, resolved);
+}
+
+auto MyDevice::_GetOrCreateRenderPass(const VulkanDetail::RenderPassSnapshot& inSnapshot) -> VkRenderPass
+{
+	std::lock_guard lock(m_renderTargetCacheMutex);
+	CHECK_TRUE(inSnapshot.description, "Render pass description must be finalized before creation!");
+	CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Render pass creation requires a live device!");
+	CHECK_TRUE(m_uptrRenderTargetCache != nullptr && m_uptrRenderTargetCache->IsCreated(),
+		"Render target cache is not created!");
+	return m_uptrRenderTargetCache->GetOrCreateRenderPass(inSnapshot);
+}
+
+auto MyDevice::_GetOrCreateFramebuffer(const VulkanDetail::RenderPassSnapshot& inSnapshot,
+	const VulkanDetail::ResolvedFramebufferDesc& inDescription) -> VkFramebuffer
+{
+	std::lock_guard lock(m_renderTargetCacheMutex);
+	CHECK_TRUE(inSnapshot.description, "Render pass description must be finalized before framebuffer creation!");
+	CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Framebuffer creation requires a live device!");
+	CHECK_TRUE(m_uptrRenderTargetCache != nullptr && m_uptrRenderTargetCache->IsCreated(),
+		"Render target cache is not created!");
+	const auto renderPass = m_uptrRenderTargetCache->GetOrCreateRenderPass(inSnapshot);
+	return m_uptrRenderTargetCache->GetOrCreateFramebuffer(renderPass, inDescription);
 }
 
 void MyDevice::GetOrCreateDescriptorSetLayout(DescriptorSetLayout& outLayout,
@@ -896,8 +931,9 @@ void MyDevice::CreateGraphicsShaderProgram(GraphicsShaderProgram& outProgram,
 	const auto& data = *inCreateInfo.m_finalized;
 	if (data.defaultRenderPass != nullptr)
 	{
-		CHECK_TRUE(m_uptrRenderPassAllocator != nullptr && m_uptrRenderPassAllocator->IsCreated(),
-			"Render pass allocator is not created!");
+		std::lock_guard lock(m_renderTargetCacheMutex);
+		CHECK_TRUE(m_uptrRenderTargetCache != nullptr && m_uptrRenderTargetCache->IsCreated(),
+			"Render target cache is not created!");
 	}
 	for (const auto& range : data.layout.m_finalized->pushConstants)
 	{
@@ -912,7 +948,7 @@ void MyDevice::CreateGraphicsShaderProgram(GraphicsShaderProgram& outProgram,
 	static_assert(std::is_nothrow_move_assignable_v<std::vector<std::unique_ptr<ShaderModule>>>);
 	static_assert(std::is_nothrow_move_assignable_v<std::vector<VkPipelineShaderStageCreateInfo>>);
 	static_assert(std::is_nothrow_move_assignable_v<decltype(program.m_cachedGraphicsPipelines)>);
-	static_assert(std::is_nothrow_move_assignable_v<std::unique_ptr<RenderPass>>);
+	static_assert(std::is_nothrow_move_assignable_v<decltype(program.m_defaultRenderPass)>);
 	static_assert(std::is_nothrow_move_assignable_v<GraphicsPipelineStateInfo>);
 	outProgram.m_shaderModules = std::move(program.m_shaderModules);
 	outProgram.m_shaderStages = std::move(program.m_shaderStages);
@@ -1097,10 +1133,6 @@ VkQueue MyDevice::GetQueueByQueueFamilyIndex(uint32_t inQueueFamilyIndex) const
     return result;
 }
 
-uint32_t MyDevice::GetQueueFamilyIndex(VkCommandPool inVkCommandPool) const
-{	
-	return m_mapPoolToQueueFamily.at(inVkCommandPool);
-}
 
 auto MyDevice::IsPipelineCacheValid(const VkPipelineCacheHeaderVersionOne& inCacheHeader) const -> bool
 {
@@ -1385,25 +1417,23 @@ VkResult MyDevice::WaitForFences(const std::vector<VkFence>& inFencesToWait, boo
 		inTimeout);
 }
 
-VkCommandPool MyDevice::CreateCommandPool(const VkCommandPoolCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator)
+auto MyDevice::CreateCommandPool(const VkCommandPoolCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator) -> VkCommandPool
 {
 	VkCommandPool result = VK_NULL_HANDLE;
 
 	VK_CHECK(vkCreateCommandPool(vkDevice, &inCreateInfo, pAllocator, &result));
 
-	m_mapPoolToQueueFamily[result] = inCreateInfo.queueFamilyIndex;
 
 	return result;
 }
 
-VkResult MyDevice::ResetCommandPool(VkCommandPool inCommandPool, VkCommandPoolResetFlags inFlags)
+auto MyDevice::ResetCommandPool(VkCommandPool inCommandPool, VkCommandPoolResetFlags inFlags) -> VkResult
 {
 	return vkResetCommandPool(vkDevice, inCommandPool, inFlags);
 }
 
 void MyDevice::DestroyCommandPool(VkCommandPool inCommandPoolToDestroy, const VkAllocationCallbacks* pAllocator)
 {
-	m_mapPoolToQueueFamily.erase(inCommandPoolToDestroy);
 
 	vkDestroyCommandPool(vkDevice, inCommandPoolToDestroy, pAllocator);
 }
@@ -1467,40 +1497,6 @@ auto MyDevice::CreateImageView(const VkImageViewCreateInfo& inCreateInfo, const 
 void MyDevice::DestroyImageView(VkImageView inView, const VkAllocationCallbacks* pAllocator)
 {
 	vkDestroyImageView(vkDevice, inView, pAllocator);
-}
-
-auto MyDevice::CreateRenderPass(const VkRenderPassCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator) -> VkRenderPass
-{
-	VkRenderPass result = VK_NULL_HANDLE;
-	VK_CHECK(vkCreateRenderPass(vkDevice, &inCreateInfo, pAllocator, &result));
-	return result;
-}
-
-void MyDevice::DestroyRenderPass(VkRenderPass inRenderPass, const VkAllocationCallbacks* pAllocator)
-{
-	if (inRenderPass == VK_NULL_HANDLE)
-	{
-		return;
-	}
-
-	vkDestroyRenderPass(vkDevice, inRenderPass, pAllocator);
-}
-
-auto MyDevice::CreateFramebuffer(const VkFramebufferCreateInfo& inCreateInfo, const VkAllocationCallbacks* pAllocator) -> VkFramebuffer
-{
-	VkFramebuffer result = VK_NULL_HANDLE;
-	VK_CHECK(vkCreateFramebuffer(vkDevice, &inCreateInfo, pAllocator, &result));
-    return result;
-}
-
-void MyDevice::DestroyFramebuffer(VkFramebuffer inFramebuffer, const VkAllocationCallbacks* pAllocator)
-{
-	if (inFramebuffer == VK_NULL_HANDLE)
-	{
-		return;
-	}
-
-	vkDestroyFramebuffer(vkDevice, inFramebuffer, pAllocator);
 }
 
 void MyDevice::GetAccelerationStructureBuildSizes(VkAccelerationStructureBuildTypeKHR inBuildType, const VkAccelerationStructureBuildGeometryInfoKHR& inBuildInfo, const std::vector<uint32_t>& inMaxPrimitiveCounts, VkAccelerationStructureBuildSizesInfoKHR& outSizeInfo)

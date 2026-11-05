@@ -2,7 +2,10 @@
 #include "my_vulkan/render_context/private/frame_slot.h"
 #include "my_vulkan/resource/acceleration_structure.h"
 #include "my_vulkan/resource/image.h"
-#include "my_vulkan/pipeline/render_pass.h"
+#include "my_vulkan/pipeline/render_pass_desc.h"
+#include "my_vulkan/pipeline/framebuffer_desc.h"
+#include "my_vulkan/allocator/private/render_target_cache.h"
+#include "my_vulkan/device.h"
 #include <concepts>
 #include <cstring>
 
@@ -15,8 +18,8 @@ struct CommandBufferTestProbe
     {
         Buffer src, dst;
         Image image, otherImage;
-        RenderPass pass;
-        Framebuffer framebuffer;
+        RenderPassDesc pass;
+        FramebufferDesc framebuffer;
         PipelineLayout layout;
         ShaderBindingTable table;
         GraphicsShaderProgram graphics;
@@ -34,17 +37,20 @@ struct CommandBufferTestProbe
             otherImage.m_resource = MakeIntrusive<VulkanDetail::ImageResource>(Handle<VkImage>(202), nullptr);
             image.m_imageInformation.mipLevels = otherImage.m_imageInformation.mipLevels = 8;
             image.m_imageInformation.arrayLayers = otherImage.m_imageInformation.arrayLayers = 6;
-            pass.m_snapshot.resource = MakeIntrusive<VulkanDetail::RenderPassResource>(Handle<VkRenderPass>(301), nullptr);
-            auto description = std::make_shared<VulkanDetail::RenderPassDescription>();
-            description->subpassInfos.resize(2);
             VkClearValue clear{};
             clear.color.float32[0] = 0.25f;
-            description->clearValues.push_back(clear);
-            pass.m_snapshot.description = std::move(description);
-            framebuffer.m_resource = MakeIntrusive<VulkanDetail::FramebufferResource>(Handle<VkFramebuffer>(302), nullptr,
-                std::vector<VulkanDetail::ResourceReference>{pass.m_snapshot.resource});
-            framebuffer.m_renderPass = pass.m_snapshot;
-            framebuffer.m_extent = { 4096, 4096 };
+            AttachmentDescription attachment;
+            attachment.CustomizeFormat(VK_FORMAT_R8G8B8A8_UNORM, clear);
+            pass.AddAttachment("color", attachment);
+            SubpassDescription subpass;
+            subpass.AddColorAttachment(0, "color");
+            pass.AddSubpass("first", subpass);
+            pass.AddSubpass("second", subpass);
+            pass.Finalize();
+            framebuffer.m_attachments.emplace("color", FramebufferDesc::Attachment{
+                42, Handle<VkImageView>(304), { 4096, 4096, 1 }, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_VIEW_TYPE_2D, 1, 1 });
+            framebuffer.m_extent = VkExtent2D{ 4096, 4096 };
             framebuffer.m_layers = 1;
             layout.m_vkPipelineLayout = Handle<VkPipelineLayout>(303);
             table.m_uptrBuffer = std::make_unique<Buffer>();
@@ -62,8 +68,6 @@ struct CommandBufferTestProbe
         ~Resources()
         {
             src.m_vkBuffer = dst.m_vkBuffer = VK_NULL_HANDLE;
-            pass.Destroy();
-            framebuffer.Reset();
             layout.m_vkPipelineLayout = VK_NULL_HANDLE;
             table.m_uptrBuffer->m_vkBuffer = VK_NULL_HANDLE;
             table.m_uptrBuffer.reset();
@@ -71,6 +75,71 @@ struct CommandBufferTestProbe
             topSrc.m_vkAccelStruct = topDst.m_vkAccelStruct = VK_NULL_HANDLE;
         }
     };
+
+    struct NativeRenderTargetHooks
+    {
+        uint32_t renderPassCreates = 0;
+        uint32_t framebufferCreates = 0;
+        PFN_vkCreateRenderPass createRenderPass = vkCreateRenderPass;
+        PFN_vkDestroyRenderPass destroyRenderPass = vkDestroyRenderPass;
+        PFN_vkCreateFramebuffer createFramebuffer = vkCreateFramebuffer;
+        PFN_vkDestroyFramebuffer destroyFramebuffer = vkDestroyFramebuffer;
+        VkDevice device = VK_NULL_HANDLE;
+        std::unique_ptr<VulkanDetail::RenderTargetCache> cache;
+
+        NativeRenderTargetHooks()
+        {
+            auto& instance = MyDevice::GetInstance();
+            device = instance.vkDevice;
+            cache = std::move(instance.m_uptrRenderTargetCache);
+            instance.vkDevice = Handle<VkDevice>(1);
+            instance.m_uptrRenderTargetCache = std::make_unique<VulkanDetail::RenderTargetCache>();
+            instance.m_uptrRenderTargetCache->Create(instance.vkDevice);
+            activeRenderTargetHooks = this;
+            vkCreateRenderPass = _CreateRenderPass;
+            vkDestroyRenderPass = _DestroyRenderPass;
+            vkCreateFramebuffer = _CreateFramebuffer;
+            vkDestroyFramebuffer = _DestroyFramebuffer;
+        }
+        NativeRenderTargetHooks(const NativeRenderTargetHooks&) = delete;
+        auto operator=(const NativeRenderTargetHooks&) -> NativeRenderTargetHooks& = delete;
+        ~NativeRenderTargetHooks()
+        {
+            auto& instance = MyDevice::GetInstance();
+            instance.m_uptrRenderTargetCache.reset();
+            instance.m_uptrRenderTargetCache = std::move(cache);
+            instance.vkDevice = device;
+            vkCreateRenderPass = createRenderPass;
+            vkDestroyRenderPass = destroyRenderPass;
+            vkCreateFramebuffer = createFramebuffer;
+            vkDestroyFramebuffer = destroyFramebuffer;
+            activeRenderTargetHooks = nullptr;
+        }
+    };
+    inline static NativeRenderTargetHooks* activeRenderTargetHooks = nullptr;
+
+    static auto VKAPI_PTR _CreateRenderPass(VkDevice inDevice, const VkRenderPassCreateInfo* inInfo,
+        const VkAllocationCallbacks*, VkRenderPass* outRenderPass) -> VkResult
+    {
+        CHECK_TRUE(inDevice == Handle<VkDevice>(1) && inInfo->attachmentCount == 1 && inInfo->subpassCount == 2,
+            "Native preparation must preserve the finalized attachment and subpass descriptions!");
+        ++activeRenderTargetHooks->renderPassCreates;
+        *outRenderPass = Handle<VkRenderPass>(301);
+        return VK_SUCCESS;
+    }
+    static void VKAPI_PTR _DestroyRenderPass(VkDevice, VkRenderPass, const VkAllocationCallbacks*) {}
+    static auto VKAPI_PTR _CreateFramebuffer(VkDevice inDevice, const VkFramebufferCreateInfo* inInfo,
+        const VkAllocationCallbacks*, VkFramebuffer* outFramebuffer) -> VkResult
+    {
+        CHECK_TRUE(inDevice == Handle<VkDevice>(1) && inInfo->renderPass == Handle<VkRenderPass>(301) &&
+            inInfo->attachmentCount == 1 && inInfo->pAttachments[0] == Handle<VkImageView>(304) &&
+            inInfo->width == 4096 && inInfo->height == 4096 && inInfo->layers == 1,
+            "Native preparation must preserve the borrowed framebuffer attachment snapshot!");
+        ++activeRenderTargetHooks->framebufferCreates;
+        *outFramebuffer = Handle<VkFramebuffer>(302);
+        return VK_SUCCESS;
+    }
+    static void VKAPI_PTR _DestroyFramebuffer(VkDevice, VkFramebuffer, const VkAllocationCallbacks*) {}
 
     static auto Count(const CommandBuffer& inBuffer) -> size_t { return inBuffer.m_commands.size(); }
     struct ExternalBuffer
@@ -119,6 +188,10 @@ struct CommandBufferTestProbe
     static void RecordLast(const CommandBuffer& inBuffer)
     {
         inBuffer.m_commands.back()->Record(Handle<VkCommandBuffer>(1));
+    }
+    static void PrepareRendering(CommandBuffer& inBuffer)
+    {
+        inBuffer._PrepareRenderPassCommands();
     }
     static void UseGraphics(CommandBuffer& inBuffer, Resources& inResources)
     {
@@ -553,33 +626,52 @@ namespace
 
     void TestRenderPassScalars()
     {
-        CommandBufferTestProbe::Resources resources;
+        CommandBufferTestProbe::NativeRenderTargetHooks native;
         ScopedFunction begin(vkCmdBeginRenderPass, &CaptureBegin);
         ScopedFunction next(vkCmdNextSubpass, &CaptureNext);
         ScopedFunction end(vkCmdEndRenderPass, &CaptureEnd);
         capture = {};
         CommandBuffer buffer;
-        buffer.BeginRenderPass(resources.pass, resources.framebuffer, 3, 4, 100, 200);
-        ExpectRejected(buffer, [&] { buffer.BeginRenderPass(resources.pass, resources.framebuffer, 0, 0, 1, 1); });
-        buffer.NextSubpass();
-        ExpectRejected(buffer, [&] { buffer.NextSubpass(); });
-        buffer.EndRenderPass();
-        std::array<VkClearValue, 1> overrides{};
-        overrides[0].depthStencil = { 0.125f, 23 };
-        buffer.BeginRenderPass(resources.pass, resources.framebuffer, 8, 9, 20, 30, overrides);
-        overrides[0].depthStencil = {};
-        buffer.EndRenderPass();
-        CommandBufferTestProbe::Record(buffer);
+        {
+            CommandBufferTestProbe::Resources resources;
+            buffer.BeginRenderPass(resources.pass, resources.framebuffer, 3, 4, 100, 200);
+            ExpectRejected(buffer, [&] { buffer.BeginRenderPass(resources.pass, resources.framebuffer, 0, 0, 1, 1); });
+            buffer.NextSubpass();
+            ExpectRejected(buffer, [&] { buffer.NextSubpass(); });
+            buffer.EndRenderPass();
+            std::array<VkClearValue, 1> overrides{};
+            overrides[0].depthStencil = { 0.125f, 23 };
+            buffer.BeginRenderPass(resources.pass, resources.framebuffer, 8, 9, 20, 30, overrides);
+            overrides[0].depthStencil = {};
+            resources.framebuffer.Reset();
+            buffer.EndRenderPass();
+        }
+        CHECK_TRUE(native.renderPassCreates == 0 && native.framebufferCreates == 0 && capture.order.empty(),
+            "Finalization and render-pass enqueue must make no native rendering calls!");
+        CommandBuffer moved(std::move(buffer));
+        CommandBuffer appended;
+        CommandBufferTestProbe::Append(appended, std::move(moved));
+        CHECK_TRUE(native.renderPassCreates == 0 && native.framebufferCreates == 0,
+            "Moving and appending render-pass descriptions must not create native resources!");
+        CommandBufferTestProbe::PrepareRendering(appended);
+        CHECK_TRUE(native.renderPassCreates == 1 && native.framebufferCreates == 1 && capture.order.empty(),
+            "Preparation must create and cache native rendering resources without recording commands!");
+        CommandBufferTestProbe::PrepareRendering(appended);
+        CHECK_TRUE(native.renderPassCreates == 1 && native.framebufferCreates == 1,
+            "Repeated preparation must reuse the native rendering cache!");
+        CommandBufferTestProbe::Record(appended);
         CHECK_TRUE(capture.begins.size() == 2 && capture.begins[0].renderPass == CommandBufferTestProbe::Handle<VkRenderPass>(301) &&
             capture.begins[0].framebuffer == CommandBufferTestProbe::Handle<VkFramebuffer>(302) &&
             capture.begins[0].renderArea.offset.x == 3 && capture.begins[0].renderArea.offset.y == 4 &&
             capture.begins[0].renderArea.extent.width == 100 && capture.begins[0].renderArea.extent.height == 200,
-            "RenderPass object and rectangle mapping is wrong!");
+            "Prepared render-pass handles and rectangle mapping are wrong!");
         CHECK_TRUE(capture.beginValues[0][0].color.float32[0] == 0.25f &&
             capture.beginValues[1][0].depthStencil.depth == 0.125f &&
             capture.beginValues[1][0].depthStencil.stencil == 23, "RenderPass clear defaults/overrides must be copied!");
         CHECK_TRUE(capture.order == std::vector<std::string>({ "begin", "next", "end", "begin", "end" }),
             "RenderPass command ordering changed!");
+        CHECK_TRUE(native.renderPassCreates == 1 && native.framebufferCreates == 1,
+            "Recording prepared rendering commands must perform no native creation!");
     }
 
     void TestDrawDispatchAndBindings()

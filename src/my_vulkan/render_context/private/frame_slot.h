@@ -21,6 +21,7 @@ class FrameSlot final
     friend struct CommandBufferTestProbe;
     friend struct ResourceLifetimeTestProbe;
     friend struct ResourceSubmissionTestProbe;
+    friend struct CommandPoolTestProbe;
 
 public:
     class RecordingTicket final

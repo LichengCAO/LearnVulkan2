@@ -381,6 +381,11 @@ auto ImageView::GetVkImageView() const noexcept -> VkImageView
 	return m_resource ? m_resource->GetHandle() : VK_NULL_HANDLE;
 }
 
+auto ImageView::GetResourceId() const noexcept -> uint64_t
+{
+	return m_resource ? m_resource->GetResourceId() : 0;
+}
+
 auto ImageView::GetVkImage() const noexcept -> VkImage { return m_resource ? m_viewInformation.vkImage : VK_NULL_HANDLE; }
 auto ImageView::IsValid() const noexcept -> bool { return static_cast<bool>(m_resource); }
 auto ImageView::_GetResourceReference() const -> VulkanDetail::ResourceReference { return m_resource; }

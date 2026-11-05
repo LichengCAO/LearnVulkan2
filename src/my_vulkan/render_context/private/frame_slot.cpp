@@ -173,8 +173,9 @@ auto FrameSlot::_GetCommandPool(
     {
         CommandPoolCreateInfo createInfo;
         createInfo.CustomizeQueueFamilyType(inQueue);
-        commandPool = std::make_unique<CommandPool>();
-        commandPool->Create(createInfo);
+        auto createdPool = std::make_unique<CommandPool>();
+        createdPool->Create(createInfo);
+        commandPool = std::move(createdPool);
     }
 
     return *commandPool;
@@ -311,6 +312,7 @@ auto FrameSlot::DispatchRecording(
     {
         CHECK_TRUE(std::holds_alternative<std::monostate>(buffer.m_renderingScopeState),
             "Command buffer has an active rendering scope!");
+        buffer._PrepareRenderPassCommands();
         if (!buffer.m_hasProgramBindings) continue;
         if (!m_dynamicDescriptorPool)
         {

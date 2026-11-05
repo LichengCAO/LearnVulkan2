@@ -1,49 +1,122 @@
-# Image, ImageView, RenderPass and Framebuffer lifetimes
+# Resource ownership and rendering descriptions
 
-Native Vulkan objects are owned by `VulkanDetail::VulkanHandleResource<T>`, a
-`RefCounted` heap object held through the existing `IntrusivePtr<T>`. Its
-destructor releases the native object before releasing its parent dependencies.
-This layer owns resources; it does not insert synchronization or wait for GPU
-work.
+Native images and views are owned by `VulkanDetail::VulkanHandleResource<T>`, a
+`RefCounted` heap object held through `IntrusivePtr<T>`. Its destructor releases
+the native object before releasing parent dependencies. This ownership does not
+insert synchronization or wait for GPU work. Native render passes and
+framebuffers instead belong solely to the Device's private render-target cache.
 
-## Values and resource versions
+## Image values and resource versions
 
-`Image` and `RenderPass` remain noncopyable facades with explicit `Create()` and
-`Destroy()`. Creation publishes a new version only after creation succeeds.
-`Destroy()` clears the facade's caches and releases its current version.
+`Image` is a noncopyable facade with explicit `Create()` and `Destroy()`.
+Creation publishes a new version only after creation succeeds; `Destroy()` clears
+its view cache and releases its current version. `ImageView` is a copyable value
+that retains the native image and allocation. `Reset()` drops that value's
+reference; other copies remain valid. References point to native resource
+objects, never back to facade objects or their caches.
 
-`ImageView` and `Framebuffer` are copyable values. `Reset()` drops that value's
-references. Other copies remain valid. A view retains the native image and its
-allocation, and a framebuffer retains its views and native render pass. These
-references point to native resource objects, never back to facade objects or
-their caches. ImageView information is a snapshot: rebuilding the original
-Image cannot change an old view's handle, dimensions, format or subresource
-range.
+ImageView information is a snapshot: rebuilding the original Image cannot change
+an old view's handle, dimensions, format or subresource range.
+`ImageView::Information::width/height/depth` are mip zero dimensions of the source
+image. `GetViewSize()` returns dimensions at the selected base mip. Remaining
+mip/layer counts are resolved when the view is created.
 
-`ImageView::Information::width/height/depth` retain their existing meaning: mip
-zero dimensions of the source image. `GetViewSize()` returns dimensions at the
-selected base mip. Remaining mip/layer counts are resolved when the view is
-created.
+`ImageView::GetResourceId()` returns a nonzero identity for each native view
+instance, or zero for an empty value. Copies of a view have the same ID. A new
+native instance receives a new ID even if Vulkan recycles an old handle value.
+IDs are non-owning and provide no validity tracking.
+
+`Image::View()` caches views with strong references. `ClearViewCache()` drops
+only those references and does not invalidate external views or wait for GPU
+work. Image destruction and successful replacement creation clear the cache.
+Native swapchain images retain their swapchain generation; replacement creation
+passes the previous native swapchain to Vulkan. Acquire and present apply only
+to the current generation.
+
+## Rendering descriptions and native cache
+
+`RenderPassDesc` is noncopyable and nonmovable. Its `Finalize()` resolves names,
+validates attachment/subpass settings and publishes an immutable CPU snapshot;
+`Finalize()` and `IsFinalized()` need no Device or Vulkan calls.
+`GetSubpassCount()`, `GetClearValues()` and `GetAttachmentIndex(name)` require a
+finalized description. Successful edits invalidate its current snapshot while
+existing command and Graphics state snapshots remain unchanged.
+
+`FramebufferDesc` is copyable and movable. `SetImageView(name, view)` stores only
+the resource ID, raw VkImageView and attachment metadata; it retains no Image or
+ImageView references. `Reset()` clears this CPU description. Dimensions default
+to the minimum available size and layer count across the supplied views.
+`CustomizeSize(width, height, layers)` supplies explicit dimensions, which are
+required for an attachment-free framebuffer. Every attachment must select one
+mip and satisfy the pass's format, sample count and usage requirements.
+
+Native lookup uses these Device entries:
 
 ```cpp
+auto nativePass = device.GetOrCreateRenderPass(passDesc);
+auto nativeFramebuffer = device.GetOrCreateFramebuffer(passDesc, framebufferDesc);
+```
+
+The return values are borrowed VkRenderPass and VkFramebuffer handles. There are
+no public RenderPass or Framebuffer facade types, per-object release operations
+or public rendering allocator getter. The Device owns every cached native
+object until teardown and destroys framebuffers before render passes. Native
+creation and cache publication complete synchronously; failed publication rolls
+back the new native object.
+
+Render-pass keys contain the full native description. Attachment names and clear
+values remain Host metadata and do not affect native reuse. Framebuffer keys
+contain the native render pass, ordered attachment IDs and handles, dimensions
+and layer count. These caches have no eviction: changing attachments can
+accumulate native framebuffers until Device teardown. Cached framebuffers retain
+no attachment resources. After an attachment's native view is destroyed, its old
+FramebufferDesc and queued snapshots must never be used again, even if a native
+handle with the same numeric value later exists.
+
+A dedicated MyDevice mutex guards both caches' lookup, native creation,
+publication and teardown. The private RenderTargetCache allocator has no locks
+of its own. This mutex covers only rendering cache state; Program-local state,
+pipeline/layout caches and their release paths keep their existing caller
+synchronization requirements. Concurrent readers may use one finalized
+RenderPassDesc; callers exclude conflicting description mutation and access to
+one CommandBuffer. Device initialization, destruction and recreation still
+require exclusive access relative to related resource operations.
+
+## Recording and GPU completion
+
+`BeginRenderPass(passDesc, framebufferDesc, x, y, width, height[, clearValues], contents)`
+copies an immutable pass snapshot and borrowed attachment metadata during Host
+enqueue. It calls no Vulkan functions and creates no native rendering objects.
+The overload without clear values copies the pass's defaults; the explicit
+overload copies the supplied values. Both descriptions may be edited or
+destroyed after enqueue because the command owns its CPU snapshot.
+
+FrameSlot serial preparation obtains native rendering handles before worker
+recording, including command buffers with no Program bindings. `Record()` uses
+the prepared handles and performs no cache lookup or native creation. Graphics
+state selects a finalized description with `SetRenderPassSubpass(desc, index)`;
+binding without an explicit target uses the active rendering description and
+subpass. `GraphicsShaderProgram::GetDefaultRenderPassDesc()` exposes its default
+description as a const reference.
+
+Rendering descriptions and commands do not automatically retain attachments.
+The caller keeps each native image/view alive through preparation, recording
+and GPU execution, or requests command retention explicitly:
+
+```cpp
+const RenderPassDesc& pass = program.GetDefaultRenderPassDesc();
 ImageViewInfo attachmentViewInfo;
 attachmentViewInfo.CustomizeMipLevels(0, 1);
-
 auto color = colorImage.View(attachmentViewInfo);
 auto depth = depthImage.View(attachmentViewInfo);
-
-FramebufferInfo info;
-info.SetImageView("color", color);
-info.SetImageView("depth", depth);
-auto framebuffer = renderPass.GetFramebuffer(info);
-
-// Existing values retain their original resources and description.
-colorImage.Destroy();
-depthImage.Destroy();
-renderPass.Destroy();
+FramebufferDesc framebuffer;
+framebuffer.SetImageView("outColor", color);
+framebuffer.SetImageView("__depth", depth);
 
 CommandBuffer commands;
-commands.BeginRenderPass(framebuffer, 0, 0, width, height);
+commands.KeepAlive(color);
+commands.KeepAlive(depth);
+commands.BeginRenderPass(pass, framebuffer, 0, 0, width, height);
 commands.BindGraphicsProgram(program);
 commands.SetViewport(0.f, 0.f, float(width), float(height));
 commands.SetScissor(0, 0, width, height);
@@ -51,43 +124,18 @@ commands.Draw(3);
 commands.EndRenderPass();
 ```
 
-Framebuffer-only BeginRenderPass uses the stored pass description and default
-clear values. An explicit compatible RenderPass and explicit clear values may
-also be supplied. Graphics binding with no explicit target uses the active
-render pass and subpass.
-
-## Strong caches
-
-`Image::View()` and `RenderPass::GetFramebuffer()` cache child values with strong
-references. Drop those references with `ClearViewCache()` and
-`ClearFramebufferCache()`. These methods neither invalidate external values nor
-wait for GPU work. Destroy and successful replacement creation also clear the
-facade's cache.
-
-Clear the relevant framebuffer cache when replacing attachments, especially on
-swapchain resize. Keeping a cached framebuffer intentionally keeps its image
-resources alive. Native swapchain images retain their swapchain generation;
-replacement creation passes the previous native swapchain to Vulkan. Acquire
-and present still apply only to the current generation.
-
-Framebuffer dimensions default to the minimum available dimensions and layer
-count across the supplied views. Use `CustomizeSize()` for explicit dimensions;
-an attachment-free framebuffer requires them. Attachments must each select one
-mip and satisfy the render pass's format, sample count and usage requirements.
-
-## Recording and GPU completion
-
-Typed image and render-pass commands automatically retain the resource version
-used to create their native parameters. ShaderResources and DescriptorSetDesc
-copy image views rather than retaining pointers to local view values.
+`KeepAlive(Image)` and `KeepAlive(ImageView)` preserve their native resource
+version. Other typed image commands retain their existing automatic image
+references. ShaderResources and DescriptorSetDesc continue to copy image views
+rather than retaining pointers to local view values.
 
 Command references move into the recording result before CPU command storage
-is cleared. Normal submissions transfer the references into a frame completion
-callback before submission. The callback releases its references after all
-queues for that frame have completed, normally when the frame slot is reused.
+is cleared. Normal submissions transfer them into a frame completion callback
+before submission. The callback releases its references after all queues for
+that frame have completed, normally when the frame slot is reused.
 `ExecuteCommandsAndWait()` uses its own HostFence completion callback.
 
-For native callbacks, register each image, view, pass or framebuffer explicitly:
+Native callbacks can use the same explicit image/view retention:
 
 ```cpp
 const auto nativeView = view.GetVkImageView();
@@ -98,17 +146,65 @@ commands.AppendCommand([nativeView](VkCommandBuffer commandBuffer)
 });
 ```
 
-KeepAlive preserves the native resource version, not the facade's C++ address.
-References captured by a callback must separately remain valid until CPU
-recording completes. Device and allocator lifetimes must cover all surviving
-resource values. Resource types not yet migrated to the RHI threading policy
-retain their existing device-thread restrictions for cache mutation and final
-resource release.
+KeepAlive preserves resources rather than the facade's C++ address. Callback
+references must separately remain valid until CPU recording completes. Complete
+all native uses before Device/cache teardown, and keep Device and allocation
+dependencies alive through final Image/ImageView release. Resource types not yet
+migrated to the RHI threading policy retain their existing restrictions.
 
-Buffer, Program, acceleration structure and other resource ownership
-contracts remain unchanged. Image layout transitions and access synchronization
-remain explicit. Dynamic rendering and imageless framebuffers are outside this
-change.
+Buffer, Program and acceleration structure ownership remains unchanged. Image
+layout transitions and access synchronization remain explicit. Dynamic rendering
+and imageless framebuffers are outside this change. The disabled RenderGraph
+path receives only call-site migration; this change does not enable it.
+
+## Command pool ownership
+
+`CommandPool` owns one native command pool. It is noncopyable and nonmovable,
+and keeps its synchronous `Create()`, `Reset()` and
+`AllocateOrGetCommandBuffer()` interfaces. Its `noexcept` destructor destroys
+the native pool once, using the VkDevice saved at creation. There is no public
+`Destroy()` or release alias; use scope or an external owner's `reset()` for
+early release. Destruction of an empty pool does not access MyDevice.
+
+```cpp
+{
+    CommandPool pool;
+    CommandPoolCreateInfo info;
+    info.CustomizeQueueFamilyType(QueueFamilyType::GRAPHICS);
+    pool.Create(info);
+    auto commandBuffer = pool.AllocateOrGetCommandBuffer(); // borrowed
+    // Record, submit, and complete GPU use before leaving this scope.
+}
+```
+
+Keep Device alive until every pool has been destroyed. Reset and destruction
+perform no implicit GPU waits: the caller completes GPU use of all buffers
+first. Destroying a native pool frees all its command buffers, without
+individual Free calls ([Vulkan destruction rules](https://docs.vulkan.org/refpages/latest/refpages/source/vkDestroyCommandPool.html)).
+Borrowed command-buffer handles become invalid when their pool is destroyed.
+Reset invalidates their recorded contents and makes the tracked primary and
+secondary buffers available for reuse; a native Reset failure leaves the Host
+reuse queues unchanged.
+
+Creation validates an empty target, an available Device and a valid queue
+family before native creation. It publishes the device, pool and family only
+after success. A failed creation leaves a null pool and
+`VK_QUEUE_FAMILY_IGNORED`, allowing retry. Repeated Create rejects the request
+and preserves the original pool and tracked buffers.
+
+CommandPool has no thread affinity or internal lock. Independent pools may be
+created, allocated from, reset and destroyed concurrently after Device
+initialization. Callers exclude conflicting access to the same pool and its
+command buffers, including recording; sequential transfer to another thread
+is allowed. Device native forwarding maintains no pool registration table or
+other shared allocation records. Device teardown and recreation still require
+exclusive access relative to pool operations.
+
+FrameSlot owns pools per queue and recording worker, publishes a lazy pool
+only after successful creation, and can retry after failure. Its existing
+completion path waits before resetting pools for reuse. This ownership does
+not move the dynamic descriptor pool into CommandPool or change recording and
+submission behavior.
 
 ## Sampler ownership
 
@@ -279,13 +375,13 @@ noncopyable and nonmovable; scope exit or an owning `unique_ptr.reset()` release
 them.
 
 Graphics creation accesses descriptor-layout and pipeline-layout caches, the
-Graphics pipeline cache and, when defaults are configured, the RenderPass cache.
+Graphics pipeline cache and, when a default pipeline is materialized, the native
+render-pass cache under the Device's dedicated mutex.
 `GetVkPipeline(state)` remains lazy and mutates both Program-local PSO state and
 the Device Graphics pipeline cache. Program cleanup consults pipeline caches and
-drops RenderPass snapshots; callers serialize those operations with related
+drops CPU render-pass snapshots; callers serialize those operations with related
 creation, lookup, release and teardown, plus conflicting access to that Program.
-Default RenderPass/framebuffer operations retain their existing synchronization
-requirements.
+The render-target mutex does not synchronize these other caches or Program state.
 
 RayTracing creation accesses descriptor-layout and pipeline-layout caches, the
 RayTracing pipeline cache and the supplied `VkPipelineCache`. Group handles and
@@ -297,6 +393,7 @@ modules may produce a separate cache entry. Cleanup follows `DestroyPipeline`,
 which probes the Graphics, Compute and RayTracing caches; callers synchronize
 those cache accesses as well as the input `VkPipelineCache` and teardown.
 
-Neither path uses internal locks or a global Device lock. Independent work may
-proceed when it uses independent shared state. Device initialization, destruction
-and recreation require exclusive access relative to these operations.
+Program state and pipeline/layout caches have no internal locks. Independent
+work may proceed when it uses independent shared state. The rendering cache's
+dedicated mutex does not introduce a global Device lock. Device initialization,
+destruction and recreation require exclusive access relative to these operations.

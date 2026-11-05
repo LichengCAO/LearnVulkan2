@@ -16,7 +16,9 @@ info.Finalize();                 // Host: load SPIR-V, reflect, resolve layout d
 }                               // Automatically releases its owned shader module.
 ```
 
-`Finalize()` and `IsFinalized()` are provided by graphics, compute and ray tracing program CreateInfos, RenderPassCreateInfo, PipelineLayoutCreateInfo, and the internal ShaderModuleCreateInfo. All three ShaderPrograms use `device.CreateXxxShaderProgram(program, info)`; render passes and shader modules use `Create(const XxxCreateInfo&)`, and pipeline layouts use `device.GetOrCreatePipelineLayout(layout, info)`. These creation entries reject unfinalized inputs before calling Vulkan; they do not silently finalize them.
+`Finalize()` and `IsFinalized()` are provided by graphics, compute and ray tracing program CreateInfos, RenderPassDesc, PipelineLayoutCreateInfo, and the internal ShaderModuleCreateInfo. All three ShaderPrograms use `device.CreateXxxShaderProgram(program, info)`; pipeline layouts use `device.GetOrCreatePipelineLayout(layout, info)`, and shader modules use `Create(const XxxCreateInfo&)`. These creation entries reject unfinalized inputs before calling Vulkan; they do not silently finalize them.
+
+Rendering uses `RenderPassDesc` and `FramebufferDesc` directly. Native handles are obtained through `device.GetOrCreateRenderPass(passDesc)` and `device.GetOrCreateFramebuffer(passDesc, framebufferDesc)`, or during command preparation. The Device owns the native cache; there are no public RenderPass or Framebuffer facade types.
 
 Program creation requires an empty output and live Device/allocators. It publishes
 only after successful temporary creation; failures leave the output unchanged and
@@ -30,7 +32,7 @@ destruction access shared state under caller synchronization; see
 - A successful Set/Add/Customize/Reset invalidates that description's snapshot. Set device options, including pipeline caches, before Finalize.
 - Finalize validates and builds a local result, then publishes an immutable snapshot. Failure leaves the description unfinalized.
 - Repeated Finalize without changes reuses the snapshot and does not reload shader files. To reload the same path, call SetShader with that path again and then Finalize.
-- Existing copy/move restrictions are preserved. Copies share immutable results; editing or resetting one copy does not invalidate another. RenderPassCreateInfo remains noncopyable and nonmovable.
+- Existing copy/move restrictions are preserved. Copies share immutable results; editing or resetting one copy does not invalidate another. RenderPassDesc is noncopyable and nonmovable.
 - Native pointer views are assembled against owned storage when creating objects. Objects retain or copy their required data, so the input CreateInfo may be modified or destroyed after Create returns.
 - Descriptions may be reused for several object creations. Concurrent mutation or Finalize of the same description requires caller synchronization.
 
@@ -62,9 +64,13 @@ owns its host metadata and borrows a Device-cached native handle. It has no
 public Create/Destroy/Reset; clear it with `layout = {}`. See
 [pipeline layout ownership](resource_lifetimes.md#pipeline-layout-ownership).
 
-RenderPassCreateInfo::Finalize resolves attachment/subpass names, validates samples and resolve attachments, and owns the arrays and derived metadata. RenderPass::Create consumes that snapshot. Generated default render passes and automatic vertex layouts are finalized as part of GraphicsShaderProgramCreateInfo::Finalize.
+`RenderPassDesc::Finalize()` resolves attachment/subpass names, validates sample counts and resolve attachments, and publishes immutable arrays and derived metadata. It and `IsFinalized()` are Host-only operations and require no Device. `GetSubpassCount()`, `GetClearValues()` and `GetAttachmentIndex(name)` require finalized input. Successful edits invalidate the current snapshot; existing command and Graphics state snapshots remain unchanged. Generated default descriptions and automatic vertex layouts are finalized as part of GraphicsShaderProgramCreateInfo::Finalize. Programs expose their default with `GetDefaultRenderPassDesc()`.
 
-Simple Buffer/Image/Sampler CreateInfos do not require Finalize. Samplers are created through `MyDevice::GetOrCreateSampler(sampler, info)` as borrowed handle values owned by the Device cache; see [Sampler ownership](resource_lifetimes.md#sampler-ownership). Command recording, asynchronous recording dispatch, queue submission, explicit waits and resource retention retain their existing semantics. Finalization itself does not introduce GPU synchronization.
+`FramebufferDesc` is copyable and movable and has no Finalize step. `SetImageView(name, view)` snapshots only the view's resource ID, raw handle and attachment metadata. `CustomizeSize(width, height, layers)` overrides the derived dimensions; `Reset()` clears the description. These operations retain no Image or ImageView resource. The supplied attachments must remain valid through native preparation, recording and GPU execution.
+
+`CommandBuffer::BeginRenderPass(passDesc, framebufferDesc, x, y, width, height[, clearValues], contents)` copies CPU snapshots without calling Vulkan. Serial preparation resolves native render-pass and framebuffer handles before worker recording, including buffers without Program bindings. Native recording uses the prepared handles. The Device internally synchronizes its two render-target caches and retains their native objects until teardown; see [rendering ownership](resource_lifetimes.md#rendering-descriptions-and-native-cache).
+
+Simple Buffer/Image/Sampler CreateInfos do not require Finalize. Samplers are created through `MyDevice::GetOrCreateSampler(sampler, info)` as borrowed handle values owned by the Device cache; see [Sampler ownership](resource_lifetimes.md#sampler-ownership). Rendering descriptions do not retain attachments automatically; use `KeepAlive(Image/ImageView)` for explicit command retention. Other typed image commands and descriptor resources keep their existing retention behavior. Finalization itself does not introduce GPU synchronization.
 
 ## Independent Host build
 

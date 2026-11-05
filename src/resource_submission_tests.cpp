@@ -3,6 +3,9 @@
 #include "my_vulkan/command/command_buffer.h"
 #include "my_vulkan/render_context/device_context.h"
 #include "my_vulkan/render_context/private/frame_slot.h"
+#include "my_vulkan/pipeline/render_pass_desc.h"
+#include "my_vulkan/pipeline/framebuffer_desc.h"
+#include "my_vulkan/allocator/private/render_target_cache.h"
 
 #include <set>
 #include <utility>
@@ -21,6 +24,47 @@ struct ResourceSubmissionTestProbe
     };
 
     inline static HookState* activeHooks = nullptr;
+    inline static size_t renderPassPreparationCalls = 0;
+
+    struct PreparationStop final : std::runtime_error
+    {
+        PreparationStop() : std::runtime_error("Stop before native render-pass allocation") {}
+    };
+
+    static auto VKAPI_PTR _StopRenderPassPreparation(VkDevice inDevice,
+        const VkRenderPassCreateInfo* inInfo, const VkAllocationCallbacks*, VkRenderPass*) -> VkResult
+    {
+        CHECK_TRUE(inDevice == reinterpret_cast<VkDevice>(uintptr_t(1)) &&
+            inInfo->attachmentCount == 1 && inInfo->subpassCount == 1,
+            "Frame recording must prepare the queued rendering description on the active Device!");
+        ++renderPassPreparationCalls;
+        throw PreparationStop{};
+    }
+
+    struct RenderPreparationScope
+    {
+        PFN_vkCreateRenderPass createRenderPass = vkCreateRenderPass;
+        std::unique_ptr<VulkanDetail::RenderTargetCache> cache;
+
+        RenderPreparationScope()
+        {
+            auto& instance = MyDevice::GetInstance();
+            cache = std::move(instance.m_uptrRenderTargetCache);
+            instance.m_uptrRenderTargetCache = std::make_unique<VulkanDetail::RenderTargetCache>();
+            instance.m_uptrRenderTargetCache->Create(instance.vkDevice);
+            renderPassPreparationCalls = 0;
+            vkCreateRenderPass = _StopRenderPassPreparation;
+        }
+        RenderPreparationScope(const RenderPreparationScope&) = delete;
+        auto operator=(const RenderPreparationScope&) -> RenderPreparationScope& = delete;
+        ~RenderPreparationScope()
+        {
+            auto& instance = MyDevice::GetInstance();
+            instance.m_uptrRenderTargetCache.reset();
+            instance.m_uptrRenderTargetCache = std::move(cache);
+            vkCreateRenderPass = createRenderPass;
+        }
+    };
 
     static void _CheckAlive()
     {
@@ -137,6 +181,24 @@ struct ResourceSubmissionTestProbe
         return buffers;
     }
 
+    static auto _ExplicitKeepAliveBuffers(int& inDestroyed, bool inView) -> std::vector<CommandBuffer>
+    {
+        Image image;
+        image.m_resource = MakeIntrusive<VulkanDetail::ImageResource>(
+            reinterpret_cast<VkImage>(uintptr_t(101)), [&inDestroyed](VkImage) { ++inDestroyed; });
+        std::vector<CommandBuffer> buffers(1);
+        if (inView)
+        {
+            ImageView view;
+            view.m_resource = MakeIntrusive<VulkanDetail::ImageViewResource>(
+                reinterpret_cast<VkImageView>(uintptr_t(102)), nullptr,
+                std::vector<VulkanDetail::ResourceReference>{image.m_resource});
+            buffers.front().KeepAlive(view);
+        }
+        else buffers.front().KeepAlive(image);
+        return buffers;
+    }
+
     static auto _Context() -> std::unique_ptr<DeviceContext>
     {
         auto context = std::make_unique<DeviceContext>(1);
@@ -159,6 +221,46 @@ struct ResourceSubmissionTestProbe
         CHECK_TRUE(destroyed == 0, "Recorded resource references must survive destruction of CPU recording sources!");
         payload.resourceReferences.clear();
         CHECK_TRUE(destroyed == 1, "An abandoned recording payload must release its resources exactly once!");
+    }
+
+    static void RenderingPreparationRunsWithoutProgramBindings()
+    {
+        int destroyed = 0;
+        HookScope hooks(destroyed);
+        RenderPreparationScope preparation;
+        std::vector<CommandBuffer> buffers(1);
+        {
+            RenderPassDesc pass;
+            AttachmentDescription attachment;
+            attachment.CustomizeFormat(VK_FORMAT_R8G8B8A8_UNORM, VkClearValue{});
+            pass.AddAttachment("color", attachment);
+            SubpassDescription subpass;
+            subpass.AddColorAttachment(0, "color");
+            pass.AddSubpass("main", subpass);
+            pass.Finalize();
+            FramebufferDesc framebuffer;
+            framebuffer.m_attachments.emplace("color", FramebufferDesc::Attachment{
+                42, reinterpret_cast<VkImageView>(uintptr_t(304)), { 64, 64, 1 }, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_VIEW_TYPE_2D, 1, 1 });
+            buffers.front().BeginRenderPass(pass, framebuffer, 0, 0, 64, 64);
+            buffers.front().EndRenderPass();
+        }
+        CHECK_TRUE(renderPassPreparationCalls == 0,
+            "Host finalization and rendering enqueue must defer native creation until frame preparation!");
+        auto slot = std::unique_ptr<FrameSlot>(new FrameSlot());
+        bool reachedPreparation = false;
+        try
+        {
+            slot->DispatchRecording(QueueFamilyType::GRAPHICS, std::move(buffers));
+        }
+        catch (const PreparationStop&)
+        {
+            reachedPreparation = true;
+        }
+        CHECK_TRUE(reachedPreparation && renderPassPreparationCalls == 1,
+            "FrameSlot must prepare rendering commands even when no Program is bound!");
+        CHECK_TRUE(slot->m_recordTasks.empty() && !slot->m_dynamicDescriptorPool && hooks.state.submitCount == 0,
+            "A preparation failure must not publish recording work, allocate descriptors, or submit GPU work!");
     }
 
     static void AbandonedRecordingReleasesResources()
@@ -213,6 +315,20 @@ struct ResourceSubmissionTestProbe
         hooks.state.expectAlive = false;
     }
 
+    static void ExplicitKeepAliveWaitsForSubmissionCompletion()
+    {
+        for (const bool view : { false, true })
+        {
+            int destroyed = 0;
+            HookScope hooks(destroyed);
+            auto context = _Context();
+            context->ExecuteCommandsAndWait(QueueFamilyType::TRANSFER, _ExplicitKeepAliveBuffers(destroyed, view));
+            CHECK_TRUE(hooks.state.submitCount == 1 && hooks.state.waitCount == 1 && destroyed == 1,
+                "Explicit Image/ImageView KeepAlive must survive owner destruction, submission and waiting, then release at completion!");
+            hooks.state.expectAlive = false;
+        }
+    }
+
     static void FailedImmediateSubmitReleasesResources()
     {
         int destroyed = 0;
@@ -238,9 +354,11 @@ struct ResourceSubmissionTestProbe
 
 void RunResourceSubmissionTests()
 {
+    ResourceSubmissionTestProbe::RenderingPreparationRunsWithoutProgramBindings();
     ResourceSubmissionTestProbe::RecordingPayloadOutlivesCpuSources();
     ResourceSubmissionTestProbe::AbandonedRecordingReleasesResources();
     ResourceSubmissionTestProbe::DeferredResourcesWaitForEveryFrameQueue();
     ResourceSubmissionTestProbe::ImmediateResourcesWaitForFenceCallback();
+    ResourceSubmissionTestProbe::ExplicitKeepAliveWaitsForSubmissionCompletion();
     ResourceSubmissionTestProbe::FailedImmediateSubmitReleasesResources();
 }

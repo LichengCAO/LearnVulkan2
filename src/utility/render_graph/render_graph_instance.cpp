@@ -280,7 +280,6 @@ void RenderGraphInstance::_DestroyManagedRenderPasses()
 		}
 		if (renderPass.renderPass != nullptr)
 		{
-			renderPass.renderPass->Destroy();
 			renderPass.renderPass.reset();
 		}
 	}
@@ -654,7 +653,8 @@ void RenderGraphInstance::_CreateManagedRenderPasses()
 				dependenciesBySubpass[afterIter->second].push_back(dependency);
 			}
 
-			RenderPassCreateInfo renderPassInfo;
+			auto renderPassDesc = std::make_unique<RenderPassDesc>();
+			auto& renderPassInfo = *renderPassDesc;
 			std::vector<std::string> attachmentNames;
 			attachmentNames.reserve(managedPlan.attachments.size());
 			for (uint32_t attachmentIndex = 0; attachmentIndex < managedPlan.attachments.size(); ++attachmentIndex)
@@ -769,9 +769,8 @@ void RenderGraphInstance::_CreateManagedRenderPasses()
 
 			ManagedRenderPass managedRenderPass;
 			managedRenderPass.attachmentPlans = managedPlan.attachments;
-			managedRenderPass.renderPass = std::make_unique<RenderPass>();
 			renderPassInfo.Finalize();
-			managedRenderPass.renderPass->Create(renderPassInfo);
+			managedRenderPass.renderPass = std::move(renderPassDesc);
 
 			CHECK_TRUE(!managedPlan.attachments.empty(), "Managed render pass has no attachments!");
 			const RenderGraph::SubmitBatch::ManagedAttachmentPlan& firstAttachmentPlan = managedPlan.attachments.front();
@@ -793,7 +792,7 @@ void RenderGraphInstance::_CreateManagedRenderPasses()
 					"Render graph framebuffer attachments must have identical 2D size!");
 			}
 
-			FramebufferInfo framebufferInfo;
+			FramebufferDesc framebufferInfo;
 			for (uint32_t attachmentIndex = 0; attachmentIndex < managedPlan.attachments.size(); ++attachmentIndex)
 			{
 				const RenderGraph::SubmitBatch::ManagedAttachmentPlan& attachment = managedPlan.attachments[attachmentIndex];
@@ -801,8 +800,7 @@ void RenderGraphInstance::_CreateManagedRenderPasses()
 					attachmentNames[attachmentIndex],
 					m_images[attachment.image]->View(_MakeImageViewInfo(attachment.subresourceRange)));
 			}
-			managedRenderPass.framebuffer = std::make_unique<Framebuffer>(
-				managedRenderPass.renderPass->GetFramebuffer(framebufferInfo));
+			managedRenderPass.framebuffer = std::make_unique<FramebufferDesc>(std::move(framebufferInfo));
 			managedRenderPass.defaultClearValues = managedRenderPass.renderPass->GetClearValues();
 
 			const uint32_t managedIndex = static_cast<uint32_t>(m_managedRenderPasses.size());
@@ -993,16 +991,13 @@ void RenderGraphInstance::_AppendRenderPassCommands(
 	CHECK_TRUE(!inPasses.empty(), "Render graph render pass batch cannot be empty!");
 	CHECK_TRUE(
 		inRenderPass.renderPass != nullptr &&
-		inRenderPass.renderPass->GetVkRenderPass() != VK_NULL_HANDLE,
+			inRenderPass.renderPass->IsFinalized(),
 		"Invalid render graph temporary render pass!");
 	CHECK_TRUE(
-		inRenderPass.framebuffer != nullptr &&
-		inRenderPass.framebuffer->GetVkFramebuffer() != VK_NULL_HANDLE,
+			inRenderPass.framebuffer != nullptr,
 		"Invalid render graph temporary framebuffer!");
 
 	BeginRenderPassCommand::Parameters beginParameters;
-	beginParameters.renderPass = inRenderPass.renderPass->GetVkRenderPass();
-	beginParameters.framebuffer = inRenderPass.framebuffer->GetVkFramebuffer();
 	beginParameters.renderArea = inRenderPass.renderArea;
 	beginParameters.clearValues = inRenderPass.defaultClearValues;
 	beginParameters.contents = VK_SUBPASS_CONTENTS_INLINE;
@@ -1062,7 +1057,7 @@ void RenderGraphInstance::_AppendRenderPassCommands(
 		}
 	}
 
-	inCommandBuffer.BeginRenderPass(*inRenderPass.framebuffer,
+		inCommandBuffer.BeginRenderPass(*inRenderPass.renderPass, *inRenderPass.framebuffer,
 		beginParameters.renderArea.offset.x, beginParameters.renderArea.offset.y,
 		beginParameters.renderArea.extent.width, beginParameters.renderArea.extent.height,
 		beginParameters.clearValues, beginParameters.contents);

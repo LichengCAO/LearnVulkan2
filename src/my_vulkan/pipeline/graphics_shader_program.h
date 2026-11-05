@@ -3,11 +3,9 @@
 #include "pipeline_layout.h"
 #include "private/shader.h"
 #include "resource/descriptor.h"
-#include "render_pass.h"
+#include "private/render_target_description.h"
 #include <map>
 #include <string_view>
-class RenderPass;
-class Framebuffer;
 class ImageView;
 class GraphicsShaderProgram;
 class CommandSubmission;
@@ -29,7 +27,7 @@ public:
 	void AddVertexInputDescription(
 		const VkVertexInputBindingDescription& inBindingDescription,
 		const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions);
-	void SetRenderPassSubpass(const RenderPass& inRenderPass, uint32_t inSubpassIndex = 0);
+	void SetRenderPassSubpass(const RenderPassDesc& inRenderPass, uint32_t inSubpassIndex = 0);
 };
 
 #include "shader_program_create_info.h"
@@ -50,15 +48,15 @@ private:
 		VulkanDetail::RenderPassSnapshot renderPass;
 	};
 	std::unordered_map<size_t, CachedGraphicsPipeline> m_cachedGraphicsPipelines;
-	std::unique_ptr<RenderPass> m_defaultRenderPass;
+	std::shared_ptr<const RenderPassDesc> m_defaultRenderPass;
 	GraphicsPipelineStateInfo m_defaultState;
 	bool m_automaticVertexInputSupported = true;
 
 private:
 	void _CreateDefaults(const GraphicsShaderProgramCreateInfo& inInfo);
 	auto _ResolveState(const GraphicsPipelineStateInfo& inState) const -> GraphicsPipelineStateInfo;
-	auto _CreateVkPipeline(const GraphicsPipelineStateInfo& inStateInfo) const -> VkPipeline;
-	auto _HashGraphicsPipelineStateInfo(const GraphicsPipelineStateInfo& inStateInfo) const -> size_t;
+	auto _CreateVkPipeline(const GraphicsPipelineStateInfo& inStateInfo, VkRenderPass inRenderPass) const -> VkPipeline;
+	auto _HashGraphicsPipelineStateInfo(const GraphicsPipelineStateInfo& inStateInfo, VkRenderPass inRenderPass) const -> size_t;
 
 public:
 	GraphicsShaderProgram();
@@ -71,6 +69,6 @@ public:
 	// MyDevice creates this object synchronously. Callers serialize this instance,
 	// its lazy GetVkPipeline calls and related shared cache/dependency accesses.
 	auto GetLayout() const -> const PipelineLayout&;
-	auto GetDefaultRenderPass() const -> const RenderPass&;
+	auto GetDefaultRenderPassDesc() const -> const RenderPassDesc&;
 	auto GetVkPipeline(const GraphicsPipelineStateInfo& inStateInfo)->VkPipeline;
 };

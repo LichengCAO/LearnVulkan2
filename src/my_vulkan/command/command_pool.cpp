@@ -25,9 +25,9 @@ auto CommandPoolCreateInfo::CustomizeNext(const void* inNext)->CommandPoolCreate
 	return *this;
 }
 
-CommandPool::~CommandPool()
+CommandPool::~CommandPool() noexcept
 {
-	Destroy();
+	_Destroy();
 }
 
 auto CommandPool::_GetUsedCommandBufferQueue(VkCommandBufferLevel inLevel)->std::deque<VkCommandBuffer>&
@@ -58,44 +58,28 @@ auto CommandPool::_GetUnusedCommandBufferQueue(VkCommandBufferLevel inLevel)->st
 	}
 }
 
-auto CommandPool::_FreeTrackedCommandBuffers()->void
-{
-	auto& device = MyDevice::GetInstance();
-	auto freeQueue = [this, &device](std::deque<VkCommandBuffer>& inoutQueue)
-	{
-		for (VkCommandBuffer commandBuffer : inoutQueue)
-		{
-			if (commandBuffer != VK_NULL_HANDLE)
-			{
-				device.FreeCommandBuffer(m_vkCommandPool, commandBuffer);
-			}
-		}
-		inoutQueue.clear();
-	};
-
-	freeQueue(m_usedPrimaryCommandBuffers);
-	freeQueue(m_unusedPrimaryCommandBuffers);
-	freeQueue(m_usedSecondaryCommandBuffers);
-	freeQueue(m_unusedSecondaryCommandBuffers);
-}
-
 auto CommandPool::Create(const CommandPoolCreateInfo& inCreateInfo)->void
 {
 	CHECK_TRUE(m_vkCommandPool == VK_NULL_HANDLE, "Command pool already created!");
 
 	auto& device = MyDevice::GetInstance();
-	m_queueFamilyIndex = device.GetQueueFamilyIndexOfType(inCreateInfo.m_queueFamilyType);
-	CHECK_TRUE(m_queueFamilyIndex != VK_QUEUE_FAMILY_IGNORED, "Invalid command pool queue family index!");
+	const VkDevice vkDevice = device.vkDevice;
+	CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Command pool requires an available device!");
+	const uint32_t queueFamilyIndex = device.GetQueueFamilyIndexOfType(inCreateInfo.m_queueFamilyType);
+	CHECK_TRUE(queueFamilyIndex != VK_QUEUE_FAMILY_IGNORED, "Invalid command pool queue family index!");
 
 	VkCommandPoolCreateInfo createInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 	createInfo.pNext = inCreateInfo.m_next;
 	createInfo.flags = inCreateInfo.m_createFlags;
-	createInfo.queueFamilyIndex = m_queueFamilyIndex;
+	createInfo.queueFamilyIndex = queueFamilyIndex;
 
-	m_vkCommandPool = device.CreateCommandPool(createInfo);
+	const VkCommandPool commandPool = device.CreateCommandPool(createInfo);
+	m_vkDevice = vkDevice;
+	m_queueFamilyIndex = queueFamilyIndex;
+	m_vkCommandPool = commandPool;
 }
 
-auto CommandPool::Destroy()->void
+void CommandPool::_Destroy() noexcept
 {
 	if (m_vkCommandPool == VK_NULL_HANDLE)
 	{
@@ -103,9 +87,13 @@ auto CommandPool::Destroy()->void
 		return;
 	}
 
-	_FreeTrackedCommandBuffers();
-	MyDevice::GetInstance().DestroyCommandPool(m_vkCommandPool);
+	vkDestroyCommandPool(m_vkDevice, m_vkCommandPool, nullptr);
+	m_usedPrimaryCommandBuffers.clear();
+	m_unusedPrimaryCommandBuffers.clear();
+	m_usedSecondaryCommandBuffers.clear();
+	m_unusedSecondaryCommandBuffers.clear();
 	m_vkCommandPool = VK_NULL_HANDLE;
+	m_vkDevice = VK_NULL_HANDLE;
 	m_queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 }
 

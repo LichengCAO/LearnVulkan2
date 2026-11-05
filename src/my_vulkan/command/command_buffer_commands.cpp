@@ -2,7 +2,7 @@
 #include "resource/buffer.h"
 #include "resource/image.h"
 #include "resource/acceleration_structure.h"
-#include "pipeline/render_pass.h"
+#include "pipeline/framebuffer_desc.h"
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -38,19 +38,18 @@ namespace
             uint64_t(inY) + inHeight <= std::numeric_limits<int32_t>::max(), "Rectangle extent overflows!");
     }
 
-    auto RenderPassParameters(const VulkanDetail::RenderPassSnapshot& inSnapshot, const Framebuffer& inFramebuffer,
+    auto RenderPassParameters(const VulkanDetail::RenderPassSnapshot& inSnapshot, const VulkanDetail::ResolvedFramebufferDesc& inFramebuffer,
         int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight,
         std::span<const VkClearValue> inClearValues, VkSubpassContents inContents)
         -> BeginRenderPassCommand::Parameters
     {
         ValidateRect(inX, inY, inWidth, inHeight);
         CHECK_TRUE(inWidth > 0 && inHeight > 0, "Render area must not be empty!");
-        const auto size = inFramebuffer.GetSize();
+        const auto size = inFramebuffer.extent;
         CHECK_TRUE(uint64_t(inX) + inWidth <= size.width && uint64_t(inY) + inHeight <= size.height,
             "Render area is outside the framebuffer!");
         CHECK_TRUE(inClearValues.size() <= std::numeric_limits<uint32_t>::max(), "Too many clear values!");
-        CHECK_TRUE(inSnapshot.GetVkRenderPass() != VK_NULL_HANDLE && inSnapshot.description,
-            "Render pass was not created!");
+        CHECK_TRUE(inSnapshot.description, "Render pass description is missing!");
         for (size_t index = 0; index < inSnapshot.description->attachments.size(); ++index)
         {
             const auto& attachment = inSnapshot.description->attachments[index];
@@ -65,8 +64,6 @@ namespace
         CHECK_TRUE(inContents == VK_SUBPASS_CONTENTS_INLINE || inContents == VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS,
             "Invalid subpass contents!");
         BeginRenderPassCommand::Parameters parameters;
-        parameters.renderPass = inSnapshot.GetVkRenderPass();
-        parameters.framebuffer = inFramebuffer.GetVkFramebuffer();
         parameters.renderArea = {{inX, inY}, {inWidth, inHeight}};
         parameters.clearValues.assign(inClearValues.begin(), inClearValues.end());
         parameters.contents = inContents;
@@ -131,40 +128,22 @@ void CommandBuffer::_RequireGraphicsProgram() const
     CHECK_TRUE(m_graphicsProgram != nullptr, "Bind a graphics program before drawing!");
 }
 
-void CommandBuffer::BeginRenderPass(const RenderPass& inRenderPass, const Framebuffer& inFramebuffer,
+void CommandBuffer::BeginRenderPass(const RenderPassDesc& inRenderPass, const FramebufferDesc& inFramebuffer,
     int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight, VkSubpassContents inContents)
 {
     BeginRenderPass(inRenderPass, inFramebuffer, inX, inY, inWidth, inHeight,
         inRenderPass.GetClearValues(), inContents);
 }
 
-void CommandBuffer::BeginRenderPass(const RenderPass& inRenderPass, const Framebuffer& inFramebuffer,
+void CommandBuffer::BeginRenderPass(const RenderPassDesc& inRenderPass, const FramebufferDesc& inFramebuffer,
     int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight,
     std::span<const VkClearValue> inClearValues, VkSubpassContents inContents)
 {
     const auto snapshot = inRenderPass._GetSnapshot();
-    CHECK_TRUE(snapshot.IsCompatibleWith(inFramebuffer._GetRenderPassSnapshot()),
-        "Render pass is incompatible with the framebuffer!");
-    const auto parameters = RenderPassParameters(snapshot, inFramebuffer,
+    auto framebuffer = inFramebuffer._Resolve(*snapshot.description);
+    const auto parameters = RenderPassParameters(snapshot, framebuffer,
         inX, inY, inWidth, inHeight, inClearValues, inContents);
-    _BeginRenderPass(parameters, snapshot, inFramebuffer._GetResourceReference());
-}
-
-void CommandBuffer::BeginRenderPass(const Framebuffer& inFramebuffer,
-    int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight, VkSubpassContents inContents)
-{
-    const auto snapshot = inFramebuffer._GetRenderPassSnapshot();
-    BeginRenderPass(inFramebuffer, inX, inY, inWidth, inHeight, snapshot.GetClearValues(), inContents);
-}
-
-void CommandBuffer::BeginRenderPass(const Framebuffer& inFramebuffer,
-    int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight,
-    std::span<const VkClearValue> inClearValues, VkSubpassContents inContents)
-{
-    const auto snapshot = inFramebuffer._GetRenderPassSnapshot();
-    const auto parameters = RenderPassParameters(snapshot, inFramebuffer,
-        inX, inY, inWidth, inHeight, inClearValues, inContents);
-    _BeginRenderPass(parameters, snapshot, inFramebuffer._GetResourceReference());
+    _BeginRenderPass(parameters, snapshot, std::move(framebuffer));
 }
 
 void CommandBuffer::BindVertexBuffers(uint32_t inFirstBinding, std::span<const Buffer* const> inBuffers,

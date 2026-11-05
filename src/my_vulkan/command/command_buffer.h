@@ -11,7 +11,6 @@
 class Buffer;
 class Image;
 class ImageView;
-class Framebuffer;
 class BottomLevelAccelStruct;
 class TopLevelAccelStruct;
 class BottomLevelAccelStructCreateInfo;
@@ -19,7 +18,8 @@ class TopLevelAccelStructCreateInfo;
 struct VkAccelStructBuildInfo;
 namespace VulkanDetail { class DynamicDescriptorPool; }
 
-// Member commands own CPU parameters and native image/rendering resource versions.
+// Member commands own CPU parameters; image commands retain their image versions.
+// Rendering attachments are borrowed through preparation, recording and GPU use.
 // Other GPU resources remain caller-owned. Callbacks own their captures;
 // any captured references must remain valid until recording completes.
 class CommandBuffer final
@@ -35,8 +35,6 @@ class CommandBuffer final
 private:
     struct LegacyRenderPassState final
     {
-        VkRenderPass renderPass = VK_NULL_HANDLE;
-        VkFramebuffer framebuffer = VK_NULL_HANDLE;
         uint32_t currentSubpass = 0;
         uint32_t subpassCount = 0;
         VkSubpassContents contents = VK_SUBPASS_CONTENTS_INLINE;
@@ -58,6 +56,7 @@ private:
     struct BindingCommand;
 
     void _PrepareCommands(VulkanDetail::DynamicDescriptorPool& inAllocator, QueueFamilyType inQueue);
+    void _PrepareRenderPassCommands();
     void _BindShaderResources(const PipelineLayout& inLayout, VkPipelineBindPoint inBindPoint,
         const ShaderResources& inResources);
     void _AppendCommand(const Command& inCommand);
@@ -66,9 +65,8 @@ private:
     void _AppendOwnedCommand(std::unique_ptr<Command> inCommand);
     void _AppendStateCommand(std::unique_ptr<Command> inCommand);
     void _Append(CommandBuffer&& inCommandBuffer);
-    void _BeginRenderPass(const BeginRenderPassCommand::Parameters& inParameters, uint32_t inSubpassCount);
     void _BeginRenderPass(const BeginRenderPassCommand::Parameters& inParameters,
-        const VulkanDetail::RenderPassSnapshot& inSnapshot, VulkanDetail::ResourceReference inFramebuffer);
+        const VulkanDetail::RenderPassSnapshot& inSnapshot, VulkanDetail::ResolvedFramebufferDesc inFramebuffer);
     void _RequireOutsideRenderPass() const;
     void _RequireInlineRenderPass() const;
     void _RequireGraphicsProgram() const;
@@ -85,17 +83,10 @@ public:
     auto operator=(CommandBuffer&& inOther) noexcept -> CommandBuffer&;
     ~CommandBuffer() = default;
 
-    void BeginRenderPass(const RenderPass& inRenderPass, const Framebuffer& inFramebuffer,
+    void BeginRenderPass(const RenderPassDesc& inRenderPass, const FramebufferDesc& inFramebuffer,
         int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight,
         VkSubpassContents inContents = VK_SUBPASS_CONTENTS_INLINE);
-    void BeginRenderPass(const Framebuffer& inFramebuffer,
-        int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight,
-        VkSubpassContents inContents = VK_SUBPASS_CONTENTS_INLINE);
-    void BeginRenderPass(const Framebuffer& inFramebuffer,
-        int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight,
-        std::span<const VkClearValue> inClearValues,
-        VkSubpassContents inContents = VK_SUBPASS_CONTENTS_INLINE);
-    void BeginRenderPass(const RenderPass& inRenderPass, const Framebuffer& inFramebuffer,
+    void BeginRenderPass(const RenderPassDesc& inRenderPass, const FramebufferDesc& inFramebuffer,
         int32_t inX, int32_t inY, uint32_t inWidth, uint32_t inHeight,
         std::span<const VkClearValue> inClearValues,
         VkSubpassContents inContents = VK_SUBPASS_CONTENTS_INLINE);
@@ -190,6 +181,4 @@ public:
     void AppendCommand(std::function<void(VkCommandBuffer)> inRecord);
     void KeepAlive(const Image& inImage);
     void KeepAlive(const ImageView& inImageView);
-    void KeepAlive(const RenderPass& inRenderPass);
-    void KeepAlive(const Framebuffer& inFramebuffer);
 };

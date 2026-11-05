@@ -3,7 +3,7 @@
 #include "my_vulkan/allocator/private/descriptor_set_layout_allocator.h"
 #include "my_vulkan/allocator/private/pipeline_layout_allocator.h"
 #include "my_vulkan/allocator/private/pipeline_allocator.h"
-#include "my_vulkan/allocator/private/render_pass_allocator.h"
+#include "my_vulkan/allocator/private/render_target_cache.h"
 #include "my_vulkan/pipeline/graphics_shader_program.h"
 #include "my_vulkan/pipeline/compute_shader_program.h"
 #include "my_vulkan/pipeline/ray_tracing_shader_program.h"
@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 #include <type_traits>
 #if defined(_MSC_VER) && defined(_DEBUG)
 #include <crtdbg.h>
@@ -40,6 +41,11 @@ static_assert(!HasPublicGraphicsCreate<GraphicsShaderProgram> && !HasPublicDestr
     !HasPublicReset<GraphicsShaderProgram>);
 static_assert(!HasPublicRayTracingCreate<RayTracingShaderProgram> && !HasPublicDestroy<RayTracingShaderProgram> &&
     !HasPublicReset<RayTracingShaderProgram>);
+static_assert(!std::is_copy_constructible_v<RenderPassDesc> && !std::is_move_constructible_v<RenderPassDesc> &&
+    !std::is_copy_assignable_v<RenderPassDesc> && !std::is_move_assignable_v<RenderPassDesc> &&
+    std::is_nothrow_destructible_v<RenderPassDesc>);
+static_assert(std::is_same_v<decltype(std::declval<MyDevice&>().GetOrCreateRenderPass(
+    std::declval<const RenderPassDesc&>())), VkRenderPass>);
 
 struct CreateInfoFinalizeTestProbe
 {
@@ -86,6 +92,22 @@ struct CreateInfoFinalizeTestProbe
         allocator = std::move(replacement);
         return previous;
     }
+    static auto ExchangePasses(std::unique_ptr<VulkanDetail::RenderTargetCache> replacement)
+        -> std::unique_ptr<VulkanDetail::RenderTargetCache>
+    {
+        auto& allocator = MyDevice::GetInstance().m_uptrRenderTargetCache;
+        auto previous = std::move(allocator);
+        allocator = std::move(replacement);
+        return previous;
+    }
+    static auto EmptyRenderPassDescriptionDestructionLeavesDeviceAbsent() -> bool
+    {
+        auto previous = std::move(MyDevice::s_uptrInstance);
+        { RenderPassDesc empty; }
+        const auto untouched = MyDevice::s_uptrInstance == nullptr;
+        MyDevice::s_uptrInstance = std::move(previous);
+        return untouched;
+    }
     static auto EmptyComputeDestructionLeavesDeviceAbsent() -> bool
     {
         auto previous = std::move(MyDevice::s_uptrInstance);
@@ -124,7 +146,7 @@ struct CreateInfoFinalizeTestProbe
         std::unique_ptr<GraphicsPipelineAllocator> graphics;
         std::unique_ptr<ComputePipelineAllocator> compute;
         std::unique_ptr<RayTracingPipelineAllocator> rays;
-        std::unique_ptr<RenderPassAllocator> passes;
+        std::unique_ptr<VulkanDetail::RenderTargetCache> passes;
 
         DeviceScope()
         {
@@ -141,19 +163,19 @@ struct CreateInfoFinalizeTestProbe
             graphics = std::move(instance.m_uptrGraphicsPipelineAllocator);
             compute = std::move(instance.m_uptrComputePipelineAllocator);
             rays = std::move(instance.m_uptrRayTracingPipelineAllocator);
-            passes = std::move(instance.m_uptrRenderPassAllocator);
+            passes = std::move(instance.m_uptrRenderTargetCache);
             instance.m_uptrDescriptorSetLayoutAllocator = std::make_unique<DescriptorSetLayoutAllocator>();
             instance.m_uptrPipelineLayoutAllocator = std::make_unique<PipelineLayoutAllocator>();
             instance.m_uptrGraphicsPipelineAllocator = std::make_unique<GraphicsPipelineAllocator>();
             instance.m_uptrComputePipelineAllocator = std::make_unique<ComputePipelineAllocator>();
             instance.m_uptrRayTracingPipelineAllocator = std::make_unique<RayTracingPipelineAllocator>();
-            instance.m_uptrRenderPassAllocator = std::make_unique<RenderPassAllocator>();
+            instance.m_uptrRenderTargetCache = std::make_unique<VulkanDetail::RenderTargetCache>();
             instance.m_uptrDescriptorSetLayoutAllocator->Create(instance.vkDevice);
             instance.m_uptrPipelineLayoutAllocator->Create(instance.vkDevice);
             instance.m_uptrGraphicsPipelineAllocator->Create(instance.vkDevice);
             instance.m_uptrComputePipelineAllocator->Create(instance.vkDevice);
             instance.m_uptrRayTracingPipelineAllocator->Create(instance.vkDevice);
-            instance.m_uptrRenderPassAllocator->Create(instance.vkDevice);
+            instance.m_uptrRenderTargetCache->Create(instance.vkDevice);
         }
         ~DeviceScope()
         {
@@ -161,7 +183,7 @@ struct CreateInfoFinalizeTestProbe
             instance.m_uptrGraphicsPipelineAllocator = std::move(graphics);
             instance.m_uptrComputePipelineAllocator = std::move(compute);
             instance.m_uptrRayTracingPipelineAllocator = std::move(rays);
-            instance.m_uptrRenderPassAllocator = std::move(passes);
+            instance.m_uptrRenderTargetCache = std::move(passes);
             instance.m_uptrPipelineLayoutAllocator = std::move(layouts);
             instance.m_uptrDescriptorSetLayoutAllocator = std::move(descriptors);
             instance.vkDevice = device;
@@ -177,8 +199,14 @@ namespace
 {
 #if defined(_MSC_VER) && defined(_DEBUG)
 thread_local bool failNextLayoutAllocation = false;
-auto __cdecl FailLayoutAllocation(int type, void*, size_t, int block, long, const unsigned char*, int) -> int
+thread_local int passAllocationsBeforeFailure = -1;
+auto __cdecl FailLayoutAllocation(int type, void*, size_t size, int block, long, const unsigned char*, int) -> int
 {
+    // MSVC Debug vectors allocate iterator proxies even in noexcept empty/move
+    // constructors. Skip those to target cache insertion.
+    if (type == _HOOK_ALLOC && block != _CRT_BLOCK && size != sizeof(std::_Container_proxy) &&
+        passAllocationsBeforeFailure >= 0 &&
+        passAllocationsBeforeFailure-- == 0) return 0;
     if (type == _HOOK_ALLOC && block != _CRT_BLOCK && failNextLayoutAllocation)
     {
         failNextLayoutAllocation = false;
@@ -186,12 +214,13 @@ auto __cdecl FailLayoutAllocation(int type, void*, size_t, int block, long, cons
     }
     return 1;
 }
-struct LayoutAllocationFailureScope final
+struct HostAllocationFailureScope final
 {
     _CRT_ALLOC_HOOK previous = _CrtSetAllocHook(FailLayoutAllocation);
-    ~LayoutAllocationFailureScope()
+    ~HostAllocationFailureScope()
     {
         failNextLayoutAllocation = false;
+        passAllocationsBeforeFailure = -1;
         _CrtSetAllocHook(previous);
     }
 };
@@ -208,12 +237,14 @@ struct NativeState final
     uint32_t calls = 0, moduleCreates = 0, moduleDestroys = 0;
     uint32_t layoutCreates = 0, computeCreates = 0, graphicsCreates = 0, rayCreates = 0, groupReads = 0, passCreates = 0;
     uint32_t descriptorCreates = 0, descriptorDestroys = 0, layoutDestroys = 0;
-    uint32_t pipelineDestroys = 0;
+    uint32_t pipelineDestroys = 0, passDestroys = 0;
     std::set<VkPipeline> livePipelines;
     std::set<VkShaderModule> liveModules;
+    std::set<VkRenderPass> livePasses;
     VkPipelineCache computePipelineCache = VK_NULL_HANDLE;
     bool failDescriptor = false;
     bool failLayoutPublication = false;
+    int failPassAllocationAfter = -1;
     std::set<VkPipelineLayout> liveLayouts;
     bool failModule = false, failLayout = false, failCompute = false, failGraphics = false, failRay = false, failGroups = false, failPass = false;
     std::vector<std::vector<uint32_t>> shaderCode;
@@ -356,9 +387,18 @@ auto VKAPI_PTR CreatePass(VkDevice, const VkRenderPassCreateInfo* info, const Vk
             nativeState->passColors.push_back(info->pSubpasses[0].pColorAttachments[index]);
     if (nativeState->failPass) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *output = CreateInfoFinalizeTestProbe::Handle<VkRenderPass>(nativeState->nextHandle++);
+    nativeState->livePasses.insert(*output);
+#if defined(_MSC_VER) && defined(_DEBUG)
+    // Arm only after test bookkeeping to fail native cache publication.
+    passAllocationsBeforeFailure = nativeState->failPassAllocationAfter;
+#endif
     return VK_SUCCESS;
 }
-void VKAPI_PTR DestroyPass(VkDevice, VkRenderPass, const VkAllocationCallbacks*) {}
+void VKAPI_PTR DestroyPass(VkDevice, VkRenderPass pass, const VkAllocationCallbacks*)
+{
+    CHECK_TRUE(nativeState->livePasses.erase(pass) == 1, "Render passes must be destroyed exactly once!");
+    ++nativeState->passDestroys;
+}
 
 // Declare before runtime owners, so their cleanup and cache cleanup run under hooks.
 struct NativeEnvironment final
@@ -465,13 +505,12 @@ void TestUnfinalizedDescriptionsNeverReachVulkan()
     ComputeShaderProgram compute;
     RayTracingShaderProgram rays;
     PipelineLayout layout;
-    Owner<RenderPass> pass;
     ShaderModuleCreateInfo moduleInfo;
     GraphicsShaderProgramCreateInfo graphicsInfo;
     ComputeShaderProgramCreateInfo computeInfo;
     RayTracingShaderProgramCreateInfo rayInfo;
     PipelineLayoutCreateInfo layoutInfo;
-    RenderPassCreateInfo passInfo;
+    RenderPassDesc passInfo;
     // Valid host-only descriptions expose accidental implicit Finalize too.
     passInfo.AddSubpass("main", SubpassDescription{});
     ExpectUnfinalizedFailure([&] { module.value.Create(moduleInfo); });
@@ -479,7 +518,7 @@ void TestUnfinalizedDescriptionsNeverReachVulkan()
     ExpectUnfinalizedFailure([&] { MyDevice::GetInstance().CreateComputeShaderProgram(compute, computeInfo); });
     ExpectUnfinalizedFailure([&] { MyDevice::GetInstance().CreateRayTracingShaderProgram(rays, rayInfo); });
     ExpectUnfinalizedFailure([&] { MyDevice::GetInstance().GetOrCreatePipelineLayout(layout, layoutInfo); });
-    ExpectUnfinalizedFailure([&] { pass.value.Create(passInfo); });
+    ExpectUnfinalizedFailure([&] { (void)MyDevice::GetInstance().GetOrCreateRenderPass(passInfo); });
     CHECK_TRUE(environment.state.calls == 0, "Unfinalized runtime Create must reject before every native API!");
     CHECK_TRUE(!moduleInfo.IsFinalized() && !graphicsInfo.IsFinalized() && !computeInfo.IsFinalized() &&
         !rayInfo.IsFinalized() && !layoutInfo.IsFinalized() && !passInfo.IsFinalized(),
@@ -731,7 +770,7 @@ void TestLayoutCachePublicationRollback()
     bool failed = false;
     environment.state.failLayoutPublication = true;
     {
-        LayoutAllocationFailureScope failureScope;
+        HostAllocationFailureScope failureScope;
         try { device.GetOrCreatePipelineLayout(target, info); }
         catch (const std::bad_alloc&) { failed = true; }
     }
@@ -983,7 +1022,7 @@ void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
     CHECK_TRUE(graphics->GetVkPipeline({}) != VK_NULL_HANDLE && environment.state.stages.size() == 2 &&
         environment.state.stages[0].stage == VK_SHADER_STAGE_VERTEX_BIT && environment.state.stages[1].stage == VK_SHADER_STAGE_FRAGMENT_BIT &&
         environment.state.stages[0].entry == "main" && environment.state.stages[1].entry == "main" &&
-        graphics->GetDefaultRenderPass().GetVkRenderPass() != VK_NULL_HANDLE,
+        graphics->GetDefaultRenderPassDesc().IsFinalized(),
         "Graphics retry and cached default pipeline must retain finalized stages and generated render pass!");
     const auto nativeCallsBeforeOccupiedGraphics = environment.state.calls;
     ExpectFailure([&] { MyDevice::GetInstance().CreateGraphicsShaderProgram(*graphics, graphicsInfo); });
@@ -1007,7 +1046,7 @@ void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
     GraphicsPipelineStateInfo explicitState;
     VkVertexInputBindingDescription customBinding{0, 64, VK_VERTEX_INPUT_RATE_VERTEX};
     explicitState.AddVertexInputDescription(customBinding, {});
-    explicitState.SetRenderPassSubpass(graphics->GetDefaultRenderPass());
+    explicitState.SetRenderPassSubpass(graphics->GetDefaultRenderPassDesc());
     environment.state.failGraphics = true;
     ExpectFailure([&] { graphics->GetVkPipeline(explicitState); });
     CHECK_TRUE(environment.state.graphicsCreates == graphicsCreatesBeforeLazyFailure + 1,
@@ -1068,18 +1107,160 @@ void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
 void TestRenderPassNativeFailureDoesNotConsumeFinalizedInfo()
 {
     NativeEnvironment environment;
-    RenderPassCreateInfo info;
+    RenderPassDesc info;
     info.AddSubpass("main", SubpassDescription{});
     info.Finalize();
-    Owner<RenderPass> pass;
     environment.state.failPass = true;
-    ExpectFailure([&] { pass.value.Create(info); });
-    CHECK_TRUE(pass.value.GetVkRenderPass() == VK_NULL_HANDLE && info.IsFinalized(),
+    ExpectFailure([&] { (void)MyDevice::GetInstance().GetOrCreateRenderPass(info); });
+    CHECK_TRUE(info.IsFinalized() && info.GetSubpassCount() == 1 && info.GetClearValues().empty() &&
+        environment.state.livePasses.empty() && environment.state.passDestroys == 0,
         "Failed native render pass creation must preserve the finalized description for retry!");
     environment.state.failPass = false;
-    pass.value.Create(info);
-    CHECK_TRUE(pass.value.GetVkRenderPass() != VK_NULL_HANDLE && environment.state.passCreates == 2,
+    const auto pass = MyDevice::GetInstance().GetOrCreateRenderPass(info);
+    CHECK_TRUE(pass != VK_NULL_HANDLE && environment.state.passCreates == 2 &&
+        MyDevice::GetInstance().GetOrCreateRenderPass(info) == pass && environment.state.passCreates == 2,
         "A finalized render pass description must support retry after a native failure!");
+}
+
+void TestRenderPassCreationDependencies()
+{
+    CHECK_TRUE(CreateInfoFinalizeTestProbe::EmptyRenderPassDescriptionDestructionLeavesDeviceAbsent(),
+        "RenderPassDesc destruction must not obtain or initialize the Device!");
+    NativeEnvironment environment;
+    auto& device = MyDevice::GetInstance();
+    RenderPassDesc info;
+    info.AddSubpass("main", SubpassDescription{});
+    info.Finalize();
+    const auto nativeDevice = device.vkDevice;
+    device.vkDevice = VK_NULL_HANDLE;
+    ExpectFailure([&] { (void)device.GetOrCreateRenderPass(info); });
+    device.vkDevice = nativeDevice;
+    auto passes = CreateInfoFinalizeTestProbe::ExchangePasses({});
+    ExpectFailure([&] { (void)device.GetOrCreateRenderPass(info); });
+    CreateInfoFinalizeTestProbe::ExchangePasses(std::make_unique<VulkanDetail::RenderTargetCache>());
+    ExpectFailure([&] { (void)device.GetOrCreateRenderPass(info); });
+    CreateInfoFinalizeTestProbe::ExchangePasses(std::move(passes));
+    CHECK_TRUE(environment.state.calls == 0 && info.IsFinalized(),
+        "Unavailable dependencies must reject before Vulkan and leave the input reusable!");
+    CHECK_TRUE(device.GetOrCreateRenderPass(info) != VK_NULL_HANDLE && environment.state.passCreates == 1,
+        "Restoring dependencies must allow creation from the same description!");
+}
+
+void AddColorPass(RenderPassDesc& info, std::string_view name, float clear,
+    VkFormat format = VK_FORMAT_R8G8B8A8_UNORM)
+{
+    AttachmentDescription attachment;
+    VkClearValue value{};
+    value.color.float32[0] = clear;
+    attachment.CustomizeFormat(format, value);
+    info.AddAttachment(name, attachment);
+    SubpassDescription subpass;
+    subpass.AddColorAttachment(0, name);
+    info.AddSubpass("main", subpass);
+    info.Finalize();
+}
+
+void TestRenderPassCacheAndIndependentSnapshots()
+{
+    NativeEnvironment environment;
+    auto& device = MyDevice::GetInstance();
+    VkRenderPass first = VK_NULL_HANDLE;
+    {
+        RenderPassDesc firstInfo, secondInfo;
+        AddColorPass(firstInfo, "color", 0.25f);
+        AddColorPass(secondInfo, "renamed", 0.75f);
+        CHECK_TRUE(environment.state.calls == 0, "RenderPassDesc Finalize must remain host-only!");
+        first = device.GetOrCreateRenderPass(firstInfo);
+        const auto second = device.GetOrCreateRenderPass(secondInfo);
+        CHECK_TRUE(first == second && environment.state.passCreates == 1 &&
+            firstInfo.GetAttachmentIndex("color") == 0 && secondInfo.GetAttachmentIndex("renamed") == 0 &&
+            firstInfo.GetClearValues()[0].color.float32[0] == 0.25f && secondInfo.GetClearValues()[0].color.float32[0] == 0.75f,
+            "Names and clear values must remain per-description metadata while equivalent native descriptions share a cache entry!");
+        ExpectFailure([&] { (void)firstInfo.GetAttachmentIndex("renamed"); });
+        ExpectFailure([&] { (void)secondInfo.GetAttachmentIndex("color"); });
+        AttachmentDescription extra;
+        extra.CustomizeFormat(VK_FORMAT_B8G8R8A8_UNORM, VkClearValue{});
+        firstInfo.AddAttachment("later", extra);
+        CHECK_TRUE(!firstInfo.IsFinalized(), "Mutating a render pass description must invalidate Finalize!");
+        ExpectUnfinalizedFailure([&] { (void)firstInfo.GetSubpassCount(); });
+        ExpectUnfinalizedFailure([&] { (void)firstInfo.GetClearValues(); });
+        ExpectUnfinalizedFailure([&] { (void)firstInfo.GetAttachmentIndex("color"); });
+        RenderPassDesc differentInfo;
+        AddColorPass(differentInfo, "hdr", 0.f, VK_FORMAT_R16G16B16A16_SFLOAT);
+        const auto different = device.GetOrCreateRenderPass(differentInfo);
+        CHECK_TRUE(different != first && environment.state.passCreates == 2 &&
+            environment.state.passAttachments.size() == 1 &&
+            environment.state.passAttachments[0].format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+            environment.state.passColors.size() == 1 && environment.state.passColors[0].attachment == 0,
+            "Different native descriptions must create independent resources using stable finalized arrays!");
+        RenderPassDesc emptyInfo;
+        emptyInfo.AddSubpass("empty", SubpassDescription{});
+        emptyInfo.Finalize();
+        CHECK_TRUE(device.GetOrCreateRenderPass(emptyInfo) != VK_NULL_HANDLE &&
+            emptyInfo.GetSubpassCount() == 1 && emptyInfo.GetClearValues().empty() &&
+            environment.state.passCreates == 3, "An attachmentless finalized pass must remain valid!");
+    }
+    CHECK_TRUE(environment.state.passDestroys == 0 && environment.state.livePasses.size() == 3,
+        "Description destruction must leave the Device cache's native resources alive!");
+    auto allocator = CreateInfoFinalizeTestProbe::ExchangePasses({});
+    allocator->Destroy();
+    allocator->Destroy();
+    allocator.reset();
+    CHECK_TRUE(environment.state.passDestroys == 3 && environment.state.livePasses.empty(),
+        "Cache teardown and repeated cleanup must destroy each native RenderPass exactly once!");
+}
+
+void TestRenderPassHostFailureRollsBackNativeCreation()
+{
+#if defined(_MSC_VER) && defined(_DEBUG)
+    NativeEnvironment environment;
+    auto& device = MyDevice::GetInstance();
+    RenderPassDesc existingInfo;
+    existingInfo.AddSubpass("main", SubpassDescription{});
+    existingInfo.Finalize();
+    const auto existingHandle = device.GetOrCreateRenderPass(existingInfo);
+    RenderPassDesc info;
+    AddColorPass(info, "color", 0.f);
+    bool failed = false;
+    environment.state.failPassAllocationAfter = 0;
+    {
+        HostAllocationFailureScope failureScope;
+        try { (void)device.GetOrCreateRenderPass(info); }
+        catch (const std::bad_alloc&) { failed = true; }
+    }
+    CHECK_TRUE(failed && info.IsFinalized() && environment.state.passCreates == 2 &&
+        environment.state.passDestroys == 1 && environment.state.livePasses.size() == 1 &&
+        environment.state.livePasses.contains(existingHandle),
+        "Cache publication failure must destroy only the new native handle and preserve finalized input!");
+    environment.state.failPassAllocationAfter = -1;
+    const auto target = device.GetOrCreateRenderPass(info);
+    CHECK_TRUE(target != VK_NULL_HANDLE && target == device.GetOrCreateRenderPass(info) &&
+        device.GetOrCreateRenderPass(existingInfo) == existingHandle && environment.state.passCreates == 3,
+        "A failed publication must preserve existing cache entries and support creation followed by reuse!");
+#endif
+}
+
+void TestConcurrentRenderPassCacheRequests()
+{
+    NativeEnvironment environment;
+    RenderPassDesc info;
+    AddColorPass(info, "color", 0.f);
+    std::vector<VkRenderPass> handles(8, VK_NULL_HANDLE);
+    std::vector<std::exception_ptr> failures(handles.size());
+    std::vector<std::thread> workers;
+    for (size_t index = 0; index < handles.size(); ++index)
+        workers.emplace_back([&, index]
+        {
+            try { handles[index] = MyDevice::GetInstance().GetOrCreateRenderPass(info); }
+            catch (...) { failures[index] = std::current_exception(); }
+        });
+    for (auto& worker : workers) worker.join();
+    for (const auto& failure : failures) if (failure) std::rethrow_exception(failure);
+    for (const auto handle : handles)
+        CHECK_TRUE(handle != VK_NULL_HANDLE && handle == handles.front(),
+            "Concurrent equivalent render pass requests must return one cached native handle!");
+    CHECK_TRUE(environment.state.passCreates == 1,
+        "The Device render target mutex must prevent duplicate native render pass creation!");
 }
 }
 
@@ -1096,4 +1277,8 @@ void RunCreateInfoFinalizeTests()
     TestComputeAutomaticLifetimeAndCacheOwnership();
     TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures();
     TestRenderPassNativeFailureDoesNotConsumeFinalizedInfo();
+    TestRenderPassCreationDependencies();
+    TestRenderPassCacheAndIndependentSnapshots();
+    TestRenderPassHostFailureRollsBackNativeCreation();
+    TestConcurrentRenderPassCacheRequests();
 }

@@ -1,4 +1,4 @@
-#include "pipeline/render_pass.h"
+#include "pipeline/framebuffer_desc.h"
 #include "command_buffer.h"
 #include "device.h"
 #include "resource/image.h"
@@ -118,33 +118,6 @@ void CommandBuffer::_Append(CommandBuffer&& inCommandBuffer)
 	return;
 }
 
-void CommandBuffer::_BeginRenderPass(
-	const BeginRenderPassCommand::Parameters& inParameters,
-	uint32_t inSubpassCount)
-{
-	CHECK_TRUE(
-		std::holds_alternative<std::monostate>(m_renderingScopeState),
-		"A rendering scope is already active!");
-	CHECK_TRUE(inParameters.renderPass != VK_NULL_HANDLE, "Invalid render pass!");
-	CHECK_TRUE(inParameters.framebuffer != VK_NULL_HANDLE, "Invalid framebuffer!");
-	CHECK_TRUE(inSubpassCount > 0, "Render pass must contain at least one subpass!");
-	CHECK_TRUE(inParameters.next == nullptr, "Unsupported render pass pNext!");
-
-	auto command = std::make_unique<BeginRenderPassCommand>();
-	command->SetParameters(inParameters);
-	_AppendOwnedCommand(std::move(command));
-	m_hasRenderingCommands = true;
-	m_graphicsProgram = nullptr;
-
-	m_renderingScopeState = LegacyRenderPassState{
-		inParameters.renderPass,
-		inParameters.framebuffer,
-		0,
-		inSubpassCount,
-		inParameters.contents};
-	return;
-}
-
 void CommandBuffer::NextSubpass(VkSubpassContents inContents)
 {
 	LegacyRenderPassState* state = std::get_if<LegacyRenderPassState>(&m_renderingScopeState);
@@ -164,24 +137,19 @@ void CommandBuffer::NextSubpass(VkSubpassContents inContents)
 }
 
 void CommandBuffer::_BeginRenderPass(const BeginRenderPassCommand::Parameters& inParameters,
-    const VulkanDetail::RenderPassSnapshot& inSnapshot, VulkanDetail::ResourceReference inFramebuffer)
+    const VulkanDetail::RenderPassSnapshot& inSnapshot, VulkanDetail::ResolvedFramebufferDesc inFramebuffer)
 {
-    CHECK_TRUE(inSnapshot.GetVkRenderPass() == inParameters.renderPass, "Render pass snapshot mismatch!");
-    CHECK_TRUE(inFramebuffer.get() != nullptr, "Framebuffer has no native resource!");
     // Validate before changing the stream or its retention list.
     CHECK_TRUE(std::holds_alternative<std::monostate>(m_renderingScopeState),
         "A rendering scope is already active!");
-    CHECK_TRUE(inParameters.renderPass != VK_NULL_HANDLE && inParameters.framebuffer != VK_NULL_HANDLE &&
-        inSnapshot.GetSubpassCount() > 0 && inParameters.next == nullptr, "Invalid render pass parameters!");
+    CHECK_TRUE(inSnapshot.description && inSnapshot.GetSubpassCount() > 0 && inParameters.next == nullptr,
+        "Invalid render pass parameters!");
     auto command = std::make_unique<BeginRenderPassCommand>();
-    command->SetParameters(inParameters);
-    command->m_resourceReferences.push_back(inSnapshot.resource);
-    command->m_resourceReferences.push_back(std::move(inFramebuffer));
+    command->_SetDescription(inParameters, inSnapshot, std::move(inFramebuffer));
     _AppendOwnedCommand(std::move(command));
     m_hasRenderingCommands = true;
     m_graphicsProgram = nullptr;
-    m_renderingScopeState = LegacyRenderPassState{inParameters.renderPass, inParameters.framebuffer,
-        0, inSnapshot.GetSubpassCount(), inParameters.contents, inSnapshot};
+    m_renderingScopeState = LegacyRenderPassState{0, inSnapshot.GetSubpassCount(), inParameters.contents, inSnapshot};
 }
 
 void CommandBuffer::EndRenderPass()
@@ -302,7 +270,7 @@ void CommandBuffer::BindGraphicsProgram(GraphicsShaderProgram& program, const Gr
 	    "Graphics binding requires an inline render pass!");
 	CHECK_TRUE(program.GetLayout().GetVkPipelineLayout() != VK_NULL_HANDLE, "Graphics program was not created!");
 	auto state = input;
-	if (state.m_renderPass.GetVkRenderPass() == VK_NULL_HANDLE)
+	if (!state.m_renderPass.description)
 	{
 		state.m_renderPass = scope->snapshot;
 		state.m_subpassIndex = scope->currentSubpass;
@@ -314,7 +282,6 @@ void CommandBuffer::BindGraphicsProgram(GraphicsShaderProgram& program, const Gr
 	auto command = std::make_unique<BindingCommand>();
 	command->graphics = &program;
 	command->state = std::move(state);
-	command->m_resourceReferences.push_back(command->state.m_renderPass.resource);
 	_AppendOwnedCommand(std::move(command));
 	m_graphicsProgram = &program;
 	m_hasProgramBindings = true;
@@ -400,17 +367,11 @@ void CommandBuffer::KeepAlive(const ImageView& inImageView)
     CHECK_TRUE(reference.get() != nullptr, "Image view was not created!");
     m_resourceReferences.push_back(std::move(reference));
 }
-void CommandBuffer::KeepAlive(const RenderPass& inRenderPass)
+void CommandBuffer::_PrepareRenderPassCommands()
 {
-    auto reference = inRenderPass._GetResourceReference();
-    CHECK_TRUE(reference.get() != nullptr, "Render pass was not created!");
-    m_resourceReferences.push_back(std::move(reference));
-}
-void CommandBuffer::KeepAlive(const Framebuffer& inFramebuffer)
-{
-    auto reference = inFramebuffer._GetResourceReference();
-    CHECK_TRUE(reference.get() != nullptr, "Framebuffer was not created!");
-    m_resourceReferences.push_back(std::move(reference));
+    for (const auto* command : m_commands)
+        if (const auto* begin = dynamic_cast<const BeginRenderPassCommand*>(command))
+            begin->_Prepare();
 }
 void CommandBuffer::_PrepareCommands(VulkanDetail::DynamicDescriptorPool& allocator, QueueFamilyType queue)
 {

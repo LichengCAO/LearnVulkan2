@@ -17,7 +17,13 @@ struct RenderGraphTestProbe
 	static void BeginRenderPass(CommandBuffer& inBuffer,
 		const BeginRenderPassCommand::Parameters& inParameters, uint32_t inSubpassCount = 1)
 	{
-		inBuffer._BeginRenderPass(inParameters, inSubpassCount);
+			RenderPassDesc pass;
+			for (uint32_t index = 0; index < inSubpassCount; ++index)
+				pass.AddSubpass(std::to_string(index), SubpassDescription{});
+			pass.Finalize();
+			FramebufferDesc framebuffer;
+			framebuffer.CustomizeSize(1, 1);
+			inBuffer.BeginRenderPass(pass, framebuffer, 0, 0, 1, 1, inParameters.clearValues, inParameters.contents);
 	}
 	struct GraphicsGroupSummary
 	{
@@ -1856,6 +1862,7 @@ void RunResourceSubmissionTests();
 void RunDescriptorPoolTests();
 auto RunDescriptorPoolFatalCase(std::string_view argument) -> int;
 void RunSamplerCreationTests();
+void RunCommandPoolTests();
 
 auto main(int argc, char** argv) -> int
 {
@@ -1874,6 +1881,7 @@ auto main(int argc, char** argv) -> int
 		RunResourceSubmissionTests();
 		RunDescriptorPoolTests();
 		RunSamplerCreationTests();
+		RunCommandPoolTests();
 #ifdef LEARN_VULKAN_HAS_SHADER_BINDING_TESTS
 		RunShaderBindingTests();
 #endif

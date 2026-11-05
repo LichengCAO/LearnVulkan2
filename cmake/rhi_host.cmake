@@ -29,7 +29,7 @@ elseif(NOT TARGET Vulkan::Headers)
 endif()
 
 set(RHI_HOST_SOURCES
-    "${PROJECT_SOURCE_DIR}/src/my_vulkan/pipeline/private/render_pass_create_info.cpp"
+    "${PROJECT_SOURCE_DIR}/src/my_vulkan/pipeline/private/render_pass_desc.cpp"
     "${PROJECT_SOURCE_DIR}/src/my_vulkan/pipeline/private/pipeline_layout_create_info.cpp"
     "${PROJECT_SOURCE_DIR}/src/my_vulkan/pipeline/private/shader_module_create_info.cpp"
     "${PROJECT_SOURCE_DIR}/src/my_vulkan/pipeline/private/shader_program_create_info.cpp"

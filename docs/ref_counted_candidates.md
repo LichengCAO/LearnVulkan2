@@ -47,7 +47,8 @@ Granite 使用 `Util::IntrusivePtrEnabled<T>` 加 `Util::IntrusivePtr<T>`。资�
 
 ## 暂不改造的类型
 
-- `MyDevice`、各类 allocator、`CommandQueue`、`CommandPool`：设备级独占对象，由 `MyDevice` 统一管理。
+- `MyDevice`、各类 allocator、`CommandQueue`：设备级独占对象，沿用各自现有所有权。
+- `CommandPool`：不可复制、不可移动的 RAII 所有者，由作用域或外部所有者管理；FrameSlot 按队列和录制工作线程持有池，Device 必须比池长寿。
 - `VkDescriptorSet`：直接使用 native 句柄，由 `DescriptorPool` 显式分配和回收，不另设 RefCounted 包装。
 - `DescriptorState`、`DescriptorSetState`、各种 `CreateInfo`、pipeline state：值语义或短期构造状态。
 - `CommandBuffer`：当前是命令描述数据，不拥有 Vulkan command buffer。

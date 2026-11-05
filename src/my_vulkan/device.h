@@ -4,10 +4,16 @@
 #include <VkBootstrap.h>
 #include "image.h"
 #include "sampler.h"
+#include <mutex>
 
 class MemoryAllocator;
 class DescriptorSetLayoutAllocator;
-class RenderPassAllocator;
+namespace VulkanDetail
+{
+	class RenderTargetCache;
+	struct RenderPassSnapshot;
+	struct ResolvedFramebufferDesc;
+}
 class PipelineLayoutAllocator;
 class GraphicsPipelineAllocator;
 class ComputePipelineAllocator;
@@ -17,6 +23,9 @@ class DescriptorSetLayout;
 class DescriptorSetLayoutCreateInfo;
 class PipelineLayout;
 class PipelineLayoutCreateInfo;
+class RenderPassDesc;
+class FramebufferDesc;
+class BeginRenderPassCommand;
 class ComputeShaderProgram;
 class ComputeShaderProgramCreateInfo;
 class GraphicsShaderProgram;
@@ -46,6 +55,9 @@ class MyDevice final
 	friend struct CreateInfoFinalizeTestProbe;
 	friend struct DescriptorPoolTestProbe;
 	friend struct SamplerCreationTestProbe;
+	friend struct CommandBufferTestProbe;
+	friend class GraphicsShaderProgram;
+	friend class BeginRenderPassCommand;
 private:
 	struct QueueFamilyIndices
 	{
@@ -92,13 +104,13 @@ private:
 	std::vector<std::unique_ptr<SwapchainImage>> m_uptrSwapchainImages;
 	std::unique_ptr<MemoryAllocator> m_uptrMemoryAllocator;
 	std::unique_ptr<DescriptorSetLayoutAllocator> m_uptrDescriptorSetLayoutAllocator;
-	std::unique_ptr<RenderPassAllocator> m_uptrRenderPassAllocator;
+	std::mutex m_renderTargetCacheMutex;
+	std::unique_ptr<VulkanDetail::RenderTargetCache> m_uptrRenderTargetCache;
 	std::unique_ptr<PipelineLayoutAllocator> m_uptrPipelineLayoutAllocator;
 	std::unique_ptr<GraphicsPipelineAllocator> m_uptrGraphicsPipelineAllocator;
 	std::unique_ptr<ComputePipelineAllocator> m_uptrComputePipelineAllocator;
 	std::unique_ptr<RayTracingPipelineAllocator> m_uptrRayTracingPipelineAllocator;
 	std::unique_ptr<SamplerAllocator> m_uptrSamplerAllocator;
-	std::unordered_map<VkCommandPool, uint32_t> m_mapPoolToQueueFamily;
 
 private:
 	MyDevice();
@@ -119,8 +131,12 @@ private:
 	void _CreateLogicalDevice();
 	void _CreateDescriptorSetLayoutAllocator();
 	void _DestroyDescriptorSetLayoutAllocator();
-	void _CreateRenderPassAllocator();
-	void _DestroyRenderPassAllocator();
+	void _CreateRenderTargetCache();
+	void _DestroyRenderTargetCache();
+	// These overloads acquire the render-target mutex once; cache helpers do not lock.
+	auto _GetOrCreateRenderPass(const VulkanDetail::RenderPassSnapshot& inSnapshot) -> VkRenderPass;
+	auto _GetOrCreateFramebuffer(const VulkanDetail::RenderPassSnapshot& inSnapshot,
+		const VulkanDetail::ResolvedFramebufferDesc& inDescription) -> VkFramebuffer;
 	void _CreatePipelineLayoutAllocator();
 	void _DestroyPipelineLayoutAllocator();
 	void _CreatePipelineAllocators();
@@ -187,7 +203,14 @@ public:
 	double GetTime() const;
 
 	MemoryAllocator* GetMemoryAllocator();
-	auto GetRenderPassAllocator() -> RenderPassAllocator*;
+
+	// Synchronous creation and publication are internally serialized by a dedicated
+	// render-target cache mutex. Inputs must remain stable; RenderPassDesc must be
+	// finalized. Returned handles borrow Device-owned native objects until teardown.
+	// Framebuffer attachments remain caller-owned through all native uses. Device
+	// teardown still requires exclusive access and completed GPU work.
+	auto GetOrCreateRenderPass(const RenderPassDesc& inDescription) -> VkRenderPass;
+	auto GetOrCreateFramebuffer(const RenderPassDesc& inRenderPass, const FramebufferDesc& inDescription) -> VkFramebuffer;
 
 	// Caller excludes concurrent access to this device's descriptor layout cache,
 	// including cache destruction. Wrapper value operations do not access it.
@@ -211,11 +234,11 @@ public:
 	void CreateComputeShaderProgram(ComputeShaderProgram& outProgram,
 		const ComputeShaderProgramCreateInfo& inCreateInfo);
 
-	// Caller coordinates the layout caches, graphics pipeline cache, RenderPass
-	// cache/snapshots and all related release paths. DestroyPipeline probes the
-	// Graphics, Compute and RayTracing caches. GetVkPipeline mutates program-local
-	// state and must be serialized with access to that instance. No internal
-	// locking or automatic GPU synchronization.
+	// Caller coordinates the layout caches, graphics pipeline cache and all
+	// related release paths. The render-target cache has its own internal mutex.
+	// DestroyPipeline probes the Graphics, Compute and RayTracing caches.
+	// GetVkPipeline mutates program-local state without internal locking and must
+	// be serialized with access to that instance. No automatic GPU synchronization.
 	void CreateGraphicsShaderProgram(GraphicsShaderProgram& outProgram,
 		const GraphicsShaderProgramCreateInfo& inCreateInfo);
 
@@ -241,7 +264,6 @@ public:
 	VkQueue GetQueueByQueueFamilyIndex(uint32_t inQueueFamilyIndex) const;
 
 	// Get queue family index by VkCommandPool handle
-	uint32_t GetQueueFamilyIndex(VkCommandPool inVkCommandPool) const;
 
 	// Return if the loaded pipeline cache is valid
 	auto IsPipelineCacheValid(const VkPipelineCacheHeaderVersionOne& inCacheHeader) const -> bool;
@@ -371,11 +393,11 @@ public:
 		bool inWaitAll = true, 
 		uint64_t inTimeout = UINT64_MAX);
 
-	VkCommandPool CreateCommandPool(
+	auto CreateCommandPool(
 		const VkCommandPoolCreateInfo& inCreateInfo,
-		const VkAllocationCallbacks* pAllocator = nullptr);
+		const VkAllocationCallbacks* pAllocator = nullptr) -> VkCommandPool;
 
-	VkResult ResetCommandPool(VkCommandPool inCommandPool, VkCommandPoolResetFlags inFlags = 0);
+	auto ResetCommandPool(VkCommandPool inCommandPool, VkCommandPoolResetFlags inFlags = 0) -> VkResult;
 
 	void DestroyCommandPool(
 		VkCommandPool inCommandPoolToDestroy,
@@ -414,22 +436,6 @@ public:
 
 	void DestroyImageView(
 		VkImageView inView, 
-		const VkAllocationCallbacks* pAllocator = nullptr);
-
-	auto CreateRenderPass(
-		const VkRenderPassCreateInfo& inCreateInfo, 
-		const VkAllocationCallbacks* pAllocator = nullptr) -> VkRenderPass;
-
-	void DestroyRenderPass(
-		VkRenderPass inRenderPass, 
-		const VkAllocationCallbacks* pAllocator = nullptr);
-
-	auto CreateFramebuffer(
-		const VkFramebufferCreateInfo& inCreateInfo,
-		const VkAllocationCallbacks* pAllocator = nullptr) -> VkFramebuffer;
-
-	void DestroyFramebuffer(
-		VkFramebuffer inFramebuffer, 
 		const VkAllocationCallbacks* pAllocator = nullptr);
 
 	void GetAccelerationStructureBuildSizes(

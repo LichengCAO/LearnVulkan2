@@ -109,7 +109,7 @@ auto GraphicsShaderProgramCreateInfo::Finalize() -> GraphicsShaderProgramCreateI
         CHECK_TRUE(std::adjacent_find(outputs.begin(), outputs.end(), [](const auto& a, const auto& b) -> bool
             { return a.location == b.location; }) == outputs.end(), "Default render pass requires unique fragment output locations!");
         CHECK_TRUE(outputs.size() == m_defaultColors.size(), "Default color attachments must cover all fragment outputs!");
-        auto pass = std::make_shared<RenderPassCreateInfo>();
+        auto pass = std::make_shared<RenderPassDesc>();
         SubpassDescription subpass;
         for (const auto& output : outputs)
         {

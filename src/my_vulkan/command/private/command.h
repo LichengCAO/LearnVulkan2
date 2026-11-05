@@ -1,6 +1,7 @@
 #pragma once
 #include "common.h"
 #include "resource/private/vulkan_handle_resource.h"
+#include "pipeline/private/render_target_description.h"
 
 class CommandBuffer;
 
@@ -63,6 +64,7 @@ public:
 
 class BeginRenderPassCommand final : public Command
 {
+    friend class CommandBuffer;
 public:
 	struct Parameters final
 	{
@@ -75,10 +77,21 @@ public:
 	};
 
 private:
-	Parameters m_parameters;
+	mutable Parameters m_parameters;
+	VulkanDetail::RenderPassSnapshot m_snapshot;
+	VulkanDetail::ResolvedFramebufferDesc m_framebuffer;
+	mutable bool m_prepared = false;
+	void _Prepare() const;
 
+	void _SetDescription(const Parameters& inParameters, const VulkanDetail::RenderPassSnapshot& inSnapshot,
+		VulkanDetail::ResolvedFramebufferDesc inFramebuffer)
+	{
+		m_parameters = inParameters;
+		m_snapshot = inSnapshot;
+		m_framebuffer = std::move(inFramebuffer);
+		m_prepared = false;
+	}
 public:
-	auto SetParameters(const Parameters& inParameters)->BeginRenderPassCommand& { m_parameters = inParameters; return *this; };
 	virtual auto Record(VkCommandBuffer inVkCommandBuffer) const->void override;
 };
 

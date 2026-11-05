@@ -1,8 +1,4 @@
-#if __has_include("my_vulkan/pipeline/render_pass_create_info.h")
-#include "my_vulkan/pipeline/render_pass_create_info.h"
-#else
-#include "my_vulkan/pipeline/render_pass.h"
-#endif
+#include "my_vulkan/pipeline/render_pass_desc.h"
 #include <type_traits>
 #include <utility>
 
@@ -117,12 +113,12 @@ void TestFinalizeContract()
     }
     else
     {
-        CHECK_TRUE(false, "RenderPassCreateInfo requires explicit Finalize and IsFinalized!");
+        CHECK_TRUE(false, "RenderPassDesc requires explicit Finalize and IsFinalized!");
     }
 }
 }
 
 void RunRenderPassFinalizeTests()
 {
-    TestFinalizeContract<RenderPassCreateInfo>();
+    TestFinalizeContract<RenderPassDesc>();
 }

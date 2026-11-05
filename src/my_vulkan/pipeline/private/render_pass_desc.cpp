@@ -1,4 +1,4 @@
-#include "../render_pass_create_info.h"
+#include "../render_pass_desc.h"
 #include <algorithm>
 
 namespace
@@ -108,7 +108,7 @@ void SubpassDescription::AllowLocalPipelineBarrier(VkPipelineStageFlags stage, V
     m_dependencies.push_back(Dependency{ {}, false, true, stage, access, flags });
 }
 
-void RenderPassCreateInfo::AddSubpass(std::string_view name, const SubpassDescription& subpass)
+void RenderPassDesc::AddSubpass(std::string_view name, const SubpassDescription& subpass)
 {
     const auto copied = CopyName(name, "Subpass name cannot be empty!");
     CHECK_TRUE(!m_subpassNameToIndex.contains(copied), "Subpass name already exists!");
@@ -117,7 +117,7 @@ void RenderPassCreateInfo::AddSubpass(std::string_view name, const SubpassDescri
     catch (...) { m_subpassNameToIndex.erase(iterator); throw; }
     m_description.reset();
 }
-void RenderPassCreateInfo::AddAttachment(std::string_view name, const AttachmentDescription& attachment)
+void RenderPassDesc::AddAttachment(std::string_view name, const AttachmentDescription& attachment)
 {
     const auto copied = CopyName(name, "Attachment name cannot be empty!");
     CHECK_TRUE(!m_attachmentNameToIndex.contains(copied), "Attachment name already exists!");
@@ -127,20 +127,20 @@ void RenderPassCreateInfo::AddAttachment(std::string_view name, const Attachment
     catch (...) { m_attachmentNameToIndex.erase(iterator); throw; }
     m_description.reset();
 }
-auto RenderPassCreateInfo::_GetAttachmentIndex(std::string_view name) const -> uint32_t
+auto RenderPassDesc::_GetAttachmentIndex(std::string_view name) const -> uint32_t
 {
     const auto iterator = m_attachmentNameToIndex.find(std::string(name));
     CHECK_TRUE(iterator != m_attachmentNameToIndex.end(), "Attachment name does not exist!");
     return iterator->second;
 }
-auto RenderPassCreateInfo::_GetSubpassIndex(std::string_view name) const -> uint32_t
+auto RenderPassDesc::_GetSubpassIndex(std::string_view name) const -> uint32_t
 {
     const auto iterator = m_subpassNameToIndex.find(std::string(name));
     CHECK_TRUE(iterator != m_subpassNameToIndex.end(), "Subpass name does not exist!");
     return iterator->second;
 }
 
-auto RenderPassCreateInfo::Finalize() -> RenderPassCreateInfo&
+auto RenderPassDesc::Finalize() -> RenderPassDesc&
 {
     if (IsFinalized()) return *this;
     CHECK_TRUE(!m_subpasses.empty(), "Render pass needs at least one subpass!");
@@ -221,4 +221,24 @@ auto RenderPassCreateInfo::Finalize() -> RenderPassCreateInfo&
     }
     m_description = std::move(description);
     return *this;
+}
+
+auto RenderPassDesc::GetSubpassCount() const -> uint32_t
+{
+    CHECK_TRUE(IsFinalized(), "Render pass description must be finalized!");
+    return static_cast<uint32_t>(m_description->subpassInfos.size());
+}
+
+auto RenderPassDesc::GetClearValues() const -> const std::vector<VkClearValue>&
+{
+    CHECK_TRUE(IsFinalized(), "Render pass description must be finalized!");
+    return m_description->clearValues;
+}
+
+auto RenderPassDesc::GetAttachmentIndex(std::string_view inName) const -> uint32_t
+{
+    CHECK_TRUE(IsFinalized(), "Render pass description must be finalized!");
+    const auto iterator = m_description->attachmentNameToIndex.find(std::string(inName));
+    CHECK_TRUE(iterator != m_description->attachmentNameToIndex.end(), "Unknown attachment name!");
+    return iterator->second;
 }

@@ -17,21 +17,25 @@ Pipeline commands select programs independently for each bind point and never ac
 resources. Each typed resource entry uses its own bind point's selected program and
 reports an error if none was bound. It snapshots the complete settings and resolves
 names immediately. Binding another kind of pipeline preserves the other selections.
-Pipeline and descriptor preparation runs serially before worker recording. Each
-buffer with bindings, dynamic state, push constants or execution commands remains
+Rendering, pipeline and descriptor preparation runs serially before worker
+recording. Each buffer with bindings, dynamic state, push constants or execution commands remains
 one Vulkan command buffer, including when it exceeds 256 commands. The previous untyped
 BindShaderResources entry is removed.
 
 CommandBuffer member operations return void and enqueue owned commands. Buffer,
-Image, RenderPass, Framebuffer, PipelineLayout and ShaderBindingTable arguments
-use existing resource objects. Rectangles, viewports, buffer copy regions and
-image clear ranges are scalar parameters; complex image transfer regions retain
+Image, PipelineLayout and ShaderBindingTable arguments use existing resource
+objects; rendering uses RenderPassDesc and FramebufferDesc CPU descriptions.
+Rectangles, viewports, buffer copy regions and image clear ranges are scalar
+parameters; complex image transfer regions retain
 their Vulkan structures. CPU arrays and bytes are copied when enqueued; Vulkan
-resource handles and GPU addresses remain caller-owned and must stay valid until
-GPU completion. AppendCommand owns its callback and invokes it later during
-recording, in stream order. Capture parameters by value; captured references
+resource lifetimes still follow their class contracts. Rendering attachment
+handles remain caller-owned through preparation, recording and GPU completion;
+explicit KeepAlive(Image/ImageView) can retain them. Other typed image commands
+and descriptor resources keep their existing retention behavior. AppendCommand
+owns its callback and invokes it later during recording, in stream order.
+Capture parameters by value; captured references
 must remain valid until recording finishes. Empty callbacks are rejected before
-enqueuing. The callback must preserve the tracked RenderPass lifecycle and
+enqueuing. The callback must preserve the tracked render-pass lifecycle and
 Program/ShaderResource bindings; use member functions to change those states.
 Any buffer containing a callback remains one native Vulkan command buffer.
 RenderGraph compiled commands use a private borrowed-command entry; their owners
@@ -48,20 +52,23 @@ createInfo.SetDefaultDepthAttachment(VK_FORMAT_D32_SFLOAT); // Optional.
 createInfo.Finalize();
 GraphicsShaderProgram program;
 device.CreateGraphicsShaderProgram(program, createInfo);
-const RenderPass& renderPass = program.GetDefaultRenderPass();
+const RenderPassDesc& passDesc = program.GetDefaultRenderPassDesc();
 
-FramebufferCreateInfo framebufferInfo;
-framebufferInfo.SetRenderPass(renderPass);
-framebufferInfo.SetImageView("outColor", *colorImage.View()); // Shader output name.
-framebufferInfo.SetImageView("__depth", *depthImage.View());
-Framebuffer framebuffer;
-framebuffer.Create(framebufferInfo);
+FramebufferDesc framebuffer;
+ImageViewInfo attachmentView;
+attachmentView.CustomizeMipLevels(0, 1);
+auto colorAttachment = colorImage.View(attachmentView);
+auto depthAttachment = depthImage.View(attachmentView);
+framebuffer.SetImageView("outColor", colorAttachment); // Shader output name.
+framebuffer.SetImageView("__depth", depthAttachment);
 
 ShaderResources resources;
 resources.SetBuffer("camera", cameraBuffer);
-resources.SetCombinedImageSampler("albedo", *albedoImage.View(), sampler);
+resources.SetCombinedImageSampler("albedo", albedoImage.View(), sampler);
 CommandBuffer commands;
-commands.BeginRenderPass(renderPass, framebuffer, 0, 0, width, height);
+commands.KeepAlive(colorAttachment);
+commands.KeepAlive(depthAttachment);
+commands.BeginRenderPass(passDesc, framebuffer, 0, 0, width, height);
 commands.BindGraphicsProgram(program);
 commands.BindGraphicsShaderResource(resources);
 commands.SetViewport(0.0f, 0.0f, float(width), float(height));
@@ -80,8 +87,11 @@ can specify VK_IMAGE_LAYOUT_PRESENT_SRC_KHR.
 Default attachments use one sample, CLEAR/STORE, transparent black, and depth 1.
 BeginRenderPass uses those clear defaults; its clearValues overload copies explicit overrides.
 Attachment names are fragment output names, or color<location> for unnamed outputs.
-Depth uses __depth; avoid that name for fragment outputs. The program owns its default
-RenderPass; the caller owns framebuffer, images and views.
+Depth uses __depth; avoid that name for fragment outputs. The program retains its
+default immutable RenderPassDesc. FramebufferDesc snapshots view IDs, raw handles
+and metadata without retaining images or views. The caller supplies attachment
+lifetime through preparation, recording and GPU execution; the example uses
+explicit KeepAlive calls for command retention.
 
 Vertex pipelines use triangle lists; mesh shaders supply their output topology.
 Both paths use back-face culling, counter-clockwise fronts, disabled blending and
@@ -90,15 +100,27 @@ when the selected subpass has depth. Simple vertex inputs are packed into bindin
 sorted by location, with vertex rate. Explicit AddVertexInputDescription calls replace
 all inferred vertex descriptions. Matrices, arrays, interface blocks, packed component
 layouts and 64-bit inputs require explicit vertex descriptions. For complex inputs,
-Create builds the default RenderPass and defers pipeline creation until explicit
+Create retains the default RenderPassDesc and defers pipeline creation until explicit
 vertex state is supplied.
 
-Without default attachment configuration, use the existing explicit RenderPass path
-with GraphicsPipelineStateInfo::SetRenderPassSubpass. Graphics binding checks the
-active RenderPass handle and subpass. Begin/EndRenderPass and NextSubpass clear only
-graphics selection; compute and ray tracing selections survive. Compute/ray tracing
+Without default attachment configuration, finalize a RenderPassDesc and select it
+with GraphicsPipelineStateInfo::SetRenderPassSubpass(desc, index). Graphics binding
+checks compatibility with the active rendering description and subpass.
+Begin/EndRenderPass and NextSubpass clear only graphics selection; compute and
+ray tracing selections survive. Compute/ray tracing
 pipeline and resource bindings require no active rendering scope. Graphics resource
 binding requires an inline render pass and a program selected in the current subpass.
+
+Both BeginRenderPass overloads require a pass description, framebuffer description
+and rectangle; the second also accepts a span of clear-value overrides. Host
+enqueue copies their CPU snapshots without Vulkan calls. Serial preparation
+resolves native rendering handles even for a buffer with no Program binding;
+Record uses the prepared handles without cache lookup or creation. Direct native
+access uses `device.GetOrCreateRenderPass(desc)` and
+`device.GetOrCreateFramebuffer(desc, framebuffer)`. The Device owns these handles
+until teardown and internally serializes only its rendering caches. See
+[rendering ownership](resource_lifetimes.md#rendering-descriptions-and-native-cache)
+for attachment identities, cache lifetime and synchronization.
 
 ## Shader selection and compute
 
