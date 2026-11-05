@@ -26,7 +26,7 @@ public:
 	auto operator=(const ComputeShaderProgram&) -> ComputeShaderProgram& = delete;
 	ComputeShaderProgram(ComputeShaderProgram&&) = delete;
 	auto operator=(ComputeShaderProgram&&) -> ComputeShaderProgram& = delete;
-	// Owns its shader module and borrows Device-cached pipeline/layout handles.
+	// Owns its reflection snapshot and borrows Device-cached module/pipeline/layout handles.
 	// Destroy before Device teardown and after completing native uses. Destruction
 	// does not wait for the GPU; see MyDevice::CreateComputeShaderProgram for the
 	// shared caches accessed by creation and the indirect pipeline release path.

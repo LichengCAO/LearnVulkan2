@@ -11,6 +11,7 @@ class DescriptorSetLayoutAllocator;
 namespace VulkanDetail
 {
 	class RenderTargetCache;
+    class ShaderModuleAllocator;
 	struct RenderPassSnapshot;
 	struct ResolvedFramebufferDesc;
 }
@@ -32,6 +33,14 @@ class GraphicsShaderProgram;
 class GraphicsShaderProgramCreateInfo;
 class RayTracingShaderProgram;
 class RayTracingShaderProgramCreateInfo;
+class ShaderModule;
+class ShaderModuleCreateInfo;
+namespace ShaderDetail
+{
+    struct FinalizedShaders;
+    void CreateStages(const FinalizedShaders&, std::vector<std::unique_ptr<ShaderModule>>&,
+        std::vector<VkPipelineShaderStageCreateInfo>&);
+}
 
 struct UserInput
 {
@@ -58,6 +67,9 @@ class MyDevice final
 	friend struct CommandBufferTestProbe;
 	friend struct BufferAllocationTestProbe;
 	friend class GraphicsShaderProgram;
+    friend class ComputeShaderProgram;
+    friend void ShaderDetail::CreateStages(const ShaderDetail::FinalizedShaders&,
+        std::vector<std::unique_ptr<ShaderModule>>&, std::vector<VkPipelineShaderStageCreateInfo>&);
 	friend class BeginRenderPassCommand;
 private:
 	struct QueueFamilyIndices
@@ -112,6 +124,7 @@ private:
 	std::unique_ptr<ComputePipelineAllocator> m_uptrComputePipelineAllocator;
 	std::unique_ptr<RayTracingPipelineAllocator> m_uptrRayTracingPipelineAllocator;
 	std::unique_ptr<SamplerAllocator> m_uptrSamplerAllocator;
+    std::unique_ptr<VulkanDetail::ShaderModuleAllocator> m_uptrShaderModuleAllocator;
 
 private:
 	MyDevice();
@@ -142,6 +155,10 @@ private:
 	void _DestroyPipelineLayoutAllocator();
 	void _CreatePipelineAllocators();
 	void _DestroyPipelineAllocators();
+    void _CreateShaderModuleAllocator();
+    void _DestroyShaderModuleAllocator();
+    // Caller serializes this shared cache with Program creation and Device teardown.
+    void _GetOrCreateShaderModule(ShaderModule& outModule, const ShaderModuleCreateInfo& inCreateInfo);
 	void _CreateSwapchain(VkSwapchainKHR inOldSwapchain = VK_NULL_HANDLE);
 	void _DestroySwapchain();
 	void _CreateMemoryAllocator();
@@ -227,15 +244,15 @@ public:
 
 	// Synchronous creation; requires finalized input, an empty target and live
 	// Device/allocators. Failure leaves the target unchanged and retryable.
-	// Caller coordinates both layout caches, the compute pipeline cache and the
-	// supplied VkPipelineCache with every other access, including cache teardown.
+	// Caller coordinates the shader-module cache, both layout caches, the compute
+	// pipeline cache and supplied VkPipelineCache with every other access, including teardown.
 	// Program destruction calls DestroyPipeline, which also searches the graphics
 	// cache (and the ray tracing cache if preceding searches miss). Coordinate
 	// those accesses too. No internal locking or automatic GPU synchronization.
 	void CreateComputeShaderProgram(ComputeShaderProgram& outProgram,
 		const ComputeShaderProgramCreateInfo& inCreateInfo);
 
-	// Caller coordinates the layout caches, graphics pipeline cache and all
+	// Caller coordinates the shader-module, layout and graphics pipeline caches and all
 	// related release paths. The render-target cache has its own internal mutex.
 	// DestroyPipeline probes the Graphics, Compute and RayTracing caches.
 	// GetVkPipeline mutates program-local state without internal locking and must
@@ -243,8 +260,8 @@ public:
 	void CreateGraphicsShaderProgram(GraphicsShaderProgram& outProgram,
 		const GraphicsShaderProgramCreateInfo& inCreateInfo);
 
-	// Caller coordinates both layout caches, the ray tracing pipeline cache and
-	// supplied VkPipelineCache with all related accesses and teardown. Destruction
+	// Caller coordinates the shader-module cache, both layout caches, the ray tracing
+	// pipeline cache and supplied VkPipelineCache with all related accesses and teardown. Destruction
 	// probes the Graphics, Compute and RayTracing caches through DestroyPipeline.
 	// No internal locking or GPU wait.
 	void CreateRayTracingShaderProgram(RayTracingShaderProgram& outProgram,

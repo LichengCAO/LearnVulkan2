@@ -19,6 +19,7 @@
 #include "allocator/private/pipeline_layout_allocator.h"
 #include "allocator/private/pipeline_allocator.h"
 #include "allocator/private/sampler_allocator.h"
+#include "allocator/private/shader_module_allocator.h"
 #include <iomanip>
 #define VOLK_IMPLEMENTATION
 #include <volk.h>
@@ -667,6 +668,31 @@ void MyDevice::_DestroyPipelineLayoutAllocator()
 	}
 }
 
+void MyDevice::_CreateShaderModuleAllocator()
+{
+    m_uptrShaderModuleAllocator = std::make_unique<VulkanDetail::ShaderModuleAllocator>();
+    m_uptrShaderModuleAllocator->Create(vkDevice);
+}
+void MyDevice::_DestroyShaderModuleAllocator()
+{
+    m_uptrShaderModuleAllocator.reset();
+}
+void MyDevice::_GetOrCreateShaderModule(ShaderModule& target, const ShaderModuleCreateInfo& info)
+{
+    CHECK_TRUE(info.IsFinalized(), "ShaderModuleCreateInfo must be finalized before creation!");
+    CHECK_TRUE(target.m_vkShaderModule == VK_NULL_HANDLE && target.m_reflector == nullptr,
+        "Shader module is already created!");
+    CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Shader module creation requires a live device!");
+    CHECK_TRUE(m_uptrShaderModuleAllocator != nullptr && m_uptrShaderModuleAllocator->IsCreated(),
+        "Shader module allocator is not created!");
+    CHECK_TRUE(vkCreateShaderModule != nullptr && vkDestroyShaderModule != nullptr,
+        "Shader module native entrypoints are unavailable!");
+    auto snapshot = info.m_finalized;
+    const auto module = m_uptrShaderModuleAllocator->GetOrCreate(info.GetCode());
+    target.m_reflector = std::move(snapshot);
+    target.m_vkShaderModule = module;
+}
+
 void MyDevice::_CreatePipelineAllocators()
 {
 	m_uptrGraphicsPipelineAllocator = std::make_unique<GraphicsPipelineAllocator>();
@@ -728,6 +754,7 @@ void MyDevice::Create()
 	_CreateRenderTargetCache();
 	_CreatePipelineLayoutAllocator();
 	_CreatePipelineAllocators();
+    _CreateShaderModuleAllocator();
 	_CreateSwapchain();
 	_CreateDescriptorSetLayoutAllocator();
 	m_initialized = true;
@@ -738,6 +765,7 @@ void MyDevice::Destroy()
 	_DestroyDescriptorSetLayoutAllocator();
 	_DestroySwapchain();
 	_DestroyPipelineAllocators();
+    _DestroyShaderModuleAllocator();
 	_DestroyPipelineLayoutAllocator();
 	_DestroyRenderTargetCache();
 	_DestroySamplerAllocator();
@@ -885,6 +913,8 @@ void MyDevice::CreateComputeShaderProgram(ComputeShaderProgram& outProgram,
 	CHECK_TRUE(outProgram.m_vkPipeline == VK_NULL_HANDLE && outProgram.m_uptrShaderModule == nullptr &&
 		outProgram.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE, "Compute shader program already created!");
 	CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Compute shader program creation requires a live device!");
+    CHECK_TRUE(m_uptrShaderModuleAllocator != nullptr && m_uptrShaderModuleAllocator->IsCreated(),
+        "Shader module allocator is not created!");
 	CHECK_TRUE(m_uptrDescriptorSetLayoutAllocator != nullptr && m_uptrDescriptorSetLayoutAllocator->IsCreated(),
 		"Descriptor set layout allocator is not created!");
 	CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr && m_uptrPipelineLayoutAllocator->IsCreated(),
@@ -920,6 +950,8 @@ void MyDevice::CreateGraphicsShaderProgram(GraphicsShaderProgram& outProgram,
 		outProgram.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE,
 		"Graphics shader program already created!");
 	CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Graphics shader program creation requires a live device!");
+    CHECK_TRUE(m_uptrShaderModuleAllocator != nullptr && m_uptrShaderModuleAllocator->IsCreated(),
+        "Shader module allocator is not created!");
 	CHECK_TRUE(m_uptrDescriptorSetLayoutAllocator != nullptr && m_uptrDescriptorSetLayoutAllocator->IsCreated(),
 		"Descriptor set layout allocator is not created!");
 	CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr && m_uptrPipelineLayoutAllocator->IsCreated(),
@@ -966,6 +998,8 @@ void MyDevice::CreateRayTracingShaderProgram(RayTracingShaderProgram& outProgram
 		outProgram.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE,
 		"Ray tracing program already created!");
 	CHECK_TRUE(vkDevice != VK_NULL_HANDLE, "Ray tracing program creation requires a live device!");
+    CHECK_TRUE(m_uptrShaderModuleAllocator != nullptr && m_uptrShaderModuleAllocator->IsCreated(),
+        "Shader module allocator is not created!");
 	CHECK_TRUE(m_uptrDescriptorSetLayoutAllocator != nullptr && m_uptrDescriptorSetLayoutAllocator->IsCreated(),
 		"Descriptor set layout allocator is not created!");
 	CHECK_TRUE(m_uptrPipelineLayoutAllocator != nullptr && m_uptrPipelineLayoutAllocator->IsCreated(),

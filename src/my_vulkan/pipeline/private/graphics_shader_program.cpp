@@ -196,10 +196,6 @@ void GraphicsShaderProgram::_Destroy()
 	m_defaultState.Reset();
 	m_defaultRenderPass.reset();
     m_automaticVertexInputSupported = true;
-	for (auto& shaderModule : m_shaderModules)
-	{
-		shaderModule->Destroy();
-	}
 	m_shaderStages.clear();
 	m_shaderModules.clear();
 	m_pipelineLayout = {};

@@ -525,33 +525,73 @@ uses, including GPU execution, before cache destruction. Wrappers do not retain
 the Device; surviving wrappers may safely be cleared or destroyed, but their
 old handles are invalid and have no validity tracking.
 
+## ShaderModule ownership
+
+Internal `ShaderModule` wrappers borrow VkShaderModule from the Device's private
+`VulkanDetail::ShaderModuleAllocator` and retain their own immutable
+`shared_ptr<const ShaderReflector>` snapshot. They are default constructible,
+noncopyable/nonmovable and have a default `noexcept` destructor, with no
+Create/Destroy or release alias. GetShaderStageInfo/GetEntryReflection continue
+to use the wrapper's reflection; entry names and returned references remain
+valid while that snapshot is retained. Wrapper cleanup never accesses Device.
+
+MyDevice's private `_GetOrCreateShaderModule` is used by Compute creation and the
+shared `ShaderDetail::CreateStages` helper. It requires finalized input, an empty
+target, initialized Device/cache and native entrypoints. Code and reflection
+come from the existing snapshot without file I/O or additional reflection. Only
+after obtaining a native handle does it publish the wrapper with nonthrowing
+assignments. Rejected or failed creation leaves an empty target; duplicate
+creation preserves the old handle and reflection.
+
+The cache owns native handles and a copy of each complete SPIR-V key. Hashes
+select buckets; full word comparison decides equality. Paths, stage/entry-name
+parameters and reflection addresses are not independent cache-key fields.
+Identical code across files and Programs shares native handles; reloading changed
+code at the same path creates a new cache entry without invalidating existing
+wrappers. Native flags remain zero and pNext remains null.
+
+Failed native creation never adopts its output. Failed cache publication destroys
+only the new unpublished module. Already published modules remain cached when a
+later Program creation step fails and are reused by retries. Each successful
+cached native creation is destroyed once; there is no per-wrapper native Free,
+cache eviction, public cache getter, runtime Reset or deferred cleanup.
+
+Callers serialize accesses to this cache, including creation, lookup and teardown;
+it has no internal mutex. Module destruction only drops Host references, while
+the Program's pipeline cleanup retains its existing shared-state requirements.
+Graphics lazy pipeline creation uses acquired module handles, and Record does not
+query or create modules. Finalize remains pure Host. Device teardown destroys
+cached modules after pipeline caches and before VkDevice, without an implicit
+GPU wait. The wrapper does not retain Device; after cache teardown its old native
+handle must not be used, although Host-only wrapper cleanup is still valid.
+
 All three ShaderPrograms are created synchronously through MyDevice entries and
-have no public Create, Destroy or Reset. Their wrappers own ShaderModules and
-host reflection metadata while pipeline/layout handles remain owned by Device
-caches. Destruction releases owned modules and drops borrowed handles synchronously;
+have no public Create, Destroy or Reset. Programs own their internal module
+wrappers and Host metadata; native module, pipeline and layout handles belong to
+Device caches. Destruction drops wrappers and borrowed handles synchronously;
 it does not wait for GPU work or retain submitted resources. Destroy Program
 instances before Device/cache teardown and complete their GPU uses first.
 
 ## Shader program ownership
 
 Create with `device.CreateComputeShaderProgram(program, finalizedInfo)`. The
-Program owns its ShaderModule, retains its own PipelineLayout metadata and borrows
-pipeline/layout handles from Device caches. It cannot be copied or moved and has
+Program owns its ShaderModule wrapper, retains its own PipelineLayout metadata and
+borrows native module/pipeline/layout handles from Device caches. It cannot be copied or moved and has
 no public Create, Destroy or Reset. Use scope exit or an owning `unique_ptr.reset()`
 to release it. Input descriptions may be reset, modified or destroyed after
 successful creation without changing the Program's reflection or native handles.
 
 Creation validates finalized input, an empty output, a live Device, initialized
-descriptor-layout, pipeline-layout and compute pipeline allocators, and cached
+shader-module, descriptor-layout, pipeline-layout and compute pipeline allocators, and cached
 device push-constant limits before native calls. Work completes synchronously in
 a temporary Program; only a fully created result is transferred to the output
 using nonthrowing member transfers. Failure releases temporary owned resources,
-leaves the output unchanged and permits retry. Layout entries already published
-remain cached. This migration preserves the existing compute allocator algorithm.
+leaves the output unchanged and permits retry. Module and layout entries already
+published remain cached. This migration preserves the existing compute allocator algorithm.
 
-Callers coordinate creation with all other accesses to both layout caches, the
-compute pipeline cache and the supplied VkPipelineCache, including cache teardown.
-Destruction synchronously releases the owned shader module and uses the existing
+Callers coordinate creation with all other accesses to the shader-module cache,
+both layout caches, the compute pipeline cache and the supplied VkPipelineCache,
+including cache teardown. Destruction releases the module's Host wrapper and uses the existing
 DestroyPipeline path to clear the pipeline borrow. That path searches the graphics
 cache first, then compute, and ray tracing if earlier searches miss. Callers must
 also synchronize those cache reads with conflicting accesses. PipelineLayout
@@ -562,7 +602,7 @@ concurrently without a global Device lock.
 
 An empty Program's destructor does not access Device. A successfully created
 Program must be destroyed while its Device and relevant caches remain alive.
-Native pipeline/layout resources stay cached until their owning caches are
+Native module/pipeline/layout resources stay cached until their owning caches are
 destroyed. Program creation/destruction does not wait for the GPU, enqueue work
 or change command recording, submission or resource retention. Complete native
 uses before destroying the Program and before Device/cache teardown.
@@ -577,7 +617,7 @@ completion. Failures leave the output empty and retryable. Both wrapper types ar
 noncopyable and nonmovable; scope exit or an owning `unique_ptr.reset()` releases
 them.
 
-Graphics creation accesses descriptor-layout and pipeline-layout caches, the
+Graphics creation accesses shader-module, descriptor-layout and pipeline-layout caches, the
 Graphics pipeline cache and, when a default pipeline is materialized, the native
 render-pass cache under the Device's dedicated mutex.
 `GetVkPipeline(state)` remains lazy and mutates both Program-local PSO state and
@@ -586,17 +626,17 @@ drops CPU render-pass snapshots; callers serialize those operations with related
 creation, lookup, release and teardown, plus conflicting access to that Program.
 The render-target mutex does not synchronize these other caches or Program state.
 
-RayTracing creation accesses descriptor-layout and pipeline-layout caches, the
+RayTracing creation accesses shader-module, descriptor-layout and pipeline-layout caches, the
 RayTracing pipeline cache and the supplied `VkPipelineCache`. Group handles and
 named host metadata are prepared before publishing the Program. If handle
 retrieval fails after native pipeline creation, that pipeline remains owned by
-the Device cache. A retry is allowed; cache reuse depends on the existing full
-pipeline key, including shader module handles, so a retry that creates new
-modules may produce a separate cache entry. Cleanup follows `DestroyPipeline`,
+the Device cache. A retry is allowed; module handles already cached are reused,
+so identical inputs can also reuse an existing pipeline under its current key.
+Cleanup follows `DestroyPipeline`,
 which probes the Graphics, Compute and RayTracing caches; callers synchronize
 those cache accesses as well as the input `VkPipelineCache` and teardown.
 
-Program state and pipeline/layout caches have no internal locks. Independent
+Program state and module/pipeline/layout caches have no internal locks. Independent
 work may proceed when it uses independent shared state. The rendering cache's
 dedicated mutex does not introduce a global Device lock. Device initialization,
 destruction and recreation require exclusive access relative to these operations.

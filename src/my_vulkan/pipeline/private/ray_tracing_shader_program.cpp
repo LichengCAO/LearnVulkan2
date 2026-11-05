@@ -49,8 +49,6 @@ void RayTracingShaderProgram::_Destroy()
 		m_vkPipeline = VK_NULL_HANDLE;
 	}
 	m_pipelineLayout = {};
-	for (auto& module : m_shaderModules)
-		module->Destroy();
 	m_shaderModules.clear();
 	m_shaderGroupCount = 0;
 	m_groupSet.Reset();

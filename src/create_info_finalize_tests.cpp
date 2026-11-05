@@ -4,6 +4,7 @@
 #include "my_vulkan/allocator/private/pipeline_layout_allocator.h"
 #include "my_vulkan/allocator/private/pipeline_allocator.h"
 #include "my_vulkan/allocator/private/render_target_cache.h"
+#include "my_vulkan/allocator/private/shader_module_allocator.h"
 #include "my_vulkan/pipeline/graphics_shader_program.h"
 #include "my_vulkan/pipeline/compute_shader_program.h"
 #include "my_vulkan/pipeline/ray_tracing_shader_program.h"
@@ -41,6 +42,11 @@ static_assert(!HasPublicGraphicsCreate<GraphicsShaderProgram> && !HasPublicDestr
     !HasPublicReset<GraphicsShaderProgram>);
 static_assert(!HasPublicRayTracingCreate<RayTracingShaderProgram> && !HasPublicDestroy<RayTracingShaderProgram> &&
     !HasPublicReset<RayTracingShaderProgram>);
+template<class T>
+concept HasPublicModuleCreate = requires(T& value, const ShaderModuleCreateInfo& info) { value.Create(info); };
+static_assert(!HasPublicModuleCreate<ShaderModule> && !HasPublicDestroy<ShaderModule> &&
+    !std::is_copy_constructible_v<ShaderModule> && !std::is_move_constructible_v<ShaderModule> &&
+    std::is_nothrow_destructible_v<ShaderModule>);
 static_assert(!std::is_copy_constructible_v<RenderPassDesc> && !std::is_move_constructible_v<RenderPassDesc> &&
     !std::is_copy_assignable_v<RenderPassDesc> && !std::is_move_assignable_v<RenderPassDesc> &&
     std::is_nothrow_destructible_v<RenderPassDesc>);
@@ -49,6 +55,25 @@ static_assert(std::is_same_v<decltype(std::declval<MyDevice&>().GetOrCreateRende
 
 struct CreateInfoFinalizeTestProbe
 {
+    static void CreateModule(ShaderModule& target, const ShaderModuleCreateInfo& info)
+    { MyDevice::GetInstance()._GetOrCreateShaderModule(target, info); }
+    static auto CacheModule(std::span<const uint32_t> code) -> VkShaderModule
+    { return MyDevice::GetInstance().m_uptrShaderModuleAllocator->GetOrCreate(code); }
+    static void ForceModuleCollision(std::span<const uint32_t> from, std::span<const uint32_t> to)
+    {
+        auto& cache = *MyDevice::GetInstance().m_uptrShaderModuleAllocator;
+        auto node = cache.m_entries.extract(cache._Hash(from));
+        node.key() = cache._Hash(to);
+        cache.m_entries.insert(std::move(node));
+    }
+    static auto ExchangeModules(std::unique_ptr<VulkanDetail::ShaderModuleAllocator> replacement)
+        -> std::unique_ptr<VulkanDetail::ShaderModuleAllocator>
+    {
+        auto& allocator = MyDevice::GetInstance().m_uptrShaderModuleAllocator;
+        auto previous = std::move(allocator);
+        allocator = std::move(replacement);
+        return previous;
+    }
     template<class T>
     static auto Handle(uintptr_t value) -> T { return reinterpret_cast<T>(value); }
 
@@ -147,6 +172,7 @@ struct CreateInfoFinalizeTestProbe
         std::unique_ptr<ComputePipelineAllocator> compute;
         std::unique_ptr<RayTracingPipelineAllocator> rays;
         std::unique_ptr<VulkanDetail::RenderTargetCache> passes;
+        std::unique_ptr<VulkanDetail::ShaderModuleAllocator> modules;
 
         DeviceScope()
         {
@@ -164,6 +190,9 @@ struct CreateInfoFinalizeTestProbe
             compute = std::move(instance.m_uptrComputePipelineAllocator);
             rays = std::move(instance.m_uptrRayTracingPipelineAllocator);
             passes = std::move(instance.m_uptrRenderTargetCache);
+            modules = std::move(instance.m_uptrShaderModuleAllocator);
+            instance.m_uptrShaderModuleAllocator = std::make_unique<VulkanDetail::ShaderModuleAllocator>();
+            instance.m_uptrShaderModuleAllocator->Create(instance.vkDevice);
             instance.m_uptrDescriptorSetLayoutAllocator = std::make_unique<DescriptorSetLayoutAllocator>();
             instance.m_uptrPipelineLayoutAllocator = std::make_unique<PipelineLayoutAllocator>();
             instance.m_uptrGraphicsPipelineAllocator = std::make_unique<GraphicsPipelineAllocator>();
@@ -183,6 +212,7 @@ struct CreateInfoFinalizeTestProbe
             instance.m_uptrGraphicsPipelineAllocator = std::move(graphics);
             instance.m_uptrComputePipelineAllocator = std::move(compute);
             instance.m_uptrRayTracingPipelineAllocator = std::move(rays);
+            instance.m_uptrShaderModuleAllocator = std::move(modules);
             instance.m_uptrRenderTargetCache = std::move(passes);
             instance.m_uptrPipelineLayoutAllocator = std::move(layouts);
             instance.m_uptrDescriptorSetLayoutAllocator = std::move(descriptors);
@@ -200,16 +230,18 @@ namespace
 #if defined(_MSC_VER) && defined(_DEBUG)
 thread_local bool failNextLayoutAllocation = false;
 thread_local int passAllocationsBeforeFailure = -1;
+thread_local uint32_t observedAllocationFailures = 0;
 auto __cdecl FailLayoutAllocation(int type, void*, size_t size, int block, long, const unsigned char*, int) -> int
 {
     // MSVC Debug vectors allocate iterator proxies even in noexcept empty/move
     // constructors. Skip those to target cache insertion.
     if (type == _HOOK_ALLOC && block != _CRT_BLOCK && size != sizeof(std::_Container_proxy) &&
         passAllocationsBeforeFailure >= 0 &&
-        passAllocationsBeforeFailure-- == 0) return 0;
+        passAllocationsBeforeFailure-- == 0) { ++observedAllocationFailures; return 0; }
     if (type == _HOOK_ALLOC && block != _CRT_BLOCK && failNextLayoutAllocation)
     {
         failNextLayoutAllocation = false;
+        ++observedAllocationFailures;
         return 0;
     }
     return 1;
@@ -239,7 +271,10 @@ struct NativeState final
     uint32_t descriptorCreates = 0, descriptorDestroys = 0, layoutDestroys = 0;
     uint32_t pipelineDestroys = 0, passDestroys = 0;
     std::set<VkPipeline> livePipelines;
-    std::set<VkShaderModule> liveModules;
+    std::multiset<VkShaderModule> liveModules;
+    std::vector<VkDevice> moduleDestroyDevices;
+    bool aliasModules = false, poisonModule = false, nullModule = false;
+    int failModulePublicationAfter = -1;
     std::set<VkRenderPass> livePasses;
     VkPipelineCache computePipelineCache = VK_NULL_HANDLE;
     bool failDescriptor = false;
@@ -267,14 +302,27 @@ auto VKAPI_PTR CreateModule(VkDevice, const VkShaderModuleCreateInfo* info, cons
     CHECK_TRUE(info->sType == VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO && info->codeSize % sizeof(uint32_t) == 0,
         "Native shader module creation must receive complete SPIR-V words!");
     nativeState->shaderCode.emplace_back(info->pCode, info->pCode + info->codeSize / sizeof(uint32_t));
-    if (nativeState->failModule) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-    *output = CreateInfoFinalizeTestProbe::Handle<VkShaderModule>(nativeState->nextHandle++);
+    CHECK_TRUE(info->flags == 0 && info->pNext == nullptr, "Cached modules must use fixed native creation options!");
+    if (nativeState->failModule)
+    {
+        if (nativeState->poisonModule) *output = CreateInfoFinalizeTestProbe::Handle<VkShaderModule>(9999);
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    }
+    if (nativeState->nullModule) { *output = VK_NULL_HANDLE; return VK_SUCCESS; }
+    *output = CreateInfoFinalizeTestProbe::Handle<VkShaderModule>(nativeState->aliasModules ? 500 : nativeState->nextHandle++);
     nativeState->liveModules.insert(*output);
+#if defined(_MSC_VER) && defined(_DEBUG)
+    if (nativeState->failModulePublicationAfter >= 0)
+        passAllocationsBeforeFailure = nativeState->failModulePublicationAfter;
+#endif
     return VK_SUCCESS;
 }
-void VKAPI_PTR DestroyModule(VkDevice, VkShaderModule module, const VkAllocationCallbacks*)
+void VKAPI_PTR DestroyModule(VkDevice device, VkShaderModule module, const VkAllocationCallbacks*)
 {
-    CHECK_TRUE(nativeState->liveModules.erase(module) == 1, "Shader modules must be destroyed exactly once!");
+    const auto found = nativeState->liveModules.find(module);
+    CHECK_TRUE(found != nativeState->liveModules.end(), "Shader modules must be destroyed exactly once per successful create!");
+    nativeState->liveModules.erase(found);
+    nativeState->moduleDestroyDevices.push_back(device);
     ++nativeState->moduleDestroys;
 }
 auto VKAPI_PTR CreateDescriptorLayout(VkDevice, const VkDescriptorSetLayoutCreateInfo* info,
@@ -447,7 +495,6 @@ template<class T>
 struct Owner final
 {
     T value;
-    ~Owner() { value.Destroy(); }
 };
 template<class F>
 void ExpectFailure(F&& action)
@@ -513,7 +560,7 @@ void TestUnfinalizedDescriptionsNeverReachVulkan()
     RenderPassDesc passInfo;
     // Valid host-only descriptions expose accidental implicit Finalize too.
     passInfo.AddSubpass("main", SubpassDescription{});
-    ExpectUnfinalizedFailure([&] { module.value.Create(moduleInfo); });
+    ExpectUnfinalizedFailure([&] { CreateInfoFinalizeTestProbe::CreateModule(module.value, moduleInfo); });
     ExpectUnfinalizedFailure([&] { MyDevice::GetInstance().CreateGraphicsShaderProgram(graphics, graphicsInfo); });
     ExpectUnfinalizedFailure([&] { MyDevice::GetInstance().CreateComputeShaderProgram(compute, computeInfo); });
     ExpectUnfinalizedFailure([&] { MyDevice::GetInstance().CreateRayTracingShaderProgram(rays, rayInfo); });
@@ -538,23 +585,149 @@ void TestShaderModuleOwnsFinalizedCodeAndEntryNames()
         expected.assign(info.GetCode().begin(), info.GetCode().end());
         CHECK_TRUE(std::filesystem::remove(path), "Shader fixture must be deleted before native creation!");
         environment.state.failModule = true;
-        ExpectFailure([&] { first.value.Create(info); });
+        ExpectFailure([&] { CreateInfoFinalizeTestProbe::CreateModule(first.value, info); });
         environment.state.failModule = false;
-        first.value.Create(info);
-        second.value.Create(info);
+        CreateInfoFinalizeTestProbe::CreateModule(first.value, info);
+        CreateInfoFinalizeTestProbe::CreateModule(second.value, info);
         info.Reset();
     }
     const auto stage = first.value.GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT);
     const auto other = second.value.GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT);
-    CHECK_TRUE(stage.module != other.module && stage.stage == VK_SHADER_STAGE_COMPUTE_BIT &&
+    CHECK_TRUE(stage.module == other.module && stage.stage == VK_SHADER_STAGE_COMPUTE_BIT &&
         std::string(stage.pName) == "main" && std::string(other.pName) == "main" &&
         first.value.GetEntryReflection(VK_SHADER_STAGE_COMPUTE_BIT).name == "main",
-        "Each module must own its native handle and retain entry reflection after description destruction!");
-    CHECK_TRUE(environment.state.shaderCode == std::vector<std::vector<uint32_t>>(3, expected),
-        "Failed creation and both retries must receive the exact finalized SPIR-V bytes without file I/O!");
-    first.value.Destroy(); first.value.Destroy(); second.value.Destroy();
-    CHECK_TRUE(environment.state.moduleCreates == 3 && environment.state.moduleDestroys == 2,
-        "Only successfully created shader handles must be destroyed, exactly once!");
+        "Equal code must share a native handle and retain entry reflection after description destruction!");
+    CHECK_TRUE(environment.state.shaderCode == std::vector<std::vector<uint32_t>>(2, expected),
+        "Failed creation and retry must receive finalized SPIR-V bytes; the second wrapper must hit the cache!");
+    auto cache = CreateInfoFinalizeTestProbe::ExchangeModules(nullptr);
+    CHECK_TRUE(environment.state.moduleDestroys == 0, "Wrappers must borrow cached native modules!");
+    cache->Destroy(); cache->Destroy();
+    CHECK_TRUE(environment.state.moduleCreates == 2 && environment.state.moduleDestroys == 1,
+        "Repeated cache cleanup must destroy only successful native creates once!");
+}
+
+void TestShaderModuleKeysSnapshotsAndGuards()
+{
+    NativeEnvironment environment;
+    ShaderFiles files;
+    const auto path = files.Write("keys.comp", "#version 450\nlayout(local_size_x=1) in; void main() {}\n");
+    const auto copy = path + ".copy.spv";
+    CHECK_TRUE(std::filesystem::copy_file(path, copy), "Cannot copy exact SPIR-V fixture!");
+    ShaderModuleCreateInfo info, otherInfo;
+    info.SetShader(path).Finalize(); otherInfo.SetShader(copy).Finalize();
+    ShaderModule first, second, changed;
+    auto& device = MyDevice::GetInstance();
+    auto cache = CreateInfoFinalizeTestProbe::ExchangeModules(nullptr);
+    ExpectFailure([&] { CreateInfoFinalizeTestProbe::CreateModule(first, info); });
+    CreateInfoFinalizeTestProbe::ExchangeModules(std::make_unique<VulkanDetail::ShaderModuleAllocator>());
+    ExpectFailure([&] { CreateInfoFinalizeTestProbe::CreateModule(first, info); });
+    CreateInfoFinalizeTestProbe::ExchangeModules(std::move(cache));
+    const auto savedDevice = device.vkDevice;
+    device.vkDevice = VK_NULL_HANDLE;
+    ExpectFailure([&] { CreateInfoFinalizeTestProbe::CreateModule(first, info); });
+    device.vkDevice = savedDevice;
+    const auto create = vkCreateShaderModule;
+    vkCreateShaderModule = nullptr;
+    ExpectFailure([&] { CreateInfoFinalizeTestProbe::CreateModule(first, info); });
+    vkCreateShaderModule = create;
+    const auto destroy = vkDestroyShaderModule;
+    vkDestroyShaderModule = nullptr;
+    ExpectFailure([&] { CreateInfoFinalizeTestProbe::CreateModule(first, info); });
+    vkDestroyShaderModule = destroy;
+    CHECK_TRUE(environment.state.calls == 0, "Module dependencies must reject before native calls!");
+    CreateInfoFinalizeTestProbe::CreateModule(first, info);
+    const auto original = first.GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT);
+    const auto* reflection = &first.GetEntryReflection(VK_SHADER_STAGE_COMPUTE_BIT);
+    CreateInfoFinalizeTestProbe::CreateModule(second, otherInfo);
+    CHECK_TRUE(second.GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT).module == original.module &&
+        &second.GetEntryReflection(VK_SHADER_STAGE_COMPUTE_BIT) != reflection && environment.state.moduleCreates == 1,
+        "Equal code across paths must share native modules while retaining separate finalized reflection snapshots!");
+    const auto changedPath = files.Write("keys.comp", "#version 450\nlayout(local_size_x=2) in; void main() {}\n");
+    info.SetShader(changedPath).Finalize();
+    ExpectFailure([&] { CreateInfoFinalizeTestProbe::CreateModule(first, info); });
+    CHECK_TRUE(first.GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT).module == original.module &&
+        first.GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT).pName == original.pName &&
+        &first.GetEntryReflection(VK_SHADER_STAGE_COMPUTE_BIT) == reflection && environment.state.moduleCreates == 1,
+        "Duplicate-target rejection must preserve original handle, entry pointer and reflection!");
+    CreateInfoFinalizeTestProbe::ForceModuleCollision(otherInfo.GetCode(), info.GetCode());
+    CreateInfoFinalizeTestProbe::CreateModule(changed, info);
+    CHECK_TRUE(changed.GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT).module != original.module &&
+        environment.state.moduleCreates == 2,
+        "Changed same-path code must miss even when its hash bucket contains different full words!");
+    info.Reset(); otherInfo.Reset();
+    cache = CreateInfoFinalizeTestProbe::ExchangeModules(nullptr);
+    device.vkDevice = CreateInfoFinalizeTestProbe::Handle<VkDevice>(1234);
+    cache->Destroy(); cache->Destroy();
+    device.vkDevice = savedDevice;
+    CHECK_TRUE(environment.state.moduleDestroys == 2 &&
+        environment.state.moduleDestroyDevices == std::vector<VkDevice>(2, savedDevice) &&
+        std::string(original.pName) == "main" && reflection->name == "main",
+        "Cache teardown must use the creating Device and preserve surviving wrappers' Host metadata!");
+}
+
+void TestShaderModuleAllocatorFailuresAndAliasedHandles()
+{
+    NativeEnvironment environment;
+    VulkanDetail::ShaderModuleAllocator allocator;
+    const std::vector<uint32_t> first{0x07230203, 1, 2, 3}, second{0x07230203, 1, 2, 4};
+    ExpectFailure([&] { (void)allocator.GetOrCreate(first); });
+    allocator.Create(CreateInfoFinalizeTestProbe::Handle<VkDevice>(77));
+    ExpectFailure([&] { (void)allocator.GetOrCreate({}); });
+    CHECK_TRUE(environment.state.moduleCreates == 0, "Invalid allocator requests must not reach native creation!");
+    environment.state.failModule = true; environment.state.poisonModule = true;
+    ExpectFailure([&] { (void)allocator.GetOrCreate(first); });
+    environment.state.failModule = false; environment.state.nullModule = true;
+    ExpectFailure([&] { (void)allocator.GetOrCreate(first); });
+    environment.state.nullModule = false; environment.state.aliasModules = true;
+    const auto one = allocator.GetOrCreate(first);
+    const auto two = allocator.GetOrCreate(second);
+    CHECK_TRUE(one == two && allocator.GetOrCreate(first) == one && environment.state.moduleCreates == 4 &&
+        environment.state.moduleDestroys == 0 && environment.state.liveModules.size() == 2,
+        "Failed poisoned/null outputs must not be adopted; distinct keys must retain each successful create even with aliased handles!");
+    allocator.Destroy(); allocator.Destroy();
+    CHECK_TRUE(environment.state.moduleDestroys == 2 && environment.state.liveModules.empty() &&
+        environment.state.moduleDestroyDevices == std::vector<VkDevice>(2, CreateInfoFinalizeTestProbe::Handle<VkDevice>(77)),
+        "Aliased handles must balance every successful native create exactly once with the saved Device!");
+}
+
+void TestShaderModuleHostFailureRollback()
+{
+#if defined(_MSC_VER) && defined(_DEBUG)
+    ShaderFiles files;
+    const auto file = files.Write("allocation.comp", "#version 450\nlayout(local_size_x=1) in; void main() {}\n");
+    ShaderModuleCreateInfo info;
+    info.SetShader(file).Finalize();
+    for (int failure = -1; failure < 2; ++failure)
+    {
+        NativeEnvironment environment;
+        // An existing bucket must survive failures publishing an unrelated module.
+        const std::vector<uint32_t> existingCode{0x07230203, 1};
+        const auto existing = CreateInfoFinalizeTestProbe::CacheModule(existingCode);
+        ShaderModule target;
+        const auto failures = observedAllocationFailures;
+        bool failed = false;
+        {
+            HostAllocationFailureScope scope;
+            if (failure < 0) passAllocationsBeforeFailure = 0;
+            else environment.state.failModulePublicationAfter = failure;
+            try { CreateInfoFinalizeTestProbe::CreateModule(target, info); }
+            catch (const std::bad_alloc&) { failed = true; }
+            environment.state.failModulePublicationAfter = -1;
+        }
+        CHECK_TRUE(failed && observedAllocationFailures == failures + 1,
+            "Host fault tests must observe a real injected key-copy or cache-publication failure!");
+        ExpectFailure([&] { (void)target.GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT); });
+        ExpectFailure([&] { (void)target.GetEntryReflection(VK_SHADER_STAGE_COMPUTE_BIT); });
+        CHECK_TRUE(environment.state.liveModules.size() == 1 &&
+            environment.state.moduleDestroys == (failure < 0 ? 0 : 1) &&
+            CreateInfoFinalizeTestProbe::CacheModule(existingCode) == existing,
+            "Host allocation failure must leave target empty, preserve old entries, and destroy only unpublished native work!");
+        CreateInfoFinalizeTestProbe::CreateModule(target, info);
+        CHECK_TRUE(target.GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT).module != VK_NULL_HANDLE &&
+            environment.state.liveModules.size() == 2,
+            "Retry after every Host failure must publish a valid wrapper and native cache entry!");
+    }
+#endif
 }
 
 void TestSparseLayoutNativeSnapshotAndFailureRetry()
@@ -870,7 +1043,8 @@ void TestComputeCreationFailureStagesAndRetry()
         environment.state.*failure = true;
         ExpectFailure([&] { device.CreateComputeShaderProgram(target, info); });
         CHECK_TRUE(target.GetVkPipeline() == VK_NULL_HANDLE && target.GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE &&
-            target.GetLayout().GetVkDescriptorBindings().empty() && environment.state.liveModules.size() == 1 &&
+            target.GetLayout().GetVkDescriptorBindings().empty() &&
+            environment.state.liveModules.size() == (failure == &NativeState::failModule ? 1 : 2) &&
             environment.state.livePipelines.size() == 1 && environment.state.livePipelines.contains(pipeline) &&
             environment.state.liveLayouts.contains(layout) && environment.state.pipelineDestroys == 0,
             "Each failure must roll back temporary ownership, preserve existing caches and leave the output empty!");
@@ -925,10 +1099,10 @@ void TestComputeAutomaticLifetimeAndCacheOwnership()
         CHECK_TRUE(device.CreateComputePipeline(nativeInfo, cache) == pipeline && environment.state.computeCreates == 1,
             "The migration must preserve existing compute cache hits!");
     }
-    CHECK_TRUE(environment.state.liveModules.empty() && environment.state.moduleDestroys == 1 &&
+    CHECK_TRUE(environment.state.liveModules.size() == 1 && environment.state.moduleDestroys == 0 &&
         environment.state.livePipelines.contains(pipeline) && environment.state.pipelineDestroys == 0 &&
         environment.state.layoutDestroys == 0 && environment.state.descriptorDestroys == 0,
-        "Scope exit must release the owned shader and retain borrowed cached pipelines and layouts!");
+        "Scope exit must retain Device-cached shaders, pipelines and layouts!");
 
     const auto destroyed = environment.state.moduleDestroys;
     ExpectFailure([&]
@@ -937,12 +1111,12 @@ void TestComputeAutomaticLifetimeAndCacheOwnership()
         device.CreateComputeShaderProgram(program, retryInfo);
         throw std::runtime_error("Test exception after successful creation");
     });
-    CHECK_TRUE(environment.state.liveModules.empty() && environment.state.moduleDestroys == destroyed + 1 &&
-        environment.state.pipelineDestroys == 0, "Exception unwinding must release only the Program's owned native resources!");
+    CHECK_TRUE(environment.state.liveModules.size() == 1 && environment.state.moduleDestroys == destroyed &&
+        environment.state.pipelineDestroys == 0, "Exception unwinding must retain Device-cached native resources!");
     auto program = std::make_unique<ComputeShaderProgram>();
     device.CreateComputeShaderProgram(*program, retryInfo);
     program.reset();
-    CHECK_TRUE(environment.state.liveModules.empty() && environment.state.moduleDestroys == destroyed + 2 &&
+    CHECK_TRUE(environment.state.liveModules.size() == 1 && environment.state.moduleDestroys == destroyed &&
         environment.state.pipelineDestroys == 0, "unique_ptr reset must release a Compute Program without an explicit Destroy!");
 
     const auto pipelines = environment.state.livePipelines.size();
@@ -1004,7 +1178,8 @@ void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
     environment.state.failCompute = true;
     ExpectFailure([&] { MyDevice::GetInstance().CreateComputeShaderProgram(*compute, computeInfo); });
     CHECK_TRUE(compute->GetVkPipeline() == VK_NULL_HANDLE && compute->GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE &&
-        environment.state.moduleDestroys == 1, "Failed compute creation must clear its runtime layout and shader module!");
+        environment.state.moduleDestroys == 0 && environment.state.moduleCreates == 1,
+        "Failed compute creation must clear its wrapper while retaining its cached native shader!");
     environment.state.failCompute = false;
     MyDevice::GetInstance().CreateComputeShaderProgram(*compute, computeInfo);
     computeInfo.Reset();
@@ -1015,8 +1190,9 @@ void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
     auto destroyed = environment.state.moduleDestroys;
     environment.state.failGraphics = true;
     ExpectFailure([&] { MyDevice::GetInstance().CreateGraphicsShaderProgram(*graphics, graphicsInfo); });
-    CHECK_TRUE(graphics->GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE && environment.state.moduleDestroys == destroyed + 2,
-        "Failed default graphics pipeline creation must release both shaders and its layout!");
+    CHECK_TRUE(graphics->GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE && environment.state.moduleDestroys == destroyed &&
+        environment.state.moduleCreates == 3,
+        "Failed default graphics pipeline creation must clear wrappers and retain both cached native shaders!");
     environment.state.failGraphics = false;
     MyDevice::GetInstance().CreateGraphicsShaderProgram(*graphics, graphicsInfo);
     CHECK_TRUE(graphics->GetVkPipeline({}) != VK_NULL_HANDLE && environment.state.stages.size() == 2 &&
@@ -1060,7 +1236,7 @@ void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
     environment.state.failRay = true;
     ExpectFailure([&] { MyDevice::GetInstance().CreateRayTracingShaderProgram(*rays, rayInfo); });
     CHECK_TRUE(rays->GetVkPipeline() == VK_NULL_HANDLE && rays->GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE &&
-        rays->GetShaderGroupCount() == 0 && environment.state.moduleDestroys == destroyed + 1,
+        rays->GetShaderGroupCount() == 0 && environment.state.moduleDestroys == destroyed && environment.state.moduleCreates == 4,
         "Failed RT pipeline creation must clear runtime groups, layout and deduplicated shader module!");
     environment.state.failRay = false;
     environment.state.failGroups = true;
@@ -1068,16 +1244,16 @@ void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
     const auto pipelineDestroysBeforeGroupFailure = environment.state.pipelineDestroys;
     ExpectFailure([&] { MyDevice::GetInstance().CreateRayTracingShaderProgram(*rays, rayInfo); });
     CHECK_TRUE(rays->GetVkPipeline() == VK_NULL_HANDLE && rays->GetShaderGroupCount() == 0 &&
-        rays->GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE && environment.state.moduleDestroys == destroyed + 2 &&
+        rays->GetLayout().GetVkPipelineLayout() == VK_NULL_HANDLE && environment.state.moduleDestroys == destroyed &&
         environment.state.rayCreates == rayCreatesBeforeGroupFailure + 1 &&
         environment.state.pipelineDestroys == pipelineDestroysBeforeGroupFailure &&
         environment.state.livePipelines.size() >= 1,
         "Failure after RT pipeline creation must also leave the runtime object reusable!");
     environment.state.failGroups = false;
     MyDevice::GetInstance().CreateRayTracingShaderProgram(*rays, rayInfo);
-    CHECK_TRUE(environment.state.rayCreates == rayCreatesBeforeGroupFailure + 2 &&
+    CHECK_TRUE(environment.state.rayCreates == rayCreatesBeforeGroupFailure + 1 &&
         environment.state.pipelineDestroys == pipelineDestroysBeforeGroupFailure,
-        "Handle-fetch failure must leave its pipeline cache-owned while the retry can create a fresh keyed pipeline!");
+        "Handle-fetch failure must leave its pipeline cache-owned; stable module handles let retry reuse it!");
     CHECK_TRUE(rays->GetVkPipeline() != VK_NULL_HANDLE && rays->GetShaderGroupCount() == 2 &&
         environment.state.recursionDepth == 2 && environment.state.groups.size() == 2 && environment.state.stages.size() == 1 &&
         environment.state.stages[0].stage == VK_SHADER_STAGE_RAYGEN_BIT_KHR && environment.state.stages[0].entry == "main" &&
@@ -1100,8 +1276,8 @@ void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
     CHECK_TRUE(environment.state.pipelineDestroys == pipelineDestroysBeforeProgramRelease &&
         copiedGroups.GetGroupData("primary").handle == std::vector<uint8_t>(8, 0x5a),
         "Program release must preserve Device-cached pipelines and copied RT host metadata!");
-    CHECK_TRUE(environment.state.moduleCreates == environment.state.moduleDestroys,
-        "All program creation retries and successful lifetimes must release every shader module!");
+    CHECK_TRUE(environment.state.moduleCreates == 4 && environment.state.moduleDestroys == 0,
+        "All Program retries and lazy pipeline requests must reuse the four Device-cached shader modules!");
 }
 
 void TestRenderPassNativeFailureDoesNotConsumeFinalizedInfo()
@@ -1268,6 +1444,9 @@ void RunCreateInfoFinalizeTests()
 {
     TestUnfinalizedDescriptionsNeverReachVulkan();
     TestShaderModuleOwnsFinalizedCodeAndEntryNames();
+    TestShaderModuleKeysSnapshotsAndGuards();
+    TestShaderModuleAllocatorFailuresAndAliasedHandles();
+    TestShaderModuleHostFailureRollback();
     TestSparseLayoutNativeSnapshotAndFailureRetry();
     TestLayoutCacheAndIndependentMetadata();
     TestLayoutCreationDependenciesAndChildFailure();

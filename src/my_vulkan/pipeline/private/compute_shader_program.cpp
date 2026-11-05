@@ -13,7 +13,7 @@ void ComputeShaderProgram::_Create(const ComputeShaderProgramCreateInfo& inCreat
 	// MyDevice validates before creating this temporary. Its destructor rolls
 	// back owned resources if any stage throws; cached resources stay cached.
 	m_uptrShaderModule = std::make_unique<ShaderModule>();
-	m_uptrShaderModule->Create(inCreateInfo.m_finalized->shader);
+	MyDevice::GetInstance()._GetOrCreateShaderModule(*m_uptrShaderModule, inCreateInfo.m_finalized->shader);
 	MyDevice::GetInstance().GetOrCreatePipelineLayout(m_pipelineLayout, inCreateInfo.m_finalized->layout);
 	_CreateVkPipeline(m_uptrShaderModule->GetShaderStageInfo(VK_SHADER_STAGE_COMPUTE_BIT), inCreateInfo.m_vkPipelineCache);
 
@@ -41,7 +41,6 @@ void ComputeShaderProgram::_Destroy()
 	}
 	if (m_uptrShaderModule != nullptr)
 	{
-		m_uptrShaderModule->Destroy();
 		m_uptrShaderModule.reset();
 	}
 	m_pipelineLayout = {};

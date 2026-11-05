@@ -7,18 +7,18 @@
 
 class ShaderModule final
 {
+    friend class MyDevice;
 private:
 	std::shared_ptr<const ShaderReflector> m_reflector;
 	VkShaderModule m_vkShaderModule = VK_NULL_HANDLE;
 public:
+	// Native handle borrows the Device cache; this wrapper owns only Host metadata.
 	ShaderModule() = default;
 	ShaderModule(const ShaderModule&) = delete;
 	auto operator=(const ShaderModule&) -> ShaderModule& = delete;
-	~ShaderModule();
-	void Create(const ShaderModuleCreateInfo& inCreateInfo);
+	~ShaderModule() noexcept = default;
 	auto GetShaderStageInfo(VkShaderStageFlagBits inStage) const -> VkPipelineShaderStageCreateInfo;
 	auto GetEntryReflection(VkShaderStageFlagBits inStage) const -> const ShaderEntryReflection&;
-	void Destroy();
 };
 
 // Internal owned requests shared by the program builders. No public API accepts these.

@@ -54,7 +54,8 @@ Granite 使用 `Util::IntrusivePtrEnabled<T>` 加 `Util::IntrusivePtr<T>`。资�
 - `CommandBuffer`：当前是命令描述数据，不拥有 Vulkan command buffer。
 - `PipelineLayout`：拥有独立的 Host 元数据并借用 Device 缓存句柄，复制和析构不管理 native 生命周期，不增加 RefCounted；见 [Pipeline layout ownership](resource_lifetimes.md#pipeline-layout-ownership)。
 - `ShaderBindingTable`：保持非 RefCounted、不可复制/移动的独占所有者，保留只接受空目标的 Create，由 RAII 释放 backing Buffer 和 Host 数据；见 [SBT ownership](resource_lifetimes.md#sbt-ownership)。
-- `ShaderModule`、`RenderPass`、`Framebuffer` 和 ShaderProgram：保留各自现有所有权模式，本轮不增加 RefCounted。
+- `ShaderModule`：内部不可复制/移动包装，借用 Device 按完整 SPIR-V 内容缓存的 native module，并保留自己的反射快照；包装析构只释放 Host 引用，不增加 RefCounted。见 [ShaderModule ownership](resource_lifetimes.md#shader-module-ownership)。
+- ShaderProgram：保持独占 Program 包装和现有 Device 创建入口，不增加 RefCounted；native shader module、pipeline 和 layout 由各自 Device 缓存持有。
 
 ## 兼容性风险
 

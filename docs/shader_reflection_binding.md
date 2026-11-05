@@ -155,28 +155,35 @@ state are outside this interface. `Reset()` clears all shaders and default attac
 Compute's CreateInfo uses `SetShader(path)`; its `Reset()` clears the shader and
 pipeline cache. The Program itself has no public Create/Destroy/Reset. Creation
 through MyDevice requires finalized input and an empty target, publishes only on
-success, and permits retry after failure. Program destruction releases its owned
-shader module automatically; pipeline/layout handles remain Device-cached. Keep
+success, and permits retry after failure. Program destruction releases its module
+wrappers and Host metadata; native module/pipeline/layout handles remain Device-cached. Keep
 the Device alive and complete native uses before scope exit or owning-pointer
 reset. Creation and destruction require caller synchronization of their shared
 state; see [Program ownership](resource_lifetimes.md#shader-program-ownership).
 
-Within each program, one Vulkan shader module is created per exact file string.
-Actual pipeline stages are deduplicated by `(file string, stage)` in
-first-use order. Paths are not normalized and file contents are not hashed. Only
+Host finalization groups module requests by exact file string and deduplicates
+pipeline stages by `(file string, stage)` in first-use order, without normalizing
+paths. Device creation separately deduplicates native modules by complete final
+SPIR-V content, using a hash bucket plus full word comparison. Different paths
+with identical code therefore share native handles across Programs. Only
 selected entries contribute descriptors, push constants, vertex inputs and fragment
 outputs, including automatic vertex and attachment defaults. A declared but unused
 resource is excluded. Resources used only by unrequested stages do not affect the
 layout. Different requested stages using the same binding merge their stage masks.
 
-`ShaderModule::Create(path)` loads, validates and caches reflection for every stage in a module.
-`GetShaderStageInfo(stage)` returns a Vulkan stage whose entry name stays valid until
-module destruction. `GetEntryReflection(stage)` returns a const reference to the same
-cached entry; the Vulkan stage name points directly into that entry's owned string.
+`ShaderModuleCreateInfo::Finalize()` loads, validates and reflects every stage in
+a module without native creation. Device's private creation helper obtains a cached
+native handle and retains that finalized snapshot in an internal ShaderModule.
+`GetShaderStageInfo(stage)` returns a Vulkan stage whose entry name stays valid
+while the wrapper retains its snapshot. `GetEntryReflection(stage)` returns a
+const reference to the same entry; the stage name points into its owned string.
+ShaderModule exposes no Create/Destroy. Native cache entries survive wrapper
+cleanup and are released at Device teardown; see [module ownership](resource_lifetimes.md#shader-module-ownership).
 The public module configuration wrapper and generic graphics shader addition API
 have been removed. Missing files, invalid SPIR-V, missing/duplicate stages and
-illegal stage combinations raise exceptions; failed program creation releases partial
-modules, layouts and pipelines and permits rebuilding.
+illegal stage combinations raise exceptions. Failed program creation releases
+temporary wrappers and Host state; already published native cache entries remain
+available for retries.
 
 ## Ray tracing programs
 
@@ -243,10 +250,11 @@ Optional paths use `std::optional<std::string_view>`; explicitly empty paths are
 Vulkan triangle hit groups can
 omit closest-hit, any-hit, or both; procedural groups always require intersection.
 
-The program owns its shader modules and always reflects descriptor layouts and push
-constant ranges from the selected entries. Builder retains recursion depth (default 1)
-and pipeline cache (default `VK_NULL_HANDLE`) settings. Creation failures clean partial
-state; `Destroy()` permits recreation.
+The program owns module wrappers and selected-entry Host reflection while native
+modules belong to the Device cache. Builder retains recursion depth (default 1)
+and pipeline cache (default `VK_NULL_HANDLE`) settings. Creation failures discard
+temporary Program state and permit retry; successful Programs are released by scope
+or an owning pointer, with recreation using a new Program owner.
 
 ~~~cpp
 const auto& group = program.GetShaderGroupSet().GetGroupData("opaque");

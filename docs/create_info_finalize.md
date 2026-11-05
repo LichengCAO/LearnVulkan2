@@ -13,10 +13,10 @@ info.Finalize();                 // Host: load SPIR-V, reflect, resolve layout d
     info.Reset();               // The program retains the data it needs.
     // Record and submit commands using program.
     // Complete native uses before leaving this scope, and before Device teardown.
-}                               // Automatically releases its owned shader module.
+}                               // Releases Host wrappers; native modules remain cached.
 ```
 
-`Finalize()` and `IsFinalized()` are provided by graphics, compute and ray tracing program CreateInfos, RenderPassDesc, PipelineLayoutCreateInfo, and the internal ShaderModuleCreateInfo. All three ShaderPrograms use `device.CreateXxxShaderProgram(program, info)`; pipeline layouts use `device.GetOrCreatePipelineLayout(layout, info)`, and shader modules use `Create(const XxxCreateInfo&)`. These creation entries reject unfinalized inputs before calling Vulkan; they do not silently finalize them.
+`Finalize()` and `IsFinalized()` are provided by graphics, compute and ray tracing program CreateInfos, RenderPassDesc, PipelineLayoutCreateInfo, and the internal ShaderModuleCreateInfo. All three ShaderPrograms use `device.CreateXxxShaderProgram(program, info)`; pipeline layouts use `device.GetOrCreatePipelineLayout(layout, info)`. Internal module creation goes through Device's private `_GetOrCreateShaderModule`, with no ShaderModule Create/Destroy. These creation entries reject unfinalized inputs before calling Vulkan; they do not silently finalize them.
 
 Rendering uses `RenderPassDesc` and `FramebufferDesc` directly. Native handles are obtained through `device.GetOrCreateRenderPass(passDesc)` and `device.GetOrCreateFramebuffer(passDesc, framebufferDesc)`, or during command preparation. The Device owns the native cache; there are no public RenderPass or Framebuffer facade types.
 
@@ -26,6 +26,15 @@ retryable. ShaderPrograms have no public Create/Destroy/Reset and cannot be copi
 or moved. Use scope exit or owning `unique_ptr.reset()` for release. Creation and
 destruction access shared state under caller synchronization; see
 [Program ownership](resource_lifetimes.md#shader-program-ownership).
+
+Native shader modules are cached by complete finalized SPIR-V content across
+Programs and paths, with full comparison after hashing. Each wrapper retains its
+own immutable reflection snapshot. Clearing descriptions or wrappers does not free
+native modules; Device teardown releases them after pipeline caches. Already
+published modules remain cached after later Program failures, so retries reuse
+them without reloading files. Creation accesses the externally synchronized
+module cache; Finalize and native recording do not. See
+[module ownership](resource_lifetimes.md#shader-module-ownership).
 
 ## State and ownership
 

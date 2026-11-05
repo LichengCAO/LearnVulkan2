@@ -3,7 +3,7 @@
 
 class ShaderModuleCreateInfo final
 {
-    friend class ShaderModule;
+    friend class MyDevice;
 private:
     std::string m_file;
     std::shared_ptr<const ShaderReflector> m_finalized;
