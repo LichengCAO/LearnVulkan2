@@ -447,7 +447,7 @@ auto TopLevelAccelStruct::_BuildInfo(const TopLevelAccelStructCreateInfo& inInfo
     return result;
 }
 
-void TopLevelAccelStruct::WriteInstances(const TopLevelAccelStructCreateInfo& inInfo,
+void TopLevelAccelStruct::WriteBuildInfoBufferInline(const TopLevelAccelStructCreateInfo& inInfo,
     Buffer& inDstBuffer, VkDeviceSize inOffset)
 {
     if (inInfo.m_instances.empty()) return;

@@ -51,6 +51,7 @@ void RayTracingShaderProgram::_Destroy()
 	m_pipelineLayout = {};
 	m_shaderModules.clear();
 	m_shaderGroupCount = 0;
+	m_allowClusterAccelerationStructure = false;
 	m_groupSet.Reset();
 }
 
@@ -212,6 +213,8 @@ void RayTracingShaderProgram::_Create(const RayTracingShaderProgramCreateInfo& i
 	CHECK_TRUE(vkCreateRayTracingPipelinesKHR && vkGetRayTracingShaderGroupHandlesKHR,
 	    "Ray tracing pipeline extension is unavailable!");
 	const auto& finalized = *inCreateInfo.m_finalized;
+	CHECK_TRUE(!finalized.allowClusterAccelerationStructure || device.m_clusterAccelerationStructureEnabled,
+	    "CLAS ray tracing pipelines require the enabled clusterAccelerationStructure feature!");
 	device.GetPhysicalDeviceRayTracingProperties(rayTracingProperties);
 	CHECK_TRUE(finalized.recursionDepth <= rayTracingProperties.maxRayRecursionDepth,
 	    "Ray tracing recursion depth exceeds device limits!");
@@ -236,7 +239,9 @@ void RayTracingShaderProgram::_Create(const RayTracingShaderProgramCreateInfo& i
 	const uint32_t groupCount = static_cast<uint32_t>(finalized.groups.size());
 	const VkPipelineLayout layoutToInit = GetLayout().GetVkPipelineLayout();
 
-	pipelineInfo.pNext = nullptr;
+	const VkRayTracingPipelineClusterAccelerationStructureCreateInfoNV clusterInfo{
+	    VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CLUSTER_ACCELERATION_STRUCTURE_CREATE_INFO_NV, nullptr, VK_TRUE};
+	pipelineInfo.pNext = finalized.allowClusterAccelerationStructure ? &clusterInfo : nullptr;
 	pipelineInfo.flags = 0;
 	pipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
 	pipelineInfo.pStages = stages.data();

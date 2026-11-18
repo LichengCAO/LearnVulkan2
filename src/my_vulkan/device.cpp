@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <algorithm>
 #include <limits>
+#include <string_view>
 #include <utility>
 #include <type_traits>
 #include "image.h"
@@ -233,8 +234,42 @@ void MyDevice::_SelectPhysicalDevice()
 	m_cachedPhysicalDeviceProperties = properties.properties;
 }
 
+auto MyDevice::_EnableClusterAccelerationStructureIfSupported() -> bool
+{
+	constexpr uint32_t minimumExtensionRevision = 2;
+	const char* extensionName = VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME;
+	if (!m_physicalDevice.is_extension_present(extensionName))
+		return false;
+
+	std::vector<VkExtensionProperties> extensions;
+	VkResult result;
+	do
+	{
+		uint32_t count = 0;
+		if (vkEnumerateDeviceExtensionProperties(vkPhysicalDevice, nullptr, &count, nullptr) != VK_SUCCESS || count == 0)
+			return false;
+		extensions.resize(count);
+		result = vkEnumerateDeviceExtensionProperties(vkPhysicalDevice, nullptr, &count, extensions.data());
+		if (result == VK_SUCCESS)
+			extensions.resize(count);
+	} while (result == VK_INCOMPLETE);
+
+	if (result != VK_SUCCESS || std::none_of(extensions.begin(), extensions.end(), [&](const VkExtensionProperties& extension) -> bool
+		{
+			return std::string_view(extension.extensionName) == extensionName && extension.specVersion >= minimumExtensionRevision;
+		}))
+		return false;
+
+	VkPhysicalDeviceClusterAccelerationStructureFeaturesNV features{
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV};
+	features.clusterAccelerationStructure = VK_TRUE;
+	return m_physicalDevice.enable_extension_features_if_present(features) &&
+		m_physicalDevice.enable_extension_if_present(extensionName);
+}
+
 void MyDevice::_CreateLogicalDevice()
 {
+	const bool enableClusterAccelerationStructure = _EnableClusterAccelerationStructureIfSupported();
 	vkb::DeviceBuilder deviceBuilder{ m_physicalDevice };
 
 	std::vector<vkb::CustomQueueDescription> queueDescription;
@@ -282,6 +317,7 @@ void MyDevice::_CreateLogicalDevice()
 		queueFamilyIndex = GetQueueFamilyIndexOfType(QueueFamilyType::TRANSFER);
 		vkGetDeviceQueue(vkDevice, queueFamilyIndex, 0, &m_vkTransferQueue);
 	}
+	m_clusterAccelerationStructureEnabled = enableClusterAccelerationStructure;
 }
 
 void MyDevice::_CreateSwapchain(VkSwapchainKHR inOldSwapchain)
@@ -743,6 +779,7 @@ void MyDevice::_DestroySamplerAllocator()
 
 void MyDevice::Create()
 {
+	m_clusterAccelerationStructureEnabled = false;
 	_InitVolk();
 	_InitGLFW();
 	_CreateInstance();
@@ -771,6 +808,7 @@ void MyDevice::Destroy()
 	_DestroySamplerAllocator();
 	_DestroyMemoryAllocator();
 	vkb::destroy_device(m_device);
+	m_clusterAccelerationStructureEnabled = false;
 	vkb::destroy_surface(m_instance, vkSurface);
 	vkb::destroy_instance(m_instance);
 	glfwDestroyWindow(pWindow);
@@ -1037,6 +1075,7 @@ void MyDevice::CreateRayTracingShaderProgram(RayTracingShaderProgram& outProgram
 	outProgram.m_vkPipeline = std::exchange(program.m_vkPipeline, VK_NULL_HANDLE);
 	outProgram.m_shaderGroupCount = std::exchange(program.m_shaderGroupCount, 0);
 	outProgram.m_groupSet = std::move(program.m_groupSet);
+	outProgram.m_allowClusterAccelerationStructure = finalized.allowClusterAccelerationStructure;
 }
 
 void MyDevice::GetOrCreateSampler(Sampler& outSampler, const SamplerCreateInfo& inCreateInfo)

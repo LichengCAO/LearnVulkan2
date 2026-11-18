@@ -78,10 +78,12 @@ private:
         PipelineLayoutCreateInfo layout;
         std::vector<ShaderGroup> groups;
         uint32_t recursionDepth;
+        bool allowClusterAccelerationStructure;
     };
     std::vector<ShaderDetail::Request> m_shaders;
     std::vector<ShaderGroup> m_shaderGroups;
     uint32_t m_maxRayRecursionDepth = 1;
+    bool m_allowClusterAccelerationStructure = false;
     VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;
     std::shared_ptr<const FinalizedData> m_finalized;
     void _ValidateGroupName(std::string_view inName) const;
@@ -94,6 +96,8 @@ public:
     auto Reset() -> RayTracingShaderProgramCreateInfo&;
     auto CustomizeMaxRecursionDepth(uint32_t inMaxDepth) -> RayTracingShaderProgramCreateInfo&;
     auto CustomizePipelineCache(VkPipelineCache inCache) -> RayTracingShaderProgramCreateInfo&;
+    // Opt into traversal of acceleration structures built from clusters on a capable Device.
+    auto CustomizeAllowClusterAccelerationStructure(bool inAllow) -> RayTracingShaderProgramCreateInfo&;
     auto AddRayGenerationShaderGroup(std::string_view inName, std::string_view inSpirv) -> RayTracingShaderProgramCreateInfo&;
     auto AddMissShaderGroup(std::string_view inName, std::string_view inSpirv) -> RayTracingShaderProgramCreateInfo&;
     auto AddCallableShaderGroup(std::string_view inName, std::string_view inSpirv) -> RayTracingShaderProgramCreateInfo&;

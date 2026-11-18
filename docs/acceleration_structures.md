@@ -77,7 +77,7 @@ concurrently; same-instance conflicts require caller exclusion. Empty instance
 lists remain supported. See [TLAS ownership](resource_lifetimes.md#tlas-ownership).
 
 `SetInstances` copies CPU descriptions without resolving BLAS addresses.
-`TopLevelAccelStruct::WriteInstances` is static: no TLAS object is required.
+`TopLevelAccelStruct::WriteBuildInfoBufferInline` is static: no TLAS object is required.
 Referenced BLAS objects need valid handles/device addresses; a null BLAS reference
 encodes an inactive instance.
 
@@ -102,7 +102,7 @@ instanceBufferInfo.CustomizeMemoryProperty(
 
 Buffer instanceBuffer;
 instanceBuffer.Create(instanceBufferInfo);
-TopLevelAccelStruct::WriteInstances(tlasInfo, instanceBuffer);
+TopLevelAccelStruct::WriteBuildInfoBufferInline(tlasInfo, instanceBuffer);
 
 TopLevelAccelStruct tlas;
 tlas.Create(tlasInfo);
@@ -114,12 +114,12 @@ commandBuffer.UpdateAccelerationStructureKHR(
     tlas, tlas, tlasInfo, instanceBuffer, 0, tlasScratch);
 ```
 
-`WriteInstances` validates and encodes the entire list before writing once.
+`WriteBuildInfoBufferInline` validates and encodes the entire list before writing once.
 It requires host-visible, host-coherent destination memory, but no build-input
 usage: a staging Buffer is also valid. For device-local instance data, write a
 staging Buffer, record the existing `CopyBuffer`, and supply the destination to
 the TLAS build. Transfers and BLAS-to-TLAS dependencies require explicit
-synchronization. A build never implicitly calls `WriteInstances`.
+synchronization. A build never implicitly calls `WriteBuildInfoBufferInline`.
 
 ## Snapshots, updates and lifetime
 
@@ -146,3 +146,76 @@ batch interface and typed Copy overloads remain available. A single batch is for
 independent builds; dependent BLAS/TLAS builds need separate calls and synchronization.
 Host Build, automatic submission/waiting, implicit barriers and new compaction
 query flows are outside this interface.
+
+## CLAS and Cluster BLAS batches
+
+`ClusterLevelAccelStructBatch` and `BottomLevelAccelStructBatch` use
+`VK_NV_cluster_acceleration_structure` with implicit destinations. Device
+initialization enables the extension and its feature when available; unsupported
+devices keep the existing paths and reject CLAS creation or a CLAS-enabled Program.
+
+Both Batch types keep their output storage and a packed `VkDeviceAddress` table in
+owned Buffers. `Create()` requires an empty target, queries whole-batch capacity,
+and allocates these Buffers synchronously. It performs no upload, submission, or
+GPU build. Empty batches and batches exceeding the device's single Buffer or
+allocation limit reject; callers split large workloads into multiple batches.
+Failure leaves an empty target that can be retried. Release never waits for GPU work.
+
+CreateInfo setters copy descriptions. CLAS batches have one vertex format and one
+index type for all items. `CustomizeIndexType()` accepts `VK_INDEX_TYPE_UINT8`,
+`VK_INDEX_TYPE_UINT16` or `VK_INDEX_TYPE_UINT32`; the default is `VK_INDEX_TYPE_UINT32`. Individual
+items specify indexed triangles and vertex/index device addresses, without an
+index-type field. Native GPU tasks are encoded with the batch's common index type.
+A zero vertex stride selects tightly packed vertices. The current path
+uses flags 0, opaque geometry, GeometryIndex 0 and no position truncation. Each
+`ClusterBasedBottomLevelAccelStructClusterCreateInfo` creates one Cluster BLAS
+referencing a contiguous interval of a source CLAS batch's address table.
+
+For either Batch, prepare and execute in this order:
+
+1. Call `Create(info)` and read `GetSizesInfo()` and `GetScratchAlignment()`.
+2. Allocate a task Buffer of `buildInfoBufferSize` bytes. It needs
+   `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | SHADER_DEVICE_ADDRESS_BIT`
+   for the build. A staging Buffer can instead be written and copied explicitly.
+3. Call the Batch type's static `WriteBuildInfoBufferInline(info, tasks)` to
+   immediately encode packed native tasks into host-visible, host-coherent memory.
+   The complete list is validated before one write. Empty lists perform no write.
+4. Provide scratch of `buildScratchBufferSize` bytes with
+   `STORAGE_BUFFER_BIT | SHADER_DEVICE_ADDRESS_BIT` and the reported alignment.
+   A zero scratch requirement uses address 0.
+5. Append the appropriate `BuildAccelerationStructureIndirect` overload using
+   `{ scratchAddress, taskAddress, &batch }`. The build count is `GetCount()`;
+   task stride is the native record size, and GPU dynamic counts are not enabled.
+
+The command snapshots the Batch's queried Host limits and the supplied addresses.
+It never copies task contents or retains borrowed inputs. GPU-generated tasks
+must remain within those frozen limits, including count, format and aggregate
+geometry counts. With raw device addresses, callers guarantee underlying Buffer
+usage, capacity, index contents and lifetime. Known scratch/output overlap and
+invalid addresses/alignment reject before appending.
+
+`GetReferenceBuffer()` becomes non-null after Host creation, but its contents are
+GPU results and are usable only after the build and its required synchronization.
+Do not assume individual implicit object addresses stay unchanged across builds.
+Synchronize CLAS output writes before Cluster BLAS reads and scratch reuse, then
+Cluster BLAS address writes before an engine shader patches standard TLAS instances.
+TLAS Build already accepts the externally prepared instance Buffer. No RHI instance
+patch helper or implicit barrier is introduced.
+
+Builds require an actual compute-capable queue and must be outside a RenderPass.
+If a ray tracing pipeline is already bound before a cluster build, it must enable
+CLAS; recording builds before binding any ray tracing pipeline is also valid.
+For tracing, call
+`RayTracingShaderProgramCreateInfo::CustomizeAllowClusterAccelerationStructure(true)`
+before `Finalize()`. The option defaults to false, participates in the immutable
+snapshot and pipeline cache key, and only attaches the native cluster `pNext` when
+enabled.
+
+The opt-in native smoke test uses the normal regression executable without a
+window and checks two CLAS and two Cluster BLAS output addresses:
+
+```powershell
+$env:LEARN_VULKAN_CLAS_GPU_TESTS = '1'
+ctest --test-dir build -C Debug --output-on-failure -V -R '^learn_vulkan_tests$'
+Remove-Item Env:LEARN_VULKAN_CLAS_GPU_TESTS
+```

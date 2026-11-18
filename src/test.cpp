@@ -1854,6 +1854,9 @@ void RunShaderBindingTests();
 #endif
 
 void RunCommandBufferTests();
+void RunClasPipelineTests();
+void RunClasResourceTests();
+void RunClasGpuTests();
 void RunCreateInfoFinalizeTests();
 void RunHostCreateInfoFinalizeTests();
 void RunRenderPassFinalizeTests();
@@ -1878,6 +1881,9 @@ auto main(int argc, char** argv) -> int
 		RunHostCreateInfoFinalizeTests();
 		RunRenderPassFinalizeTests();
 		RunCommandBufferTests();
+		RunClasPipelineTests();
+		RunClasResourceTests();
+		RunClasGpuTests();
 		RunResourceLifetimeTests();
 		RunResourceSubmissionTests();
 		RunDescriptorPoolTests();

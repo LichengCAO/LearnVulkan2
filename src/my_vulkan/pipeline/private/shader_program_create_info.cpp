@@ -175,12 +175,20 @@ auto ComputeShaderProgramCreateInfo::Finalize() -> ComputeShaderProgramCreateInf
 auto RayTracingShaderProgramCreateInfo::Reset() -> RayTracingShaderProgramCreateInfo&
 {
     m_shaders.clear(); m_shaderGroups.clear(); m_maxRayRecursionDepth = 1;
+    m_allowClusterAccelerationStructure = false;
     m_vkPipelineCache = VK_NULL_HANDLE; m_finalized.reset(); return *this;
 }
 auto RayTracingShaderProgramCreateInfo::CustomizeMaxRecursionDepth(uint32_t depth) -> RayTracingShaderProgramCreateInfo&
 { m_maxRayRecursionDepth = depth; m_finalized.reset(); return *this; }
 auto RayTracingShaderProgramCreateInfo::CustomizePipelineCache(VkPipelineCache cache) -> RayTracingShaderProgramCreateInfo&
 { m_vkPipelineCache = cache; m_finalized.reset(); return *this; }
+auto RayTracingShaderProgramCreateInfo::CustomizeAllowClusterAccelerationStructure(bool inAllow)
+    -> RayTracingShaderProgramCreateInfo&
+{
+    m_allowClusterAccelerationStructure = inAllow;
+    m_finalized.reset();
+    return *this;
+}
 void RayTracingShaderProgramCreateInfo::_ValidateGroupName(std::string_view name) const
 {
     CHECK_TRUE(!name.empty(), "Ray tracing shader group name is empty!");
@@ -260,5 +268,6 @@ auto RayTracingShaderProgramCreateInfo::Finalize() -> RayTracingShaderProgramCre
         for (auto* index : {&group.record.generalShader, &group.record.closestHitShader, &group.record.intersectionShader, &group.record.anyHitShader})
             if (*index != VK_SHADER_UNUSED_KHR) *index = data->shaders.indices.at(*index);
     data->recursionDepth = m_maxRayRecursionDepth;
+    data->allowClusterAccelerationStructure = m_allowClusterAccelerationStructure;
     m_finalized = std::move(data); return *this;
 }

@@ -313,6 +313,7 @@ auto FrameSlot::DispatchRecording(
         CHECK_TRUE(std::holds_alternative<std::monostate>(buffer.m_renderingScopeState),
             "Command buffer has an active rendering scope!");
         buffer._PrepareRenderPassCommands();
+        buffer._ValidateQueueCapabilities(inQueue);
         if (!buffer.m_hasProgramBindings) continue;
         if (!m_dynamicDescriptorPool)
         {

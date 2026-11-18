@@ -24,9 +24,15 @@ private:
 
 public:
 	void Reset();
-	void AddVertexInputDescription(
-		const VkVertexInputBindingDescription& inBindingDescription,
-		const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions);
+	// Offsets and strides are in bytes. Locations must be unique; attributes sharing
+	// a binding must agree on stride and input rate. Explicit inputs replace reflection defaults.
+	void AddVertexAttribute(
+		uint32_t inBinding,
+		uint32_t inLocation,
+		uint32_t inOffset,
+		uint32_t inStride,
+		VkFormat inFormat,
+		VkVertexInputRate inInputRate = VK_VERTEX_INPUT_RATE_VERTEX);
 	void SetRenderPassSubpass(const RenderPassDesc& inRenderPass, uint32_t inSubpassIndex = 0);
 };
 

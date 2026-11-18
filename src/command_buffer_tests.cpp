@@ -170,6 +170,62 @@ struct CommandBufferTestProbe
     static void VKAPI_PTR _DestroyFramebuffer(VkDevice, VkFramebuffer, const VkAllocationCallbacks*) {}
 
     static auto Count(const CommandBuffer& inBuffer) -> size_t { return inBuffer.m_commands.size(); }
+    template<typename T>
+    static void PrepareClusterBatch(T& inBatch)
+    {
+        inBatch.m_storageBuffer = std::make_unique<Buffer>();
+        inBatch.m_referenceBuffer = std::make_unique<Buffer>();
+        SetBorrowedBuffer(*inBatch.m_storageBuffer, Handle<VkBuffer>(103));
+        SetBorrowedBuffer(*inBatch.m_referenceBuffer, Handle<VkBuffer>(104));
+        inBatch.m_storageBuffer->m_bufferInformation = { 4096,
+            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT };
+        inBatch.m_referenceBuffer->m_bufferInformation = { 16,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT };
+        inBatch.m_count = 2;
+        inBatch.m_sizesInfo.accelerationStructureSize = 4096;
+        inBatch.m_sizesInfo.buildScratchBufferSize = 512;
+        inBatch.m_sizesInfo.scratchAlignment = 256;
+        if constexpr (std::same_as<T, ClusterLevelAccelStructBatch>)
+        {
+            inBatch.m_sizesInfo.buildInfoBufferSize = 2 * sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV);
+            inBatch.m_triangleInput.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+            inBatch.m_triangleInput.maxClusterTriangleCount = 17;
+        }
+        else
+        {
+            inBatch.m_sizesInfo.buildInfoBufferSize = 2 * sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV);
+            inBatch.m_clustersInput.maxTotalClusterCount = 12;
+            inBatch.m_clustersInput.maxClusterCountPerAccelerationStructure = 7;
+        }
+    }
+    static void ChangeClusterLayout(ClusterLevelAccelStructBatch& inBatch)
+    {
+        inBatch.m_count = 3;
+        inBatch.m_triangleInput.maxClusterTriangleCount = 31;
+    }
+    struct ClusterQueueState
+    {
+        VkPhysicalDevice previousDevice = MyDevice::GetInstance().vkPhysicalDevice;
+        MyDevice::QueueFamilyIndices previousIndices = MyDevice::GetInstance().queueFamilyIndices;
+        ClusterQueueState()
+        {
+            auto& device = MyDevice::GetInstance();
+            device.vkPhysicalDevice = Handle<VkPhysicalDevice>(1);
+            device.queueFamilyIndices.graphicsFamily = 0;
+            device.queueFamilyIndices.graphicsAndComputeFamily = 0;
+            device.queueFamilyIndices.transferFamily = 0;
+        }
+        ~ClusterQueueState()
+        {
+            auto& device = MyDevice::GetInstance();
+            device.vkPhysicalDevice = previousDevice;
+            device.queueFamilyIndices = previousIndices;
+        }
+    };
+    static void ValidateClusterQueue(const CommandBuffer& inBuffer, QueueFamilyType inQueue)
+    {
+        inBuffer._ValidateQueueCapabilities(inQueue);
+    }
     struct ExternalBuffer
     {
         Buffer buffer;
@@ -845,13 +901,13 @@ namespace
     {
         if constexpr (requires(Info& info, Buffer& destination) {
             info.SetInstances({});
-            Tlas::WriteInstances(info, destination, VkDeviceSize{ 0 });
+            Tlas::WriteBuildInfoBufferInline(info, destination, VkDeviceSize{ 0 });
         })
         {
             Info info;
             info.SetInstances({});
             Buffer destination;
-            Tlas::WriteInstances(info, destination, 0);
+            Tlas::WriteBuildInfoBufferInline(info, destination, 0);
         }
         else
             CHECK_TRUE(false, "Missing CPU instance description and static host upload interface!");
@@ -1070,7 +1126,7 @@ namespace
         memory.fill(0xCD);
         CommandBufferTestProbe::ExternalBuffer upload(105, memory.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             memory.data(), VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        TopLevelAccelStruct::WriteInstances(info, upload.buffer, 16);
+        TopLevelAccelStruct::WriteBuildInfoBufferInline(info, upload.buffer, 16);
         VkAccelerationStructureInstanceKHR first{}, second{};
         std::memcpy(&first, memory.data() + 16, sizeof(first));
         std::memcpy(&second, memory.data() + 80, sizeof(second));
@@ -1085,15 +1141,15 @@ namespace
         instances[1].instanceCustomIndex = 0x1000000;
         info.SetInstances(instances);
         CommandBuffer commands;
-        ExpectRejected(commands, [&] { TopLevelAccelStruct::WriteInstances(info, upload.buffer, 16); });
+        ExpectRejected(commands, [&] { TopLevelAccelStruct::WriteBuildInfoBufferInline(info, upload.buffer, 16); });
         CHECK_TRUE(memory == previous, "A rejected instance list must not partially overwrite the destination!");
         instances[1].instanceCustomIndex = 0;
         info.SetInstances(instances);
-        ExpectRejected(commands, [&] { TopLevelAccelStruct::WriteInstances(info, upload.buffer, 200); });
+        ExpectRejected(commands, [&] { TopLevelAccelStruct::WriteBuildInfoBufferInline(info, upload.buffer, 200); });
         CommandBufferTestProbe::ExternalBuffer invisible(105, 256, 0, memory.data(), 0);
-        ExpectRejected(commands, [&] { TopLevelAccelStruct::WriteInstances(info, invisible.buffer); });
+        ExpectRejected(commands, [&] { TopLevelAccelStruct::WriteBuildInfoBufferInline(info, invisible.buffer); });
         CommandBufferTestProbe::SetBlasAddress(resources.bottomSrc, 0);
-        ExpectRejected(commands, [&] { TopLevelAccelStruct::WriteInstances(info, upload.buffer); });
+        ExpectRejected(commands, [&] { TopLevelAccelStruct::WriteBuildInfoBufferInline(info, upload.buffer); });
         CHECK_TRUE(memory == previous, "Host validation must precede all writes!");
     }
 
@@ -1379,8 +1435,108 @@ namespace
     }
 }
 
+namespace
+{
+    std::vector<VkClusterAccelerationStructureCommandsInfoNV> clusterCommands;
+    std::vector<VkClusterAccelerationStructureTriangleClusterInputNV> clusterTriangleInputs;
+    std::vector<VkClusterAccelerationStructureClustersBottomLevelInputNV> clusterBlasInputs;
+    VkQueueFlags clusterQueueFlags = VK_QUEUE_COMPUTE_BIT;
+
+    void VKAPI_PTR CaptureClusterBuild(VkCommandBuffer, const VkClusterAccelerationStructureCommandsInfoNV* inInfo)
+    {
+        clusterCommands.push_back(*inInfo);
+        if (inInfo->input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV)
+            clusterTriangleInputs.push_back(*inInfo->input.opInput.pTriangleClusters);
+        else
+            clusterBlasInputs.push_back(*inInfo->input.opInput.pClustersBottomLevel);
+    }
+    void VKAPI_PTR CaptureClusterQueues(VkPhysicalDevice, uint32_t* inCount, VkQueueFamilyProperties* outFamilies)
+    {
+        *inCount = 1;
+        if (outFamilies) { outFamilies[0] = {}; outFamilies[0].queueCount = 1; outFamilies[0].queueFlags = clusterQueueFlags; }
+    }
+    void TestClusterBuildCommands()
+    {
+        ScopedFunction build(vkCmdBuildClusterAccelerationStructureIndirectNV, &CaptureClusterBuild);
+        ScopedFunction address(vkGetBufferDeviceAddress, &CaptureAsAddress);
+        ScopedFunction queues(vkGetPhysicalDeviceQueueFamilyProperties, &CaptureClusterQueues);
+        CommandBufferTestProbe::ClusterQueueState queueState;
+        clusterCommands.clear(); clusterTriangleInputs.clear(); clusterBlasInputs.clear();
+        ClusterLevelAccelStructBatch clas;
+        BottomLevelAccelStructBatch blas;
+        CommandBuffer commands;
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(ClusterLevelAccelStructBuildIndirectInfo{}); });
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(BottomLevelAccelStructBuildIndirectInfo{}); });
+        ClusterLevelAccelStructBuildIndirectInfo clasInfo{ 8192, 4096, &clas };
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(clasInfo); });
+        CommandBufferTestProbe::PrepareClusterBatch(clas);
+        CommandBufferTestProbe::PrepareClusterBatch(blas);
+        auto invalid = clasInfo; invalid.scratchAddress = 8193;
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalid); });
+        invalid = clasInfo; invalid.buildInfoAddress = 0;
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalid); });
+        invalid = clasInfo; invalid.buildInfoAddress = 4097;
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalid); });
+        invalid = clasInfo; invalid.scratchAddress = 12288;
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalid); });
+        invalid = clasInfo; invalid.scratchAddress = 16384;
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalid); });
+        CommandBuffer adjacent;
+        auto adjacentInfo = clasInfo; adjacentInfo.scratchAddress = 12288 - 512;
+        adjacent.BuildAccelerationStructureIndirect(adjacentInfo);
+        CHECK_TRUE(CommandBufferTestProbe::Count(adjacent) == 1, "Adjacent non-overlapping scratch must remain valid!");
+        commands.BuildAccelerationStructureIndirect(clasInfo);
+        commands.BuildAccelerationStructureIndirect(BottomLevelAccelStructBuildIndirectInfo{ 8192, 4096, &blas });
+        CHECK_TRUE(clusterCommands.empty(), "Cluster builds must remain deferred!");
+        CommandBufferTestProbe::ChangeClusterLayout(clas);
+        clasInfo.buildInfoAddress = 0;
+        clusterQueueFlags = VK_QUEUE_TRANSFER_BIT;
+        ExpectRejected(commands, [&] { CommandBufferTestProbe::ValidateClusterQueue(commands, QueueFamilyType::TRANSFER); });
+        clusterQueueFlags = VK_QUEUE_GRAPHICS_BIT;
+        ExpectRejected(commands, [&] { CommandBufferTestProbe::ValidateClusterQueue(commands, QueueFamilyType::GRAPHICS); });
+        clusterQueueFlags = VK_QUEUE_COMPUTE_BIT;
+        CommandBuffer moved(std::move(commands));
+        CommandBuffer joined;
+        CommandBufferTestProbe::Append(joined, std::move(moved));
+        clusterQueueFlags = VK_QUEUE_TRANSFER_BIT;
+        ExpectRejected(joined, [&] { CommandBufferTestProbe::ValidateClusterQueue(joined, QueueFamilyType::TRANSFER); });
+        clusterQueueFlags = VK_QUEUE_COMPUTE_BIT;
+        CommandBufferTestProbe::ValidateClusterQueue(joined, QueueFamilyType::COMPUTE);
+        CommandBufferTestProbe::Record(joined);
+        CHECK_TRUE(clusterCommands.size() == 2 && clusterTriangleInputs[0].maxClusterTriangleCount == 17 &&
+            clusterCommands[0].input.maxAccelerationStructureCount == 2 &&
+            clusterBlasInputs[0].maxTotalClusterCount == 12, "Cluster commands must own creation-spec snapshots!");
+        for (const auto& command : clusterCommands)
+        {
+            CHECK_TRUE(command.input.opMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV &&
+                command.srcInfosCount == 0 && command.addressResolutionFlags == 0 && command.input.flags == 0 &&
+                command.dstImplicitData == 12288 && command.dstAddressesArray.deviceAddress == 16384 &&
+                command.dstAddressesArray.stride == 8 && command.dstAddressesArray.size == 16 &&
+                command.scratchData == 8192 && command.srcInfosArray.deviceAddress == 4096,
+                "Cluster build mapping must preserve fixed-count implicit destinations!");
+        }
+        CHECK_TRUE(clusterCommands[0].srcInfosArray.stride == sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV) &&
+            clusterCommands[1].srcInfosArray.stride == sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV),
+            "Cluster build task strides must match the native operation!");
+
+        CommandBufferTestProbe::PrepareClusterBatch(clas);
+        CommandBufferTestProbe::NativeRenderTargetHooks native;
+        CommandBufferTestProbe::Resources resources;
+        CommandBuffer inside;
+        inside.BeginRenderPass(resources.pass, resources.framebuffer, 0, 0, 32, 32);
+        clasInfo = { 8192, 4096, &clas };
+        ExpectRejected(inside, [&] { inside.BuildAccelerationStructureIndirect(clasInfo); });
+        ExpectRejected(inside, [&] { inside.BuildAccelerationStructureIndirect(BottomLevelAccelStructBuildIndirectInfo{ 8192, 4096, &blas }); });
+        CommandBuffer pending;
+        pending.BuildAccelerationStructureIndirect(clasInfo);
+        ExpectRejected(inside, [&] { CommandBufferTestProbe::Append(inside, std::move(pending)); });
+        inside.EndRenderPass();
+    }
+}
+
 void RunCommandBufferTests()
 {
+    TestClusterBuildCommands();
     {
         CommandBufferTestProbe::ExternalBuffer source(801, 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         Buffer moved(std::move(source.buffer));

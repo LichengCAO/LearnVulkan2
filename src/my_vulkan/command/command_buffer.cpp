@@ -17,6 +17,7 @@ namespace
             dynamic_cast<const CopyBufferToImageCommand*>(&inCommand) ||
             dynamic_cast<const CopyBufferCommand*>(&inCommand) ||
             dynamic_cast<const BuildAccelerationStructuresKHRCommand*>(&inCommand) ||
+            dynamic_cast<const BuildClusterAccelerationStructuresNVCommand*>(&inCommand) ||
             dynamic_cast<const CopyAccelerationStructureKHRCommand*>(&inCommand) ||
             dynamic_cast<const UpdateBufferCommand*>(&inCommand) ||
             dynamic_cast<const CopyImageCommand*>(&inCommand) ||
@@ -28,9 +29,12 @@ namespace
 
 void CommandBuffer::_AppendCommand(const Command& inCommand)
 {
+    const bool isClusterBuild = dynamic_cast<const BuildClusterAccelerationStructuresNVCommand*>(&inCommand) != nullptr;
+	if (isClusterBuild) _RequireOutsideRenderPass();
 	m_resourceReferences.insert(m_resourceReferences.end(),
 		inCommand.m_resourceReferences.begin(), inCommand.m_resourceReferences.end());
 	m_commands.push_back(&inCommand);
+    m_hasClusterBuilds = m_hasClusterBuilds || isClusterBuild;
 }
 
 CommandBuffer::CommandBuffer(CommandBuffer&& inOther) noexcept
@@ -48,6 +52,7 @@ auto CommandBuffer::operator=(CommandBuffer&& inOther) noexcept -> CommandBuffer
     m_renderingScopeState = std::move(inOther.m_renderingScopeState);
     m_hasRenderingCommands = inOther.m_hasRenderingCommands;
     m_hasProgramBindings = inOther.m_hasProgramBindings;
+    m_hasClusterBuilds = inOther.m_hasClusterBuilds;
     m_requiresSingleVkCommandBuffer = inOther.m_requiresSingleVkCommandBuffer;
     m_graphicsProgram = inOther.m_graphicsProgram;
     m_computeProgram = inOther.m_computeProgram;
@@ -58,6 +63,7 @@ auto CommandBuffer::operator=(CommandBuffer&& inOther) noexcept -> CommandBuffer
     inOther.m_renderingScopeState = std::monostate{};
     inOther.m_hasRenderingCommands = false;
     inOther.m_hasProgramBindings = false;
+    inOther.m_hasClusterBuilds = false;
     inOther.m_requiresSingleVkCommandBuffer = false;
     inOther.m_graphicsProgram = nullptr;
     inOther.m_computeProgram = nullptr;
@@ -83,7 +89,7 @@ void CommandBuffer::_Append(CommandBuffer&& inCommandBuffer)
 	if (!std::holds_alternative<std::monostate>(m_renderingScopeState))
 	{
 		CHECK_TRUE(
-			!inCommandBuffer.m_hasRenderingCommands && !inCommandBuffer.m_hasProgramBindings,
+			!inCommandBuffer.m_hasRenderingCommands && !inCommandBuffer.m_hasProgramBindings && !inCommandBuffer.m_hasClusterBuilds,
 			"Cannot append rendering or program-binding commands into an active rendering scope!");
 	}
 
@@ -100,6 +106,7 @@ void CommandBuffer::_Append(CommandBuffer&& inCommandBuffer)
 		std::make_move_iterator(inCommandBuffer.m_resourceReferences.end()));
 	m_hasRenderingCommands = m_hasRenderingCommands || inCommandBuffer.m_hasRenderingCommands;
 	m_hasProgramBindings = m_hasProgramBindings || inCommandBuffer.m_hasProgramBindings;
+    m_hasClusterBuilds = m_hasClusterBuilds || inCommandBuffer.m_hasClusterBuilds;
 	m_requiresSingleVkCommandBuffer =
 		m_requiresSingleVkCommandBuffer || inCommandBuffer.m_requiresSingleVkCommandBuffer;
 	m_graphicsProgram = nullptr;
@@ -111,6 +118,7 @@ void CommandBuffer::_Append(CommandBuffer&& inCommandBuffer)
 	inCommandBuffer.m_resourceReferences.clear();
 	inCommandBuffer.m_hasRenderingCommands = false;
 	inCommandBuffer.m_hasProgramBindings = false;
+    inCommandBuffer.m_hasClusterBuilds = false;
 	inCommandBuffer.m_requiresSingleVkCommandBuffer = false;
 	inCommandBuffer.m_graphicsProgram = nullptr;
 	inCommandBuffer.m_computeProgram = nullptr;
@@ -191,6 +199,8 @@ void CommandBuffer::_AppendCommands(const Command* const* inCommands, size_t inC
 			dynamic_cast<const EndRenderPassCommand*>(command) == nullptr,
 			"Rendering scope commands must be appended through CommandBuffer members!");
 		requiresSingle = requiresSingle || !CanSplitCommand(*command);
+			if (dynamic_cast<const BuildClusterAccelerationStructuresNVCommand*>(command))
+				_RequireOutsideRenderPass();
 	}
 	for (size_t commandIndex = 0; commandIndex < inCount; ++commandIndex)
 	{
@@ -378,4 +388,27 @@ void CommandBuffer::_PrepareCommands(VulkanDetail::DynamicDescriptorPool& alloca
 	for (const auto* command : m_commands)
 		if (const auto* binding = dynamic_cast<const BindingCommand*>(command))
 			binding->_Prepare(allocator, queue);
+}
+
+void CommandBuffer::_ValidateQueueCapabilities(QueueFamilyType inQueue) const
+{
+    if (!m_hasClusterBuilds) return;
+    bool compatibleRayPipeline = true; // No bound ray pipeline is valid for AS construction.
+    for (const auto* command : m_commands)
+    {
+        if (const auto* binding = dynamic_cast<const BindingCommand*>(command); binding && binding->rayTracing)
+            compatibleRayPipeline = binding->rayTracing->m_allowClusterAccelerationStructure;
+        if (dynamic_cast<const BuildClusterAccelerationStructuresNVCommand*>(command))
+            CHECK_TRUE(compatibleRayPipeline, "A ray tracing pipeline bound before a cluster build must enable CLAS!");
+    }
+    auto& device = MyDevice::GetInstance();
+    CHECK_TRUE(device.vkPhysicalDevice != VK_NULL_HANDLE && vkGetPhysicalDeviceQueueFamilyProperties != nullptr,
+        "Cluster builds require initialized physical device queue properties!");
+    uint32_t count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device.vkPhysicalDevice, &count, nullptr);
+    std::vector<VkQueueFamilyProperties> properties(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(device.vkPhysicalDevice, &count, properties.data());
+    const auto family = device.GetQueueFamilyIndexOfType(inQueue);
+    CHECK_TRUE(family < count && (properties[family].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0,
+        "Cluster builds require a compute-capable queue family!");
 }

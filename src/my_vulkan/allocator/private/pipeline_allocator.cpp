@@ -367,12 +367,25 @@ namespace
 		hash_combine(seed, interfaceInfo->maxPipelineRayHitAttributeSize);
 	}
 
-	uint64_t HashRayTracingPipelineCreateInfo(const VkRayTracingPipelineCreateInfoKHR& createInfo)
+	auto GetRayTracingClusterPermission(const void* pNext) -> std::optional<VkBool32>
 	{
+		if (pNext == nullptr)
+			return std::nullopt;
+
+		const auto* node = static_cast<const VkBaseInStructure*>(pNext);
+		CHECK_TRUE(node->sType == VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CLUSTER_ACCELERATION_STRUCTURE_CREATE_INFO_NV,
+			"Unsupported ray tracing pipeline create info pNext!");
+		CHECK_TRUE(node->pNext == nullptr, "Unsupported or duplicate ray tracing pipeline create info pNext!");
+		return reinterpret_cast<const VkRayTracingPipelineClusterAccelerationStructureCreateInfoNV*>(node)
+			->allowClusterAccelerationStructure;
+	}
+
+	auto HashRayTracingPipelineCreateInfo(const VkRayTracingPipelineCreateInfoKHR& createInfo) -> uint64_t
+	{
+		const auto allowClusterAccelerationStructure = GetRayTracingClusterPermission(createInfo.pNext);
 		size_t result = 0;
 
 		HashEnum(result, createInfo.sType);
-		HashPNext(result, createInfo.pNext, "ray tracing pipeline create info");
 		hash_combine(result, createInfo.flags);
 
 		hash_combine(result, createInfo.stageCount);
@@ -394,6 +407,9 @@ namespace
 		hash_combine(result, createInfo.layout);
 		hash_combine(result, createInfo.basePipelineHandle);
 		hash_combine(result, createInfo.basePipelineIndex);
+		// The node's presence affects CLAS build validation for a bound ray tracing pipeline.
+		hash_combine(result, allowClusterAccelerationStructure.has_value());
+		HashBool(result, allowClusterAccelerationStructure.value_or(VK_FALSE));
 
 		return static_cast<uint64_t>(result);
 	}

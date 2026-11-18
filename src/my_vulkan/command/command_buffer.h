@@ -13,8 +13,14 @@ class Image;
 class ImageView;
 class BottomLevelAccelStruct;
 class TopLevelAccelStruct;
+class ClusterLevelAccelStructBatch;
+class ClusterLevelAccelStructBatchCreateInfo;
 class BottomLevelAccelStructCreateInfo;
+class BottomLevelAccelStructBatchCreateInfo;
+class BottomLevelAccelStructBatch;
 class TopLevelAccelStructCreateInfo;
+struct BottomLevelAccelStructBuildIndirectInfo;
+struct ClusterLevelAccelStructBuildIndirectInfo;
 struct VkAccelStructBuildInfo;
 namespace VulkanDetail { class DynamicDescriptorPool; }
 
@@ -31,6 +37,8 @@ class CommandBuffer final
     friend struct CommandBufferTestProbe;
     friend struct ResourceLifetimeTestProbe;
     friend struct ResourceSubmissionTestProbe;
+    friend struct ClusterAccelerationStructureGpuTestProbe;
+    friend struct ClasPipelineTestProbe;
 
 private:
     struct LegacyRenderPassState final
@@ -49,6 +57,7 @@ private:
     RenderingScopeState m_renderingScopeState;
     bool m_hasRenderingCommands = false;
     bool m_hasProgramBindings = false;
+    bool m_hasClusterBuilds = false;
     bool m_requiresSingleVkCommandBuffer = false;
     GraphicsShaderProgram* m_graphicsProgram = nullptr;
     ComputeShaderProgram* m_computeProgram = nullptr;
@@ -57,6 +66,7 @@ private:
 
     void _PrepareCommands(VulkanDetail::DynamicDescriptorPool& inAllocator, QueueFamilyType inQueue);
     void _PrepareRenderPassCommands();
+    void _ValidateQueueCapabilities(QueueFamilyType inQueue) const;
     void _BindShaderResources(const PipelineLayout& inLayout, VkPipelineBindPoint inBindPoint,
         const ShaderResources& inResources);
     void _AppendCommand(const Command& inCommand);
@@ -174,6 +184,9 @@ public:
         VkCopyAccelerationStructureModeKHR inMode = VK_COPY_ACCELERATION_STRUCTURE_MODE_CLONE_KHR);
     void CopyAccelerationStructureKHR(const TopLevelAccelStruct& inSrc, TopLevelAccelStruct& inDst,
         VkCopyAccelerationStructureModeKHR inMode = VK_COPY_ACCELERATION_STRUCTURE_MODE_CLONE_KHR);
+    // Snapshots fixed-count implicit build parameters. GPU task/scratch memory remains borrowed.
+	void BuildAccelerationStructureIndirect(const ClusterLevelAccelStructBuildIndirectInfo& inInfo);
+	void BuildAccelerationStructureIndirect(const BottomLevelAccelStructBuildIndirectInfo& inInfo);
 
     // Executes later during recording, in stream order. The callback must preserve
     // the tracked RenderPass lifecycle and Program/ShaderResource bindings.

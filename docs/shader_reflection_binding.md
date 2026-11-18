@@ -97,11 +97,28 @@ Vertex pipelines use triangle lists; mesh shaders supply their output topology.
 Both paths use back-face culling, counter-clockwise fronts, disabled blending and
 dynamic viewport/scissor. Depth test/write and LESS_OR_EQUAL are enabled
 when the selected subpass has depth. Simple vertex inputs are packed into binding 0,
-sorted by location, with vertex rate. Explicit AddVertexInputDescription calls replace
+sorted by location, with vertex rate. Explicit AddVertexAttribute calls replace
 all inferred vertex descriptions. Matrices, arrays, interface blocks, packed component
 layouts and 64-bit inputs require explicit vertex descriptions. For complex inputs,
 Create retains the default RenderPassDesc and defers pipeline creation until explicit
 vertex state is supplied.
+
+AddVertexAttribute takes `inBinding`, `inLocation`, `inOffset`, `inStride`, `inFormat`
+and an optional `inInputRate` defaulting to VK_VERTEX_INPUT_RATE_VERTEX. Offset and
+stride are byte counts. Attributes sharing a binding must have the same stride and
+input rate; duplicate locations and conflicting binding settings throw without
+changing the existing layout. Binding descriptions are merged by binding number,
+and attributes are sorted by location, so insertion order does not affect PSO reuse.
+Adding attributes only updates Host state. Reset clears the explicit layout and
+restores reflection defaults.
+
+~~~cpp
+GraphicsPipelineStateInfo state;
+state.AddVertexAttribute(0, 0, 0, 20, VK_FORMAT_R32G32B32_SFLOAT);
+state.AddVertexAttribute(0, 1, 12, 20, VK_FORMAT_R32G32_SFLOAT);
+state.AddVertexAttribute(1, 2, 0, 16, VK_FORMAT_R32G32B32A32_SFLOAT,
+    VK_VERTEX_INPUT_RATE_INSTANCE);
+~~~
 
 Without default attachment configuration, finalize a RenderPassDesc and select it
 with GraphicsPipelineStateInfo::SetRenderPassSubpass(desc, index). Graphics binding

@@ -66,8 +66,14 @@ class MyDevice final
 	friend struct SamplerCreationTestProbe;
 	friend struct CommandBufferTestProbe;
 	friend struct BufferAllocationTestProbe;
+	friend struct ClusterAccelerationStructureTestProbe;
+	friend struct ClusterAccelerationStructureGpuTestProbe;
+	friend struct ClasPipelineTestProbe;
+	friend class ClusterLevelAccelStructBatch;
+	friend class BottomLevelAccelStructBatch;
 	friend class GraphicsShaderProgram;
     friend class ComputeShaderProgram;
+	friend class RayTracingShaderProgram;
     friend void ShaderDetail::CreateStages(const ShaderDetail::FinalizedShaders&,
         std::vector<std::unique_ptr<ShaderModule>>&, std::vector<VkPipelineShaderStageCreateInfo>&);
 	friend class BeginRenderPassCommand;
@@ -113,6 +119,7 @@ private:
 	VkQueue				m_vkTransferQueue = VK_NULL_HANDLE;
 	bool				m_needRecreate = false;
 	bool				m_initialized = false;
+	bool m_clusterAccelerationStructureEnabled = false;
 	UserInput			m_userInput{};
 	std::vector<std::unique_ptr<SwapchainImage>> m_uptrSwapchainImages;
 	std::unique_ptr<MemoryAllocator> m_uptrMemoryAllocator;
@@ -142,6 +149,7 @@ private:
 	void _CreateInstance();
 	void _CreateSurface();
 	void _SelectPhysicalDevice();
+	auto _EnableClusterAccelerationStructureIfSupported() -> bool;
 	void _CreateLogicalDevice();
 	void _CreateDescriptorSetLayoutAllocator();
 	void _DestroyDescriptorSetLayoutAllocator();
@@ -263,6 +271,7 @@ public:
 	// Caller coordinates the shader-module cache, both layout caches, the ray tracing
 	// pipeline cache and supplied VkPipelineCache with all related accesses and teardown. Destruction
 	// probes the Graphics, Compute and RayTracing caches through DestroyPipeline.
+	// An opted-in CLAS pipeline requires the enabled clusterAccelerationStructure feature.
 	// No internal locking or GPU wait.
 	void CreateRayTracingShaderProgram(RayTracingShaderProgram& outProgram,
 		const RayTracingShaderProgramCreateInfo& inCreateInfo);

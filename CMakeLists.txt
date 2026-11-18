@@ -58,6 +58,14 @@ macro(source_group_by_dir source_files)
 endmacro(source_group_by_dir)
 
 file(GLOB_RECURSE SOURCES "src/*.cpp")
+# Register the new CLAS sources explicitly so existing build trees regenerate
+# their source lists when this CMake input changes.
+list(APPEND SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/my_vulkan/resource/cluster_acceleration_structure.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/clas_resource_tests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/clas_pipeline_tests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/clas_gpu_tests.cpp")
+list(REMOVE_DUPLICATES SOURCES)
 list(REMOVE_ITEM SOURCES ${RHI_HOST_SOURCES})
 file(GLOB_RECURSE HEADERS "src/*.h" "src/*.hpp")
 list(FILTER SOURCES EXCLUDE REGEX "/build[^/]*/")

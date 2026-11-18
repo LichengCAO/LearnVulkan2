@@ -103,6 +103,7 @@ class RayTracingShaderProgram
 {
 	friend class MyDevice;
 	friend class CommandBuffer;
+	friend struct ClasPipelineTestProbe;
 private:
 	void _Create(const RayTracingShaderProgramCreateInfo& inCreateInfo);
 	void _Destroy();
@@ -115,6 +116,7 @@ private:
 	PipelineLayout m_pipelineLayout;
 	VkPipeline m_vkPipeline = VK_NULL_HANDLE;
 	uint32_t m_shaderGroupCount = 0;
+	bool m_allowClusterAccelerationStructure = false;
 	RayTracingShaderGroupSet m_groupSet;
 
 public:

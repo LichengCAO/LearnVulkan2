@@ -15,15 +15,28 @@ void GraphicsPipelineStateInfo::Reset()
 	m_subpassIndex = 0;
 }
 
-void GraphicsPipelineStateInfo::AddVertexInputDescription(
-	const VkVertexInputBindingDescription& inBindingDescription,
-	const std::vector<VkVertexInputAttributeDescription>& inAttributeDescriptions)
+void GraphicsPipelineStateInfo::AddVertexAttribute(
+	uint32_t inBinding,
+	uint32_t inLocation,
+	uint32_t inOffset,
+	uint32_t inStride,
+	VkFormat inFormat,
+	VkVertexInputRate inInputRate)
 {
-	m_vertexBindingDescriptions.push_back(inBindingDescription);
-	m_vertexAttributeDescriptions.insert(
-		m_vertexAttributeDescriptions.end(),
-		inAttributeDescriptions.begin(),
-		inAttributeDescriptions.end());
+	const auto bindingIt = std::lower_bound(
+		m_vertexBindingDescriptions.begin(), m_vertexBindingDescriptions.end(), inBinding,
+		[](const auto& inDescription, uint32_t inValue) -> bool { return inDescription.binding < inValue; });
+	const auto attributeIt = std::lower_bound(
+		m_vertexAttributeDescriptions.begin(), m_vertexAttributeDescriptions.end(), inLocation,
+		[](const auto& inDescription, uint32_t inValue) -> bool { return inDescription.location < inValue; });
+	const bool hasBinding = bindingIt != m_vertexBindingDescriptions.end() && bindingIt->binding == inBinding;
+	CHECK_TRUE(attributeIt == m_vertexAttributeDescriptions.end() || attributeIt->location != inLocation,
+		"Vertex attribute locations must be unique!");
+	CHECK_TRUE(!hasBinding || (bindingIt->stride == inStride && bindingIt->inputRate == inInputRate),
+		"Vertex attributes sharing a binding must use the same stride and input rate!");
+	if (!hasBinding)
+		m_vertexBindingDescriptions.insert(bindingIt, {inBinding, inStride, inInputRate});
+	m_vertexAttributeDescriptions.insert(attributeIt, {inLocation, inBinding, inFormat, inOffset});
 }
 
 void GraphicsPipelineStateInfo::SetRenderPassSubpass(const RenderPassDesc& inRenderPass, uint32_t inSubpassIndex)

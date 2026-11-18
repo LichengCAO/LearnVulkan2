@@ -1134,6 +1134,72 @@ void TestComputeAutomaticLifetimeAndCacheOwnership()
         "Cache teardown must release every borrowed native resource once, including those retained through failed outer lifetimes!");
 }
 
+void TestExplicitVertexAttributesAndPipelineCache()
+{
+    NativeEnvironment environment;
+    ShaderFiles files;
+    const auto vertexFile = files.Write("attributes.vert",
+        "#version 450\nlayout(location=0) in vec3 position; layout(location=1) in vec2 uv; "
+        "layout(location=2) in vec4 instanceOffset; "
+        "void main(){ gl_Position=vec4(position.xy+uv,position.z,1)+instanceOffset; }\n");
+    const auto fragmentFile = files.Write("attributes.frag",
+        "#version 450\nlayout(location=0) out vec4 color; void main(){ color=vec4(1); }\n");
+    GraphicsShaderProgramCreateInfo info;
+    info.AddVertexShader(vertexFile).AddFragmentShader(fragmentFile)
+        .SetDefaultColorAttachment(0, VK_FORMAT_R8G8B8A8_UNORM).Finalize();
+    GraphicsShaderProgram graphics;
+    MyDevice::GetInstance().CreateGraphicsShaderProgram(graphics, info);
+    const auto defaultPipeline = graphics.GetVkPipeline({});
+    const auto nativeCallsBeforeAttributes = environment.state.calls;
+
+    GraphicsPipelineStateInfo state;
+    state.AddVertexAttribute(5, 2, 0, 16, VK_FORMAT_R32G32B32A32_SFLOAT, VK_VERTEX_INPUT_RATE_INSTANCE);
+    state.AddVertexAttribute(2, 1, 16, 32, VK_FORMAT_R32G32_SFLOAT);
+    state.AddVertexAttribute(2, 0, 4, 32, VK_FORMAT_R32G32B32_SFLOAT);
+    CHECK_TRUE(environment.state.calls == nativeCallsBeforeAttributes,
+        "Adding vertex attributes must only update Host state!");
+    const auto createsBeforeExplicitLayout = environment.state.graphicsCreates;
+    const auto pipeline = graphics.GetVkPipeline(state);
+    const auto& bindings = environment.state.vertexBindings;
+    const auto& attributes = environment.state.vertexAttributes;
+    CHECK_TRUE(pipeline != VK_NULL_HANDLE && pipeline != defaultPipeline &&
+        environment.state.graphicsCreates == createsBeforeExplicitLayout + 1 && bindings.size() == 2 &&
+        bindings[0].binding == 2 && bindings[0].stride == 32 && bindings[0].inputRate == VK_VERTEX_INPUT_RATE_VERTEX &&
+        bindings[1].binding == 5 && bindings[1].stride == 16 && bindings[1].inputRate == VK_VERTEX_INPUT_RATE_INSTANCE &&
+        attributes.size() == 3 &&
+        attributes[0].location == 0 && attributes[0].binding == 2 && attributes[0].offset == 4 && attributes[0].format == VK_FORMAT_R32G32B32_SFLOAT &&
+        attributes[1].location == 1 && attributes[1].binding == 2 && attributes[1].offset == 16 && attributes[1].format == VK_FORMAT_R32G32_SFLOAT &&
+        attributes[2].location == 2 && attributes[2].binding == 5 && attributes[2].offset == 0 && attributes[2].format == VK_FORMAT_R32G32B32A32_SFLOAT,
+        "Explicit attributes must replace inferred inputs, merge bindings and preserve all fields in canonical order!");
+
+    const auto createsAfterExplicitLayout = environment.state.graphicsCreates;
+    GraphicsPipelineStateInfo reordered;
+    reordered.AddVertexAttribute(2, 0, 4, 32, VK_FORMAT_R32G32B32_SFLOAT);
+    reordered.AddVertexAttribute(5, 2, 0, 16, VK_FORMAT_R32G32B32A32_SFLOAT, VK_VERTEX_INPUT_RATE_INSTANCE);
+    reordered.AddVertexAttribute(2, 1, 16, 32, VK_FORMAT_R32G32_SFLOAT);
+    CHECK_TRUE(graphics.GetVkPipeline(reordered) == pipeline &&
+        environment.state.graphicsCreates == createsAfterExplicitLayout,
+        "Equivalent vertex layouts must reuse the pipeline regardless of attribute insertion order!");
+
+    ExpectFailure([&] { state.AddVertexAttribute(9, 0, 0, 12, VK_FORMAT_R32G32B32_SFLOAT); });
+    ExpectFailure([&] { state.AddVertexAttribute(2, 3, 24, 48, VK_FORMAT_R32G32_SFLOAT); });
+    ExpectFailure([&] { state.AddVertexAttribute(2, 3, 24, 32, VK_FORMAT_R32G32_SFLOAT, VK_VERTEX_INPUT_RATE_INSTANCE); });
+    CHECK_TRUE(graphics.GetVkPipeline(state) == pipeline &&
+        environment.state.graphicsCreates == createsAfterExplicitLayout,
+        "Duplicate locations and conflicting binding stride/rate must reject without changing the existing layout!");
+
+    state.Reset();
+    CHECK_TRUE(graphics.GetVkPipeline(state) == defaultPipeline &&
+        environment.state.graphicsCreates == createsAfterExplicitLayout,
+        "Reset must restore inferred vertex input and reuse the default pipeline!");
+    state.AddVertexAttribute(2, 0, 4, 32, VK_FORMAT_R32G32B32_SFLOAT);
+    state.AddVertexAttribute(2, 1, 16, 32, VK_FORMAT_R32G32_SFLOAT);
+    state.AddVertexAttribute(5, 2, 0, 16, VK_FORMAT_R32G32B32A32_SFLOAT, VK_VERTEX_INPUT_RATE_INSTANCE);
+    CHECK_TRUE(graphics.GetVkPipeline(state) == pipeline &&
+        environment.state.graphicsCreates == createsAfterExplicitLayout,
+        "Reset must allow rebuilding an explicit layout without stale bindings or locations!");
+}
+
 void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
 {
     NativeEnvironment environment;
@@ -1220,8 +1286,8 @@ void TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures()
         "Automatic vertex input must reach native creation with packed stride, offsets and formats!");
     const auto graphicsCreatesBeforeLazyFailure = environment.state.graphicsCreates;
     GraphicsPipelineStateInfo explicitState;
-    VkVertexInputBindingDescription customBinding{0, 64, VK_VERTEX_INPUT_RATE_VERTEX};
-    explicitState.AddVertexInputDescription(customBinding, {});
+    explicitState.AddVertexAttribute(0, 0, 0, 64, VK_FORMAT_R32G32B32_SFLOAT);
+    explicitState.AddVertexAttribute(0, 1, 12, 64, VK_FORMAT_R32G32_SFLOAT);
     explicitState.SetRenderPassSubpass(graphics->GetDefaultRenderPassDesc());
     environment.state.failGraphics = true;
     ExpectFailure([&] { graphics->GetVkPipeline(explicitState); });
@@ -1454,6 +1520,7 @@ void RunCreateInfoFinalizeTests()
     TestComputeCreationDependencies();
     TestComputeCreationFailureStagesAndRetry();
     TestComputeAutomaticLifetimeAndCacheOwnership();
+    TestExplicitVertexAttributesAndPipelineCache();
     TestProgramNativeCreationUsesFinalizedSnapshotsAndCleansFailures();
     TestRenderPassNativeFailureDoesNotConsumeFinalizedInfo();
     TestRenderPassCreationDependencies();

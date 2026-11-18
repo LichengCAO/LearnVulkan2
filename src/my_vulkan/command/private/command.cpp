@@ -176,6 +176,36 @@ void BuildAccelerationStructuresKHRCommand::Record(VkCommandBuffer inVkCommandBu
         infos.data(), ranges.data());
 }
 
+void BuildClusterAccelerationStructuresNVCommand::SetParameters(const Parameters& inParameters)
+{
+    const auto& info = inParameters.info;
+    CHECK_TRUE(info.pNext == nullptr && info.input.pNext == nullptr &&
+        inParameters.triangles.pNext == nullptr && inParameters.clusters.pNext == nullptr,
+        "Unsupported cluster build pNext!");
+    CHECK_TRUE(info.input.opMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV &&
+        info.input.maxAccelerationStructureCount != 0 && info.input.flags == 0 &&
+        (info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV ||
+         info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV),
+        "Unsupported cluster build operation!");
+    m_parameters = inParameters;
+    // All Host pointer targets are owned values; reconstruct the active union at Record.
+    m_parameters.info.input.opInput.pTriangleClusters = nullptr;
+}
+
+void BuildClusterAccelerationStructuresNVCommand::Record(VkCommandBuffer inVkCommandBuffer) const
+{
+    CHECK_TRUE(inVkCommandBuffer != VK_NULL_HANDLE && vkCmdBuildClusterAccelerationStructureIndirectNV != nullptr,
+        "Cluster acceleration structure commands are unavailable!");
+    auto info = m_parameters.info;
+    auto triangles = m_parameters.triangles;
+    auto clusters = m_parameters.clusters;
+    if (info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV)
+        info.input.opInput.pTriangleClusters = &triangles;
+    else
+        info.input.opInput.pClustersBottomLevel = &clusters;
+    vkCmdBuildClusterAccelerationStructureIndirectNV(inVkCommandBuffer, &info);
+}
+
 void CopyAccelerationStructureKHRCommand::Record(VkCommandBuffer inVkCommandBuffer) const
 {
     CHECK_TRUE(inVkCommandBuffer != VK_NULL_HANDLE, "Invalid command buffer!");
