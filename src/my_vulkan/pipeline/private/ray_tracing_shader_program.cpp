@@ -182,7 +182,7 @@ void ShaderBindingTable::Commit()
 {
 	CHECK_TRUE(m_uptrBuffer != nullptr, "Shader binding table must be created before committing!");
 	CHECK_TRUE(!m_hostData.empty(), "Shader binding table has no allocated records!");
-	m_uptrBuffer->CopyFromHost(m_hostData.data(), 0, m_hostData.size());
+	Buffer::UploadToDeviceInline(*m_uptrBuffer, 0, m_hostData.data(), m_hostData.size());
 }
 
 auto ShaderBindingTable::GetShaderTableRegion(ShaderTableType inType, uint32_t inOffset) const

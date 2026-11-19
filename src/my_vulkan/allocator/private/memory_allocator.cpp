@@ -84,6 +84,7 @@ auto MemoryAllocator::AllocateForVkBuffer(VkBuffer _vkBuffer, VkMemoryPropertyFl
 	VmaAllocationInfo allocInfo{};
 
 	allocCreateInfo.usage = _ToVmaMemoryUsage(_flags);
+	allocCreateInfo.requiredFlags = _flags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
 	if (_alignment > 0)
 	{

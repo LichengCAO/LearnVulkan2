@@ -1,11 +1,14 @@
 #pragma once
 #include "common.h"
+#include "common_enums.h"
 #include "../ref_counted.h"
+#include <cstddef>
 
 // ref: https://stackoverflow.com/questions/73512602/using-vulkan-memory-allocator-with-volk
 class Buffer;
 class BufferView;
 class CommandBuffer;
+class DeviceContext;
 class MemoryAllocator;
 namespace VulkanDetail { struct BufferStorage; }
 
@@ -111,8 +114,13 @@ private:
 	std::vector<std::unique_ptr<BufferView>> m_uptrBufferViews;
 
 private:
-	// Map the memory and copy from host-visible, host-coherent memory.
-	void _CopyFromHostWithMappedMemory(const void* src, size_t bufferOffset, size_t size);
+	auto _MapForInlineTransfer(VkDeviceSize inOffset, size_t inSize) const -> std::byte*;
+	static void _ExecuteTransfer(DeviceContext* inContext, QueueFamilyType inQueue,
+		std::function<void(VkCommandBuffer)> inRecord);
+	static void _UploadToDeviceInline(DeviceContext* inContext, QueueFamilyType inQueue, Buffer& inDst,
+		VkDeviceSize inOffset, const void* inSrc, size_t inSize);
+	static void _DownloadFromDeviceInline(DeviceContext* inContext, QueueFamilyType inQueue, const Buffer& inSrc,
+		VkDeviceSize inOffset, void* outDst, size_t inSize);
 
 	auto _FindView(const BufferViewInfo& inCreateInfo) const -> BufferView*;
 
@@ -137,8 +145,18 @@ public:
 	
 	auto IsValid() const noexcept -> bool;
 
-	// Copy from host memory. Requires host-visible, host-coherent memory.
-	void CopyFromHost(const void* src, size_t bufferOffset, size_t size);
+	// Coherent host-visible buffers map directly. Other buffers use a staging
+	// copy and wait on the compute queue or on the supplied context and queue.
+	// Staging requires TRANSFER_DST for upload and TRANSFER_SRC for download.
+	// Callers complete conflicting uses, synchronize producers and ensure queue
+	// ownership before calling. Mapping also requires exclusive access to the
+	// Buffer's allocation. Explicit calls follow the context's thread affinity.
+	static void UploadToDeviceInline(Buffer& inDst, VkDeviceSize inOffset, const void* inSrc, size_t inSize);
+	static void DownloadFromDeviceInline(const Buffer& inSrc, VkDeviceSize inOffset, void* outDst, size_t inSize);
+	static void UploadToDeviceInline(DeviceContext& inContext, QueueFamilyType inQueue, Buffer& inDst,
+		VkDeviceSize inOffset, const void* inSrc, size_t inSize);
+	static void DownloadFromDeviceInline(DeviceContext& inContext, QueueFamilyType inQueue, const Buffer& inSrc,
+		VkDeviceSize inOffset, void* outDst, size_t inSize);
 
 	// Borrowed cached view; remains valid until this Buffer's final release.
 	auto View(const BufferViewInfo& inCreateInfo)->const BufferView*;

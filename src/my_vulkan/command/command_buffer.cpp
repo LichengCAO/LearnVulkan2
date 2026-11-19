@@ -401,14 +401,5 @@ void CommandBuffer::_ValidateQueueCapabilities(QueueFamilyType inQueue) const
         if (dynamic_cast<const BuildClusterAccelerationStructuresNVCommand*>(command))
             CHECK_TRUE(compatibleRayPipeline, "A ray tracing pipeline bound before a cluster build must enable CLAS!");
     }
-    auto& device = MyDevice::GetInstance();
-    CHECK_TRUE(device.vkPhysicalDevice != VK_NULL_HANDLE && vkGetPhysicalDeviceQueueFamilyProperties != nullptr,
-        "Cluster builds require initialized physical device queue properties!");
-    uint32_t count = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(device.vkPhysicalDevice, &count, nullptr);
-    std::vector<VkQueueFamilyProperties> properties(count);
-    vkGetPhysicalDeviceQueueFamilyProperties(device.vkPhysicalDevice, &count, properties.data());
-    const auto family = device.GetQueueFamilyIndexOfType(inQueue);
-    CHECK_TRUE(family < count && (properties[family].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0,
-        "Cluster builds require a compute-capable queue family!");
+    MyDevice::GetInstance()._RequireClusterBuildQueue(inQueue);
 }

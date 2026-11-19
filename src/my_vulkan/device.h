@@ -7,6 +7,9 @@
 #include <mutex>
 
 class MemoryAllocator;
+class DeviceContext;
+class ClusterLevelAccelStructTemplateInfo;
+class ClusterLevelAccelStructTemplateBatch;
 class DescriptorSetLayoutAllocator;
 namespace VulkanDetail
 {
@@ -58,6 +61,10 @@ struct UserInput
 
 class MyDevice final
 {
+	friend struct InlineExecutionTestProbe;
+	friend class SubmissionManager;
+	friend class Buffer;
+	friend class CommandBuffer;
     friend struct ResourceSubmissionTestProbe;
 	friend struct ShaderBindingTestProbe;
 	friend struct ResourceLifetimeTestProbe;
@@ -117,6 +124,10 @@ private:
 	VkQueue				m_vkGraphicsQueue = VK_NULL_HANDLE;
 	VkQueue				m_vkComputeQueue = VK_NULL_HANDLE;
 	VkQueue				m_vkTransferQueue = VK_NULL_HANDLE;
+	mutable std::array<std::mutex, 4> m_queueHostMutexes;
+	struct InlineExecution;
+	std::mutex m_inlineExecutionMutex;
+	std::unique_ptr<InlineExecution> m_inlineExecution;
 	bool				m_needRecreate = false;
 	bool				m_initialized = false;
 	bool m_clusterAccelerationStructureEnabled = false;
@@ -136,6 +147,14 @@ private:
 private:
 	MyDevice();
 	MyDevice(const MyDevice& _other) = delete;
+	auto _GetNativeQueues() const -> std::array<VkQueue, 4>;
+	auto _AcquireQueueHostLock(VkQueue inQueue) const -> std::unique_lock<std::mutex>;
+	static auto _WaitForFenceCompletion(VkDevice inDevice, VkFence inFence) -> VkResult;
+	void _ExecuteInlineAndWait(std::function<void(VkCommandBuffer)> inRecord);
+	void _DestroyInlineExecution() noexcept;
+	void _RequireClusterBuildQueue(QueueFamilyType inQueue) const;
+	void _CreateClusterLevelAccelStructTemplatesAndWait(DeviceContext* inContext, QueueFamilyType inQueue,
+		std::span<const ClusterLevelAccelStructTemplateInfo> inInfos, ClusterLevelAccelStructTemplateBatch& outBatch);
 
 	std::vector<const char*> _GetInstanceRequiredExtensions() const;
 	QueueFamilyIndices		 _GetQueueFamilyIndices(VkPhysicalDevice physicalDevice) const;
@@ -276,6 +295,12 @@ public:
 	void CreateRayTracingShaderProgram(RayTracingShaderProgram& outProgram,
 		const RayTracingShaderProgramCreateInfo& inCreateInfo);
 
+	// Ready index data is borrowed through completion. Each output batch requires exclusive access.
+	void CreateClusterLevelAccelStructTemplatesAndWait(std::span<const ClusterLevelAccelStructTemplateInfo> inInfos,
+		ClusterLevelAccelStructTemplateBatch& outBatch);
+	void CreateClusterLevelAccelStructTemplatesAndWait(DeviceContext& inContext, QueueFamilyType inQueue,
+		std::span<const ClusterLevelAccelStructTemplateInfo> inInfos, ClusterLevelAccelStructTemplateBatch& outBatch);
+
 	// Caller excludes concurrent access to this device's sampler cache, including
 	// cache destruction. Borrowed Sampler value operations do not access it.
 	void GetOrCreateSampler(Sampler& outSampler, const SamplerCreateInfo& inCreateInfo);
@@ -284,8 +309,8 @@ public:
 	// https://github.com/KhronosGroup/Vulkan-Guide/blob/main/chapters/queues.adoc
 	uint32_t GetQueueFamilyIndexOfType(QueueFamilyType inType) const;
 
-	// Get queue by the queue family type, we only have one queue for one type.
-	// One queue can only be submit from one thread each time
+	// Borrowed native queue. Callers of raw Vulkan queue functions must externally
+	// exclude conflicting RHI access, including submission, present and WaitIdle.
 	VkQueue GetQueueOfType(QueueFamilyType inType) const;
 
 	VkQueue GetQueueByQueueFamilyIndex(uint32_t inQueueFamilyIndex) const;

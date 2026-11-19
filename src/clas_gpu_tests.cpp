@@ -1,13 +1,16 @@
 #include "my_vulkan/command/command_buffer.h"
 #include "my_vulkan/device.h"
+#include "my_vulkan/render_context/device_context.h"
 #include "my_vulkan/resource/acceleration_structure.h"
 #include "my_vulkan/resource/private/buffer_storage.h"
+#include "utility/task_scheduler.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #if defined(_WIN32)
@@ -37,6 +40,11 @@ void CheckResult(VkResult result, const char* operation)
 {
     if (result != VK_SUCCESS)
         throw std::runtime_error(std::format("CLAS GPU smoke {} failed with VkResult {}", operation, int(result)));
+}
+
+auto VKAPI_PTR FailFenceWait(VkDevice, uint32_t, const VkFence*, VkBool32, uint64_t) -> VkResult
+{
+    return VK_ERROR_OUT_OF_HOST_MEMORY;
 }
 
 template<typename T>
@@ -100,7 +108,7 @@ class HeadlessDevice final
         instanceFunctions.vkGetPhysicalDeviceQueueFamilyProperties(candidate, &count, queues.data());
         for (uint32_t index = 0; index < count; ++index)
         {
-            if (queues[index].queueCount > 0 && (queues[index].queueFlags & VK_QUEUE_COMPUTE_BIT))
+            if (queues[index].queueCount > 0 && CONTAIN_BITS(queues[index].queueFlags, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
                 return index;
         }
         return std::nullopt;
@@ -151,12 +159,14 @@ class HeadlessDevice final
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV };
             VkPhysicalDeviceAccelerationStructureFeaturesKHR accel{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR };
             VkPhysicalDeviceBufferDeviceAddressFeatures address{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES };
+            VkPhysicalDeviceSynchronization2Features sync{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES };
             VkPhysicalDeviceFeatures2 features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
-            features.pNext = &address;
+            features.pNext = &sync;
+            sync.pNext = &address;
             address.pNext = &accel;
             accel.pNext = &cluster;
             instanceFunctions.vkGetPhysicalDeviceFeatures2(candidate, &features);
-            if (address.bufferDeviceAddress && accel.accelerationStructure && cluster.clusterAccelerationStructure)
+            if (sync.synchronization2 && address.bufferDeviceAddress && accel.accelerationStructure && cluster.clusterAccelerationStructure)
             {
                 physicalDevice = candidate;
                 properties = candidateProperties;
@@ -166,7 +176,7 @@ class HeadlessDevice final
             }
         }
         throw std::runtime_error(
-            "CLAS GPU smoke requires Vulkan 1.3, a compute queue, buffer device addresses, "
+            "CLAS GPU smoke requires Vulkan 1.3, a graphics and compute queue, synchronization2, buffer device addresses, "
             "acceleration structures and VK_NV_cluster_acceleration_structure revision 2 or newer.");
     }
 
@@ -228,13 +238,16 @@ public:
         VkPhysicalDeviceBufferDeviceAddressFeatures address{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES };
         address.bufferDeviceAddress = VK_TRUE;
         address.pNext = &accel;
+        VkPhysicalDeviceSynchronization2Features sync{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES };
+        sync.synchronization2 = VK_TRUE;
+        sync.pNext = &address;
         const float priority = 1.0f;
         VkDeviceQueueCreateInfo queueInfo{ VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
         queueInfo.queueFamilyIndex = queueFamily;
         queueInfo.queueCount = 1;
         queueInfo.pQueuePriorities = &priority;
         VkDeviceCreateInfo deviceInfo{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
-        deviceInfo.pNext = &address;
+        deviceInfo.pNext = &sync;
         deviceInfo.queueCreateInfoCount = 1;
         deviceInfo.pQueueCreateInfos = &queueInfo;
         deviceInfo.enabledExtensionCount = static_cast<uint32_t>(kDeviceExtensions.size());
@@ -337,6 +350,80 @@ void AppendBarrier(CommandBuffer& commands, PFN_vkCmdPipelineBarrier barrier,
 struct ClusterAccelerationStructureGpuTestProbe
 {
 private:
+    static void _CheckInlineTransfers()
+    {
+        constexpr VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        constexpr std::array<uint8_t, 7> first{ 5, 17, 32, 64, 2, 124, 196 };
+        constexpr std::array<uint8_t, 7> second{ 134, 67, 24, 8, 1, 56, 200 };
+        constexpr VkDeviceSize offset = 3;
+        Buffer buffer = MakeBuffer(19, usage);
+        bool frameCompleted = false;
+        DeviceContext context(1);
+        context.StartFrame();
+        context.AddCurrentFrameCompletionCallback([&] { frameCompleted = true; });
+
+        std::array<uint8_t, 19> expected{};
+        expected.fill(216);
+        Buffer::UploadToDeviceInline(buffer, 0, expected.data(), expected.size());
+        Buffer::UploadToDeviceInline(buffer, offset, first.data(), first.size());
+        std::copy(first.begin(), first.end(), expected.begin() + offset);
+        std::array<uint8_t, expected.size()> wholeBuffer{};
+        Buffer::DownloadFromDeviceInline(context, QueueFamilyType::TRANSFER, buffer, 0, wholeBuffer.data(), wholeBuffer.size());
+        CHECK_TRUE(wholeBuffer == expected, "An unaligned staging upload must only replace the supplied byte range!");
+        Buffer::UploadToDeviceInline(context, QueueFamilyType::TRANSFER, buffer, offset, second.data(), second.size());
+        std::array<uint8_t, first.size()> result{};
+        Buffer::DownloadFromDeviceInline(buffer, offset, result.data(), result.size());
+        CHECK_TRUE(result == second, "Default staging download must read the explicit upload at the supplied byte offset!");
+
+        const auto checkFailedReadPreservesHostData = [&](const auto& download)
+        {
+            bool failed = false;
+            result = first;
+            {
+                const ScopedValue wait(vkWaitForFences, FailFenceWait);
+                try { download(); }
+                catch (const std::runtime_error&) { failed = true; }
+            }
+            CHECK_TRUE(failed && result == first, "A failed staging download wait must preserve the Host destination!");
+        };
+        checkFailedReadPreservesHostData([&] { Buffer::DownloadFromDeviceInline(buffer, offset, result.data(), result.size()); });
+        checkFailedReadPreservesHostData([&] {
+            Buffer::DownloadFromDeviceInline(context, QueueFamilyType::TRANSFER, buffer, offset, result.data(), result.size());
+        });
+        CHECK_TRUE(!frameCompleted, "Explicit inline transfers must preserve the current frame!");
+        context.EndFrame();
+        context.StartFrame();
+        CHECK_TRUE(frameCompleted, "Explicit inline transfers must preserve frame completion callbacks!");
+        context.EndFrame();
+
+        std::array<std::exception_ptr, 2> failures{};
+        const auto roundTrip = [&](size_t index, const std::array<uint8_t, 7>& values)
+        {
+            try
+            {
+                Buffer workerBuffer = MakeBuffer(19, usage);
+                std::array<uint8_t, 7> output{};
+                Buffer::UploadToDeviceInline(workerBuffer, offset, values.data(), values.size());
+                Buffer::DownloadFromDeviceInline(workerBuffer, offset, output.data(), output.size());
+                CHECK_TRUE(output == values, "Default staging transfers must round-trip from any Host thread!");
+            }
+            catch (...)
+            {
+                failures[index] = std::current_exception();
+            }
+        };
+        std::jthread firstWorker([&] { roundTrip(0, first); });
+        std::jthread secondWorker([&] { roundTrip(1, second); });
+        firstWorker.join();
+        secondWorker.join();
+        for (const auto& failure : failures)
+        {
+            if (failure)
+                std::rethrow_exception(failure);
+        }
+        std::cout << "Verified default and explicit Buffer staging transfers and worker-thread round trips.\n";
+    }
+
     static void _CheckAddresses(const Buffer& storage, std::span<const VkDeviceAddress> addresses,
         VkDeviceSize alignment, std::string_view batchName)
     {
@@ -355,47 +442,107 @@ private:
             addresses.size(), batchName, bytes, alignment);
     }
 
-    static void _BuildAndReadBack(const HeadlessDevice& native)
+    static void _BuildAndReadBack(const HeadlessDevice& native, bool useTemplates)
     {
         constexpr std::array<float, 18> positions{
             0, 0, 0, 1, 0, 0, 0, 1, 0,
-            2, 0, 0, 3, 0, 0, 2, 1, 0
+            2, 0, 0, 3, 0, 1, 2, 2, 0
         };
         constexpr std::array<uint16_t, 3> indices{ 0, 1, 2 };
         auto vertices = MakeBuffer(sizeof(positions), kBuildInputUsage, kHostMemory);
         auto indexBuffer = MakeBuffer(sizeof(indices), kBuildInputUsage, kHostMemory);
-        vertices.CopyFromHost(positions.data(), 0, sizeof(positions));
-        indexBuffer.CopyFromHost(indices.data(), 0, sizeof(indices));
+        Buffer::UploadToDeviceInline(vertices, 0, positions.data(), sizeof(positions));
+        Buffer::UploadToDeviceInline(indexBuffer, 0, indices.data(), sizeof(indices));
         const VkDeviceAddress vertexAddress = vertices.GetDeviceAddress();
         const VkDeviceAddress indexAddress = indexBuffer.GetDeviceAddress();
         constexpr VkDeviceSize vertexStride = 3 * sizeof(float);
-        const std::array clusterDescriptions{
-            ClusterLevelAccelStructCreateInfo{ 1, 1, vertexAddress, vertexStride, 3, indexAddress },
-            ClusterLevelAccelStructCreateInfo{ 2, 1, vertexAddress + 3 * vertexStride, vertexStride, 3, indexAddress }
+        std::array clusterDescriptions{
+            ClusterLevelAccelStructDirectBuildInfo{ 1, 1, vertexAddress, vertexStride, 3, indexAddress },
+            ClusterLevelAccelStructDirectBuildInfo{ 2, 1, vertexAddress + 3 * vertexStride, vertexStride, 3, indexAddress }
         };
+        for (auto& task : clusterDescriptions) task.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
+        ClusterLevelAccelStructTemplateBatch templates;
+        if (useTemplates)
+        {
+            constexpr std::array<uint16_t, 6> paddedIndices{ 0, 99, 2, 99, 1, 99 };
+            auto otherIndices = MakeBuffer(sizeof(paddedIndices), kBuildInputUsage, kHostMemory);
+            Buffer::UploadToDeviceInline(otherIndices, 0, paddedIndices.data(), sizeof(paddedIndices));
+            std::array<ClusterLevelAccelStructTemplateInfo, 2> infos;
+            for (auto& info : infos)
+            {
+                info.SetVertexCount(3);
+                info.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
+            }
+            infos[0].SetIndexBuffer(indexAddress, 3);
+            infos[1].SetIndexBuffer(otherIndices.GetDeviceAddress(), 3);
+            infos[1].CustomizeIndexStride(4);
+            auto& device = MyDevice::GetInstance();
+            {
+                const ScopedValue wait(vkWaitForFences, FailFenceWait);
+                bool failed = false;
+                try { device.CreateClusterLevelAccelStructTemplatesAndWait(infos, templates); }
+                catch (const std::exception&) { failed = true; }
+                CHECK_TRUE(failed && !templates.GetReferenceBuffer() && templates.GetCount() == 0);
+            }
+            std::exception_ptr workerFailure;
+            std::jthread worker([&] {
+                try { device.CreateClusterLevelAccelStructTemplatesAndWait(infos, templates); }
+                catch (...) { workerFailure = std::current_exception(); }
+            });
+            worker.join();
+            if (workerFailure) std::rethrow_exception(workerFailure);
+            CHECK_TRUE(templates.GetCount() == 2 && templates.GetReference(0) != templates.GetReference(1) &&
+                templates.GetTriangleCount(1) == 1 && templates.GetVertexCount(0) == 3 &&
+                templates.GetBuildLimits().maxTotalVertexCount == 6 && templates.GetBuildLimits().maxTotalTriangleCount == 2 &&
+                templates.GetVertexFormat() == VK_FORMAT_R32G32B32_SFLOAT && templates.GetIndexType() == VK_INDEX_TYPE_UINT16);
+            ClusterLevelAccelStructTemplateBatch explicitTemplates;
+            DeviceContext context(1);
+            device.CreateClusterLevelAccelStructTemplatesAndWait(context, QueueFamilyType::COMPUTE, infos, explicitTemplates);
+            CHECK_TRUE(explicitTemplates.GetCount() == 2 && explicitTemplates.GetReference(1) != 0);
+            std::cout << "Verified two implicit templates from distinct index buffers, worker retry and explicit creation.\n";
+        }
         ClusterLevelAccelStructBatchCreateInfo clusterInfo;
-        clusterInfo.SetClusterLevelAccelStructCreateInfos(clusterDescriptions);
+        clusterInfo.SetMaxClusterCount(2);
+        clusterInfo.SetMaxClusterTriangleCount(1);
+        clusterInfo.SetMaxClusterVertexCount(3);
+        clusterInfo.SetMaxTotalTriangleCount(2);
+        clusterInfo.SetMaxTotalVertexCount(6);
         clusterInfo.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
+        clusterInfo.CustomizeTemplateUsage(useTemplates);
         ClusterLevelAccelStructBatch clusters;
         clusters.Create(clusterInfo);
 
-        const std::array blasDescriptions{
-            ClusterBasedBottomLevelAccelStructClusterCreateInfo{ &clusters, 0, 2 },
-            ClusterBasedBottomLevelAccelStructClusterCreateInfo{ &clusters, 1, 1 }
-        };
+        std::array<BottomLevelAccelStructBuildInfo, 2> blasDescriptions{};
+        blasDescriptions[0].SetClusterReferences(clusters, 0, 2);
+        blasDescriptions[1].SetClusterReferences(clusters, 1, 1);
         BottomLevelAccelStructBatchCreateInfo blasInfo;
-        blasInfo.SetBottomLevelAccelStructCreateInfos(blasDescriptions);
+        blasInfo.SetMaxAccelStructCount(2);
+        blasInfo.SetMaxClusterCountPerAccelStruct(2);
+        blasInfo.SetMaxTotalClusterCount(3);
         BottomLevelAccelStructBatch blases;
         blases.Create(blasInfo);
-        CHECK_TRUE(clusters.GetCount() == clusterDescriptions.size() && blases.GetCount() == blasDescriptions.size(),
+        CHECK_TRUE(clusters.GetCapacity() == clusterDescriptions.size() && blases.GetCapacity() == blasDescriptions.size(),
             "CLAS GPU smoke found unexpected output counts.");
 
-        auto clusterTasks = MakeBuffer(clusters.GetSizesInfo().buildInfoBufferSize, kBuildInputUsage,
-            kHostMemory, alignof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV));
+        auto clusterTasks = MakeBuffer(clusters.GetSizesInfo().buildInfoBufferSize, kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            useTemplates ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : kHostMemory, alignof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV));
         auto blasTasks = MakeBuffer(blases.GetSizesInfo().buildInfoBufferSize, kBuildInputUsage,
             kHostMemory, alignof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV));
-        clusters.WriteBuildInfoBufferInline(clusterInfo, clusterTasks);
-        blases.WriteBuildInfoBufferInline(blasInfo, blasTasks);
+        if (useTemplates)
+        {
+            std::array<ClusterLevelAccelStructInstantiateBuildInfo, 2> instances;
+            for (size_t i = 0; i < instances.size(); ++i)
+            {
+                instances[i].SetTemplateReference(templates.GetReference(0));
+                instances[i].SetVertexBuffer(clusterDescriptions[i].vertexAddress);
+                instances[i].CustomizeVertexStride(vertexStride);
+                instances[i].CustomizeClusterID(static_cast<uint32_t>(i + 1));
+            }
+            ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(instances, clusters, clusterTasks);
+        }
+        else
+            ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(clusterDescriptions, clusters, clusterTasks);
+        blases.WriteBuildInfoBufferInline(blasDescriptions, blasTasks);
 
         const VkDeviceSize scratchAlignment = native.clusterProperties.clusterScratchByteAlignment;
         const VkDeviceSize coreScratchAlignment = native.accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment;
@@ -425,35 +572,134 @@ private:
         constexpr VkAccessFlags buildRead = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
         constexpr VkAccessFlags buildWrite = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
         const auto barrier = native.deviceFunctions.vkCmdPipelineBarrier;
+        const auto submit = [&](const CommandBuffer& inCommands)
+        {
+            inCommands._ValidateQueueCapabilities(QueueFamilyType::COMPUTE);
+            SmokeSubmission submission(native);
+            const auto command = submission.Begin();
+            for (const Command* recorded : inCommands.m_commands)
+                recorded->Record(command);
+            submission.SubmitAndWait(command);
+        };
 
         CommandBuffer commands;
         AppendBarrier(commands, barrier, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_WRITE_BIT, buildStage,
             buildRead | VK_ACCESS_SHADER_READ_BIT);
-        commands.BuildAccelerationStructureIndirect(ClusterLevelAccelStructBuildIndirectInfo{
-            scratchAddress(clusterScratch), clusterTasks.GetDeviceAddress(), &clusters });
+        const auto addClusterBuild = [&](CommandBuffer& cmd, VkDeviceAddress count = 0)
+        {
+            const auto add = [&](auto args) {
+                args.SetTarget(clusters);
+                args.SetBuildInfoAddress(clusterTasks.GetDeviceAddress());
+                args.SetScratchAddress(scratchAddress(clusterScratch));
+                args.CustomizeBuildCountAddress(count);
+                cmd.BuildAccelerationStructureIndirect(args);
+            };
+            if (useTemplates) add(ClusterLevelAccelStructInstantiateBuildIndirectInfo{});
+            else add(ClusterLevelAccelStructDirectBuildIndirectInfo{});
+        };
+        addClusterBuild(commands);
         AppendBarrier(commands, barrier, buildStage, buildWrite, buildStage, buildRead);
-        commands.BuildAccelerationStructureIndirect(BottomLevelAccelStructBuildIndirectInfo{
-            scratchAddress(blasScratch), blasTasks.GetDeviceAddress(), &blases });
+        BottomLevelAccelStructBuildIndirectInfo blasBuild;
+        blasBuild.SetTarget(blases);
+        blasBuild.SetBuildInfoAddress(blasTasks.GetDeviceAddress());
+        blasBuild.SetScratchAddress(scratchAddress(blasScratch));
+        commands.BuildAccelerationStructureIndirect(blasBuild);
         AppendBarrier(commands, barrier, buildStage, buildWrite, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
         commands.CopyBuffer(*clusters.GetReferenceBuffer(), readback, 0, 0, sizeof(clusterAddresses));
         commands.CopyBuffer(*blases.GetReferenceBuffer(), readback, 0, sizeof(clusterAddresses), sizeof(blasAddresses));
         AppendBarrier(commands, barrier, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
 
-        commands._ValidateQueueCapabilities(QueueFamilyType::COMPUTE);
-        SmokeSubmission submission(native);
-        const VkCommandBuffer command = submission.Begin();
-        for (const Command* recorded : commands.m_commands)
-            recorded->Record(command);
-        submission.SubmitAndWait(command);
+        submit(commands);
 
         auto& allocation = readback.m_storage->allocation;
         const auto* mapped = static_cast<const std::byte*>(allocation.Map());
         std::memcpy(clusterAddresses.data(), mapped, sizeof(clusterAddresses));
         std::memcpy(blasAddresses.data(), mapped + sizeof(clusterAddresses), sizeof(blasAddresses));
         allocation.Unmap();
-        _CheckAddresses(*clusters.m_storageBuffer, clusterAddresses, native.clusterProperties.clusterByteAlignment, "CLAS");
+        _CheckAddresses(*clusters.m_storageBuffer, clusterAddresses, native.clusterProperties.clusterByteAlignment,
+            useTemplates ? "instantiated CLAS" : "direct CLAS");
         _CheckAddresses(*blases.m_storageBuffer, blasAddresses, native.clusterProperties.clusterBottomLevelByteAlignment, "Cluster BLAS");
+
+        auto gpuCountBuffer = MakeBuffer(sizeof(uint32_t), kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        struct CountCase
+        {
+            uint32_t requestedCount;
+            uint32_t submittedCount;
+            uint32_t expectedCount;
+        };
+        constexpr std::array countCases{
+            CountCase{ 0, 0, 0 }, CountCase{ 1, 1, 1 }, CountCase{ 2, 2, 2 },
+            CountCase{ 3, 2, 2 }, // The producer bounds the requested count to capacity before the Vulkan build reads it.
+        };
+        constexpr uint32_t sentinelWord = 0xffffffffu;
+        constexpr VkDeviceAddress sentinelAddress = 0xffffffffffffffffull;
+        const auto blasCapacity = blases.GetCapacity();
+        for (const auto& [requestedCount, submittedCount, expectedCount] : countCases)
+        {
+            CHECK_TRUE(submittedCount <= blasCapacity, "Vulkan Cluster BLAS requires the submitted GPU count to fit the batch capacity.");
+            CommandBuffer dynamicBuild;
+            dynamicBuild.FillBuffer(gpuCountBuffer, 0, sizeof(uint32_t), submittedCount);
+            dynamicBuild.FillBuffer(*blases.m_referenceBuffer, 0, sizeof(blasAddresses), sentinelWord);
+            AppendBarrier(dynamicBuild, barrier, VK_PIPELINE_STAGE_TRANSFER_BIT | buildStage,
+                VK_ACCESS_TRANSFER_WRITE_BIT | buildWrite, buildStage, buildRead | buildWrite);
+            blasBuild.CustomizeBuildCountAddress(gpuCountBuffer.GetDeviceAddress());
+            dynamicBuild.BuildAccelerationStructureIndirect(blasBuild);
+            AppendBarrier(dynamicBuild, barrier, buildStage | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                buildWrite | VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            dynamicBuild.CopyBuffer(*blases.GetReferenceBuffer(), readback, 0, sizeof(clusterAddresses), sizeof(blasAddresses));
+            AppendBarrier(dynamicBuild, barrier, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
+            submit(dynamicBuild);
+
+            mapped = static_cast<const std::byte*>(allocation.Map());
+            std::memcpy(blasAddresses.data(), mapped + sizeof(clusterAddresses), sizeof(blasAddresses));
+            allocation.Unmap();
+            const auto addresses = std::span(blasAddresses);
+            _CheckAddresses(*blases.m_storageBuffer, addresses.first(expectedCount),
+                native.clusterProperties.clusterBottomLevelByteAlignment, "GPU-counted Cluster BLAS");
+            for (size_t index = expectedCount; index < addresses.size(); ++index)
+            {
+                CHECK_TRUE(addresses[index] == sentinelAddress,
+                    std::format("GPU count request {} submitted {} with capacity {} overwrote inactive Cluster BLAS address {} with 0x{:x}.",
+                        requestedCount, submittedCount, blasCapacity, index, addresses[index]));
+            }
+            std::cout << std::format("GPU count request {} submitted {} with capacity {} preserved {} inactive Cluster BLAS addresses.\n",
+                requestedCount, submittedCount, blasCapacity, addresses.size() - expectedCount);
+        }
+
+        const auto capacity = clusters.GetCapacity();
+        for (const auto& [requestedCount, submittedCount, expectedCount] : countCases)
+        {
+            CHECK_TRUE(submittedCount <= capacity, "Vulkan CLAS requires the submitted GPU count to fit the batch capacity.");
+            CommandBuffer dynamicBuild;
+            dynamicBuild.FillBuffer(gpuCountBuffer, 0, sizeof(uint32_t), submittedCount);
+            dynamicBuild.FillBuffer(*clusters.m_referenceBuffer, 0, sizeof(clusterAddresses), sentinelWord);
+            AppendBarrier(dynamicBuild, barrier, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                buildStage, VK_ACCESS_INDIRECT_COMMAND_READ_BIT | buildWrite);
+            addClusterBuild(dynamicBuild, gpuCountBuffer.GetDeviceAddress());
+            AppendBarrier(dynamicBuild, barrier, buildStage | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                buildWrite | VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            dynamicBuild.CopyBuffer(*clusters.GetReferenceBuffer(), readback, 0, 0, sizeof(clusterAddresses));
+            AppendBarrier(dynamicBuild, barrier, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
+            submit(dynamicBuild);
+
+            mapped = static_cast<const std::byte*>(allocation.Map());
+            std::memcpy(clusterAddresses.data(), mapped, sizeof(clusterAddresses));
+            allocation.Unmap();
+            const auto addresses = std::span(clusterAddresses);
+            _CheckAddresses(*clusters.m_storageBuffer, addresses.first(expectedCount),
+                native.clusterProperties.clusterByteAlignment, "GPU-counted CLAS");
+            for (size_t index = expectedCount; index < addresses.size(); ++index)
+            {
+                CHECK_TRUE(addresses[index] == sentinelAddress,
+                    std::format("GPU count request {} submitted {} with capacity {} overwrote inactive CLAS address {} with 0x{:x}.",
+                        requestedCount, submittedCount, capacity, index, addresses[index]));
+            }
+            std::cout << std::format("GPU count request {} submitted {} with capacity {} preserved {} inactive CLAS addresses.\n",
+                requestedCount, submittedCount, capacity, addresses.size() - expectedCount);
+        }
     }
 
 public:
@@ -468,23 +714,40 @@ public:
         CLAS_BIND_VK_FUNCTION(instanceFunctions, vkGetPhysicalDeviceProperties2);
         CLAS_BIND_VK_FUNCTION(instanceFunctions, vkGetPhysicalDeviceQueueFamilyProperties);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkAllocateMemory);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkAllocateCommandBuffers);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkBeginCommandBuffer);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkBindBufferMemory);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkBindImageMemory);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkCmdBuildClusterAccelerationStructureIndirectNV);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkCmdCopyBuffer);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkCmdFillBuffer);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkCmdPipelineBarrier2);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkCreateBuffer);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkCreateCommandPool);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkCreateFence);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkCreateSemaphore);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkCreateImage);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkDestroyBuffer);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkDestroyCommandPool);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkDestroyFence);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkDestroyImage);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkDestroySemaphore);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkDeviceWaitIdle);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkEndCommandBuffer);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkFlushMappedMemoryRanges);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkFreeMemory);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkGetBufferDeviceAddress);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkGetBufferMemoryRequirements);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkGetClusterAccelerationStructureBuildSizesNV);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkGetFenceStatus);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkGetImageMemoryRequirements);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkInvalidateMappedMemoryRanges);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkMapMemory);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkQueueSubmit2);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkResetCommandPool);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkResetFences);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkUnmapMemory);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkWaitForFences);
 #undef CLAS_BIND_VK_FUNCTION
 
         const ScopedValue singleton(MyDevice::s_uptrInstance, std::make_unique<MyDevice>());
@@ -493,10 +756,22 @@ public:
         device.vkPhysicalDevice = native.physicalDevice;
         device.vkDevice = native.device;
         device.queueFamilyIndices.graphicsAndComputeFamily = native.queueFamily;
+        device.queueFamilyIndices.transferFamily = native.queueFamily;
+        device.m_vkGraphicsQueue = native.queue;
+        device.m_vkComputeQueue = native.queue;
+        device.m_vkTransferQueue = native.queue;
         device.m_cachedPhysicalDeviceProperties = native.properties;
         device.m_clusterAccelerationStructureEnabled = true;
         device._CreateMemoryAllocator();
-        _BuildAndReadBack(native);
+        const auto destroyInlineExecution = [](MyDevice* owner) { owner->_DestroyInlineExecution(); };
+        const std::unique_ptr<MyDevice, decltype(destroyInlineExecution)> inlineExecutionCleanup(&device, destroyInlineExecution);
+        auto& scheduler = MyTaskScheduler::GetInstance();
+        scheduler.Create();
+        const auto shutdownScheduler = [](MyTaskScheduler* owner) { owner->Destroy(); };
+        const std::unique_ptr<MyTaskScheduler, decltype(shutdownScheduler)> schedulerCleanup(&scheduler, shutdownScheduler);
+        _CheckInlineTransfers();
+        _BuildAndReadBack(native, false);
+        _BuildAndReadBack(native, true);
     }
 };
 

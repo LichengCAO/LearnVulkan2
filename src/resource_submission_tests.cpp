@@ -17,10 +17,13 @@ struct ResourceSubmissionTestProbe
     {
         int* destroyed = nullptr;
         bool expectAlive = true;
-        bool failNextSubmit = false;
+        VkResult nextSubmit = VK_SUCCESS;
+        VkResult nextWait = VK_SUCCESS;
         uintptr_t nextFence = 100;
         size_t waitCount = 0;
         size_t submitCount = 0;
+        size_t statusCount = 0;
+        size_t resetCount = 0;
         std::set<VkFence> signaled;
     };
 
@@ -83,6 +86,7 @@ struct ResourceSubmissionTestProbe
     static VKAPI_ATTR auto VKAPI_CALL _ResetFences(VkDevice, uint32_t inCount,
         const VkFence* inFences) -> VkResult
     {
+        ++activeHooks->resetCount;
         for (uint32_t index = 0; index < inCount; ++index)
             activeHooks->signaled.erase(inFences[index]);
         return VK_SUCCESS;
@@ -96,9 +100,7 @@ struct ResourceSubmissionTestProbe
         _CheckAlive();
         CHECK_TRUE(inCount == 1 && inSubmits != nullptr, "Expected one native queue submission!");
         ++activeHooks->submitCount;
-        if (std::exchange(activeHooks->failNextSubmit, false))
-            return VK_ERROR_DEVICE_LOST;
-        return VK_SUCCESS;
+        return std::exchange(activeHooks->nextSubmit, VK_SUCCESS);
     }
 
     static VKAPI_ATTR auto VKAPI_CALL _WaitForFences(VkDevice, uint32_t inCount,
@@ -106,11 +108,22 @@ struct ResourceSubmissionTestProbe
     {
         _CheckAlive();
         ++activeHooks->waitCount;
+        if (const VkResult result = std::exchange(activeHooks->nextWait, VK_SUCCESS); result != VK_SUCCESS)
+            return result;
         for (uint32_t index = 0; index < inCount; ++index)
         {
             if (inTimeout == 0 && !activeHooks->signaled.contains(inFences[index]))
                 return VK_TIMEOUT;
         }
+        return VK_SUCCESS;
+    }
+
+    static VKAPI_ATTR auto VKAPI_CALL _GetFenceStatus(VkDevice, VkFence fence) -> VkResult
+    {
+        _CheckAlive();
+        if (++activeHooks->statusCount == 1)
+            return VK_NOT_READY;
+        activeHooks->signaled.insert(fence);
         return VK_SUCCESS;
     }
 
@@ -131,6 +144,7 @@ struct ResourceSubmissionTestProbe
         PFN_vkDestroyFence destroyFence = vkDestroyFence;
         PFN_vkQueueSubmit2 queueSubmit = vkQueueSubmit2;
         PFN_vkWaitForFences waitForFences = vkWaitForFences;
+        PFN_vkGetFenceStatus getFenceStatus = vkGetFenceStatus;
         PFN_vkDeviceWaitIdle deviceWaitIdle = vkDeviceWaitIdle;
         PFN_vkDestroyImage destroyImage = vkDestroyImage;
         VkDevice device = VK_NULL_HANDLE;
@@ -152,6 +166,7 @@ struct ResourceSubmissionTestProbe
             vkDestroyFence = _DestroyFence;
             vkQueueSubmit2 = _QueueSubmit;
             vkWaitForFences = _WaitForFences;
+            vkGetFenceStatus = _GetFenceStatus;
             vkDeviceWaitIdle = _DeviceWaitIdle;
             vkDestroyImage = _DestroyImage;
         }
@@ -171,6 +186,7 @@ struct ResourceSubmissionTestProbe
             vkDestroyFence = destroyFence;
             vkQueueSubmit2 = queueSubmit;
             vkWaitForFences = waitForFences;
+            vkGetFenceStatus = getFenceStatus;
             vkDeviceWaitIdle = deviceWaitIdle;
             vkDestroyImage = destroyImage;
             activeHooks = nullptr;
@@ -350,7 +366,7 @@ struct ResourceSubmissionTestProbe
         int destroyed = 0;
         HookScope hooks(destroyed);
         auto context = _Context();
-        hooks.state.failNextSubmit = true;
+        hooks.state.nextSubmit = VK_ERROR_OUT_OF_HOST_MEMORY;
         bool failed = false;
         try
         {
@@ -366,6 +382,50 @@ struct ResourceSubmissionTestProbe
             "A failed submission must not leave a pending fence callback!");
         hooks.state.expectAlive = false;
     }
+
+    static void FailedImmediateWaitRetiresNativeWork()
+    {
+        int destroyed = 0;
+        HookScope hooks(destroyed);
+        auto context = _Context();
+        hooks.state.nextWait = VK_ERROR_OUT_OF_HOST_MEMORY;
+        bool failed = false;
+        try
+        {
+            context->ExecuteCommandsAndWait(QueueFamilyType::TRANSFER, _Buffers(_Resource(destroyed)));
+        }
+        catch (const std::runtime_error&)
+        {
+            failed = true;
+        }
+        CHECK_TRUE(failed && hooks.state.submitCount == 1 && hooks.state.waitCount == 1 && hooks.state.statusCount == 2,
+            "An immediate fence wait error must preserve the error and resolve native pending work before unwinding!");
+        context->ExecuteCommandsAndWait(QueueFamilyType::TRANSFER, {});
+        CHECK_TRUE(destroyed == 1, "A later wait must reclaim the retired submission's resources!");
+        hooks.state.expectAlive = false;
+    }
+
+    static void LostImmediateSubmitRetiresNativeWork()
+    {
+        int destroyed = 0;
+        HookScope hooks(destroyed);
+        auto context = _Context();
+        hooks.state.nextSubmit = VK_ERROR_DEVICE_LOST;
+        hooks.state.nextWait = VK_ERROR_DEVICE_LOST;
+        bool failed = false;
+        try
+        {
+            context->ExecuteCommandsAndWait(QueueFamilyType::TRANSFER, _Buffers(_Resource(destroyed)));
+        }
+        catch (const std::runtime_error&)
+        {
+            failed = true;
+        }
+        CHECK_TRUE(failed && hooks.state.submitCount == 1 && hooks.state.waitCount == 1 &&
+            hooks.state.resetCount == 0 && destroyed == 1,
+            "Device loss during an immediate submit must retire native work before releasing resources or reusing fences!");
+        hooks.state.expectAlive = false;
+    }
 };
 
 void RunResourceSubmissionTests()
@@ -377,4 +437,6 @@ void RunResourceSubmissionTests()
     ResourceSubmissionTestProbe::ImmediateResourcesWaitForFenceCallback();
     ResourceSubmissionTestProbe::ExplicitKeepAliveWaitsForSubmissionCompletion();
     ResourceSubmissionTestProbe::FailedImmediateSubmitReleasesResources();
+    ResourceSubmissionTestProbe::LostImmediateSubmitRetiresNativeWork();
+    ResourceSubmissionTestProbe::FailedImmediateWaitRetiresNativeWork();
 }

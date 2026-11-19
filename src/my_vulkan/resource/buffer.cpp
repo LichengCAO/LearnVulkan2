@@ -1,8 +1,43 @@
 #include "buffer.h"
 #include "device.h"
 #include "allocator/private/memory_allocator.h"
+#include "render_context/device_context.h"
 #include "utils.h"
 #include "private/buffer_storage.h"
+#include <cstring>
+
+namespace
+{
+constexpr VkMemoryPropertyFlags kCoherentHostMemory =
+	VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+void ValidateInlineTransfer(const Buffer& inBuffer, VkDeviceSize inOffset, const void* inData, size_t inSize)
+{
+	CHECK_TRUE(inBuffer.IsValid(), "Inline transfer requires a created Buffer!");
+	const VkDeviceSize bufferSize = inBuffer.GetBufferInformation().size;
+	CHECK_TRUE(inOffset <= bufferSize && inSize <= bufferSize - inOffset, "Buffer transfer range out of bounds!");
+	CHECK_TRUE(inSize == 0 || inData != nullptr, "Non-empty Buffer transfer requires a Host pointer!");
+}
+
+void RecordTransferBarrier(VkCommandBuffer inCommands, VkBuffer inBuffer, VkDeviceSize inOffset, VkDeviceSize inSize,
+	VkPipelineStageFlags2 inSrcStage, VkAccessFlags2 inSrcAccess, VkPipelineStageFlags2 inDstStage, VkAccessFlags2 inDstAccess)
+{
+	VkBufferMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+	barrier.srcStageMask = inSrcStage;
+	barrier.srcAccessMask = inSrcAccess;
+	barrier.dstStageMask = inDstStage;
+	barrier.dstAccessMask = inDstAccess;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.buffer = inBuffer;
+	barrier.offset = inOffset;
+	barrier.size = inSize;
+	VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+	dependency.bufferMemoryBarrierCount = 1;
+	dependency.pBufferMemoryBarriers = &barrier;
+	vkCmdPipelineBarrier2(inCommands, &dependency);
+}
+}
 
 Buffer::~Buffer() noexcept
 {
@@ -41,14 +76,6 @@ void Buffer::Create(const BufferCreateInfo& inCreateInfo)
 	m_storage = std::move(storage);
 }
 
-void Buffer::_CopyFromHostWithMappedMemory(const void* src, size_t bufferOffset, size_t size)
-{
-	CHECK_TRUE(IsValid(), "Cannot copy into an empty Buffer!");
-	uint8_t* pMapped = static_cast<uint8_t*>(m_storage->allocation.Map());
-	pMapped += bufferOffset;
-	memcpy((void*)pMapped, src, size);
-}
-
 Buffer::Buffer()
 {
 }
@@ -60,21 +87,114 @@ Buffer::Buffer(Buffer&& _toMove) noexcept
 	m_uptrBufferViews = std::move(_toMove.m_uptrBufferViews);
 }
 
-void Buffer::CopyFromHost(const void* src, size_t bufferOffset, size_t size)
+auto Buffer::_MapForInlineTransfer(VkDeviceSize inOffset, size_t inSize) const -> std::byte*
 {
-	CHECK_TRUE(src != nullptr, "No source data!");
-	CHECK_TRUE(
-		CONTAIN_BITS(m_bufferInformation.memoryProperty, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT),
-		"CopyFromHost requires host-visible memory!");
-	CHECK_TRUE(
-		CONTAIN_BITS(m_bufferInformation.memoryProperty, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-		"CopyFromHost requires host-coherent memory!");
-	CHECK_TRUE(bufferOffset <= static_cast<size_t>(m_bufferInformation.size), "Copy offset out of range!");
-	CHECK_TRUE(
-		size <= static_cast<size_t>(m_bufferInformation.size) - bufferOffset,
-		"Try to copy too much data from host!");
+	CHECK_TRUE(inOffset <= SIZE_MAX - inSize, "Mapped Buffer transfer range does not fit the Host address space!");
+	return static_cast<std::byte*>(m_storage->allocation.Map()) + static_cast<size_t>(inOffset);
+}
 
-	_CopyFromHostWithMappedMemory(src, bufferOffset, size);
+void Buffer::_ExecuteTransfer(DeviceContext* inContext, QueueFamilyType inQueue,
+	std::function<void(VkCommandBuffer)> inRecord)
+{
+	if (inContext == nullptr)
+	{
+		MyDevice::GetInstance()._ExecuteInlineAndWait(std::move(inRecord));
+		return;
+	}
+	std::vector<CommandBuffer> commands(1);
+	commands.front().AppendCommand(std::move(inRecord));
+	inContext->ExecuteCommandsAndWait(inQueue, std::move(commands));
+}
+
+void Buffer::_UploadToDeviceInline(DeviceContext* inContext, QueueFamilyType inQueue, Buffer& inDst,
+	VkDeviceSize inOffset, const void* inSrc, size_t inSize)
+{
+	ValidateInlineTransfer(inDst, inOffset, inSrc, inSize);
+	if (inSize == 0)
+		return;
+	if (CONTAIN_BITS(inDst.m_bufferInformation.memoryProperty, kCoherentHostMemory))
+	{
+		std::memcpy(inDst._MapForInlineTransfer(inOffset, inSize), inSrc, inSize);
+		return;
+	}
+	CHECK_TRUE(CONTAIN_BITS(inDst.m_bufferInformation.usage, VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+		"Staging upload requires VK_BUFFER_USAGE_TRANSFER_DST_BIT!");
+
+	Buffer staging;
+	BufferCreateInfo info;
+	info.SetBufferSize(inSize).SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_SRC_BIT).CustomizeMemoryProperty(kCoherentHostMemory);
+	staging.Create(info);
+	std::memcpy(staging._MapForInlineTransfer(0, inSize), inSrc, inSize);
+	const VkBuffer src = staging.GetVkBuffer();
+	const VkBuffer dst = inDst.GetVkBuffer();
+	const VkBufferCopy region{0, inOffset, inSize};
+	_ExecuteTransfer(inContext, inQueue, [src, dst, region](VkCommandBuffer commands)
+	{
+		RecordTransferBarrier(commands, dst, region.dstOffset, region.size,
+			VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+			VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+		// Submission makes writes to the coherent staging allocation available to the copy.
+		vkCmdCopyBuffer(commands, src, dst, 1, &region);
+		RecordTransferBarrier(commands, dst, region.dstOffset, region.size,
+			VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+	});
+}
+
+void Buffer::_DownloadFromDeviceInline(DeviceContext* inContext, QueueFamilyType inQueue, const Buffer& inSrc,
+	VkDeviceSize inOffset, void* outDst, size_t inSize)
+{
+	ValidateInlineTransfer(inSrc, inOffset, outDst, inSize);
+	if (inSize == 0)
+		return;
+	if (CONTAIN_BITS(inSrc.m_bufferInformation.memoryProperty, kCoherentHostMemory))
+	{
+		std::memcpy(outDst, inSrc._MapForInlineTransfer(inOffset, inSize), inSize);
+		return;
+	}
+	CHECK_TRUE(CONTAIN_BITS(inSrc.m_bufferInformation.usage, VK_BUFFER_USAGE_TRANSFER_SRC_BIT),
+		"Staging download requires VK_BUFFER_USAGE_TRANSFER_SRC_BIT!");
+
+	Buffer staging;
+	BufferCreateInfo info;
+	info.SetBufferSize(inSize).SetBufferUsage(VK_BUFFER_USAGE_TRANSFER_DST_BIT).CustomizeMemoryProperty(kCoherentHostMemory);
+	staging.Create(info);
+	const VkBuffer src = inSrc.GetVkBuffer();
+	const VkBuffer dst = staging.GetVkBuffer();
+	const VkBufferCopy region{inOffset, 0, inSize};
+	_ExecuteTransfer(inContext, inQueue, [src, dst, region](VkCommandBuffer commands)
+	{
+		RecordTransferBarrier(commands, src, region.srcOffset, region.size,
+			VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+			VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+		vkCmdCopyBuffer(commands, src, dst, 1, &region);
+		RecordTransferBarrier(commands, dst, region.dstOffset, region.size,
+			VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+	});
+	std::memcpy(outDst, staging._MapForInlineTransfer(0, inSize), inSize);
+}
+
+void Buffer::UploadToDeviceInline(Buffer& inDst, VkDeviceSize inOffset, const void* inSrc, size_t inSize)
+{
+	_UploadToDeviceInline(nullptr, QueueFamilyType::COMPUTE, inDst, inOffset, inSrc, inSize);
+}
+
+void Buffer::DownloadFromDeviceInline(const Buffer& inSrc, VkDeviceSize inOffset, void* outDst, size_t inSize)
+{
+	_DownloadFromDeviceInline(nullptr, QueueFamilyType::COMPUTE, inSrc, inOffset, outDst, inSize);
+}
+
+void Buffer::UploadToDeviceInline(DeviceContext& inContext, QueueFamilyType inQueue, Buffer& inDst,
+	VkDeviceSize inOffset, const void* inSrc, size_t inSize)
+{
+	_UploadToDeviceInline(&inContext, inQueue, inDst, inOffset, inSrc, inSize);
+}
+
+void Buffer::DownloadFromDeviceInline(DeviceContext& inContext, QueueFamilyType inQueue, const Buffer& inSrc,
+	VkDeviceSize inOffset, void* outDst, size_t inSize)
+{
+	_DownloadFromDeviceInline(&inContext, inQueue, inSrc, inOffset, outDst, inSize);
 }
 
 auto Buffer::GetBufferInformation() const -> const Buffer::Information&

@@ -319,7 +319,7 @@ after the record's start;
 record strides use shaderGroupHandleAlignment, with raygen additionally aligned to
 shaderGroupBaseAlignment, and must fit maxShaderGroupStride. Replacing a record clears
 its previous bytes and never resizes the buffer. Commit uploads the full Host mirror
-through Buffer::CopyFromHost. GetShaderTableRegion returns one raygen record selected
+through `Buffer::UploadToDeviceInline`. GetShaderTableRegion returns one raygen record selected
 by its optional record offset; other types require zero offset and return the full
 region, or a zero region when empty. Acceleration structure SBT record offsets retain
 their meaning as offsets into the hit table; group names do not change them.

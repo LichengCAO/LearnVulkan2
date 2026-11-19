@@ -20,7 +20,8 @@ class BottomLevelAccelStructBatchCreateInfo;
 class BottomLevelAccelStructBatch;
 class TopLevelAccelStructCreateInfo;
 struct BottomLevelAccelStructBuildIndirectInfo;
-struct ClusterLevelAccelStructBuildIndirectInfo;
+struct ClusterLevelAccelStructDirectBuildIndirectInfo;
+struct ClusterLevelAccelStructInstantiateBuildIndirectInfo;
 struct VkAccelStructBuildInfo;
 namespace VulkanDetail { class DynamicDescriptorPool; }
 
@@ -184,8 +185,10 @@ public:
         VkCopyAccelerationStructureModeKHR inMode = VK_COPY_ACCELERATION_STRUCTURE_MODE_CLONE_KHR);
     void CopyAccelerationStructureKHR(const TopLevelAccelStruct& inSrc, TopLevelAccelStruct& inDst,
         VkCopyAccelerationStructureModeKHR inMode = VK_COPY_ACCELERATION_STRUCTURE_MODE_CLONE_KHR);
-    // Snapshots fixed-count implicit build parameters. GPU task/scratch memory remains borrowed.
-	void BuildAccelerationStructureIndirect(const ClusterLevelAccelStructBuildIndirectInfo& inInfo);
+	// These overloads snapshot capacity and an optional GPU count address. They borrow the
+	// GPU storage and input ranges and require a compute-capable queue outside a render pass.
+	void BuildAccelerationStructureIndirect(const ClusterLevelAccelStructDirectBuildIndirectInfo& inInfo);
+	void BuildAccelerationStructureIndirect(const ClusterLevelAccelStructInstantiateBuildIndirectInfo& inInfo);
 	void BuildAccelerationStructureIndirect(const BottomLevelAccelStructBuildIndirectInfo& inInfo);
 
     // Executes later during recording, in stream order. The callback must preserve

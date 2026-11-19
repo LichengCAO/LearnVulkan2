@@ -61,6 +61,7 @@ file(GLOB_RECURSE SOURCES "src/*.cpp")
 # Register the new CLAS sources explicitly so existing build trees regenerate
 # their source lists when this CMake input changes.
 list(APPEND SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/inline_execution_tests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/my_vulkan/resource/cluster_acceleration_structure.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/clas_resource_tests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/clas_pipeline_tests.cpp"

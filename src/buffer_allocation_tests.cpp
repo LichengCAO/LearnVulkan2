@@ -7,6 +7,7 @@
 #include "clas_buffer_test_fixture.h"
 #include <atomic>
 #include <concepts>
+#include <limits>
 #include <mutex>
 #include <thread>
 #ifdef _DEBUG
@@ -73,14 +74,18 @@ auto FailPublication(int kind, void*, size_t size, int block, long, const unsign
 }
 #endif
 
+enum class MemoryLayout { Unified, SeparateHost };
+
 struct NativeState final
 {
     struct Binding { VkDeviceMemory memory; VkDeviceSize offset; };
+    struct Memory { uint32_t typeIndex; std::vector<uint8_t> bytes; };
     std::mutex mutex;
+    MemoryLayout memoryLayout = MemoryLayout::Unified;
     uintptr_t next = 100;
     std::unordered_map<VkBuffer, VkDeviceSize> buffers;
     std::unordered_map<VkBuffer, Binding> bindings;
-    std::unordered_map<VkDeviceMemory, std::vector<uint8_t>> memories;
+    std::unordered_map<VkDeviceMemory, Memory> memories;
     std::unordered_map<VkBufferView, VkBuffer> views;
     std::unordered_map<VkImage, VkImageCreateInfo> images;
     std::unordered_map<VkImage, Binding> imageBindings;
@@ -90,6 +95,7 @@ struct NativeState final
     bool failAsCreate = false, zeroAsAddress = false, zeroAsSize = false, badAsFormat = false, badAsLimits = false;
     bool checkAsSnapshot = false, checkTlasSnapshot = false, nullAsCreate = false, badTlasLimits = false, zeroAsAlignment = false;
     uint32_t bufferAddresses = 0;
+    VkDeviceAddress bufferAddressOverride = 0;
     uint32_t imageCreates = 0, imageDestroys = 0, imageViewCreates = 0, imageViewDestroys = 0;
     bool failImage = false, failImageView = false, failImagePublication = false;
     bool failImageCachePublication = false;
@@ -138,7 +144,8 @@ void VKAPI_PTR DestroyBuffer(VkDevice device, VkBuffer buffer, const VkAllocatio
 void VKAPI_PTR BufferRequirements(VkDevice, VkBuffer buffer, VkMemoryRequirements* out)
 {
     std::lock_guard lock(active->mutex);
-    *out = { active->buffers.at(buffer), 64, 1 };
+    const uint32_t memoryTypeBits = active->memoryLayout == MemoryLayout::SeparateHost ? 0b11 : 0b01;
+    *out = { active->buffers.at(buffer), 64, memoryTypeBits };
 }
 auto VKAPI_PTR AllocateMemory(VkDevice, const VkMemoryAllocateInfo* info,
     const VkAllocationCallbacks*, VkDeviceMemory* out) -> VkResult
@@ -146,7 +153,8 @@ auto VKAPI_PTR AllocateMemory(VkDevice, const VkMemoryAllocateInfo* info,
     std::lock_guard lock(active->mutex);
     if (active->failAllocate) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *out = Handle<VkDeviceMemory>(active->next++);
-    active->memories.emplace(*out, std::vector<uint8_t>(static_cast<size_t>(info->allocationSize)));
+    active->memories.emplace(*out, NativeState::Memory{info->memoryTypeIndex,
+        std::vector<uint8_t>(static_cast<size_t>(info->allocationSize))});
     return VK_SUCCESS;
 }
 void VKAPI_PTR FreeMemory(VkDevice, VkDeviceMemory memory, const VkAllocationCallbacks*)
@@ -171,7 +179,7 @@ auto VKAPI_PTR MapMemory(VkDevice, VkDeviceMemory memory, VkDeviceSize offset,
     std::lock_guard lock(active->mutex);
     ++active->maps;
     if (active->failMap) return VK_ERROR_MEMORY_MAP_FAILED;
-    *out = active->memories.at(memory).data() + offset;
+    *out = active->memories.at(memory).bytes.data() + offset;
     return VK_SUCCESS;
 }
 void VKAPI_PTR UnmapMemory(VkDevice, VkDeviceMemory)
@@ -196,6 +204,14 @@ void VKAPI_PTR MemoryProperties(VkPhysicalDevice, VkPhysicalDeviceMemoryProperti
     out->memoryTypeCount = 1;
     out->memoryTypes[0] = { VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0 };
+    if (active->memoryLayout == MemoryLayout::SeparateHost)
+    {
+        out->memoryHeapCount = 2;
+        out->memoryHeaps[1] = { 1024 * 1024, 0 };
+        out->memoryTypeCount = 2;
+        out->memoryTypes[0] = { VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0 };
+        out->memoryTypes[1] = { VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 1 };
+    }
 }
 auto VKAPI_PTR Flush(VkDevice, uint32_t, const VkMappedMemoryRange*) -> VkResult { return VK_SUCCESS; }
 auto VKAPI_PTR CreateImage(VkDevice device, const VkImageCreateInfo* info, const VkAllocationCallbacks*, VkImage* out) -> VkResult
@@ -252,6 +268,8 @@ auto VKAPI_PTR Address(VkDevice device, const VkBufferDeviceAddressInfo* info) -
     CHECK_TRUE(device == active->expectedDevice, "Device address must use the creating Device!");
     std::lock_guard lock(active->mutex);
     ++active->bufferAddresses;
+    if (active->bufferAddressOverride != 0)
+        return active->bufferAddressOverride;
     const auto binding = active->bindings.at(info->buffer);
     return 0x100000 + binding.offset;
 }
@@ -356,8 +374,9 @@ struct Hooks final
 #define SAVE(name, impl) decltype(name) old_##name = name;
     BUFFER_HOOKS(SAVE)
 #undef SAVE
-    Hooks()
+    explicit Hooks(MemoryLayout memoryLayout = MemoryLayout::Unified)
     {
+        state.memoryLayout = memoryLayout;
         auto& owner = MyDevice::GetInstance();
         device = owner.vkDevice; instance = owner.vkInstance; physicalDevice = owner.vkPhysicalDevice;
         allocator = BufferAllocationTestProbe::TakeAllocator();
@@ -395,6 +414,66 @@ auto HostInfo() -> BufferCreateInfo
     return info;
 }
 
+void TestCombinedMemoryRequestUsesCoherentHostAllocation()
+{
+    Hooks hooks(MemoryLayout::SeparateHost);
+    auto info = HostInfo();
+    info.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    Buffer buffer;
+    buffer.Create(info);
+    const auto binding = hooks.state.bindings.at(buffer.GetVkBuffer());
+    const auto& memory = hooks.state.memories.at(binding.memory);
+    CHECK_TRUE(memory.typeIndex == 1, "Combined memory request must select the coherent Host memory type!");
+
+    constexpr VkDeviceSize offset = 16;
+    const uint32_t value = 0x12345678;
+    Buffer::UploadToDeviceInline(buffer, offset, &value, sizeof(value));
+    CHECK_TRUE(std::memcmp(memory.bytes.data() + binding.offset + offset, &value, sizeof(value)) == 0,
+        "Upload must write directly into the bound Host memory!");
+
+    uint32_t output = 0;
+    Buffer::DownloadFromDeviceInline(buffer, offset, &output, sizeof(output));
+    CHECK_TRUE(output == value && hooks.state.maps == 1 && hooks.state.creates == 1,
+        "Transfers without transfer usage must share the mapping and avoid staging!");
+}
+
+void TestInlineTransferValidation()
+{
+    Hooks hooks;
+    Buffer empty;
+    uint32_t value = 0x12345678;
+    ExpectFailure([&] { Buffer::UploadToDeviceInline(empty, 0, &value, sizeof(value)); });
+    ExpectFailure([&] { Buffer::DownloadFromDeviceInline(empty, 0, &value, sizeof(value)); });
+
+    Buffer host;
+    host.Create(HostInfo());
+    for (const auto& [offset, size] : std::array<std::pair<VkDeviceSize, size_t>, 4>{
+        std::pair{ VkDeviceSize{257}, size_t{0} }, {255, 2},
+        {(std::numeric_limits<VkDeviceSize>::max)(), 1}, {1, (std::numeric_limits<size_t>::max)()} })
+    {
+        ExpectFailure([&] { Buffer::UploadToDeviceInline(host, offset, &value, size); });
+        ExpectFailure([&] { Buffer::DownloadFromDeviceInline(host, offset, &value, size); });
+    }
+    ExpectFailure([&] { Buffer::UploadToDeviceInline(host, 0, nullptr, 1); });
+    ExpectFailure([&] { Buffer::DownloadFromDeviceInline(host, 0, nullptr, 1); });
+    Buffer::UploadToDeviceInline(host, 256, nullptr, 0);
+    Buffer::DownloadFromDeviceInline(host, 256, nullptr, 0);
+    CHECK_TRUE(hooks.state.maps == 0, "Invalid and empty transfers must not map memory!");
+
+    BufferCreateInfo deviceInfo;
+    deviceInfo.SetBufferSize(32).SetBufferUsage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    Buffer device;
+    device.Create(deviceInfo);
+    const auto creates = hooks.state.creates;
+    ExpectFailure([&] { Buffer::UploadToDeviceInline(device, 0, &value, sizeof(value)); });
+    ExpectFailure([&] { Buffer::DownloadFromDeviceInline(device, 0, &value, sizeof(value)); });
+    Buffer::UploadToDeviceInline(device, 32, nullptr, 0);
+    Buffer::DownloadFromDeviceInline(device, 32, nullptr, 0);
+    CHECK_TRUE(value == 0x12345678 && hooks.state.creates == creates && hooks.state.maps == 0,
+        "Missing transfer usage and empty transfers must be handled before staging or touching Host data!");
+}
+
 void TestLifecycleAndMove()
 {
     Buffer empty;
@@ -406,11 +485,14 @@ void TestLifecycleAndMove()
         auto buffer = MakeIntrusive<Buffer>();
         buffer->Create(HostInfo());
         const uint32_t value = 0x12345678;
-        buffer->CopyFromHost(&value, 16, sizeof(value));
+        Buffer::UploadToDeviceInline(*buffer, 16, &value, sizeof(value));
         const auto binding = hooks.state.bindings.at(buffer->GetVkBuffer());
-        CHECK_TRUE(std::memcmp(hooks.state.memories.at(binding.memory).data() + binding.offset + 16, &value, sizeof(value)) == 0,
-            "CopyFromHost must write into the real VMA allocation offset!");
-        buffer->CopyFromHost(&value, 32, sizeof(value));
+        CHECK_TRUE(std::memcmp(hooks.state.memories.at(binding.memory).bytes.data() + binding.offset + 16, &value, sizeof(value)) == 0,
+            "UploadToDeviceInline must write into the real VMA allocation offset!");
+        Buffer::UploadToDeviceInline(*buffer, 32, &value, sizeof(value));
+        uint32_t output = 0;
+        Buffer::DownloadFromDeviceInline(*buffer, 16, &output, sizeof(output));
+        CHECK_TRUE(output == value, "DownloadFromDeviceInline must read from the specified mapped offset!");
         CHECK_TRUE(hooks.state.maps == 1, "Repeated copies must reuse one mapping!");
         auto retained = buffer;
         buffer = nullptr;
@@ -419,7 +501,10 @@ void TestLifecycleAndMove()
         CHECK_TRUE(!retained->IsValid() && retained->GetBufferInformation().size == 0,
             "Move must empty source storage and information!");
         retained = nullptr;
-        moved.CopyFromHost(&value, 0, sizeof(value));
+        Buffer::UploadToDeviceInline(moved, 0, &value, sizeof(value));
+        output = 0;
+        Buffer::DownloadFromDeviceInline(moved, 32, &output, sizeof(output));
+        CHECK_TRUE(output == value, "Moved Buffers must keep mapped download contents!");
         CHECK_TRUE(hooks.state.maps == 1 && hooks.state.unmaps == 0, "Move must transfer the mapping!");
         CHECK_TRUE(moved.GetDeviceAddress() != 0 && moved.GetDescriptorBufferInfo().range == 256,
             "Moved Buffer queries must retain allocation information!");
@@ -477,11 +562,14 @@ void TestValidationAndFailureRetry()
         "Duplicate creation must preserve the existing Buffer before calling Vulkan!");
     uint32_t value = 42;
     hooks.state.failMap = true;
-    ExpectFailure([&] { buffer.CopyFromHost(&value, 0, sizeof(value)); });
+    ExpectFailure([&] { Buffer::UploadToDeviceInline(buffer, 0, &value, sizeof(value)); });
+    uint32_t output = 7;
+    ExpectFailure([&] { Buffer::DownloadFromDeviceInline(buffer, 0, &output, sizeof(output)); });
+    CHECK_TRUE(output == 7, "A failed map must preserve the Host destination!");
     hooks.state.failMap = false;
-    buffer.CopyFromHost(&value, 0, sizeof(value));
-    buffer.CopyFromHost(&value, 4, sizeof(value));
-    CHECK_TRUE(hooks.state.maps == 2, "A failed map must not publish a pointer and must support retry!");
+    Buffer::UploadToDeviceInline(buffer, 0, &value, sizeof(value));
+    Buffer::DownloadFromDeviceInline(buffer, 0, &output, sizeof(output));
+    CHECK_TRUE(output == value && hooks.state.maps == 3, "A failed map must not publish a pointer and must support retry!");
 }
 
 void TestAllocationAlignmentAndUnmap()
@@ -578,7 +666,10 @@ void TestIndependentThreads()
                 for (uint32_t iteration = 0; iteration < 16; ++iteration)
                 {
                     Buffer buffer; buffer.Create(HostInfo());
-                    buffer.CopyFromHost(&worker, 0, sizeof(worker));
+                    Buffer::UploadToDeviceInline(buffer, 0, &worker, sizeof(worker));
+                    uint32_t output = 4;
+                    Buffer::DownloadFromDeviceInline(buffer, 0, &output, sizeof(output));
+                    CHECK_TRUE(output == worker, "Independent mapped Buffer transfers must round-trip on each worker!");
                     BufferViewInfo info; info.SetFormat(VK_FORMAT_R32_UINT);
                     CHECK_TRUE(buffer.View(info) == buffer.View(info), "Concurrent independent view caches must remain stable!");
                 }
@@ -595,7 +686,7 @@ void TestIndependentThreads()
     if (!failures.empty()) std::rethrow_exception(failures.front());
     std::thread consume([&]
     {
-        try { uint32_t value = 7; buffer->CopyFromHost(&value, 0, sizeof(value)); buffer.reset(); }
+        try { uint32_t value = 7; Buffer::UploadToDeviceInline(*buffer, 0, &value, sizeof(value)); buffer.reset(); }
         catch (...) { failures.push_back(std::current_exception()); }
     });
     consume.join();
@@ -732,12 +823,26 @@ void ClasBufferTestFixture::FailNextReferenceBufferCreation()
     active->failNextReferenceBufferCreation = true;
 }
 
+void ClasBufferTestFixture::SetAllocationFailure(bool inFail)
+{
+    active->failAllocate = inFail;
+}
+
+void ClasBufferTestFixture::SetBufferAddressOverride(VkDeviceAddress inAddress)
+{
+    active->bufferAddressOverride = inAddress;
+}
+
 auto ClasBufferTestFixture::Bytes(const Buffer& inBuffer) -> std::span<const uint8_t>
 {
-    const auto native = inBuffer.GetVkBuffer();
-    const auto& binding = active->bindings.at(native);
-    const auto& allocation = active->memories.at(binding.memory);
-    return { allocation.data() + binding.offset, static_cast<size_t>(active->buffers.at(native)) };
+    return Bytes(inBuffer.GetVkBuffer());
+}
+
+auto ClasBufferTestFixture::Bytes(VkBuffer inBuffer) -> std::span<uint8_t>
+{
+    const auto& binding = active->bindings.at(inBuffer);
+    auto& bytes = active->memories.at(binding.memory).bytes;
+    return { bytes.data() + binding.offset, static_cast<size_t>(active->buffers.at(inBuffer)) };
 }
 
 auto ClasBufferTestFixture::LiveBufferCount() -> size_t
@@ -905,7 +1010,7 @@ void RunBufferAllocationTests()
             hooks.state.failMap = true; ExpectFailure([&] { table.Commit(); }); hooks.state.failMap = false;
             table.Commit();
             const auto buffer = hooks.state.bindings.begin()->second;
-            auto& bytes = hooks.state.memories.at(buffer.memory);
+            auto& bytes = hooks.state.memories.at(buffer.memory).bytes;
             CHECK_TRUE(bytes[buffer.offset] == 1 && bytes[buffer.offset+3] == 4 && bytes[buffer.offset+4] == 9 &&
                 bytes[buffer.offset+7] == 12 && bytes[buffer.offset+8] == 0 && bytes[buffer.offset+128] == 5);
             table.SetShaderTableBinding(ShaderTableType::RayGeneration, 0, "ray"); table.Commit();
@@ -1126,6 +1231,8 @@ void RunBufferAllocationTests()
     TestImageValidationAndRollback();
     TestImageViewsAndOwners();
     TestImageThreads();
+    TestCombinedMemoryRequestUsesCoherentHostAllocation();
+    TestInlineTransferValidation();
     TestLifecycleAndMove();
     TestValidationAndFailureRetry();
     TestAllocationAlignmentAndUnmap();

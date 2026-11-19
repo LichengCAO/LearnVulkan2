@@ -161,15 +161,117 @@ GPU build. Empty batches and batches exceeding the device's single Buffer or
 allocation limit reject; callers split large workloads into multiple batches.
 Failure leaves an empty target that can be retried. Release never waits for GPU work.
 
-CreateInfo setters copy descriptions. CLAS batches have one vertex format and one
-index type for all items. `CustomizeIndexType()` accepts `VK_INDEX_TYPE_UINT8`,
-`VK_INDEX_TYPE_UINT16` or `VK_INDEX_TYPE_UINT32`; the default is `VK_INDEX_TYPE_UINT32`. Individual
-items specify indexed triangles and vertex/index device addresses, without an
-index-type field. Native GPU tasks are encoded with the batch's common index type.
-A zero vertex stride selects tightly packed vertices. The current path
-uses flags 0, opaque geometry, GeometryIndex 0 and no position truncation. Each
-`ClusterBasedBottomLevelAccelStructClusterCreateInfo` creates one Cluster BLAS
-referencing a contiguous interval of a source CLAS batch's address table.
+`ClusterLevelAccelStructBatchCreateInfo` describes capacity, not geometry or a
+list of tasks. All five required budgets must be set to positive values:
+
+```cpp
+ClusterLevelAccelStructBatchCreateInfo info;
+info.SetMaxClusterCount(2);
+info.SetMaxClusterTriangleCount(100);
+info.SetMaxClusterVertexCount(80);
+info.SetMaxTotalTriangleCount(160);
+info.SetMaxTotalVertexCount(130);
+ClusterLevelAccelStructBatch batch;
+batch.Create(info);
+```
+
+The two total budgets are independent upper bounds, not inferred products. In
+this example two tasks with 80 triangles each fit, but two with 100 triangles
+each exceed the total even though neither exceeds the per-cluster maximum.
+Count vertices uniquely within each task and sum those counts across tasks;
+vertices shared between clusters still contribute to each cluster's count.
+Creation snapshots these budgets and formats; later changes to `info` do not
+affect the Batch. `GetCapacity()` returns
+the maximum CLAS count, not the latest GPU count.
+
+CLAS batches have one vertex format and one index type for all tasks. Their
+defaults are `VK_FORMAT_R32G32B32_SFLOAT` and `VK_INDEX_TYPE_UINT32`.
+`CustomizeIndexType()` also accepts `VK_INDEX_TYPE_UINT8` and `VK_INDEX_TYPE_UINT16`.
+`ClusterLevelAccelStructDirectBuildInfo` describes one direct task.
+`SetVertexBuffer(address, uniqueVertexCount)` and `SetIndexBuffer(address, indexCount)`
+provide its inputs; indexCount must be divisible by three and determines
+`primitiveCount`. `CustomizeClusterID()` defaults to 0, and
+`CustomizeVertexStride()` defaults to 0 for tightly packed vertices. The actual
+index values must reference valid vertex elements; uniqueVertexCount does not
+prove the extent of a raw device-address range. Set each task's vertex format and
+index type to match the batch. `CustomizeIndexStride(bytes)` sets the distance
+between consecutive indices. Zero selects packed indices. Nonzero direct and
+template index strides must fit 16 bits and be a multiple of the index width.
+Direct and template tasks use flags 0, opaque geometry and GeometryIndex 0.
+
+### Building and instantiating templates
+
+```cpp
+ClusterLevelAccelStructTemplateInfo topology;
+topology.SetIndexBuffer(indexAddress, 3);
+topology.SetVertexCount(3);
+topology.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
+ClusterLevelAccelStructTemplateBatch templates;
+device.CreateClusterLevelAccelStructTemplatesAndWait(std::span(&topology, 1), templates);
+
+info.CustomizeTemplateUsage(true);
+info.CustomizeIndexType(templates.GetIndexType());
+info.CustomizeVertexFormat(templates.GetVertexFormat());
+ClusterLevelAccelStructBatch instances;
+instances.Create(info); // Uses the five capacity settings above.
+ClusterLevelAccelStructInstantiateBuildInfo pose;
+pose.SetTemplateReference(templates.GetReference(0));
+pose.SetVertexBuffer(deformedVertexAddress);
+pose.CustomizeVertexFormat(templates.GetVertexFormat());
+pose.CustomizeClusterID(42);
+ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(
+    std::span(&pose, 1), instances, taskBuffer);
+```
+
+The template factory accepts multiple index buffers, requires common vertex/index
+formats and derives per-cluster maxima and batch totals from the actual counts.
+Its default overload builds and waits on COMPUTE from any thread. The explicit
+overload takes `DeviceContext&` and a compute-capable queue as its first arguments
+and runs on the context's owning thread. Keep index buffers alive and ready for
+that queue until return. Successful creation publishes template storage, the
+packed address table and CPU copies of the addresses and topology counts.
+`GetTriangleCount(i)`, `GetVertexCount(i)` and `GetBuildLimits()` expose the
+metadata for budgeting subsequent instances. Repeat each template's contribution
+for every pose that uses it.
+
+The factory's private template storage uses exclusive sharing. On devices that
+require queue-family ownership transfers, select the instantiation queue family
+when building templates. The public reference Buffer exposes the address table,
+and the factory keeps the native storage handle private. [Vulkan queue-family ownership](https://docs.vulkan.org/refpages/latest/refpages/source/VkSharingMode.html)
+
+Templates contain indices with base Cluster ID zero. Every instance supplies
+its own vertex positions. Its `CustomizeClusterID()` becomes the final ID via
+the native ID offset. When supplying raw template addresses, the caller guarantees
+that the template is built, has base ID zero, matches the batch formats and fits
+both per-cluster and aggregate budgets. Keep the template and vertex inputs
+alive through instantiation. In the example above the upload contains one pose,
+so supply GPU count 1 or initialize all remaining capacity before a full build.
+
+### Cluster BLAS and indirect commands
+
+`BottomLevelAccelStructBatchCreateInfo` also describes explicit capacity. Its
+three required budgets must be positive:
+
+```cpp
+BottomLevelAccelStructBatchCreateInfo info;
+info.SetMaxAccelStructCount(2);
+info.SetMaxClusterCountPerAccelStruct(2);
+info.SetMaxTotalClusterCount(3);
+BottomLevelAccelStructBatch batch;
+batch.Create(info);
+```
+
+The total cluster budget is independent of the product of the other two limits.
+Creation snapshots all three values and needs no source CLAS Batch.
+`GetCapacity()` returns the maximum Cluster
+BLAS count. Each `BottomLevelAccelStructBuildInfo` describes an actual task through
+`SetClusterReferences(sourceBatch, offset, count)`. This sole input setter requires
+a created source and a positive range within its capacity. It resolves a borrowed
+address in the source's packed address table; native reference stride is always
+`sizeof(VkDeviceAddress)`. A rejected setter preserves the previous values.
+BuildInfo retains no source owner. Callers reference only the GPU-built valid
+prefix and keep source CLAS resources alive through dependent GPU uses. Different
+tasks may reference different source Batches.
 
 For either Batch, prepare and execute in this order:
 
@@ -177,15 +279,51 @@ For either Batch, prepare and execute in this order:
 2. Allocate a task Buffer of `buildInfoBufferSize` bytes. It needs
    `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | SHADER_DEVICE_ADDRESS_BIT`
    for the build. A staging Buffer can instead be written and copied explicitly.
-3. Call the Batch type's static `WriteBuildInfoBufferInline(info, tasks)` to
-   immediately encode packed native tasks into host-visible, host-coherent memory.
-   The complete list is validated before one write. Empty lists perform no write.
+3. Use `ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(infos, batch, taskBuffer)`
+   or the corresponding instantiate uploader. For Cluster BLAS call
+   `batch.WriteBuildInfoBufferInline(infos, taskBuffer)`.
+   Encoders validate the entire task span before one upload. Cluster BLAS uses
+   coherent Host memory. Direct and instantiate encoders also support a staged
+   upload to task buffers with `TRANSFER_DST_BIT`.
 4. Provide scratch of `buildScratchBufferSize` bytes with
    `STORAGE_BUFFER_BIT | SHADER_DEVICE_ADDRESS_BIT` and the reported alignment.
    A zero scratch requirement uses address 0.
-5. Append the appropriate `BuildAccelerationStructureIndirect` overload using
-   `{ scratchAddress, taskAddress, &batch }`. The build count is `GetCount()`;
-   task stride is the native record size, and GPU dynamic counts are not enabled.
+5. Append the matching direct, instantiate or Cluster BLAS command. For example:
+
+```cpp
+ClusterLevelAccelStructInstantiateBuildIndirectInfo build;
+build.SetTarget(instances);
+build.SetBuildInfoAddress(taskBuffer.GetDeviceAddress());
+build.SetScratchAddress(scratchAddress);
+build.CustomizeBuildCountAddress(buildCountAddress);
+commands.BuildAccelerationStructureIndirect(build);
+```
+
+`ClusterLevelAccelStructDirectBuildIndirectInfo` and `BottomLevelAccelStructBuildIndirectInfo`
+use the same setters with their matching targets. `SetTarget` copies limits,
+capacity, required sizes and output addresses. The recorded command borrows the
+native resources through completion. The optional count address defaults to zero.
+
+The native `maxAccelerationStructureCount` always comes from
+`GetCapacity()`. If `buildCountAddress` is 0, the build processes the full
+capacity, so every task in that range must be initialized and valid. Otherwise
+the GPU count selects the actual number, which must not exceed capacity. The
+producer must bound the count before submitting it; the RHI does not read back
+or clamp the value, and callers must not rely on the driver to handle an
+over-limit count. The count address refers to a four-byte aligned
+`uint32_t` in a Buffer with
+`ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | SHADER_DEVICE_ADDRESS_BIT`.
+The Host snapshots this address without reading its contents. Synchronize count
+and task producers with `ACCELERATION_STRUCTURE_BUILD_BIT_KHR` and
+`INDIRECT_COMMAND_READ_BIT` before the build consumes them.
+
+A zero value in a supplied GPU count Buffer builds no structures, while still
+requiring a normal native command and compute-capable queue. Partial builds
+use a count Buffer, which may also be written by the CPU with the required
+visibility and synchronization. Uploading fewer BuildInfo records does not
+change the count: supply a compatible count Buffer when only a prefix is valid.
+Output, scratch, task and address-table regions retain their creation-sized
+capacity. `buildInfoBufferSize` remains the maximum task storage required by it.
 
 The command snapshots the Batch's queried Host limits and the supplied addresses.
 It never copies task contents or retains borrowed inputs. GPU-generated tasks
@@ -194,8 +332,11 @@ geometry counts. With raw device addresses, callers guarantee underlying Buffer
 usage, capacity, index contents and lifetime. Known scratch/output overlap and
 invalid addresses/alignment reject before appending.
 
-`GetReferenceBuffer()` becomes non-null after Host creation, but its contents are
-GPU results and are usable only after the build and its required synchronization.
+`GetReferenceBuffer()` becomes non-null after Host creation, but only the actual
+GPU-built prefix is valid after the build and its required synchronization.
+Inactive entries may contain uninitialized or stale addresses; the Batch does not
+clear them. Both address tables have `TRANSFER_DST_BIT` for explicit caller
+initialization when needed; initialization and synchronization remain explicit.
 Do not assume individual implicit object addresses stay unchanged across builds.
 Synchronize CLAS output writes before Cluster BLAS reads and scratch reuse, then
 Cluster BLAS address writes before an engine shader patches standard TLAS instances.
@@ -212,7 +353,11 @@ snapshot and pipeline cache key, and only attaches the native cluster `pNext` wh
 enabled.
 
 The opt-in native smoke test uses the normal regression executable without a
-window and checks two CLAS and two Cluster BLAS output addresses:
+window. It builds direct CLAS and implicit templates, instantiates one template
+at two poses and builds Cluster BLAS from each path. It checks the output addresses
+and GPU count values zero, one and full capacity, plus a producer request
+restricted to capacity before submission. Fixed sentinel entries verify that
+inactive address-table tails are not overwritten:
 
 ```powershell
 $env:LEARN_VULKAN_CLAS_GPU_TESTS = '1'

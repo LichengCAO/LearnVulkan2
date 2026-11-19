@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <unordered_set>
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <thread>
 #include <limits>
 #include <string_view>
 #include <utility>
@@ -26,6 +29,20 @@
 #include <volk.h>
 
 std::unique_ptr<MyDevice> MyDevice::s_uptrInstance = nullptr;
+
+struct MyDevice::InlineExecution
+{
+	VkDevice device = VK_NULL_HANDLE;
+	VkCommandPool pool = VK_NULL_HANDLE;
+	VkCommandBuffer command = VK_NULL_HANDLE;
+	VkFence fence = VK_NULL_HANDLE;
+
+	~InlineExecution()
+	{
+		if (fence != VK_NULL_HANDLE) vkDestroyFence(device, fence, nullptr);
+		if (pool != VK_NULL_HANDLE) vkDestroyCommandPool(device, pool, nullptr);
+	}
+};
 
 MyDevice::MyDevice()
 {
@@ -416,7 +433,11 @@ void MyDevice::PresentSwapchainImage(const SwapchainImage& image)
 	presentInfo.pImageIndices = &imageIdx;
 	presentInfo.pResults = nullptr;
 
-	VkResult result = vkQueuePresentKHR(m_vkPresentQueue, &presentInfo);
+	VkResult result;
+	{
+		auto queueLock = _AcquireQueueHostLock(m_vkPresentQueue);
+		result = vkQueuePresentKHR(m_vkPresentQueue, &presentInfo);
+	}
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) 
 	{
 		m_needRecreate = true;
@@ -799,6 +820,7 @@ void MyDevice::Create()
 
 void MyDevice::Destroy()
 {
+	_DestroyInlineExecution();
 	_DestroyDescriptorSetLayoutAllocator();
 	_DestroySwapchain();
 	_DestroyPipelineAllocators();
@@ -830,8 +852,105 @@ UserInput MyDevice::GetUserInput() const
 	return ret;
 }
 
+auto MyDevice::_GetNativeQueues() const -> std::array<VkQueue, 4>
+{
+	return {m_vkGraphicsQueue, m_vkComputeQueue, m_vkTransferQueue, m_vkPresentQueue};
+}
+
+auto MyDevice::_AcquireQueueHostLock(VkQueue inQueue) const -> std::unique_lock<std::mutex>
+{
+	const auto queues = _GetNativeQueues();
+	const auto first = std::find(queues.begin(), queues.end(), inQueue);
+	CHECK_TRUE(inQueue != VK_NULL_HANDLE && first != queues.end(), "Queue does not belong to this Device!");
+	return std::unique_lock(m_queueHostMutexes[first - queues.begin()]);
+}
+
+void MyDevice::_ExecuteInlineAndWait(std::function<void(VkCommandBuffer)> inRecord)
+{
+	std::lock_guard executorLock(m_inlineExecutionMutex);
+	CHECK_TRUE(vkDevice != VK_NULL_HANDLE && inRecord, "Inline execution requires a device and a recording callback!");
+	const VkQueue queue = GetQueueOfType(QueueFamilyType::COMPUTE);
+	if (!m_inlineExecution)
+	{
+		auto execution = std::make_unique<InlineExecution>();
+		execution->device = vkDevice;
+		VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+		info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+		info.queueFamilyIndex = GetQueueFamilyIndexOfType(QueueFamilyType::COMPUTE);
+		execution->pool = CreateCommandPool(info);
+		execution->command = AllocateCommandBuffer(execution->pool);
+		execution->fence = CreateVkFence(0);
+		m_inlineExecution = std::move(execution);
+	}
+
+	const auto& execution = *m_inlineExecution;
+	VK_CHECK(vkResetCommandPool(execution.device, execution.pool, 0), "Failed to reset the inline command pool!");
+	VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+	begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	VK_CHECK(vkBeginCommandBuffer(execution.command, &begin), "Failed to begin inline recording!");
+	inRecord(execution.command);
+	VK_CHECK(vkEndCommandBuffer(execution.command), "Failed to end inline recording!");
+
+	VkCommandBufferSubmitInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+	commandInfo.commandBuffer = execution.command;
+	commandInfo.deviceMask = 1;
+	VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+	submit.commandBufferInfoCount = 1;
+	submit.pCommandBufferInfos = &commandInfo;
+	VK_CHECK(vkResetFences(execution.device, 1, &execution.fence), "Failed to reset the inline fence!");
+	VkResult submitResult;
+	{
+		auto queueLock = _AcquireQueueHostLock(queue);
+		submitResult = vkQueueSubmit2(queue, 1, &submit, execution.fence);
+	}
+	// A device-lost submission can still make the command buffer pending.
+	if (submitResult != VK_ERROR_DEVICE_LOST)
+		VK_CHECK(submitResult, "Failed to submit inline work!");
+
+	const VkResult wait = _WaitForFenceCompletion(execution.device, execution.fence);
+	VK_CHECK(submitResult, "Device lost during inline submission!");
+	VK_CHECK(wait, "Failed to wait for inline work!");
+}
+
+auto MyDevice::_WaitForFenceCompletion(VkDevice inDevice, VkFence inFence) -> VkResult
+{
+	const VkResult wait = vkWaitForFences(inDevice, 1, &inFence, VK_TRUE, UINT64_MAX);
+	if (wait != VK_SUCCESS && wait != VK_ERROR_DEVICE_LOST)
+	{
+		// The submission still owns GPU access to the caller's temporaries. A failed
+		// host wait can only unwind once the fence signals or the device is lost.
+		VkResult status = vkGetFenceStatus(inDevice, inFence);
+		bool reportedStatusError = false;
+		while (status != VK_SUCCESS && status != VK_ERROR_DEVICE_LOST)
+		{
+			if (status != VK_NOT_READY && !reportedStatusError)
+			{
+				std::fprintf(stderr, "Fence status query failed (VkResult %d), waiting for completion or device loss.\n",
+					static_cast<int>(status));
+				reportedStatusError = true;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			status = vkGetFenceStatus(inDevice, inFence);
+		}
+	}
+	return wait;
+}
+
+void MyDevice::_DestroyInlineExecution() noexcept
+{
+	m_inlineExecution.reset();
+}
+
 void MyDevice::WaitIdle() const
 {
+	const auto queues = _GetNativeQueues();
+	std::array<std::unique_lock<std::mutex>, 4> locks;
+	for (size_t index = 0; index < queues.size(); ++index)
+	{
+		const auto current = queues.begin() + index;
+		if (*current != VK_NULL_HANDLE && std::find(queues.begin(), current, *current) == current)
+			locks[index] = std::unique_lock(m_queueHostMutexes[index]);
+	}
 	VK_CHECK(vkDeviceWaitIdle(vkDevice), "Failed to wait for device idle!");
 }
 

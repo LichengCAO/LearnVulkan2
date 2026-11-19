@@ -286,6 +286,7 @@ void SubmissionManager::Submit(
 	DependencySemaphoreMap stagedDependencySemaphores;
 	stagedDependencySemaphores.reserve(signalOnlyCount);
 	VkFence completionVkFence = VK_NULL_HANDLE;
+	VkResult submitResult = VK_SUCCESS;
 
 	try
 	{
@@ -349,12 +350,19 @@ void SubmissionManager::Submit(
 		submitInfo.signalSemaphoreInfoCount = static_cast<uint32_t>(signalInfos.size());
 		submitInfo.pSignalSemaphoreInfos = signalInfos.empty() ? nullptr : signalInfos.data();
 
-		VK_CHECK(vkQueueSubmit2(state.vkQueue, 1, &submitInfo, completionVkFence),
-			"Failed to submit command queue!");
+		{
+			auto queueLock = MyDevice::GetInstance()._AcquireQueueHostLock(state.vkQueue);
+			submitResult = vkQueueSubmit2(state.vkQueue, 1, &submitInfo, completionVkFence);
+		}
+		// Device loss can still make command buffers pending. Retire the work
+		// before the synchronous caller releases its command pool or resources.
+		if (submitResult == VK_ERROR_DEVICE_LOST && completionVkFence != VK_NULL_HANDLE)
+			MyDevice::_WaitForFenceCompletion(MyDevice::GetInstance().GetVkDevice(), completionVkFence);
+		VK_CHECK(submitResult, "Failed to submit command queue!");
 	}
 	catch (...)
 	{
-		if (completionVkFence != VK_NULL_HANDLE)
+		if (completionVkFence != VK_NULL_HANDLE && submitResult != VK_ERROR_DEVICE_LOST)
 		{
 			m_fenceAllocator.FreeVkFence(&completionVkFence, 1);
 		}
@@ -555,12 +563,10 @@ auto SubmissionManager::_ConsumeHostFence(
 	if (!m_completedFrontier.Covers(inFence.m_submissionFrontier))
 	{
 		const VkFence vkFence = _FindHostFenceVkFence(inFence);
-		const VkResult result = vkWaitForFences(
-			MyDevice::GetInstance().GetVkDevice(),
-			1,
-			&vkFence,
-			VK_TRUE,
-			inTimeout);
+		const VkDevice device = MyDevice::GetInstance().GetVkDevice();
+		const VkResult result = inTimeout == UINT64_MAX
+			? MyDevice::_WaitForFenceCompletion(device, vkFence)
+			: vkWaitForFences(device, 1, &vkFence, VK_TRUE, inTimeout);
 		if (result == VK_TIMEOUT)
 		{
 			return false;

@@ -484,7 +484,7 @@ void TopLevelAccelStruct::WriteBuildInfoBufferInline(const TopLevelAccelStructCr
         instance.flags = source.flags;
         instances.push_back(instance);
     }
-    inDstBuffer.CopyFromHost(instances.data(), static_cast<size_t>(inOffset), static_cast<size_t>(bytes));
+    Buffer::UploadToDeviceInline(inDstBuffer, inOffset, instances.data(), static_cast<size_t>(bytes));
 }
 
 BottomLevelAccelStruct::BottomLevelAccelStruct() = default;

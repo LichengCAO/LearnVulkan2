@@ -222,6 +222,7 @@ class SwapchainImage final : public Image
 {
 	friend class MyDevice;
 	friend class DeviceContext;
+	friend struct InlineExecutionTestProbe;
 
 private:
 	uint32_t m_index;

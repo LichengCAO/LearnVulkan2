@@ -1862,6 +1862,7 @@ void RunHostCreateInfoFinalizeTests();
 void RunRenderPassFinalizeTests();
 void RunResourceLifetimeTests();
 void RunResourceSubmissionTests();
+void RunInlineExecutionTests();
 void RunDescriptorPoolTests();
 auto RunDescriptorPoolFatalCase(std::string_view argument) -> int;
 void RunSamplerCreationTests();
@@ -1886,6 +1887,7 @@ auto main(int argc, char** argv) -> int
 		RunClasGpuTests();
 		RunResourceLifetimeTests();
 		RunResourceSubmissionTests();
+		RunInlineExecutionTests();
 		RunDescriptorPoolTests();
 		RunSamplerCreationTests();
 		RunCommandPoolTests();

@@ -185,6 +185,7 @@ void BuildClusterAccelerationStructuresNVCommand::SetParameters(const Parameters
     CHECK_TRUE(info.input.opMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV &&
         info.input.maxAccelerationStructureCount != 0 && info.input.flags == 0 &&
         (info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV ||
+         info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV ||
          info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV),
         "Unsupported cluster build operation!");
     m_parameters = inParameters;
@@ -199,10 +200,10 @@ void BuildClusterAccelerationStructuresNVCommand::Record(VkCommandBuffer inVkCom
     auto info = m_parameters.info;
     auto triangles = m_parameters.triangles;
     auto clusters = m_parameters.clusters;
-    if (info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV)
-        info.input.opInput.pTriangleClusters = &triangles;
-    else
+    if (info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV)
         info.input.opInput.pClustersBottomLevel = &clusters;
+    else
+        info.input.opInput.pTriangleClusters = &triangles;
     vkCmdBuildClusterAccelerationStructureIndirectNV(inVkCommandBuffer, &info);
 }
 
