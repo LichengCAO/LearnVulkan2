@@ -223,6 +223,11 @@ exclusion. Keep Device/allocator/native dispatch stable and alive through final
 release, exclude teardown/recreation, and complete GPU work before release. No
 automatic retention, internal lock or GPU wait is introduced.
 
+`TopLevelAccelStruct::GetBuildInfoLayout()` is a static Host-only query for the
+64-byte packed GPU instance layout and its 16-byte input address alignment. It
+requires no owner or Device. [GPU input layout](acceleration_structure_gpu_layout.md)
+describes the transform rows, packed words and borrowed BLAS address.
+
 ## Cluster acceleration structure batches
 
 `ClusterLevelAccelStructBatch` and `BottomLevelAccelStructBatch` own their opaque
@@ -236,9 +241,19 @@ Both creations snapshot explicit batch capacity budgets. CLAS also snapshots
 the direct or instantiation mode and common vertex/index formats. Cluster BLAS
 creation needs no source CLAS Batch. The CreateInfo may be changed or destroyed
 afterward. `GetCapacity()` reports the allocated
-maximum. The static direct and instantiate `CommitToDeviceInline(infos, target,
-buffer, offset)` encoders and Cluster BLAS's member uploader check all supplied
-Host data before one upload. Raw template addresses carry no Host topology metadata.
+maximum. All three static `CommitToDeviceInline(infos, buffer, offset)` encoders
+operate without a target Batch. They validate task representation, addresses,
+strides and the upload range before one upload. Direct encoding uses each task's
+vertex format and index type; instantiation uses each task's vertex format to
+resolve a zero vertex stride and queries the active physical device for template
+address alignment. Callers guarantee format support, matching templates/build
+formats and compliance with the eventual build's task, per-task and aggregate
+budgets. Cluster BLAS uploads require a host-visible, host-coherent Buffer;
+direct and instantiate uploads also support Buffer's staged transfer path.
+All three BuildInfo types expose static `GetBuildInfoLayout()` queries for their
+GPU record stride and input address alignment; they access no owner or Device.
+Field offsets and bit encodings are documented in [GPU input layout](acceleration_structure_gpu_layout.md).
+Raw template addresses carry no Host topology metadata.
 The caller guarantees their base ID is zero, their formats match and their actual
 counts fit the batch's per-task and aggregate budgets.
 
@@ -251,12 +266,14 @@ overload uses the caller's thread-affine DeviceContext and compute-capable queue
 Each independent output can be created on any thread using the default overload.
 Retain template storage and supplied vertices until all instantiations finish.
 
-`BottomLevelAccelStructBuildInfo::SetClusterReferences(source, offset, count)`
-requires a created source CLAS Batch and a positive range within its capacity.
-It stores only the resolved borrowed address and count, with a fixed packed
-`VkDeviceAddress` stride. It retains no source pointer or strong reference.
-Capacity validation cannot prove that the referenced entries have been built on
-the GPU; callers ensure that the whole range lies in the valid built prefix.
+`BottomLevelAccelStructBuildInfo::SetClusterReferences(address, count)` borrows a
+packed array of `VkDeviceAddress` values. It requires a nonzero, aligned address,
+a positive count and a non-overflowing address range, and stores only the address
+and count. It retains no source owner and does not inspect the table contents or
+allocation capacity. Callers ensure the addressed range contains valid built
+CLAS references, synchronize GPU-produced table contents and retain the table
+through the BLAS build. Referenced CLAS storage remains alive through the last
+dependent GPU use.
 
 The direct CLAS, instantiate CLAS and Cluster BLAS indirect arguments snapshot
 native limits, capacity, layout and borrowed destination addresses at `SetTarget`.

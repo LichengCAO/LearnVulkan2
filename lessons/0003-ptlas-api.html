@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>从 Vulkan API 对照普通 TLAS 与 PTLAS</title>
+<link rel="stylesheet" href="../assets/teaching.css"><script src="../assets/teaching.js" defer></script>
+</head><body><main>
+<div class="eyebrow">LEARNVULKAN2 · 第 03 课 · 2026-11-19</div>
+<h1>从完整实例输入，到持久状态上的操作列表</h1>
+<p class="lead">目标：看懂两种 API 如何表达“100 万实例里只移动两个”，并分清总容量、操作数量和写入数量。</p>
+<p>承接 <a href="0002-partitioned-tlas.html">PTLAS 原理</a>。以下围绕本仓库使用的 Vulkan KHR TLAS 路径，与 NV PTLAS 扩展对照。代码为字段关系片段，省略完整 sType 初始化、内存分配、上传和同步，不能直接复制运行。</p>
+
+<section id="overview"><h2>1. API 的五处变化</h2>
+<table><thead><tr><th>环节</th><th>普通 TLAS：KHR 路径</th><th>PTLAS：NV 扩展路径</th></tr></thead><tbody>
+<tr><td>Host 查大小</td><td>vkGetAccelerationStructureBuildSizesKHR</td><td>vkGetPartitionedAccelerationStructuresBuildSizesNV</td></tr>
+<tr><td>目标表示</td><td>Buffer 上创建 VkAccelerationStructureKHR 对象</td><td>直接提供 PTLAS 存储的 VkDeviceAddress</td></tr>
+<tr><td>实例输入</td><td>VkAccelerationStructureInstanceKHR 数组</td><td>按操作类型提供 Write / Update / Translation 数据数组</td></tr>
+<tr><td>GPU 命令</td><td>vkCmdBuildAccelerationStructuresKHR</td><td>vkCmdBuildPartitionedAccelerationStructuresNV</td></tr>
+<tr><td>descriptor</td><td>ACCELERATION_STRUCTURE_KHR，写入 AS handle</td><td>PARTITIONED_ACCELERATION_STRUCTURE_NV，写入 GPU 地址</td></tr>
+</tbody></table>
+<p>依据：<a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCreateAccelerationStructureKHR.html">KHR 对象创建</a>、<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkBuildPartitionedAccelerationStructureInfoNV.html">PTLAS 构建参数</a>、<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkWriteDescriptorSetPartitionedAccelerationStructureNV.html">PTLAS descriptor</a>。</p>
+</section>
+
+<section id="regular"><h2>2. 普通 TLAS：完整实例集合仍是构建输入</h2>
+<p>常规路径：查询大小 → 分配 Buffer → 创建类型为 TOP_LEVEL 的 AS 对象 → 提供实例数组 → 录制 build。创建 AS 对象不会替你执行 GPU build。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCreateAccelerationStructureKHR.html">[对象与 build 的边界]</a></p>
+<p>假设已经以 ALLOW_UPDATE 构建了 N 个实例，现有输入 Buffer 保留全部记录，只改变实例 37 与 9002。UPDATE 仍以完整集合为输入；这不要求每帧重新上传所有记录。</p>
+<pre><code>// build、geometry、range 已按 KHR 要求完整初始化。
+geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+geometry.geometry.instances.data.deviceAddress = instancesGpuAddress;
+
+build.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+build.srcAccelerationStructure = tlasHandle;
+build.dstAccelerationStructure = tlasHandle;
+build.geometryCount = 1;
+build.pGeometries = &amp;geometry;
+build.scratchData.deviceAddress = scratchGpuAddress;
+
+range.primitiveCount = N; // 整个实例集合的数量
+const auto* pRange = &amp;range;
+vkCmdBuildAccelerationStructuresKHR(cmd, 1, &amp;build, &amp;pRange);</code></pre>
+<p>若将 primitiveCount 改成 2，它表达的是输入范围内的两个实例，不会自动解释为“只更新已有 TLAS 的 37 号与 9002 号实例”。KHR UPDATE 也有初次构建 flags、实例数量和活跃状态等约束。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildAccelerationStructuresKHR.html">[KHR 构建命令]</a></p>
+<div class="callout"><b>输入局部写入，与 AS 局部维护是两个步骤。</b>普通路径完全可以只改 InstanceInfoBuffer[37]；随后对完整实例范围执行 UPDATE。PTLAS 则显式提交 instanceIndex=37 的变化记录，并以分区作为可保留构建结果的边界。</div>
+<p>普通 KHR 构建参数包含输入地址与完整实例范围，没有“本帧变化实例索引列表”。应用写了哪段 Buffer，不会自动成为 AS 命令的语义级 dirty list。普通 UPDATE 本身也会复用旧 AS；不能把它说成必然从零重建，或断言所有驱动都按同一种算法访问每个节点。</p>
+<p>PTLAS 同时提供显式变化记录与分区组织：WRITE_INSTANCE 让受影响普通分区的内部 AS 重建，未变化分区可保留已有结果，再维护上层结构。因此，即使两条路径都只写一条输入记录，后续 GPU 更新 AS 的成本仍可能不同。<a href="https://docs.vulkan.org/features/latest/features/proposals/VK_NV_partitioned_acceleration_structure.html">[分区复用设计]</a> <a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureOpTypeNV.html">[受影响分区规则]</a></p>
+<p>例如 100 万实例分成 1,000 个普通分区，只改分区 12 的实例 37：普通 UPDATE 的 API 输入范围仍是 100 万；PTLAS 提交 1 条写入，分区 12 需要重建，其余 999 个分区可复用，上层组织仍有维护成本。这个例子说明工作范围，不承诺实际 GPU 指令数或固定加速比。</p>
+</section>
+
+<section id="storage"><h2>3. PTLAS：先为持久状态分配容量</h2>
+<pre><code>VkPartitionedAccelerationStructureInstancesInputNV input{
+    VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCES_INPUT_NV
+};
+input.instanceCount = 1'000'000;
+input.partitionCount = 1'000;
+input.maxInstancePerPartitionCount = 2'000;
+input.maxInstanceInGlobalPartitionCount = 10'000;
+
+VkAccelerationStructureBuildSizesInfoKHR sizes{
+    VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR
+};
+vkGetPartitionedAccelerationStructuresBuildSizesNV(device, &amp;input, &amp;sizes);
+// 按 sizes 分配 PTLAS result 和 scratch Buffer，并取得 GPU 地址。</code></pre>
+<p>这些是教学预算，不是建议的最优参数。还要检查设备限制，特别是 partitionCount + maxInstanceInGlobalPartitionCount 不超过 maxPartitionCount。实例写入的 instanceIndex 必须小于 instanceCount。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureInstancesInputNV.html">[容量约束]</a></p>
+<p>PTLAS result 存放在应用分配的 Buffer 中，通过地址传给 GPU；这条路径没有额外的 VkAccelerationStructureKHR 对象。Buffer 用途、对齐和生命周期仍须满足 <a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildPartitionedAccelerationStructuresNV.html">PTLAS 命令要求</a>。初次构建 srcAccelerationStructureData 为 0，后续修改引用上一次构建结果。</p>
+</section>
+
+<section id="ops"><h2>4. 只改变两个实例：GPU 中准备一个操作、两个参数</h2>
+<p>完整 Write 数据包含 transform、mask、hit-group 索引贡献、应用 ID、BLAS 地址等，还增加用于持久修改的 instanceIndex 与分组用的 partitionIndex。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureWriteInstanceDataNV.html">[Write 记录]</a></p>
+<pre><code>// fullRecord37 / fullRecord9002 是包含全部当前属性的完整记录。
+VkPartitionedAccelerationStructureWriteInstanceDataNV writes[2] = {
+    fullRecord37, fullRecord9002
+};
+writes[0].instanceIndex = 37;
+writes[1].instanceIndex = 9002;
+writes[0].partitionIndex =
+    VK_PARTITIONED_ACCELERATION_STRUCTURE_PARTITION_INDEX_GLOBAL_NV;
+// writes[0].transform 已是汽车的新变换。
+// 将 writes 写入 GPU Buffer，得到 writesGpuAddress。
+
+VkBuildPartitionedAccelerationStructureIndirectCommandNV operation{};
+operation.opType = VK_PARTITIONED_ACCELERATION_STRUCTURE_OP_TYPE_WRITE_INSTANCE_NV;
+operation.argCount = 2;
+operation.argData = { writesGpuAddress, sizeof(writes[0]) };
+// 将 operation 写到 opsGpuAddress。
+// 在 opCountGpuAddress 对应的 GPU 内存写入 uint32_t(1)。</code></pre>
+<p>外层操作表中有 1 个 WRITE_INSTANCE 操作；该操作的 argCount 是 2，指向两个完整实例记录。它们的 instanceIndex 是 37 与 9002，即使数组下标是 0 与 1。相同 opType 在外层操作表里只能出现一次，应将同类写入合并成一个数组；参数中实例索引也不得重复。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkBuildPartitionedAccelerationStructureInfoNV.html">[操作表]</a> <a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkBuildPartitionedAccelerationStructureIndirectCommandNV.html">[参数表]</a></p>
+<pre><code>VkBuildPartitionedAccelerationStructureInfoNV build{
+    VK_STRUCTURE_TYPE_BUILD_PARTITIONED_ACCELERATION_STRUCTURE_INFO_NV
+};
+build.input = input; // 容量预算没有变成 2
+build.srcAccelerationStructureData = ptlasGpuAddress;
+build.dstAccelerationStructureData = ptlasGpuAddress;
+build.scratchData = scratchGpuAddress;
+build.srcInfos = opsGpuAddress;
+build.srcInfosCount = opCountGpuAddress;
+vkCmdBuildPartitionedAccelerationStructuresNV(cmd, &amp;build);</code></pre>
+<p>源和目标相同表示原地修改；源和目标也可以不同，前提是内存范围合法。未被操作触及的持久实例记录保留。源 / 目标语义见 <a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkBuildPartitionedAccelerationStructureInfoNV.html">构建参数</a>。</p>
+<div class="callout"><b>Global 在 API 上如何选择？</b>在完整 Write 记录里把 partitionIndex 设为特殊 GLOBAL 常量；普通分区使用 0 到 partitionCount−1 的索引。API 没有要求应用先逐个创建 partition 对象。</div>
+<p>移动实例或修改分区用 WRITE_INSTANCE。UPDATE_INSTANCE 仅提供 BLAS 地址与 hit-group 索引贡献等有限字段。移除可通过完整写入将 accelerationStructure 设为 0；重新启用时重新完整写入，不要依赖 UPDATE 把已禁用实例恢复。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureUpdateInstanceDataNV.html">[Update 规则]</a></p>
+</section>
+
+<section id="binding"><h2>5. 追踪代码可沿用，Host 绑定路径要扩展</h2>
+<p>普通 descriptor 使用 VkWriteDescriptorSetAccelerationStructureKHR，传入 VkAccelerationStructureKHR handle；PTLAS 使用 VkWriteDescriptorSetPartitionedAccelerationStructureNV，传入 VkDeviceAddress。descriptor set layout 与 pool 对应的类型也要匹配。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkWriteDescriptorSetAccelerationStructureKHR.html">[KHR]</a> <a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkWriteDescriptorSetPartitionedAccelerationStructureNV.html">[NV]</a></p>
+<p>Shader 仍通过 accelerationStructureEXT 和通常的 traceRayEXT / ray query 方式追踪。NVIDIA 示例的普通 TLAS 与 PTLAS 使用相同形式的 shader 声明。<a href="https://github.com/nvpro-samples/vk_partitioned_tlas#tlas-vs-ptlas">[示例对照]</a> Shader 反射不一定能替 Host 自动选择 PTLAS descriptor 类型；引擎需要显式的绑定类型策略。</p>
+<p>当前本仓库的接入点：device.cpp 的 CLAS 特性开关之外增加独立 PTLAS 能力；command/private/command.cpp 的 KHR build 与 CLAS build 之外增加 PTLAS 命令；resource/descriptor.cpp 的普通 AS handle 分支之外增加 PTLAS 地址、类型和资源生命周期支持。这些是接入建议，本课没有修改引擎。</p>
+</section>
+
+<section id="boundaries"><h2>6. GPU-driven 不等于省略同步</h2>
+<p>Write 数据、操作和 count 可以由 CPU 上传，也可以由 compute shader 生成。普通 TLAS 的实例也能由 GPU 生成；KHR 还有 vkCmdBuildAccelerationStructuresIndirectKHR，所以两者的区别不能只归结为“是否 indirect”。关键是 PTLAS 的持久实例槽和分区操作语义。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildAccelerationStructuresIndirectKHR.html">[KHR indirect]</a></p>
+<p>PTLAS 的间接操作表与 count 在 AS_BUILD 阶段以 INDIRECT_COMMAND_READ 访问；AS 源 / 目标分别需要 AS read / write 同步，scratch 需要相应读写同步。新 build 前不能覆盖仍被旧遍历读取的存储，新 build 的结果也要同步到后续 trace。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildPartitionedAccelerationStructuresNV.html">[命令同步规则]</a></p>
+</section>
+
+<section id="practice"><h2>7. 检查两个数量</h2>
+<fieldset data-quiz data-answer="two" data-explanation="总实例容量仍是 100 万；外层操作数为 1；WRITE_INSTANCE 的 argCount 为 2。"><legend>容量 100 万，只写 37 与 9002 两个实例。外层操作数 / 内层参数数分别是多少？</legend><label><input type="radio" name="api1" value="two"> 一个操作，两条参数</label><label><input type="radio" name="api1" value="one"> 两个操作，一条参数</label><p class="feedback" aria-live="polite">选择后查看理由。</p></fieldset>
+<fieldset data-quiz data-answer="global" data-explanation="global 是 partitionIndex 的特殊取值；同一条完整实例写入同时表达 transform 和分区归属。"><legend>把正在移动的实例 37 移进 global，应该怎样表达？</legend><label><input type="radio" name="api2" value="create"> 创建新的分区对象</label><label><input type="radio" name="api2" value="global"> 写入特殊分区索引</label><p class="feedback" aria-live="polite">选择后查看理由。</p></fieldset>
+</section>
+<p class="footer">优先阅读 <a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkBuildPartitionedAccelerationStructureInfoNV.html">PTLAS 构建参数</a>，顺着 srcInfos → operation.argData → Write 记录理解两层间接输入。<a href="0002-partitioned-tlas.html">返回原理课</a> · <a href="../reference/partitioned-tlas.html">速查表</a>。可以继续问我记录布局、初次构建、GPU 参数生成或 descriptor 反射的细节。</p>
+<p><a href="0004-ptlas-worked-example.html">继续：100 个实例，只移动 37 号的完整逐帧 API 示例</a></p>
+</main></body></html>

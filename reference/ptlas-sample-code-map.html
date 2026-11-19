@@ -1,0 +1,17 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PTLAS 示例源码速查</title><link rel="stylesheet" href="../assets/teaching.css"></head><body><main>
+<div class="eyebrow">REFERENCE · vk_partitioned_tlas · 07acd56</div><h1>PTLAS 示例源码速查</h1>
+<p>本地根目录：<code>E:/GitStorage/nvidia_examples/v2/vk_partitioned_tlas</code>。行号针对本地提交；未运行验证。</p>
+<table><thead><tr><th>入口</th><th>位置</th><th>关注点</th></tr></thead><tbody>
+<tr><td>初始化顺序</td><td>src/partitioned_tlas.cpp:218</td><td>同一场景的 BLAS、TLAS、PTLAS</td></tr>
+<tr><td>实例记录与容量</td><td>src/partitioned_tlas_acceleration_structure.cpp:197</td><td>稳定 instanceIndex、partitionIndex、global 预算</td></tr>
+<tr><td>尺寸查询</td><td>src/partitioned_acceleration_structures.hpp:123</td><td>容量描述与结果 / scratch / 辅助输入大小</td></tr>
+<tr><td>原生 build</td><td>src/partitioned_acceleration_structures.hpp:216</td><td>src=0 初次；src=dst 原地；operations/count 是 GPU 地址</td></tr>
+<tr><td>每帧复位计数</td><td>src/partitioned_tlas.cpp:315</td><td>外层 1，内层先清零</td></tr>
+<tr><td>变化列表</td><td>shaders/animation_update_instances.comp.glsl:39</td><td>atomicAdd、紧凑 outputSlot、稳定 instanceIndex</td></tr>
+<tr><td>执行更新</td><td>src/partitioned_tlas.cpp:452</td><td>PTLAS 与普通 TLAS refit / rebuild 分支</td></tr>
+<tr><td>实际追踪绑定</td><td>src/partitioned_tlas.cpp:496；shaders/raytrace.rgen.glsl:53</td><td>push constant 地址，不调用 descriptor helper</td></tr>
+</tbody></table>
+<div class="callout">三个数量：<code>input.instanceCount=N</code>；<code>*srcInfosCount=1</code>；<code>operations[0].argCount=K</code>。变化列表的数组位置与记录中的 instanceIndex 是两回事。</div>
+<p>当前源码待核查：global 策略没有写入输出记录的 partitionIndex；通用 barrier 未列出 operations/count 所需的 INDIRECT_COMMAND_READ。详见 <a href="../lessons/0005-ptlas-sample-walkthrough.html#caveats">源码讲义</a>，不要直接照搬这两处。</p>
+<p>规范：<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkBuildPartitionedAccelerationStructureInfoNV.html">构建参数</a>、<a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildPartitionedAccelerationStructuresNV.html">同步与容量</a>。可以继续向我追问任意一条调用链。</p>
+</main></body></html>

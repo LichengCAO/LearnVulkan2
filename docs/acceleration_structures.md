@@ -1,5 +1,31 @@
 # Acceleration structures
 
+## Type and file layout
+
+Public headers live in `src/my_vulkan/resource/`:
+
+| Header | Types and purpose |
+| --- | --- |
+| `acceleration_structure_types.h` | `VkAccelStructBuildInfo` for the public low-level KHR batch command and `AccelStructSizesInfo` for caller-owned batch task/scratch allocation. |
+| `acceleration_structure_gpu_layout.h` | GPU record strides, address alignments, field offsets and bit packing for CLAS tasks and packed TLAS instances. |
+| `acceleration_structure.h` | Ordinary BLAS/TLAS owners, geometry and instance descriptions, and their CreateInfo types. |
+| `cluster_acceleration_structure.h` | CLAS templates, CLAS/Cluster BLAS batch owners and CreateInfo types, CPU task descriptions, and public indirect-build arguments. |
+
+Include the ordinary or cluster header explicitly for the path being used.
+`resource/private/` contains the implementations, native AS storage owner, and
+`cluster_acceleration_structure_build.h` with the internal `ClusterBuildAddresses`
+value snapshot shared with command recording. It is included by the cluster
+header to store snapshots by value; callers do not construct or use it directly.
+Single-implementation helpers remain in anonymous namespaces in the `.cpp` files.
+
+Regression sources and test fixtures live in `src/test/`; `main.cpp` is the
+device regression entry point. CMake also builds the Host-only tests from this
+directory. GPU smoke tests remain opt-in as described below.
+
+See [GPU build-input layout](acceleration_structure_gpu_layout.md) for the static
+`GetBuildInfoLayout()` queries, native record offsets and bit encodings used by
+GPU task producers, including packed TLAS instances.
+
 The host path prepares descriptions and resources. GPU work is recorded through
 `CommandBuffer`; recording never allocates an input/scratch Buffer or uploads
 instances. All setters and recording methods return `void`.
@@ -193,8 +219,10 @@ provide its inputs; indexCount must be divisible by three and determines
 `primitiveCount`. `CustomizeClusterID()` defaults to 0, and
 `CustomizeVertexStride()` defaults to 0 for tightly packed vertices. The actual
 index values must reference valid vertex elements; uniqueVertexCount does not
-prove the extent of a raw device-address range. Set each task's vertex format and
-index type to match the batch. `CustomizeIndexStride(bytes)` sets the distance
+prove the extent of a raw device-address range. Encoders use each task's own
+vertex format and index type without requiring a Batch. The caller sets those
+formats to match the eventual build and guarantees device format support and all
+batch budgets. `CustomizeIndexStride(bytes)` sets the distance
 between consecutive indices. Zero selects packed indices. Nonzero direct and
 template index strides must fit 16 bits and be a multiple of the index width.
 Direct and template tasks use flags 0, opaque geometry and GeometryIndex 0.
@@ -220,7 +248,7 @@ pose.SetVertexBuffer(deformedVertexAddress);
 pose.CustomizeVertexFormat(templates.GetVertexFormat());
 pose.CustomizeClusterID(42);
 ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(
-    std::span(&pose, 1), instances, taskBuffer);
+    std::span(&pose, 1), taskBuffer);
 ```
 
 The template factory accepts multiple index buffers, requires common vertex/index
@@ -265,13 +293,15 @@ The total cluster budget is independent of the product of the other two limits.
 Creation snapshots all three values and needs no source CLAS Batch.
 `GetCapacity()` returns the maximum Cluster
 BLAS count. Each `BottomLevelAccelStructBuildInfo` describes an actual task through
-`SetClusterReferences(sourceBatch, offset, count)`. This sole input setter requires
-a created source and a positive range within its capacity. It resolves a borrowed
-address in the source's packed address table; native reference stride is always
-`sizeof(VkDeviceAddress)`. A rejected setter preserves the previous values.
-BuildInfo retains no source owner. Callers reference only the GPU-built valid
-prefix and keep source CLAS resources alive through dependent GPU uses. Different
-tasks may reference different source Batches.
+`SetClusterReferences(referenceAddress, count)`. This sole input setter borrows a
+packed array of `VkDeviceAddress` values and requires a nonzero, aligned address,
+a positive count and a non-overflowing address range. Native reference stride is
+always `sizeof(VkDeviceAddress)`. A rejected setter preserves the previous values.
+Callers compute any table offset in bytes before passing the address. The table
+may be caller-owned or GPU-generated; BuildInfo retains no source owner and does
+not inspect table contents or allocation capacity. Callers provide valid built
+CLAS references, keep the table alive through the BLAS build and keep referenced
+CLAS resources alive through dependent GPU uses.
 
 For either Batch, prepare and execute in this order:
 
@@ -279,12 +309,17 @@ For either Batch, prepare and execute in this order:
 2. Allocate a task Buffer of `buildInfoBufferSize` bytes. It needs
    `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | SHADER_DEVICE_ADDRESS_BIT`
    for the build. A staging Buffer can instead be written and copied explicitly.
-3. Use `ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(infos, batch, taskBuffer)`
+3. Use `ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(infos, taskBuffer)`
    or the corresponding instantiate uploader. For Cluster BLAS call
-   `batch.WriteBuildInfoBufferInline(infos, taskBuffer)`.
-   Encoders validate the entire task span before one upload. Cluster BLAS uses
-   coherent Host memory. Direct and instantiate encoders also support a staged
-   upload to task buffers with `TRANSFER_DST_BIT`.
+   `BottomLevelAccelStructBuildInfo::CommitToDeviceInline(infos, taskBuffer)`.
+   All three encoders require no target Batch and validate the entire task span
+   before one upload. They check native field representation, addresses, strides
+   and the upload range; the caller ensures matching formats/templates and
+   compliance with the eventual build's task, per-task and aggregate budgets.
+   Instantiate encoding resolves a zero vertex stride from each task's format
+   and queries the active physical device for template address alignment.
+   Cluster BLAS uploads use coherent Host memory. Direct and instantiate encoders
+   also support a staged upload to task buffers with `TRANSFER_DST_BIT`.
 4. Provide scratch of `buildScratchBufferSize` bytes with
    `STORAGE_BUFFER_BIT | SHADER_DEVICE_ADDRESS_BIT` and the reported alignment.
    A zero scratch requirement uses address 0.

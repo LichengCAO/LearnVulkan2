@@ -1,7 +1,7 @@
-#include "acceleration_structure.h"
-#include "device.h"
-#include "../allocator/private/memory_allocator.h"
-#include "../render_context/device_context.h"
+#include "../cluster_acceleration_structure.h"
+#include "../../device.h"
+#include "../../allocator/private/memory_allocator.h"
+#include "../../render_context/device_context.h"
 #include <algorithm>
 #include <bit>
 #include <limits>
@@ -13,9 +13,12 @@ namespace
     using TemplateTask = VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV;
     using InstanceTask = VkClusterAccelerationStructureInstantiateClusterInfoNV;
     using ClusterBlasTask = VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV;
-    constexpr VkDeviceSize ReferenceStride = sizeof(VkDeviceAddress);
+    constexpr auto TriangleTaskLayout = ClusterLevelAccelStructDirectBuildInfo::GetBuildInfoLayout();
+    constexpr auto InstanceTaskLayout = ClusterLevelAccelStructInstantiateBuildInfo::GetBuildInfoLayout();
+    constexpr auto ClusterBlasTaskLayout = BottomLevelAccelStructBuildInfo::GetBuildInfoLayout();
+    constexpr VkDeviceSize ReferenceStride = AccelStructGpuLayout::ClusterBlas::PackedReferenceStride;
     constexpr auto MaxCount = (std::numeric_limits<uint32_t>::max)();
-    constexpr uint32_t MaxTriangleTaskCount = (1u << 9) - 1; // Native triangleCount and vertexCount bit widths.
+    constexpr uint32_t MaxTriangleTaskCount = AccelStructGpuLayout::Direct::CountMask;
     constexpr VkBufferUsageFlags StorageUsage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     constexpr VkBufferUsageFlags ReferenceUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -71,20 +74,28 @@ namespace
         VkDeviceSize alignment;
     };
 
+    auto GetVertexLayout(VkFormat inFormat) -> VertexLayout
+    {
+        CHECK_TRUE(inFormat != VK_FORMAT_UNDEFINED && inFormat != VK_FORMAT_MAX_ENUM,
+            "A cluster vertex format is required!");
+        const auto format = static_cast<vk::Format>(inFormat);
+        const auto size = vk::blockSize(format);
+        CHECK_TRUE(size > 0, "Invalid cluster vertex format size!");
+        const auto packedBits = vk::packed(format);
+        const VkDeviceSize alignment = (packedBits == 0 ? vk::componentBits(format, 0) : packedBits) / 8;
+        CHECK_TRUE(alignment > 0, "Invalid cluster vertex format alignment!");
+        return { size, alignment };
+    }
+
     auto QueryVertexLayout(VkPhysicalDevice inDevice, VkFormat inFormat) -> VertexLayout
     {
-        CHECK_TRUE(vkGetPhysicalDeviceFormatProperties && inFormat != VK_FORMAT_UNDEFINED && inFormat != VK_FORMAT_MAX_ENUM,
-            "A cluster vertex format and format query entrypoint are required!");
+        const auto layout = GetVertexLayout(inFormat);
+        CHECK_TRUE(vkGetPhysicalDeviceFormatProperties, "A cluster vertex format query entrypoint is required!");
         VkFormatProperties properties{};
         vkGetPhysicalDeviceFormatProperties(inDevice, inFormat, &properties);
         CHECK_TRUE(CONTAIN_BITS(properties.bufferFeatures, VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR),
             "Vertex format does not support acceleration structure input!");
-        const auto format = static_cast<vk::Format>(inFormat);
-        const auto size = vk::blockSize(format);
-        const auto packedBits = vk::packed(format);
-        const VkDeviceSize alignment = (packedBits == 0 ? vk::componentBits(format, 0) : packedBits) / 8;
-        CHECK_TRUE(size > 0 && alignment > 0, "Invalid cluster vertex format layout!");
-        return { size, alignment };
+        return layout;
     }
 
     struct IndexLayout
@@ -127,36 +138,28 @@ namespace
     }
 
     auto EncodeTriangle(const ClusterLevelAccelStructDirectBuildInfo& inTriangle,
-        const VkClusterAccelerationStructureTriangleClusterInputNV& inLimits, const VertexLayout& inVertex,
-        const IndexLayout& inIndex) -> TriangleTask
+        const VertexLayout& inVertex, const IndexLayout& inIndex) -> TriangleTask
     {
         CHECK_TRUE(inTriangle.clusterID != MaxCount, "Cluster ID is reserved!");
-        CHECK_TRUE(inTriangle.primitiveCount > 0 && inTriangle.primitiveCount <= inLimits.maxClusterTriangleCount,
-            "Invalid triangle count for a cluster!");
-        CHECK_TRUE(inTriangle.vertexCount > 0 && inTriangle.vertexCount <= inLimits.maxClusterVertexCount,
-            "Invalid vertex count for a cluster!");
         CHECK_TRUE(inTriangle.vertexStride <= (std::numeric_limits<uint16_t>::max)() &&
             inTriangle.vertexStride % inVertex.size == 0, "Invalid cluster vertex stride!");
-        const auto vertexStride = inTriangle.vertexStride == 0 ? inVertex.size : inTriangle.vertexStride;
-        const auto vertexSize = (inTriangle.vertexCount - 1) * vertexStride + inVertex.size;
         auto task = EncodeTopology<TriangleTask>(inTriangle.primitiveCount, inTriangle.vertexCount,
             inTriangle.indexAddress, inTriangle.indexStride, inIndex);
+        const auto vertexStride = inTriangle.vertexStride == 0 ? inVertex.size : inTriangle.vertexStride;
+        const auto vertexSize = (inTriangle.vertexCount - 1) * vertexStride + inVertex.size;
         task.clusterID = inTriangle.clusterID;
         task.vertexBufferStride = static_cast<uint16_t>(inTriangle.vertexStride);
         task.vertexBuffer = CheckAddress(inTriangle.vertexAddress, 0, vertexSize, inVertex.alignment);
         return task;
     }
 
-    auto CheckClusterReferenceAddress(VkDeviceAddress inBase, uint32_t inOffset, uint32_t inCount) -> VkDeviceAddress
+    auto CheckClusterReferenceAddress(VkDeviceAddress inAddress, uint32_t inCount) -> VkDeviceAddress
     {
         constexpr auto maximum = (std::numeric_limits<VkDeviceAddress>::max)();
-        const auto offset = inOffset * ReferenceStride;
         const auto bytes = inCount * ReferenceStride;
-        CHECK_TRUE(inBase != 0 && offset <= maximum - inBase, "Cluster BLAS reference address is invalid!");
-        const auto address = inBase + offset;
-        CHECK_TRUE(address % ReferenceStride == 0 && bytes <= maximum - address,
-            "Cluster BLAS reference address range overflows or is misaligned!");
-        return address;
+        CHECK_TRUE(inAddress != 0 && inAddress % ReferenceStride == 0 && bytes <= maximum - inAddress,
+            "Cluster BLAS reference address is invalid, overflows or is misaligned!");
+        return inAddress;
     }
 
     auto QuerySizes(const MyDevice& inDevice, const VkClusterAccelerationStructureInputInfoNV& inInput,
@@ -393,7 +396,7 @@ void ClusterLevelAccelStructBatch::Create(const ClusterLevelAccelStructBatchCrea
         "Cluster batch triangle capacity exceeds the per-cluster limit!");
     CHECK_TRUE(inCreateInfo.m_maxClusterVertexCount <= (std::min)(properties.cluster.maxVerticesPerCluster, MaxTriangleTaskCount),
         "Cluster batch vertex capacity exceeds the per-cluster limit!");
-    const auto vertexLayout = QueryVertexLayout(device.vkPhysicalDevice, inCreateInfo.m_vertexFormat);
+    QueryVertexLayout(device.vkPhysicalDevice, inCreateInfo.m_vertexFormat);
     const auto indexType = inCreateInfo.m_indexType;
     GetIndexLayout(indexType);
 
@@ -414,16 +417,13 @@ void ClusterLevelAccelStructBatch::Create(const ClusterLevelAccelStructBatchCrea
     input.opInput.pTriangleClusters = &triangleInput;
     if (inCreateInfo.m_useTemplate)
         CHECK_TRUE(std::has_single_bit(properties.cluster.clusterTemplateByteAlignment), "Invalid template alignment!");
-    const auto sizes = QuerySizes(device, input, inCreateInfo.m_useTemplate ? sizeof(InstanceTask) : sizeof(TriangleTask), properties);
+    const auto sizes = QuerySizes(device, input, inCreateInfo.m_useTemplate ? InstanceTaskLayout.recordStride : TriangleTaskLayout.recordStride, properties);
     auto storage = CreateClusterBuffer(sizes.accelerationStructureSize, StorageUsage, properties.cluster.clusterByteAlignment);
     auto references = CreateClusterBuffer(count * ReferenceStride,
         ReferenceUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, ReferenceStride);
 
     m_triangleInput = triangleInput;
-    m_vertexElementSize = vertexLayout.size;
-    m_vertexAlignment = vertexLayout.alignment;
     m_useTemplate = inCreateInfo.m_useTemplate;
-    m_templateAlignment = properties.cluster.clusterTemplateByteAlignment;
     m_indexType = indexType;
     m_sizesInfo = sizes;
     m_storageBuffer = std::move(storage);
@@ -441,71 +441,57 @@ auto ClusterLevelAccelStructBatch::GetScratchAlignment() const noexcept -> VkDev
 { return m_sizesInfo.scratchAlignment; }
 
 void ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(std::span<const ClusterLevelAccelStructDirectBuildInfo> inBuildInfos,
-    const ClusterLevelAccelStructBatch& target, Buffer& inDstBuffer, VkDeviceSize inOffset)
+    Buffer& inDstBuffer, VkDeviceSize inOffset)
 {
-    CHECK_TRUE(target.GetCapacity() > 0 && !target.m_useTemplate, "Direct tasks require a created direct CLAS batch!");
     if (inBuildInfos.empty()) return;
-    CHECK_TRUE(inBuildInfos.size() <= target.GetCapacity(), "Cluster task count exceeds batch capacity!");
-    const auto bytes = VkDeviceSize{ inBuildInfos.size() } * sizeof(TriangleTask);
-    CHECK_TRUE(inOffset % alignof(TriangleTask) == 0, "Direct task offset is misaligned!");
+    CHECK_TRUE(inBuildInfos.size() <= (std::numeric_limits<VkDeviceSize>::max)() / TriangleTaskLayout.recordStride,
+        "Direct task upload size overflows!");
+    const auto bytes = VkDeviceSize{ inBuildInfos.size() } * TriangleTaskLayout.recordStride;
+    CHECK_TRUE(inOffset % TriangleTaskLayout.addressAlignment == 0, "Direct task offset is misaligned!");
     CheckUploadBuffer(inDstBuffer, inOffset, bytes);
-    const VertexLayout vertex{ target.m_vertexElementSize, target.m_vertexAlignment };
-    const auto index = GetIndexLayout(target.GetIndexType());
     std::vector<TriangleTask> tasks;
     tasks.reserve(inBuildInfos.size());
-    const auto limits = target.GetBuildLimits();
-    uint32_t remainingTriangles = limits.maxTotalTriangleCount;
-    uint32_t remainingVertices = limits.maxTotalVertexCount;
     for (const auto& triangle : inBuildInfos)
     {
-        CHECK_TRUE(triangle.primitiveCount <= remainingTriangles && triangle.vertexCount <= remainingVertices,
-            "Cluster tasks exceed the batch's total triangle or vertex capacity!");
-        CHECK_TRUE(triangle.vertexFormat == target.GetVertexFormat() && triangle.indexType == target.GetIndexType(),
-            "Direct task formats must match the target batch!");
-        tasks.push_back(EncodeTriangle(triangle, limits, vertex, index));
-        remainingTriangles -= triangle.primitiveCount;
-        remainingVertices -= triangle.vertexCount;
+        const auto vertex = GetVertexLayout(triangle.vertexFormat);
+        const auto index = GetIndexLayout(triangle.indexType);
+        tasks.push_back(EncodeTriangle(triangle, vertex, index));
     }
     Buffer::UploadToDeviceInline(inDstBuffer, inOffset, tasks.data(), static_cast<size_t>(bytes));
 }
 
 void ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(
-    std::span<const ClusterLevelAccelStructInstantiateBuildInfo> inInfos, const ClusterLevelAccelStructBatch& target,
-    Buffer& inDstBuffer, VkDeviceSize inOffset)
+    std::span<const ClusterLevelAccelStructInstantiateBuildInfo> inInfos, Buffer& inDstBuffer, VkDeviceSize inOffset)
 {
-    CHECK_TRUE(target.GetCapacity() && target.m_useTemplate, "Instantiate tasks require a created template-mode CLAS batch!");
     if (inInfos.empty()) return;
-    CHECK_TRUE(inInfos.size() <= target.GetCapacity() && inInfos.size() <= target.m_triangleInput.maxTotalTriangleCount &&
-        inInfos.size() <= target.m_triangleInput.maxTotalVertexCount, "Instance tasks exceed the target budget!");
-    const auto bytes = VkDeviceSize{inInfos.size()} * sizeof(InstanceTask);
-    CHECK_TRUE(inOffset % alignof(InstanceTask) == 0, "Instantiate task offset is misaligned!");
+    CHECK_TRUE(inInfos.size() <= (std::numeric_limits<VkDeviceSize>::max)() / InstanceTaskLayout.recordStride,
+        "Instantiate task upload size overflows!");
+    const auto bytes = VkDeviceSize{inInfos.size()} * InstanceTaskLayout.recordStride;
+    CHECK_TRUE(inOffset % InstanceTaskLayout.addressAlignment == 0, "Instantiate task offset is misaligned!");
     CheckUploadBuffer(inDstBuffer, inOffset, bytes);
+    const auto templateAlignment = QueryProperties(MyDevice::GetInstance().vkPhysicalDevice).cluster.clusterTemplateByteAlignment;
+    CHECK_TRUE(std::has_single_bit(templateAlignment), "Invalid template alignment!");
     std::vector<InstanceTask> tasks;
     tasks.reserve(inInfos.size());
     for (const auto& info : inInfos)
     {
-        CHECK_TRUE(info.m_vertexFormat == target.GetVertexFormat() && info.m_id != MaxCount &&
-            info.m_stride <= UINT32_MAX && info.m_stride % target.m_vertexAlignment == 0, "Invalid instance format, ID or stride!");
+        const auto vertex = GetVertexLayout(info.m_vertexFormat);
+        CHECK_TRUE(info.m_id != MaxCount && info.m_stride <= UINT32_MAX && info.m_stride % vertex.alignment == 0,
+            "Invalid instance ID or stride!");
         InstanceTask task{};
         task.clusterIdOffset = info.m_id;
-        task.clusterTemplateAddress = CheckAddress(info.m_template, 0, 1, target.m_templateAlignment);
-        task.vertexBuffer.startAddress = CheckAddress(info.m_vertices, 0, target.m_vertexElementSize, target.m_vertexAlignment);
-        task.vertexBuffer.strideInBytes = info.m_stride ? info.m_stride : target.m_vertexElementSize;
+        task.clusterTemplateAddress = CheckAddress(info.m_template, 0, 1, templateAlignment);
+        task.vertexBuffer.startAddress = CheckAddress(info.m_vertices, 0, vertex.size, vertex.alignment);
+        task.vertexBuffer.strideInBytes = info.m_stride ? info.m_stride : vertex.size;
         tasks.push_back(task);
     }
     Buffer::UploadToDeviceInline(inDstBuffer, inOffset, tasks.data(), static_cast<size_t>(bytes));
 }
 
-void BottomLevelAccelStructBuildInfo::SetClusterReferences(const ClusterLevelAccelStructBatch& inSource,
-    uint32_t inOffset, uint32_t inCount)
+void BottomLevelAccelStructBuildInfo::SetClusterReferences(VkDeviceAddress inAddress, uint32_t inCount)
 {
-    const auto* references = inSource.GetReferenceBuffer();
-    CHECK_TRUE(references, "Cluster BLAS requires a created source cluster batch!");
-    const auto capacity = inSource.GetCapacity();
-    CHECK_TRUE(inCount > 0 && inOffset <= capacity && inCount <= capacity - inOffset,
-        "Cluster BLAS reference range is out of bounds!");
-    CHECK_TRUE(vkGetBufferDeviceAddress, "Cluster BLAS reference setup requires the address entrypoint!");
-    const auto address = CheckClusterReferenceAddress(references->GetDeviceAddress(), inOffset, inCount);
+    CHECK_TRUE(inCount > 0, "Cluster BLAS reference count must be nonzero!");
+    const auto address = CheckClusterReferenceAddress(inAddress, inCount);
     m_clusterReferencesAddress = address;
     m_clusterCount = inCount;
 }
@@ -528,7 +514,7 @@ void BottomLevelAccelStructBatch::Create(const BottomLevelAccelStructBatchCreate
     input.opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV;
     input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
     input.opInput.pClustersBottomLevel = &clustersInput;
-    const auto sizes = QuerySizes(device, input, sizeof(ClusterBlasTask), properties);
+    const auto sizes = QuerySizes(device, input, ClusterBlasTaskLayout.recordStride, properties);
     auto storage = CreateClusterBuffer(sizes.accelerationStructureSize, StorageUsage,
         properties.cluster.clusterBottomLevelByteAlignment);
     auto references = CreateClusterBuffer(count * ReferenceStride,
@@ -550,29 +536,25 @@ auto BottomLevelAccelStructBatch::GetCapacity() const noexcept -> uint32_t
 auto BottomLevelAccelStructBatch::GetScratchAlignment() const noexcept -> VkDeviceSize
 { return m_sizesInfo.scratchAlignment; }
 
-void BottomLevelAccelStructBatch::WriteBuildInfoBufferInline(std::span<const BottomLevelAccelStructBuildInfo> inBuildInfos,
-    Buffer& inDstBuffer, VkDeviceSize inOffset) const
+void BottomLevelAccelStructBuildInfo::CommitToDeviceInline(std::span<const BottomLevelAccelStructBuildInfo> inHostInfo,
+    Buffer& inoutTargetBuffer, VkDeviceSize inOffset)
 {
-    CHECK_TRUE(m_count > 0, "Cluster BLAS build info upload requires a created batch!");
-    if (inBuildInfos.empty()) return;
-    CHECK_TRUE(inBuildInfos.size() <= m_count, "Cluster BLAS task count exceeds batch capacity!");
-    const auto bytes = VkDeviceSize{ inBuildInfos.size() } * sizeof(ClusterBlasTask);
-    CHECK_TRUE(CONTAIN_BITS(inDstBuffer.GetBufferInformation().memoryProperty,
+    if (inHostInfo.empty()) return;
+    CHECK_TRUE(inHostInfo.size() <= (std::numeric_limits<VkDeviceSize>::max)() / ClusterBlasTaskLayout.recordStride,
+        "Cluster BLAS task upload size overflows!");
+    const auto bytes = VkDeviceSize{ inHostInfo.size() } * ClusterBlasTaskLayout.recordStride;
+    CHECK_TRUE(CONTAIN_BITS(inoutTargetBuffer.GetBufferInformation().memoryProperty,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
         "Cluster BLAS task upload requires host-visible, host-coherent memory!");
-    CheckUploadBuffer(inDstBuffer, inOffset, bytes);
+    CheckUploadBuffer(inoutTargetBuffer, inOffset, bytes);
     std::vector<ClusterBlasTask> tasks;
-    tasks.reserve(inBuildInfos.size());
-    uint32_t remainingClusters = m_clustersInput.maxTotalClusterCount;
-    for (const auto& info : inBuildInfos)
+    tasks.reserve(inHostInfo.size());
+    for (const auto& info : inHostInfo)
     {
         const auto count = info.m_clusterCount;
-        CHECK_TRUE(count > 0 && count <= m_clustersInput.maxClusterCountPerAccelerationStructure,
-            "Invalid cluster count for a Cluster BLAS task!");
-        CHECK_TRUE(count <= remainingClusters, "Cluster BLAS tasks exceed the batch's total cluster capacity!");
-        const auto address = CheckClusterReferenceAddress(info.m_clusterReferencesAddress, 0, count);
+        CHECK_TRUE(count > 0, "Cluster BLAS reference count must be nonzero!");
+        const auto address = CheckClusterReferenceAddress(info.m_clusterReferencesAddress, count);
         tasks.push_back({ count, static_cast<uint32_t>(ReferenceStride), address });
-        remainingClusters -= count;
     }
-    Buffer::UploadToDeviceInline(inDstBuffer, inOffset, tasks.data(), static_cast<size_t>(bytes));
+    Buffer::UploadToDeviceInline(inoutTargetBuffer, inOffset, tasks.data(), static_cast<size_t>(bytes));
 }

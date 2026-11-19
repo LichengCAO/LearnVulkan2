@@ -1857,6 +1857,7 @@ void RunCommandBufferTests();
 void RunClasPipelineTests();
 void RunClasResourceTests();
 void RunClasGpuTests();
+void RunAccelerationStructureGpuLayoutTests();
 void RunCreateInfoFinalizeTests();
 void RunHostCreateInfoFinalizeTests();
 void RunRenderPassFinalizeTests();
@@ -1884,6 +1885,7 @@ auto main(int argc, char** argv) -> int
 		RunCommandBufferTests();
 		RunClasPipelineTests();
 		RunClasResourceTests();
+		RunAccelerationStructureGpuLayoutTests();
 		RunClasGpuTests();
 		RunResourceLifetimeTests();
 		RunResourceSubmissionTests();

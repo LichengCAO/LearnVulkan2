@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Partitioned TLAS 速查</title><link rel="stylesheet" href="../assets/teaching.css"></head><body><main>
+<div class="eyebrow">LEARNVULKAN2 · REFERENCE</div><h1>Partitioned TLAS 速查</h1>
+<p>PTLAS：持久实例状态 + 可复用的分区结构 + 上层组织。普通 TLAS 已支持 refit；PTLAS 进一步提供稀疏修改接口。<a href="https://github.com/nvpro-samples/vk_partitioned_tlas#tlas-vs-ptlas">[官方示例]</a></p>
+<table><thead><tr><th>名词</th><th>记法</th></tr></thead><tbody>
+<tr><td>instanceIndex</td><td>PTLAS 中的实例槽位；区别于应用 instanceID 和本帧写入数组下标。</td></tr>
+<tr><td>partitionIndex</td><td>应用指定的分组；宜兼顾空间邻近与更新行为。</td></tr>
+<tr><td>global partition</td><td>每个实例按独立分区处理；适合持续动态实例，也有构建 / 遍历代价。</td></tr>
+<tr><td>WRITE_INSTANCE</td><td>写完整记录；移动和分区迁移用它。</td></tr>
+<tr><td>UPDATE_INSTANCE</td><td>改 BLAS 引用与 hit-group 索引贡献，不改 transform。</td></tr>
+<tr><td>partition translation</td><td>设置分区额外平移；需要开启；不是一般多级 transform。</td></tr>
+</tbody></table>
+<p>字段依据：<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureWriteInstanceDataNV.html">Write</a>、<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureUpdateInstanceDataNV.html">Update</a>、<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureWritePartitionTranslationDataNV.html">Translation</a>。分组取舍见 <a href="https://docs.vulkan.org/features/latest/features/proposals/VK_NV_partitioned_acceleration_structure.html">扩展设计</a>。</p>
+<div class="callout">接入判断看“受影响分区”，不能只看“变化实例比例”；比较参数生成 + build/update + trace，同时测内存。</div>
+<p>Vulkan：<code>VK_NV_partitioned_acceleration_structure</code>；Host 查大小，GPU 用独立 PTLAS 命令构建，使用独立 descriptor 类型通过地址绑定。容量按预算而非当帧稀疏写入数准备。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureInstancesInputNV.html">[预算]</a> <a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkWriteDescriptorSetPartitionedAccelerationStructureNV.html">[descriptor]</a></p>
+<p>原地更新先建立旧遍历到新构建的依赖；新构建完成后才可追踪新结果。AS、scratch 与间接输入的访问不同，按 <a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildPartitionedAccelerationStructuresNV.html">命令规范</a> 设置同步。</p>
+<p><a href="../lessons/0002-partitioned-tlas.html">返回第 02 课与练习</a> · <a href="cluster-template.html">Cluster Template 速查</a></p>
+<p><a href="../lessons/0003-ptlas-api.html">API 对照：容量、两层间接输入与 descriptor</a></p>
+</main></body></html>

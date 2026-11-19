@@ -1,7 +1,7 @@
 #include "my_vulkan/command/command_buffer.h"
 #include "my_vulkan/device.h"
 #include "my_vulkan/render_context/device_context.h"
-#include "my_vulkan/resource/acceleration_structure.h"
+#include "my_vulkan/resource/cluster_acceleration_structure.h"
 #include "my_vulkan/resource/private/buffer_storage.h"
 #include "utility/task_scheduler.h"
 
@@ -513,8 +513,9 @@ private:
         clusters.Create(clusterInfo);
 
         std::array<BottomLevelAccelStructBuildInfo, 2> blasDescriptions{};
-        blasDescriptions[0].SetClusterReferences(clusters, 0, 2);
-        blasDescriptions[1].SetClusterReferences(clusters, 1, 1);
+        const auto clusterReferences = clusters.GetReferenceBuffer()->GetDeviceAddress();
+        blasDescriptions[0].SetClusterReferences(clusterReferences, 2);
+        blasDescriptions[1].SetClusterReferences(clusterReferences + sizeof(VkDeviceAddress), 1);
         BottomLevelAccelStructBatchCreateInfo blasInfo;
         blasInfo.SetMaxAccelStructCount(2);
         blasInfo.SetMaxClusterCountPerAccelStruct(2);
@@ -538,11 +539,11 @@ private:
                 instances[i].CustomizeVertexStride(vertexStride);
                 instances[i].CustomizeClusterID(static_cast<uint32_t>(i + 1));
             }
-            ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(instances, clusters, clusterTasks);
+            ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(instances, clusterTasks);
         }
         else
-            ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(clusterDescriptions, clusters, clusterTasks);
-        blases.WriteBuildInfoBufferInline(blasDescriptions, blasTasks);
+            ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(clusterDescriptions, clusterTasks);
+        BottomLevelAccelStructBuildInfo::CommitToDeviceInline(blasDescriptions, blasTasks);
 
         const VkDeviceSize scratchAlignment = native.clusterProperties.clusterScratchByteAlignment;
         const VkDeviceSize coreScratchAlignment = native.accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment;

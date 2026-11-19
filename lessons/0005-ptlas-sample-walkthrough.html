@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NVIDIA PTLAS 示例：一条变化怎样进入加速结构</title>
+<link rel="stylesheet" href="../assets/teaching.css"><script src="../assets/teaching.js" defer></script>
+</head><body><main>
+<div class="eyebrow">LEARNVULKAN2 · 第 05 课 · 2026-11-19</div>
+<h1>追踪一条变化怎样进入 PTLAS</h1>
+<p class="lead">目标：为引擎接入做准备，能从 GPU 动画状态一路找到 PTLAS 的变化列表、间接计数、旧结果和最终追踪入口。</p>
+<p>承接 <a href="0004-ptlas-worked-example.html">单实例 API 示例</a>。本课依据本机 <code>vk_partitioned_tlas</code> 提交 <code>07acd56</code> 的源码；仅做静态阅读，示例尚未编译运行。你已掌握普通 TLAS 输入 Buffer 可局部修改，本课从变化列表的生成开始。</p>
+
+<section id="route"><h2>1. 先看生命周期，略过多米诺骨牌的物理细节</h2>
+<p><a href="https://github.com/nvpro-samples/vk_partitioned_tlas/blob/07acd56/src/partitioned_tlas.cpp#L218">onAttach，218 行</a> 依次创建场景、GPU Buffer、BLAS、普通 TLAS、管线、动画数据，最后创建 PTLAS。普通 TLAS 与 PTLAS 引用相同场景中的 BLAS，用于对照。</p>
+<div class="flow"><span class="node">Host 初始场景</span><span class="arrow">→</span><span class="node">全部 Write 记录</span><span class="arrow">→</span><span class="node">初次 PTLAS build</span></div>
+<div class="flow"><span class="node">GPU 动画状态</span><span class="arrow">→</span><span class="node">紧凑 delta 列表</span><span class="arrow">→</span><span class="node">旧 PTLAS + delta</span><span class="arrow">→</span><span class="node">TraceRays</span></div>
+<p>第一遍只抓住两个阶段：Host 准备容量和初始记录；GPU 在后续帧生成稀疏修改。动画状态、delta 输入与最终 PTLAS 是三种不同数据。</p>
+</section>
+
+<section id="storage"><h2>2. 初始化：容量与所有权分开看</h2>
+<p>入口：<a href="https://github.com/nvpro-samples/vk_partitioned_tlas/blob/07acd56/src/partitioned_tlas_acceleration_structure.cpp#L197">createPartitionedTopLevelAS，197 行</a>。234 行附近为每个场景节点生成完整实例记录：<code>instanceIndex=i</code>，保存 transform、BLAS 地址及初始 partitionIndex。</p>
+<p>255 行附近设置总实例数、普通分区数、单分区最大实例数、global 容量，并查询结果与 scratch 大小。这里允许一组 WRITE_INSTANCE 操作；没有启用分区平移。它给动态 delta Buffer 分配了可容纳全场景记录的空间，实际每帧只消费有效前缀。</p>
+<table><thead><tr><th>示例资源</th><th>角色</th><th>引擎侧需要区分什么</th></tr></thead><tbody>
+<tr><td>accelerationStructure</td><td>持久 PTLAS 结果，含旧实例状态</td><td>资源拥有存储；初次 build 前还不能追踪</td></tr>
+<tr><td>buildScratch</td><td>build 的临时工作区</td><td>地址、大小、对齐与复用依赖</td></tr>
+<tr><td>instanceWriteInfo</td><td>初始全量记录；本例还用于重置与复制原始属性</td><td>应用保留的输入副本，不是最终 AS</td></tr>
+<tr><td>m_partitionedTlasInstanceWriteDynamic</td><td>当帧紧凑变化列表</td><td>容量与实际有效数量分开</td></tr>
+<tr><td>operationsInfo / operationsCount</td><td>操作描述数组 / 外层操作数</td><td>本例外层为 1；内层 argCount 每帧变化</td></tr>
+</tbody></table>
+<p><a href="https://github.com/nvpro-samples/vk_partitioned_tlas/blob/07acd56/src/partitioned_acceleration_structures.hpp#L123">getBuildSizes，123 行</a> 同时保存后续 build 的容量参数。<a href="https://github.com/nvpro-samples/vk_partitioned_tlas/blob/07acd56/src/partitioned_acceleration_structures.hpp#L216">buildAccelerationStructure，216 行</a> 初次令 src=0，后续令 src=dst=结果地址，并始终使用 buildScratch。这个 <code>update=true</code> 只是 helper 的布尔参数，不是 KHR UPDATE mode，也不是 UPDATE_INSTANCE 操作。</p>
+<p>规范允许源与目标地址相同或不同；本例选择原地修改。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkBuildPartitionedAccelerationStructureInfoNV.html">[源与目标语义]</a></p>
+</section>
+
+<section id="frame"><h2>3. 每帧：CPU 不需要知道变化数量</h2>
+<p>从 <a href="https://github.com/nvpro-samples/vk_partitioned_tlas/blob/07acd56/src/partitioned_tlas.cpp#L315">onRender，315 行</a> 往下读。下列为提炼后的伪代码：</p>
+<pre><code>// CPU 录制；写入动作在 GPU 执行
+operation.opType   = WRITE_INSTANCE;
+operation.argCount = 0;
+operation.argData  = { deltaAddress, sizeof(WriteInstance) };
+operationCount    = 1;
+
+DispatchPhysics();          // 写下一份动画状态
+DispatchCollectChanges();   // 写 delta，并增加 operation.argCount
+BuildPTLAS(oldResult, oldResult, operationAddress, countAddress);
+TraceRays(resultAddress);</code></pre>
+<p>这里省略了各步之间的同步。重点是：CPU 预先录制 build，具体处理多少条变化，等命令执行时由 GPU 写入的 <code>argCount</code> 决定。443 行附近的 readback 用于 UI 统计，并非驱动 PTLAS build 的前提。</p>
+<p>不要混淆三个量：<code>input.instanceCount</code> 是 PTLAS 实例范围，<code>*srcInfosCount=1</code> 是一组 WRITE_INSTANCE 操作，<code>operations[0].argCount=K</code> 才是本帧写入记录数。每个操作类型只能在外层数组出现一次；同组记录不能重复引用同一实例索引。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkBuildPartitionedAccelerationStructureInfoNV.html">[外层操作]</a> <a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkBuildPartitionedAccelerationStructureIndirectCommandNV.html">[内层记录]</a></p>
+</section>
+
+<section id="delta"><h2>4. 核心 shader：紧凑位置不等于实例身份</h2>
+<p>入口：<a href="https://github.com/nvpro-samples/vk_partitioned_tlas/blob/07acd56/shaders/animation_update_instances.comp.glsl#L39">animation_update_instances，39 行</a>。它扫描动态对象，判断是否本帧运动、是否请求换分区，必要时追加输出：</p>
+<pre><code>// 提炼伪代码；records 是紧凑的本帧输出
+if (changed) {
+    outputSlot = atomicAdd(operation.argCount, 1);
+    records[outputSlot] = initialRecords[sceneIndex];
+    records[outputSlot].transform = currentTransform;
+}</code></pre>
+<p>例如场景实例 37 成为第一个被追加的变化：<code>outputSlot=0</code>，但复制的记录仍保留 <code>instanceIndex=37</code>。追加顺序不承担身份映射；稳定索引才连接旧 PTLAS 中的实例。</p>
+<div class="callout">对引擎的启发：dirty entity → 稳定 PTLAS 槽位 → 一条完整 Write 记录。需要保证同一实例每次提交不重复、追加不超容量；示例通过“每个动态对象一个线程、每线程最多追加一次”满足数量与去重约束。</div>
+<p>本例扫描全部动态候选对象，只有输出记录是稀疏的。因此不能从输出 K 条就推断整个生产阶段只做 O(K) 工作。</p>
+</section>
+
+<section id="trace"><h2>5. 追踪入口：本提交传的是地址</h2>
+<p><a href="https://github.com/nvpro-samples/vk_partitioned_tlas/blob/07acd56/src/partitioned_tlas.cpp#L496">onRender，496 行</a> 按开关把普通 TLAS 地址或 PTLAS 结果 Buffer 地址写入 <code>m_pushConst.tlas</code>。<a href="https://github.com/nvpro-samples/vk_partitioned_tlas/blob/07acd56/shaders/raytrace.rgen.glsl#L53">raytrace.rgen，53 行</a> 用 <code>accelerationStructureEXT(pc.tlas)</code> 追踪。</p>
+<p>helper 虽提供 <code>getWriteDescriptorSet()</code>，本提交的渲染路径没有调用它。若引擎选择 descriptor 路线，需要另外实现 PTLAS descriptor 类型及匹配布局；不能把 KHR AS handle 写入逻辑直接当成这份样例的实际路径。</p>
+</section>
+
+<section id="caveats"><h2>6. 接入前，先核查这两处示例细节</h2>
+<details open><summary>global 迁移：动画状态与提交记录没有连起来</summary>
+<p>在本地提交中，physics shader 设置 <code>newPartitionID</code>；collect shader 的 71 行复制初始记录、74 行只更新 transform，随后更改动画状态的 partitionID。没有看到将新分区写入输出记录的 <code>partitionIndex</code>。所以按当前源码，这条 Write 仍携带初始分区，不能直接把 UI 的 global 模式当成实际迁移已发生的证据。</p>
+<p>接入时应显式把策略层的分区 ID 编码为原生字段；global 应写 <code>VK_PARTITIONED_ACCELERATION_STRUCTURE_PARTITION_INDEX_GLOBAL_NV</code>，而不是动画 bookkeeping 中的尾部数组下标。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureWriteInstanceDataNV.html">[partitionIndex 语义]</a> 本发现来自静态数据流检查，尚未运行验证，未修改示例。</p>
+</details>
+<details><summary>通用 barrier 没有覆盖所有原生读取类型</summary>
+<p>本例 <code>memoryBarrier()</code> 使用 ALL_COMMANDS 与一组 shader / transfer / AS access flags，但没有包含 INDIRECT_COMMAND_READ。规范对 operations 与 operationCount 的消费指定为 AS_BUILD 阶段的 INDIRECT_COMMAND_READ；delta 参数读取还要依据对应操作描述核对。引擎应分别描述 transfer→compute、compute→build、build→trace 以及上一帧 trace→下一次原地 build 的依赖，不应只复制这个宽泛 helper。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildPartitionedAccelerationStructuresNV.html">[命令同步规则]</a></p>
+</details>
+</section>
+
+<section id="engine"><h2>7. 对照你的引擎：先明确五个边界</h2>
+<table><thead><tr><th>边界</th><th>本例提供的线索</th><th>LearnVulkan2 接入时要补的能力</th></tr></thead><tbody>
+<tr><td>Device 能力</td><td>main 请求 NV 扩展与 feature</td><td>独立探测 PTLAS；不能由已有 CLAS 支持推导</td></tr>
+<tr><td>结果资源</td><td>原生结果是地址化 Buffer</td><td>独立容量描述与 RAII 存储；Host Create 不隐式执行 GPU build</td></tr>
+<tr><td>命令</td><td>helper 把旧结果与 GPU operation 地址交给 NV build</td><td>独立命令参数快照；明确输入地址借用及 GPU 生命周期</td></tr>
+<tr><td>依赖追踪</td><td>GPU 追加计数、原地修改、随后追踪</td><td>输入、scratch、源 / 目标的 access；跨帧覆盖与多帧资源版本</td></tr>
+<tr><td>追踪绑定</td><td>push constant 地址</td><td>决定先沿地址路线验证，还是扩展现有 descriptor 路线</td></tr>
+</tbody></table>
+<p>当前 <code>TopLevelAccelStruct</code> 暴露 KHR handle，已有的 cluster indirect 命令也属于另一套 NV API；两者都不能仅通过换一个 flag 表达 PTLAS。这是本次阅读得到的接入边界，尚未实现新接口。</p>
+<p>第一版实验可只支持固定普通分区、WRITE_INSTANCE、初次全量 build 与后续原地稀疏写入。用相同场景的 KHR TLAS UPDATE 对照，分别测量变化列表生成、AS build、trace 与总 GPU 成本；global 迁移在编码正确性验证后再加入。</p>
+</section>
+
+<section id="check"><h2>8. 用一帧检查是否读通</h2>
+<fieldset data-quiz data-answer="inner" data-explanation="外层仍只有一组 WRITE_INSTANCE；该组的 argCount 由 shader 增加到 2，记录各自携带稳定 instanceIndex。"><legend>只移动场景实例 37、80，本例哪里变为 2？</legend><label><input type="radio" name="sample-count" value="outer"> 外层操作数量</label><label><input type="radio" name="sample-count" value="inner"> 内层记录数量</label><p class="feedback" aria-live="polite">选择后查看理由。</p></fieldset>
+<p>读代码时再自查：能否从 <code>records[0].instanceIndex=37</code> 反向找到原始记录，向前找到 <code>srcInfos → argData → delta</code>，并指出旧的其他实例由哪个 PTLAS 地址提供？</p>
+</section>
+<p class="footer">主读物：<a href="https://github.com/nvpro-samples/vk_partitioned_tlas/blob/07acd56/src/partitioned_acceleration_structures.hpp#L216">本版本 build helper</a>，再用 <a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildPartitionedAccelerationStructuresNV.html">Khronos 命令规范</a> 核对约束。<a href="../reference/ptlas-sample-code-map.html">源码速查</a> · <a href="0004-ptlas-worked-example.html">上一课</a>。可以继续让我逐行带读 createPartitionedTopLevelAS，或先展开 GPU 变化列表与同步。</p>
+</main></body></html>

@@ -1,6 +1,6 @@
 #include "clas_buffer_test_fixture.h"
 #include "my_vulkan/device.h"
-#include "my_vulkan/resource/acceleration_structure.h"
+#include "my_vulkan/resource/cluster_acceleration_structure.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -270,18 +270,25 @@ namespace
             "Template usage must size a full-capacity native instantiation.");
         CHECK_TRUE(batch.GetVertexFormat() == VK_FORMAT_R32G32B32_SFLOAT && batch.GetIndexType() == VK_INDEX_TYPE_UINT32 &&
             batch.GetBuildLimits().pNext == nullptr && batch.GetBuildLimits().maxTotalVertexCount == 12);
+    }
+
+    void TestInstantiatePackingAndAtomicUpload()
+    {
+        Hooks hooks;
+        Buffer empty;
+        ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline({}, empty, std::numeric_limits<VkDeviceSize>::max());
         auto upload = UploadBuffer(HostMemory);
         ClusterLevelAccelStructInstantiateBuildInfo instance;
         instance.SetTemplateReference(0x4000);
         instance.SetVertexBuffer(0x8000);
         instance.CustomizeClusterID(41);
         std::array instances{ instance, instance, instance };
-        instances[1].CustomizeVertexStride(16);
+        instances[1].CustomizeVertexFormat(VK_FORMAT_R16G16B16A16_SFLOAT);
         instances[2].CustomizeVertexStride(32);
-        ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(instances, batch, upload, 8);
+        ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(instances, upload, 8);
         VkClusterAccelerationStructureInstantiateClusterInfoNV record{};
         auto bytes = ClasBufferTestFixture::Bytes(upload);
-        constexpr std::array expectedStrides{ 12u, 16u, 32u };
+        constexpr std::array expectedStrides{ 12u, 8u, 32u };
         for (size_t i = 0; i < instances.size(); ++i)
         {
             std::memcpy(&record, bytes.data() + 8 + i * sizeof(record), sizeof(record));
@@ -292,19 +299,28 @@ namespace
         const std::vector<uint8_t> saved(bytes.begin(), bytes.end());
         auto bad = instances;
         bad.back().CustomizeVertexStride(14);
-        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(bad, batch, upload); });
+        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(bad, upload); });
         bad.back().CustomizeVertexStride(VkDeviceSize{1} << 32);
-        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(bad, batch, upload); });
+        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(bad, upload); });
         bad = instances;
-        bad.back().CustomizeVertexFormat(VK_FORMAT_R16G16B16A16_SFLOAT);
-        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(bad, batch, upload); });
+        bad.back().CustomizeVertexFormat(VK_FORMAT_UNDEFINED);
+        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(bad, upload); });
         bad = instances;
         bad.back().SetTemplateReference(0);
-        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(bad, batch, upload); });
-        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(MakeTriangles(), batch, upload); });
-        ClusterLevelAccelStructBatch direct;
-        direct.Create(MakeTriangleCapacity());
-        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(instances, direct, upload); });
+        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(bad, upload); });
+        bad.back().SetTemplateReference(0x4010);
+        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(bad, upload); });
+        bad = instances;
+        bad.back().SetVertexBuffer(0x8001);
+        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(bad, upload); });
+        bad.back().SetVertexBuffer(0);
+        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(bad, upload); });
+        bad = instances;
+        bad.back().CustomizeClusterID(std::numeric_limits<uint32_t>::max());
+        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(bad, upload); });
+        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(instances, empty); });
+        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(instances, upload, 255); });
+        ExpectFailure([&] { ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(instances, upload, std::numeric_limits<VkDeviceSize>::max()); });
         CHECK_TRUE(std::ranges::equal(bytes, saved));
     }
 
@@ -402,25 +418,14 @@ namespace
     {
         Hooks hooks;
         auto triangles = MakeTriangles();
-        auto info = MakeTriangleCapacity();
-        ClusterLevelAccelStructBatch batch;
         Buffer empty;
-        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline({}, batch, empty); });
-        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(triangles, batch, empty); });
-        batch.Create(info);
-        ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline({}, batch, empty);
-        info.CustomizeIndexType(VK_INDEX_TYPE_NONE_KHR);
-        info.CustomizeVertexFormat(VK_FORMAT_UNDEFINED);
-        info.SetMaxClusterCount(0);
-        info.SetMaxClusterTriangleCount(0);
-        info.SetMaxClusterVertexCount(0);
-        info.SetMaxTotalTriangleCount(0);
-        info.SetMaxTotalVertexCount(0);
+        ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline({}, empty, std::numeric_limits<VkDeviceSize>::max());
+        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(triangles, empty); });
         caps.supportsVertexFormat = false;
         caps.maxTriangles = 0;
         Buffer upload = UploadBuffer(HostMemory);
         constexpr size_t offset = 8;
-        ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(triangles, batch, upload, offset);
+        ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(triangles, upload, offset);
         using Record = VkClusterAccelerationStructureBuildTriangleClusterInfoNV;
         const auto bytes = ClasBufferTestFixture::Bytes(upload);
         for (size_t i = 0; i < triangles.size(); ++i)
@@ -441,35 +446,22 @@ namespace
             VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_16BIT_NV,
             VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_32BIT_NV
         };
-        caps.supportsVertexFormat = true;
-        caps.maxTriangles = 16;
-        info = MakeTriangleCapacity();
-        info.CustomizeVertexFormat(VK_FORMAT_R16G16B16A16_SFLOAT);
         ClusterLevelAccelStructDirectBuildInfo defaults;
         defaults.SetVertexBuffer(0x4002, 3);
         defaults.SetIndexBuffer(0x5004, 3);
-        CHECK_TRUE(defaults.clusterID == 0 && defaults.vertexStride == 0 && defaults.primitiveCount == 1);
         ExpectFailure([&] { defaults.SetIndexBuffer(0xFFFF, 4); });
         CHECK_TRUE(defaults.indexAddress == 0x5004 && defaults.primitiveCount == 1);
-        auto customized = defaults;
-        customized.CustomizeVertexStride(12);
-        customized.CustomizeClusterID(11);
-        CHECK_TRUE(customized.vertexStride == 12 && customized.clusterID == 11);
         for (size_t format = 0; format < indexTypes.size(); ++format)
         {
-            info.CustomizeIndexType(indexTypes[format]);
-            ClusterLevelAccelStructBatch other;
-            other.Create(info);
-            CHECK_TRUE(lastTriangleInput.vertexFormat == VK_FORMAT_R16G16B16A16_SFLOAT);
             defaults.CustomizeVertexFormat(VK_FORMAT_R16G16B16A16_SFLOAT);
             defaults.CustomizeIndexType(indexTypes[format]);
             defaults.CustomizeIndexStride(8);
-            ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(std::span(&defaults, 1), other, upload, offset);
+            ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(std::span(&defaults, 1), upload, offset);
             Record task{};
             std::memcpy(&task, bytes.data() + offset, sizeof(task));
             CHECK_TRUE(task.indexType == nativeTypes[format] && task.clusterID == 0 && task.vertexBufferStride == 0 &&
                 task.indexBufferStride == 8 && task.opacityMicromapIndexType == VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV,
-                "Packed native CLAS task must use the batch's common index type and value defaults!");
+                "Packed native CLAS task must use its own index type and value defaults!");
         }
         const std::vector<uint8_t> saved(bytes.begin(), bytes.end());
         triangles[0].clusterID = 42;
@@ -477,21 +469,21 @@ namespace
         auto expectBadTriangle = [&](const ClusterLevelAccelStructDirectBuildInfo& invalid)
         {
             triangles[2] = invalid;
-            ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(triangles, batch, upload, offset); });
+            ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(triangles, upload, offset); });
             CHECK_TRUE(std::ranges::equal(ClasBufferTestFixture::Bytes(upload), saved),
                 "A rejected late task must preserve all caller bytes!");
         };
         auto bad = original; bad.clusterID = std::numeric_limits<uint32_t>::max(); expectBadTriangle(bad);
-        bad = original; bad.CustomizeIndexType(VK_INDEX_TYPE_UINT16); expectBadTriangle(bad);
-        bad = original; bad.CustomizeVertexFormat(VK_FORMAT_R16G16B16A16_SFLOAT); expectBadTriangle(bad);
+        bad = original; bad.CustomizeIndexType(VK_INDEX_TYPE_NONE_KHR); expectBadTriangle(bad);
+        bad = original; bad.CustomizeVertexFormat(VK_FORMAT_UNDEFINED); expectBadTriangle(bad);
         bad = original; bad.CustomizeIndexStride(65536); expectBadTriangle(bad);
         bad = original; bad.CustomizeIndexStride(5); expectBadTriangle(bad);
         bad = original; bad.indexAddress = std::numeric_limits<VkDeviceAddress>::max() - 31;
         bad.CustomizeIndexStride(8); expectBadTriangle(bad);
         bad = original; bad.primitiveCount = 0; expectBadTriangle(bad);
         bad = original; bad.vertexCount = 0; expectBadTriangle(bad);
-        bad = original; bad.primitiveCount = 4; expectBadTriangle(bad);
-        bad = original; bad.vertexCount = 6; expectBadTriangle(bad);
+        bad = original; bad.primitiveCount = 512; expectBadTriangle(bad);
+        bad = original; bad.vertexCount = 512; expectBadTriangle(bad);
         bad = original; bad.vertexAddress = 0; expectBadTriangle(bad);
         bad = original; bad.vertexAddress += 1; expectBadTriangle(bad);
         bad = original; bad.vertexStride = 65536; expectBadTriangle(bad);
@@ -500,73 +492,42 @@ namespace
         bad = original; bad.vertexAddress = std::numeric_limits<VkDeviceAddress>::max() - 3; expectBadTriangle(bad);
         bad = original; bad.indexAddress = std::numeric_limits<VkDeviceAddress>::max() - 3; expectBadTriangle(bad);
         triangles[2] = original;
-        const std::array tooMany{ triangles[0], triangles[0], triangles[0], triangles[0] };
-        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(tooMany, batch, upload); });
-        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(triangles, batch, upload, 255); });
-        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(triangles, batch, upload, std::numeric_limits<VkDeviceSize>::max()); });
-        ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline({}, batch, upload);
+        const std::array tooMany{ triangles[0], triangles[0], triangles[0], triangles[0], triangles[0] };
+        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(tooMany, upload); });
+        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(triangles, upload, 255); });
+        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(triangles, upload, std::numeric_limits<VkDeviceSize>::max()); });
+        ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline({}, upload);
         Buffer deviceLocal = UploadBuffer(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(triangles, batch, deviceLocal); });
+        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(triangles, deviceLocal); });
         CHECK_TRUE(std::ranges::equal(ClasBufferTestFixture::Bytes(upload), saved));
     }
 
-    void TestIndependentTriangleAndVertexBudgets()
+    void TestDirectUploadUsesTaskFormatsAndCounts()
     {
         Hooks hooks;
-        caps.maxTriangles = 100;
-        caps.maxVertices = 120;
-        ClusterLevelAccelStructBatchCreateInfo info;
-        info.SetMaxClusterCount(2);
-        info.SetMaxClusterTriangleCount(100);
-        info.SetMaxClusterVertexCount(120);
-        info.SetMaxTotalTriangleCount(160);
-        info.SetMaxTotalVertexCount(170);
-        ClusterLevelAccelStructBatch batch;
-        batch.Create(info);
-        CHECK_TRUE(queriedOutputCount == 2 && lastTriangleInput.maxTotalTriangleCount == 160 &&
-            lastTriangleInput.maxTotalVertexCount == 170);
-        info.SetMaxTotalTriangleCount(200);
-        info.SetMaxTotalVertexCount(240);
-
         Buffer upload = UploadBuffer(HostMemory);
-        std::array<ClusterLevelAccelStructDirectBuildInfo, 2> tasks{{
-            { 0, 80, 0x4000, 0, 85, 0x5000 },
-            { 1, 80, 0x6000, 0, 85, 0x7000 }
+        std::array<ClusterLevelAccelStructDirectBuildInfo, 3> tasks{{
+            { 0, 100, 0x4000, 0, 120, 0x5000, VK_INDEX_TYPE_UINT8 },
+            { 1, 101, 0x6002, 0, 121, 0x7002, VK_INDEX_TYPE_UINT16, 0, VK_FORMAT_R16G16B16A16_SFLOAT },
+            { 2, 102, 0x8000, 0, 122, 0x9004, VK_INDEX_TYPE_UINT32 }
         }};
-        ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(tasks, batch, upload);
+        ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(tasks, upload);
         const auto bytes = ClasBufferTestFixture::Bytes(upload);
-        const std::vector<uint8_t> saved(bytes.begin(), bytes.end());
-        tasks[0].primitiveCount = tasks[1].primitiveCount = 100;
-        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(tasks, batch, upload); });
-        tasks[0].primitiveCount = tasks[1].primitiveCount = 80;
-        tasks[1].vertexCount = 86;
-        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(tasks, batch, upload); });
-        tasks[0].primitiveCount = 59;
-        tasks[1].primitiveCount = 101;
-        tasks[1].vertexCount = 85;
-        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(tasks, batch, upload); });
-        tasks[0].vertexCount = 49;
-        tasks[1].vertexCount = 121;
-        tasks[0].primitiveCount = tasks[1].primitiveCount = 80;
-        ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(tasks, batch, upload); });
-        CHECK_TRUE(std::ranges::equal(bytes, saved), "A rejected task must preserve caller bytes!");
+        using Record = VkClusterAccelerationStructureBuildTriangleClusterInfoNV;
+        std::array<Record, 3> records{};
+        std::memcpy(records.data(), bytes.data(), sizeof(records));
+        CHECK_TRUE(records[0].indexType == VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV &&
+            records[1].indexType == VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_16BIT_NV &&
+            records[2].indexType == VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_32BIT_NV &&
+            records[0].triangleCount == 100 && records[1].triangleCount == 101 && records[2].triangleCount == 102 &&
+            records[0].vertexCount == 120 && records[1].vertexCount == 121 && records[2].vertexCount == 122 &&
+            records[1].vertexBuffer == 0x6002,
+            "Direct upload must encode each task's own formats and counts without a target batch!");
     }
 
     void TestUniqueVertexCountBounds()
     {
         Hooks hooks;
-        caps.maxTriangles = 100;
-        caps.maxVertices = 300;
-        ClusterLevelAccelStructBatchCreateInfo info;
-        info.SetMaxClusterCount(2);
-        info.SetMaxClusterTriangleCount(100);
-        info.SetMaxClusterVertexCount(300);
-        info.SetMaxTotalTriangleCount(110);
-        info.SetMaxTotalVertexCount(310);
-        info.CustomizeIndexType(VK_INDEX_TYPE_UINT8);
-        ClusterLevelAccelStructBatch batch;
-        batch.Create(info);
-
         using Record = VkClusterAccelerationStructureBuildTriangleClusterInfoNV;
         Buffer upload = UploadBuffer(HostMemory);
         const auto bytes = ClasBufferTestFixture::Bytes(upload);
@@ -579,7 +540,7 @@ namespace
                 { 8, triangles, 0x8000, 0, maxUniqueVertices, 0xa000 }
             }};
             for (auto& task : tasks) task.CustomizeIndexType(VK_INDEX_TYPE_UINT8);
-            ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(tasks, batch, upload);
+            ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(tasks, upload);
             Record record{};
             std::memcpy(&record, bytes.data() + sizeof(record), sizeof(record));
             CHECK_TRUE(record.vertexCount == maxUniqueVertices, "The unique vertex count bound must be inclusive!");
@@ -587,7 +548,7 @@ namespace
 
             tasks[0].clusterID = 9;
             ++tasks[1].vertexCount;
-            ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(tasks, batch, upload); });
+            ExpectFailure([&] { ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(tasks, upload); });
             CHECK_TRUE(std::ranges::equal(bytes, saved), "A late impossible unique vertex count must preserve caller bytes!");
         }
     }
@@ -672,90 +633,66 @@ namespace
         CHECK_TRUE(batch.GetCapacity() == 2 && batch.GetSizesInfo().buildScratchBufferSize == 0);
     }
 
-    void TestClusterBlasRangesAndPacking()
+    void TestClusterBlasRawReferencesAndPacking()
     {
         Hooks hooks;
-        ClusterLevelAccelStructBatch clusters;
-        ClusterLevelAccelStructBatch otherClusters;
-        clusters.Create(MakeTriangleCapacity());
-        otherClusters.Create(MakeTriangleCapacity());
+        constexpr VkDeviceAddress firstReferences = 0x100008;
+        constexpr VkDeviceAddress secondReferences = 0x200000;
         std::array<BottomLevelAccelStructBuildInfo, 2> tasks{};
-        tasks[0].SetClusterReferences(clusters, 1, 2);
-        tasks[1].SetClusterReferences(otherClusters, 0, 1);
+        tasks[0].SetClusterReferences(firstReferences, 2);
+        tasks[1].SetClusterReferences(secondReferences, 1);
 
-        ClusterLevelAccelStructBatch uncreated;
-        ExpectFailure([&] { tasks[0].SetClusterReferences(uncreated, 0, 1); });
-        ExpectFailure([&] { tasks[0].SetClusterReferences(clusters, 0, 0); });
-        ExpectFailure([&] { tasks[0].SetClusterReferences(clusters, 2, 2); });
-        ExpectFailure([&] { tasks[0].SetClusterReferences(clusters, std::numeric_limits<uint32_t>::max(), 2); });
-        ClasBufferTestFixture::SetBufferAddressOverride(std::numeric_limits<VkDeviceAddress>::max() - 7);
-        ExpectFailure([&] { tasks[0].SetClusterReferences(clusters, 0, 1); });
-        ExpectFailure([&] { tasks[0].SetClusterReferences(clusters, 1, 1); });
-        ClasBufferTestFixture::SetBufferAddressOverride(0x100001);
-        ExpectFailure([&] { tasks[0].SetClusterReferences(clusters, 0, 1); });
-        ClasBufferTestFixture::SetBufferAddressOverride(0);
+        ExpectFailure([&] { tasks[0].SetClusterReferences(0, 1); });
+        ExpectFailure([&] { tasks[0].SetClusterReferences(firstReferences, 0); });
+        ExpectFailure([&] { tasks[0].SetClusterReferences(std::numeric_limits<VkDeviceAddress>::max() - 7, 1); });
+        ExpectFailure([&] { tasks[0].SetClusterReferences(std::numeric_limits<VkDeviceAddress>::max() - 15, 2); });
+        ExpectFailure([&] { tasks[0].SetClusterReferences(0x100001, 1); });
 
-        BottomLevelAccelStructBatch batch;
         Buffer empty;
-        ExpectFailure([&] { batch.WriteBuildInfoBufferInline({}, empty); });
-        ExpectFailure([&] { batch.WriteBuildInfoBufferInline(tasks, empty); });
-        batch.Create(MakeClusterBlasCapacity());
-        batch.WriteBuildInfoBufferInline({}, empty, std::numeric_limits<VkDeviceSize>::max());
+        BottomLevelAccelStructBuildInfo::CommitToDeviceInline({}, empty, std::numeric_limits<VkDeviceSize>::max());
+        ExpectFailure([&] { BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, empty); });
         Buffer upload = UploadBuffer(HostMemory);
         constexpr VkDeviceSize offset = 8;
-        batch.WriteBuildInfoBufferInline(tasks, upload, offset);
+        BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload, offset);
         const auto bytes = ClasBufferTestFixture::Bytes(upload);
         std::array<VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, 2> records{};
         std::memcpy(records.data(), bytes.data() + offset, sizeof(records));
-        CHECK_TRUE(records[0].clusterReferences == clusters.GetReferenceBuffer()->GetDeviceAddress() + 8 &&
+        CHECK_TRUE(records[0].clusterReferences == firstReferences &&
             records[0].clusterReferencesCount == 2 && records[0].clusterReferencesStride == 8 &&
-            records[1].clusterReferences == otherClusters.GetReferenceBuffer()->GetDeviceAddress() &&
+            records[1].clusterReferences == secondReferences &&
             records[1].clusterReferencesCount == 1 && records[1].clusterReferencesStride == 8,
-            "Each BLAS task must pack its source range with fixed stride and preserve previously valid inputs on setter failure!");
+            "Each BLAS task must pack its borrowed address with fixed stride and preserve previously valid inputs on setter failure!");
     }
 
-    void TestClusterBlasUploadChecksSavedBudgetsBeforeWriting()
+    void TestClusterBlasUploadValidatesBeforeWriting()
     {
         Hooks hooks;
-        ClusterLevelAccelStructBatch clusters;
-        clusters.Create(MakeTriangleCapacity());
-        BottomLevelAccelStructBatch batch;
-        auto info = MakeClusterBlasCapacity();
-        batch.Create(info);
-        info.SetMaxAccelStructCount(3);
-        info.SetMaxClusterCountPerAccelStruct(3);
-        info.SetMaxTotalClusterCount(6);
+        constexpr VkDeviceAddress references = 0x100000;
         Buffer upload = UploadBuffer(HostMemory);
-        std::array<BottomLevelAccelStructBuildInfo, 2> tasks{};
-        tasks[0].SetClusterReferences(clusters, 1, 2);
-        tasks[1].SetClusterReferences(clusters, 0, 1);
-        batch.WriteBuildInfoBufferInline(tasks, upload);
+        std::array<BottomLevelAccelStructBuildInfo, 3> tasks{};
+        tasks[0].SetClusterReferences(references + sizeof(VkDeviceAddress), 2);
+        tasks[1].SetClusterReferences(references, 3);
+        tasks[2].SetClusterReferences(references, 4);
+        BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload);
         const auto bytes = ClasBufferTestFixture::Bytes(upload);
+        std::array<VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, 3> records{};
+        std::memcpy(records.data(), bytes.data(), sizeof(records));
+        CHECK_TRUE(records[0].clusterReferencesCount == 2 && records[1].clusterReferencesCount == 3 &&
+            records[2].clusterReferencesCount == 4,
+            "Cluster BLAS upload must encode caller-supplied counts without a target batch!");
         const std::vector<uint8_t> saved(bytes.begin(), bytes.end());
 
-        const std::array tooMany{ tasks[1], tasks[1], tasks[1] };
-        ExpectFailure([&] { batch.WriteBuildInfoBufferInline(tooMany, upload); });
-        auto expectLateFailure = [&]
-        {
-            ExpectFailure([&] { batch.WriteBuildInfoBufferInline(tasks, upload); });
-            CHECK_TRUE(std::ranges::equal(bytes, saved), "A late rejected BLAS task must preserve the entire upload buffer!");
-        };
-        tasks[0].SetClusterReferences(clusters, 0, 2);
-        tasks[1].SetClusterReferences(clusters, 0, 2);
-        expectLateFailure();
-        tasks[0].SetClusterReferences(clusters, 0, 1);
-        tasks[1].SetClusterReferences(clusters, 0, 3);
-        ExpectFailure([&] { batch.WriteBuildInfoBufferInline(std::span(&tasks[1], 1), upload); });
-        tasks[1] = {};
-        expectLateFailure();
+        tasks.back() = {};
+        ExpectFailure([&] { BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload); });
+        CHECK_TRUE(std::ranges::equal(bytes, saved), "A late rejected BLAS task must preserve the entire upload buffer!");
 
-        tasks[1].SetClusterReferences(clusters, 0, 2);
-        ExpectFailure([&] { batch.WriteBuildInfoBufferInline(tasks, upload, 255); });
-        ExpectFailure([&] { batch.WriteBuildInfoBufferInline(tasks, upload, std::numeric_limits<VkDeviceSize>::max()); });
+        tasks.back().SetClusterReferences(references, 4);
+        ExpectFailure([&] { BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload, 255); });
+        ExpectFailure([&] { BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload, std::numeric_limits<VkDeviceSize>::max()); });
         Buffer deviceLocal = UploadBuffer(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        ExpectFailure([&] { batch.WriteBuildInfoBufferInline(tasks, deviceLocal); });
+        ExpectFailure([&] { BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, deviceLocal); });
         Buffer nonCoherent = UploadBuffer(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-        ExpectFailure([&] { batch.WriteBuildInfoBufferInline(tasks, nonCoherent); });
+        ExpectFailure([&] { BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, nonCoherent); });
         CHECK_TRUE(std::ranges::equal(bytes, saved));
     }
 }
@@ -764,13 +701,14 @@ void RunClasResourceTests()
 {
     ClasBufferTestFixture::Run([] { ClasBufferTestFixture::WithInlineExecutor(TestTemplatePackingAndRollback); });
     ClasBufferTestFixture::Run(TestInstantiateUsesWholeCapacity);
+    ClasBufferTestFixture::Run(TestInstantiatePackingAndAtomicUpload);
     ClasBufferTestFixture::Run(TestTriangleSnapshotsAndNativeSizes);
     ClasBufferTestFixture::Run(TestTriangleCreateRejectionAndRetry);
     ClasBufferTestFixture::Run(TestTrianglePackingAndAtomicUpload);
-    ClasBufferTestFixture::Run(TestIndependentTriangleAndVertexBudgets);
+    ClasBufferTestFixture::Run(TestDirectUploadUsesTaskFormatsAndCounts);
     ClasBufferTestFixture::Run(TestUniqueVertexCountBounds);
     ClasBufferTestFixture::Run(TestClusterBlasCreationUsesExplicitCapacity);
     ClasBufferTestFixture::Run(TestClusterBlasCreateRejectionAndRetry);
-    ClasBufferTestFixture::Run(TestClusterBlasRangesAndPacking);
-    ClasBufferTestFixture::Run(TestClusterBlasUploadChecksSavedBudgetsBeforeWriting);
+    ClasBufferTestFixture::Run(TestClusterBlasRawReferencesAndPacking);
+    ClasBufferTestFixture::Run(TestClusterBlasUploadValidatesBeforeWriting);
 }

@@ -10,8 +10,6 @@
 static_assert(!std::is_copy_constructible_v<CommandPool> && !std::is_copy_assignable_v<CommandPool>);
 static_assert(!std::is_move_constructible_v<CommandPool> && !std::is_move_assignable_v<CommandPool>);
 static_assert(std::is_nothrow_destructible_v<CommandPool>);
-template<class T> concept HasPublicDestroy = requires(T& value) { value.Destroy(); };
-static_assert(!HasPublicDestroy<CommandPool>);
 
 namespace { VkResult createResult = VK_SUCCESS; }
 

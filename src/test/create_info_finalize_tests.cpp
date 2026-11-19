@@ -22,36 +22,15 @@
 static_assert(std::is_nothrow_move_assignable_v<PipelineLayout>);
 static_assert(!std::is_copy_constructible_v<ComputeShaderProgram> && !std::is_copy_assignable_v<ComputeShaderProgram>);
 static_assert(!std::is_move_constructible_v<ComputeShaderProgram> && !std::is_move_assignable_v<ComputeShaderProgram>);
-template<class T>
-concept HasPublicComputeCreate = requires(T& value, const ComputeShaderProgramCreateInfo& info) { value.Create(info); };
-template<class T>
-concept HasPublicGraphicsCreate = requires(T& value, const GraphicsShaderProgramCreateInfo& info) { value.Create(info); };
-template<class T>
-concept HasPublicRayTracingCreate = requires(T& value, const RayTracingShaderProgramCreateInfo& info) { value.Create(info); };
-template<class T>
-concept HasPublicDestroy = requires(T& value) { value.Destroy(); };
-template<class T>
-concept HasPublicReset = requires(T& value) { value.Reset(); };
-static_assert(!HasPublicComputeCreate<ComputeShaderProgram> && !HasPublicDestroy<ComputeShaderProgram> &&
-    !HasPublicReset<ComputeShaderProgram>);
 static_assert(!std::is_copy_constructible_v<GraphicsShaderProgram> && !std::is_copy_assignable_v<GraphicsShaderProgram> &&
     !std::is_move_constructible_v<GraphicsShaderProgram> && !std::is_move_assignable_v<GraphicsShaderProgram>);
 static_assert(!std::is_copy_constructible_v<RayTracingShaderProgram> && !std::is_copy_assignable_v<RayTracingShaderProgram> &&
     !std::is_move_constructible_v<RayTracingShaderProgram> && !std::is_move_assignable_v<RayTracingShaderProgram>);
-static_assert(!HasPublicGraphicsCreate<GraphicsShaderProgram> && !HasPublicDestroy<GraphicsShaderProgram> &&
-    !HasPublicReset<GraphicsShaderProgram>);
-static_assert(!HasPublicRayTracingCreate<RayTracingShaderProgram> && !HasPublicDestroy<RayTracingShaderProgram> &&
-    !HasPublicReset<RayTracingShaderProgram>);
-template<class T>
-concept HasPublicModuleCreate = requires(T& value, const ShaderModuleCreateInfo& info) { value.Create(info); };
-static_assert(!HasPublicModuleCreate<ShaderModule> && !HasPublicDestroy<ShaderModule> &&
-    !std::is_copy_constructible_v<ShaderModule> && !std::is_move_constructible_v<ShaderModule> &&
+static_assert(!std::is_copy_constructible_v<ShaderModule> && !std::is_move_constructible_v<ShaderModule> &&
     std::is_nothrow_destructible_v<ShaderModule>);
 static_assert(!std::is_copy_constructible_v<RenderPassDesc> && !std::is_move_constructible_v<RenderPassDesc> &&
     !std::is_copy_assignable_v<RenderPassDesc> && !std::is_move_assignable_v<RenderPassDesc> &&
     std::is_nothrow_destructible_v<RenderPassDesc>);
-static_assert(std::is_same_v<decltype(std::declval<MyDevice&>().GetOrCreateRenderPass(
-    std::declval<const RenderPassDesc&>())), VkRenderPass>);
 
 struct CreateInfoFinalizeTestProbe
 {

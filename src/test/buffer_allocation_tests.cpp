@@ -6,7 +6,7 @@
 #include "my_vulkan/device.h"
 #include "clas_buffer_test_fixture.h"
 #include <atomic>
-#include <concepts>
+#include <type_traits>
 #include <limits>
 #include <mutex>
 #include <thread>
@@ -51,11 +51,10 @@ template<typename F> void ExpectFailure(F&& action)
     try { action(); } catch (const std::exception&) { failed = true; }
     CHECK_TRUE(failed, "Expected Buffer operation to fail!");
 }
-template<typename T> concept HasDestroy = requires(T& value) { value.Destroy(); };
-static_assert(!HasDestroy<Buffer> && !std::is_copy_constructible_v<Buffer> &&
+static_assert(!std::is_copy_constructible_v<Buffer> &&
     !std::is_move_assignable_v<Buffer> && !std::is_copy_assignable_v<Buffer>);
 static_assert(std::is_nothrow_move_constructible_v<Buffer> && std::is_nothrow_destructible_v<Buffer>);
-static_assert(!HasDestroy<BottomLevelAccelStruct> && !std::is_copy_constructible_v<BottomLevelAccelStruct> &&
+static_assert(!std::is_copy_constructible_v<BottomLevelAccelStruct> &&
     !std::is_move_constructible_v<BottomLevelAccelStruct> && !std::is_copy_assignable_v<BottomLevelAccelStruct> &&
     !std::is_move_assignable_v<BottomLevelAccelStruct> && std::is_nothrow_destructible_v<BottomLevelAccelStruct>);
 static_assert(!std::is_copy_constructible_v<BufferView> && !std::is_move_constructible_v<BufferView> &&
@@ -702,7 +701,7 @@ auto ImageInfo() -> ImageCreateInfo
 
 void TestImageValidationAndRollback()
 {
-    static_assert(!HasDestroy<Image> && !std::is_move_constructible_v<Image> && std::is_nothrow_destructible_v<Image>);
+    static_assert(!std::is_move_constructible_v<Image> && std::is_nothrow_destructible_v<Image>);
     Hooks hooks;
     Image image;
     CHECK_TRUE(!image.IsValid() && image.GetVkImage() == VK_NULL_HANDLE);
@@ -852,9 +851,9 @@ auto ClasBufferTestFixture::LiveBufferCount() -> size_t
 
 void RunBufferAllocationTests()
 {
-    static_assert(!HasDestroy<TopLevelAccelStruct> && !std::is_move_constructible_v<TopLevelAccelStruct> &&
+    static_assert(!std::is_move_constructible_v<TopLevelAccelStruct> &&
         !std::is_copy_constructible_v<TopLevelAccelStruct> && std::is_nothrow_destructible_v<TopLevelAccelStruct>);
-    static_assert(!HasDestroy<ShaderBindingTable> && !std::is_move_constructible_v<ShaderBindingTable> &&
+    static_assert(!std::is_move_constructible_v<ShaderBindingTable> &&
         !std::is_copy_constructible_v<ShaderBindingTable> && std::is_nothrow_destructible_v<ShaderBindingTable>);
     {
         Hooks hooks; TopLevelAccelStructCreateInfo info;

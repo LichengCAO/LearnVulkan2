@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Partitioned TLAS：把更新工作限制在变化的分区</title>
+<link rel="stylesheet" href="../assets/teaching.css">
+<script src="../assets/teaching.js" defer></script>
+</head>
+<body><main>
+<div class="eyebrow">LEARNVULKAN2 · 第 02 课 · 2026-11-19</div>
+<h1>场景只动了一小块，TLAS 要做多少工作？</h1>
+<p class="lead">目标：给定实例变化的空间分布，能解释 PTLAS 复用了什么，并判断它是否值得做性能原型。</p>
+<p class="muted">承接 <a href="0001-cluster-template.html">Cluster Template</a>。本课聚焦原理与接入价值，不修改引擎实现。约 6 分钟。</p>
+
+<section id="model">
+<h2>1. 从物体内部，走到整个世界</h2>
+<p>上一课把物体内部的几何工作拆成可复用的 cluster；PTLAS 把场景中的实例分组，保留未变化组的加速结构。CLAS 与 PTLAS 可以独立使用：普通三角形 BLAS 也能放进 PTLAS。<a href="https://devblogs.microsoft.com/directx/clas-ptlas-preview/">[Microsoft 原文]</a></p>
+<p>把城市分成街区：大多数街区静止，一处街区有物体移动。应用给实例指定 partitionIndex，驱动维护每个分区的内部结构，再把分区组织进上层结构。空间网格只是分组方案之一，不是 API 的强制要求。<a href="https://docs.vulkan.org/features/latest/features/proposals/VK_NV_partitioned_acceleration_structure.html">[Khronos 设计]</a></p>
+<div class="flow" aria-label="PTLAS 内部组织示意"><span class="node">一个 PTLAS</span><span class="arrow">→</span><span class="node">A 分区：复用</span><span class="node">B 分区：有变化，重建</span><span class="node">C 分区：复用</span></div>
+<p>这是一个 PTLAS 的内部组织方式，不需要应用把几个可独立追踪的 TLAS 手工嵌套起来。光线最终仍通过实例访问 BLAS。</p>
+<p>普通 TLAS 已有 refit / update 路径；因此不要把比较简化为“普通 TLAS 每帧一定从零重建”。关键差别是：常规接口提交整个实例集合，PTLAS 提交持久状态上的稀疏改动。<a href="https://github.com/nvpro-samples/vk_partitioned_tlas#tlas-vs-ptlas">[NVIDIA 示例说明]</a></p>
+</section>
+
+<section id="sparse">
+<h2>2. 这一帧的写入数组，不等于完整场景</h2>
+<p>可以把 PTLAS 理解成持久实例表加上缓存的分区结构。instanceIndex 标识表中的槽位，partitionIndex 标识所属分区，两者都不是本帧写入数组的下标。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureWriteInstanceDataNV.html">[WRITE 数据]</a></p>
+<pre><code>初始化：写入实例 0 … N-1，建立 PTLAS
+下一帧：只写入 instanceIndex = 37、9002 的完整记录
+         其余实例保留以前的记录
+         受影响的普通分区重建，上层组织相应维护</code></pre>
+<p>迁移一个实例时，旧分区失去它，新分区得到它，两边都可能产生维护成本。持久记录和局部分区复用见 <a href="https://microsoft.github.io/DirectX-Specs/d3d/Raytracing2.html#partitioned-top-level-acceleration-structures">DXR 规范</a>。</p>
+<div class="callout"><b>核心判断：</b>变化实例少，并不自动等于变化分区少。还要观察这些实例散布在哪里。</div>
+<p>教学例子：100 万实例，分成 1,000 个普通分区，每区 1,000 实例；只考虑 transform 的完整写入。</p>
+<table><thead><tr><th>本帧变化</th><th>受影响普通分区</th><th>推断</th></tr></thead><tbody>
+<tr><td>10 个实例，都在同一分区</td><td>1 个</td><td>大量分区可复用</td></tr>
+<tr><td>10 个实例，分别在 10 个分区</td><td>10 个</td><td>相同写入数量，牵动更多分区</td></tr>
+<tr><td>1,000 个实例，每区一个</td><td>1,000 个</td><td>变化只有 0.1%，仍触及所有普通分区</td></tr>
+</tbody></table>
+<p class="muted">这是推理模型，不是 GPU 时间预测。还需计入上层组织维护、global 实例、命令生成及实际驱动算法；不能据此声称严格 O(变化实例数)。</p>
+</section>
+
+<section id="policy">
+<h2>3. 为什么还有 global partition？</h2>
+<p>假设每个静态街区里都有一辆每帧移动的汽车。把它们一直留在普通分区，会频繁牵动很多街区。global partition 中的实例在构建和遍历上按“各自一个分区”处理，因此适合持续活动的实例；稳定后可移回空间上合适的普通分区。它有自己的容量预算。<a href="https://docs.vulkan.org/features/latest/features/proposals/VK_NV_partitioned_acceleration_structure.html">[Khronos 设计]</a></p>
+<p>代价是上层需要处理更多独立项。分组越细，局部重建通常越省，但遍历不一定越快；分区包围盒彼此重叠也会影响遍历。<a href="https://github.com/nvpro-samples/vk_partitioned_tlas">NVIDIA 多米诺示例</a>提供原地更新、移入 global，以及根据相机距离混合选择的模式，适合观察这个取舍。</p>
+</section>
+
+<section id="ops">
+<h2>4. 三个操作，先记对移动用哪个</h2>
+<table><thead><tr><th>操作</th><th>用来做什么</th></tr></thead><tbody>
+<tr><td>WRITE_INSTANCE</td><td>完整写入实例；transform 改变或更换分区都走这里。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureWriteInstanceDataNV.html">字段</a></td></tr>
+<tr><td>UPDATE_INSTANCE</td><td>只修改 BLAS 地址和 hit-group 索引贡献，不修改 transform；适合符合约束的 LOD / BLAS 替换。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureUpdateInstanceDataNV.html">字段</a></td></tr>
+<tr><td>WRITE_PARTITION_TRANSLATION（Vulkan）</td><td>设置整个分区的额外平移，例如大世界原点调整；需要启用该功能。DXR 名为 TRANSLATE_PARTITION。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureWritePartitionTranslationDataNV.html">字段</a></td></tr>
+</tbody></table>
+<p>UPDATE 不意味着“任意更新都便宜”。DXR 显式 AABB 开启后，替换 BLAS 的变换后边界必须仍在声明范围内；未显式指定时，边界扩张可能触发 refit。范围预留越松，也可能增加遍历工作。<a href="https://microsoft.github.io/DirectX-Specs/d3d/Raytracing2.html#d3d12_rtas_partitioned_tlas_operation_type">[DXR 约束]</a></p>
+<p>分区平移可以让实例变换保留为分区相对坐标，再附加分区平移。它不是任意旋转 / 缩放的多级实例化接口。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureWritePartitionTranslationDataNV.html">[平移语义]</a></p>
+</section>
+
+<section id="value">
+<h2>5. 判断引擎是否值得接入</h2>
+<p>把它当作需要验证的假设：大量实例、较多静态区域、变化集中或动态实例可隔离时，PTLAS 有机会节省场景更新成本。若每帧几乎所有分区都变，或者 TLAS 时间本来很小，就不应仅凭实例数量决定。</p>
+<pre><code>比较同样场景、同样光线负载下的 GPU 时间：
+变化检测 / 参数生成 + AS build/update + trace
+
+同时记录：变化实例数、受影响分区数、global 实例数、AS / scratch 内存</code></pre>
+<p>分别测试稀疏集中、稀疏分散和大面积动态，比较普通 TLAS rebuild、允许时的 refit，以及不同分区粒度的 PTLAS。以上是实验建议，不是已经测得的收益。</p>
+<p>当前本仓库 <code>src</code> 未检索到 PTLAS 特性或构建接口；已有 CLAS 支持不能自动提供 PTLAS。接入面至少包括能力查询、容量与存储、间接写入命令、descriptor，以及同步 / 生命周期。Vulkan 的入口是 <code>vkCmdBuildPartitionedAccelerationStructuresNV</code>，descriptor 也有独立类型。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildPartitionedAccelerationStructuresNV.html">[命令]</a> <a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkWriteDescriptorSetPartitionedAccelerationStructureNV.html">[绑定]</a></p>
+<p>Vulkan 预算包含总实例、普通分区、单分区实例与 global 容量，不能只按当帧写入数分配。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkPartitionedAccelerationStructureInstancesInputNV.html">[预算字段]</a> PTLAS 更新仍需服从旧遍历到新写入的依赖；原地更新时尤其不能覆盖正在被 GPU 读取的存储。scratch、间接输入和 AS 结果各有同步要求。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildPartitionedAccelerationStructuresNV.html">[同步规则]</a></p>
+</section>
+
+<section id="practice">
+<h2>6. 用三个判断检查理解</h2>
+<fieldset data-quiz data-answer="write" data-explanation="transform 位于完整写入结构中；UPDATE_INSTANCE 不包含它。"><legend>汽车移动了，应该提交哪个操作？</legend><label><input type="radio" name="p1" value="write"> 完整写入实例</label><label><input type="radio" name="p1" value="update"> 局部更新引用</label><p class="feedback" aria-live="polite">选择后查看理由。</p></fieldset>
+<fieldset data-quiz data-answer="spread" data-explanation="每区一个变化仍会触及全部普通分区；先看分布，再考虑 global 或调整分组。"><legend>只有 0.1% 的实例移动，但每个普通分区都有一个。能保证明显节省分区重建吗？</legend><label><input type="radio" name="p2" value="count"> 可以，仅看变化比例</label><label><input type="radio" name="p2" value="spread"> 不行，还看变化分布</label><p class="feedback" aria-live="polite">选择后查看理由。</p></fieldset>
+<fieldset data-quiz data-answer="total" data-explanation="构建节省可能被遍历或参数生成开销抵消，必须比较同负载的总成本。"><legend>PTLAS build 比普通 TLAS 快，能直接判定值得接入吗？</legend><label><input type="radio" name="p3" value="build"> 只比较构建耗时</label><label><input type="radio" name="p3" value="total"> 要比较整帧耗时</label><p class="feedback" aria-live="polite">选择后查看理由。</p></fieldset>
+<p>开放练习：一片基本静止的森林，100 辆车分散在 100 个分区里持续移动。你会把车留在普通分区，还是试验 global？说出预期节省的工作和需要测量的代价。</p>
+</section>
+<p class="footer">优先阅读：<a href="https://docs.vulkan.org/features/latest/features/proposals/VK_NV_partitioned_acceleration_structure.html">Khronos 设计中的 Proposal</a>，再看 <a href="https://github.com/nvpro-samples/vk_partitioned_tlas#tlas-vs-ptlas">NVIDIA 示例的 TLAS vs. PTLAS</a>。<a href="../reference/partitioned-tlas.html">打开速查表</a>。任何一步不清楚都可以继续问我，尤其是分区粒度、global 和 BLAS 边界变化。</p>
+<p><a href="0003-ptlas-api.html">继续：第 03 课，从 Vulkan API 对照普通 TLAS 与 PTLAS</a></p>
+</main></body></html>

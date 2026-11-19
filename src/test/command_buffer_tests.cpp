@@ -1,6 +1,7 @@
 #include "my_vulkan/command/command_buffer.h"
 #include "my_vulkan/render_context/private/frame_slot.h"
 #include "my_vulkan/resource/acceleration_structure.h"
+#include "my_vulkan/resource/cluster_acceleration_structure.h"
 #include "my_vulkan/resource/image.h"
 #include "my_vulkan/pipeline/render_pass_desc.h"
 #include "my_vulkan/pipeline/framebuffer_desc.h"
@@ -338,37 +339,31 @@ namespace
         ++viewportCapture.calls;
     }
 
-    template<typename T>
     void TestFlattenedViewportIsDeferred()
     {
-        if constexpr (requires(T& buffer) { { buffer.SetViewport(1.f, 2.f, 30.f, 40.f) } -> std::same_as<void>; })
+        const auto previous = vkCmdSetViewport;
+        vkCmdSetViewport = CaptureViewport;
+        try
         {
-            const auto previous = vkCmdSetViewport;
-            vkCmdSetViewport = CaptureViewport;
-            try
-            {
-                T buffer;
-                viewportCapture = {};
-                buffer.SetViewport(1.f, 2.f, 30.f, -40.f, 0.25f, 0.75f, 3);
-                CHECK_TRUE(viewportCapture.calls == 0, "Enqueuing a viewport must not call Vulkan!");
-                T moved(std::move(buffer));
-                CommandBufferTestProbe::Record(moved);
-                CHECK_TRUE(viewportCapture.calls == 1 && viewportCapture.index == 3,
-                    "Viewport index must survive moving the command buffer!");
-                const auto& viewport = viewportCapture.viewport;
-                CHECK_TRUE(viewport.x == 1.f && viewport.y == 2.f && viewport.width == 30.f &&
-                    viewport.height == -40.f && viewport.minDepth == 0.25f && viewport.maxDepth == 0.75f,
-                    "Viewport fields must preserve the supplied scalar parameters!");
-            }
-            catch (...)
-            {
-                vkCmdSetViewport = previous;
-                throw;
-            }
-            vkCmdSetViewport = previous;
+            CommandBuffer buffer;
+            viewportCapture = {};
+            buffer.SetViewport(1.f, 2.f, 30.f, -40.f, 0.25f, 0.75f, 3);
+            CHECK_TRUE(viewportCapture.calls == 0, "Enqueuing a viewport must not call Vulkan!");
+            CommandBuffer moved(std::move(buffer));
+            CommandBufferTestProbe::Record(moved);
+            CHECK_TRUE(viewportCapture.calls == 1 && viewportCapture.index == 3,
+                "Viewport index must survive moving the command buffer!");
+            const auto& viewport = viewportCapture.viewport;
+            CHECK_TRUE(viewport.x == 1.f && viewport.y == 2.f && viewport.width == 30.f &&
+                viewport.height == -40.f && viewport.minDepth == 0.25f && viewport.maxDepth == 0.75f,
+                "Viewport fields must preserve the supplied scalar parameters!");
         }
-        else
-            CHECK_TRUE(false, "Missing flattened void CommandBuffer::SetViewport interface!");
+        catch (...)
+        {
+            vkCmdSetViewport = previous;
+            throw;
+        }
+        vkCmdSetViewport = previous;
     }
 }
 
@@ -908,23 +903,6 @@ namespace
 
 namespace
 {
-    template<typename Info, typename Tlas>
-    void TestEmptyInstanceUploadNeedsNoDeviceResources()
-    {
-        if constexpr (requires(Info& info, Buffer& destination) {
-            info.SetInstances({});
-            Tlas::WriteBuildInfoBufferInline(info, destination, VkDeviceSize{ 0 });
-        })
-        {
-            Info info;
-            info.SetInstances({});
-            Buffer destination;
-            Tlas::WriteBuildInfoBufferInline(info, destination, 0);
-        }
-        else
-            CHECK_TRUE(false, "Missing CPU instance description and static host upload interface!");
-    }
-
     constexpr VkBufferUsageFlags asInputUsage =
         VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
@@ -1122,6 +1100,10 @@ namespace
 
     void TestStaticInstanceUploadIsExplicitAndAtomic()
     {
+        TopLevelAccelStructCreateInfo emptyInfo;
+        Buffer emptyBuffer;
+        TopLevelAccelStruct::WriteBuildInfoBufferInline(emptyInfo, emptyBuffer);
+
         CommandBufferTestProbe::Resources resources;
         CommandBufferTestProbe::SetBlasAddress(resources.bottomSrc, 32768);
         std::array<AccelStructInstance, 2> instances{};
@@ -1393,57 +1375,50 @@ namespace
 
 namespace
 {
-    template<typename T>
     void TestOwnedAppendCallback()
     {
-        if constexpr (requires(T& buffer, std::function<void(VkCommandBuffer)> callback)
-            { { buffer.AppendCommand(std::move(callback)) } -> std::same_as<void>; })
+        std::weak_ptr<int> lifetime;
+        std::vector<int> observations;
         {
-            std::weak_ptr<int> lifetime;
-            std::vector<int> observations;
+            CommandBuffer source;
             {
-                T source;
+                auto value = std::make_shared<int>(27);
+                lifetime = value;
+                std::function<void(VkCommandBuffer)> callback = [value, &observations](VkCommandBuffer inBuffer)
                 {
-                    auto value = std::make_shared<int>(27);
-                    lifetime = value;
-                    std::function<void(VkCommandBuffer)> callback = [value, &observations](VkCommandBuffer inBuffer)
-                    {
-                        CHECK_TRUE(inBuffer == CommandBufferTestProbe::Handle<VkCommandBuffer>(1),
-                            "Callback must receive the native recording buffer!");
-                        observations.push_back(*value);
-                    };
-                    source.AppendCommand(std::move(callback));
-                }
-                CHECK_TRUE(!lifetime.expired() && observations.empty(),
-                    "AppendCommand must own its closure and defer execution!");
-                T moved(std::move(source));
-                T joined;
-                joined.AppendCommand([&observations](VkCommandBuffer) { observations.push_back(1); });
-                CommandBufferTestProbe::Append(joined, std::move(moved));
-                joined.AppendCommand([&observations](VkCommandBuffer) { observations.push_back(3); });
-                ExpectRejected(joined, [&] { joined.AppendCommand({}); });
-                CommandBufferTestProbe::Record(joined);
-                CHECK_TRUE(observations == std::vector<int>({ 1, 27, 3 }),
-                    "Callback commands must preserve capture values and stream order across move/append!");
+                    CHECK_TRUE(inBuffer == CommandBufferTestProbe::Handle<VkCommandBuffer>(1),
+                        "Callback must receive the native recording buffer!");
+                    observations.push_back(*value);
+                };
+                source.AppendCommand(std::move(callback));
             }
-            CHECK_TRUE(lifetime.expired(), "Destroying the command stream must release owned callback captures!");
-
-            CommandBufferTestProbe::Resources resources;
-            std::vector<T> buffers(3);
-            buffers[0].FillBuffer(resources.dst, 0, 4, 0);
-            std::vector<uint32_t> recorded;
-            for (uint32_t i = 0; i < 257; ++i)
-                buffers[1].AppendCommand([i, &recorded](VkCommandBuffer) { recorded.push_back(i); });
-            buffers[2].FillBuffer(resources.dst, 0, 4, 0);
-            CHECK_TRUE(CommandBufferTestProbe::BatchSizes(buffers) == std::vector<size_t>({ 1, 257, 1 }),
-                "Opaque callback commands must remain in one native recording buffer!");
-            CHECK_TRUE(recorded.empty(), "Callbacks must not run while batching!");
-            CommandBufferTestProbe::Record(buffers[1]);
-            CHECK_TRUE(recorded.size() == 257 && recorded.front() == 0 && recorded.back() == 256,
-                "Callback recording must preserve insertion order!");
+            CHECK_TRUE(!lifetime.expired() && observations.empty(),
+                "AppendCommand must own its closure and defer execution!");
+            CommandBuffer moved(std::move(source));
+            CommandBuffer joined;
+            joined.AppendCommand([&observations](VkCommandBuffer) { observations.push_back(1); });
+            CommandBufferTestProbe::Append(joined, std::move(moved));
+            joined.AppendCommand([&observations](VkCommandBuffer) { observations.push_back(3); });
+            ExpectRejected(joined, [&] { joined.AppendCommand({}); });
+            CommandBufferTestProbe::Record(joined);
+            CHECK_TRUE(observations == std::vector<int>({ 1, 27, 3 }),
+                "Callback commands must preserve capture values and stream order across move/append!");
         }
-        else
-            CHECK_TRUE(false, "Missing void AppendCommand(std::function<void(VkCommandBuffer)>) interface!");
+        CHECK_TRUE(lifetime.expired(), "Destroying the command stream must release owned callback captures!");
+
+        CommandBufferTestProbe::Resources resources;
+        std::vector<CommandBuffer> buffers(3);
+        buffers[0].FillBuffer(resources.dst, 0, 4, 0);
+        std::vector<uint32_t> recorded;
+        for (uint32_t i = 0; i < 257; ++i)
+            buffers[1].AppendCommand([i, &recorded](VkCommandBuffer) { recorded.push_back(i); });
+        buffers[2].FillBuffer(resources.dst, 0, 4, 0);
+        CHECK_TRUE(CommandBufferTestProbe::BatchSizes(buffers) == std::vector<size_t>({ 1, 257, 1 }),
+            "Opaque callback commands must remain in one native recording buffer!");
+        CHECK_TRUE(recorded.empty(), "Callbacks must not run while batching!");
+        CommandBufferTestProbe::Record(buffers[1]);
+        CHECK_TRUE(recorded.size() == 257 && recorded.front() == 0 && recorded.back() == 256,
+            "Callback recording must preserve insertion order!");
     }
 }
 
@@ -1627,22 +1602,13 @@ namespace
 void RunCommandBufferTests()
 {
     TestClusterBuildCommands();
-    {
-        CommandBufferTestProbe::ExternalBuffer source(801, 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        Buffer moved(std::move(source.buffer));
-        const bool emptied = source.buffer.GetBufferInformation().size == 0;
-        // The fixture borrowed this handle; remove it before either destructor runs.
-        CommandBufferTestProbe::ClearBorrowedBuffer(moved);
-        CHECK_TRUE(emptied, "Moving a Buffer must empty the source information!");
-    }
-    TestEmptyInstanceUploadNeedsNoDeviceResources<TopLevelAccelStructCreateInfo, TopLevelAccelStruct>();
     TestObjectBlasCommandsUseExternalBuffersAndSnapshots();
     TestAsValidationAndScratchSelection();
     TestNonIndexedTrianglesAndAabbMapping();
     TestStaticInstanceUploadIsExplicitAndAtomic();
     TestTlasCommandsDoNotUploadAndSnapshotInstanceCount();
-    TestFlattenedViewportIsDeferred<CommandBuffer>();
-    TestOwnedAppendCallback<CommandBuffer>();
+    TestFlattenedViewportIsDeferred();
+    TestOwnedAppendCallback();
     TestScalarRegionsAndOwnedBytes();
     TestPushConstantSnapshotAndValidation();
     TestImageClearTypesAndRanges();

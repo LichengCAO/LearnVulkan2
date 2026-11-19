@@ -152,7 +152,7 @@ MyDevice::CreateXxxShaderProgram 并移除相应公开 Create；这些属于后�
 
 ## 测试与验收
 
-优先扩展 [create_info_finalize_tests.cpp](E:/GitStorage/LearnVulkan2/src/create_info_finalize_tests.cpp)
+优先扩展 [create_info_finalize_tests.cpp](E:/GitStorage/LearnVulkan2/src/test/create_info_finalize_tests.cpp)
 已有的真实 allocator + native Vulkan 替身环境，保持 Host Finalize、稀疏布局和 Program
 失败重试测试可用。测试中的 Owner<PipelineLayout> 依赖公开 Destroy，需改用普通值对象，
 不能为了保留测试辅助逻辑而给生产类增加释放别名。

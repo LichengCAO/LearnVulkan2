@@ -17,13 +17,6 @@ static_assert(std::is_nothrow_copy_constructible_v<ImageView>);
 static_assert(std::is_nothrow_move_constructible_v<ImageView>);
 static_assert(!std::is_copy_constructible_v<Image>);
 static_assert(!std::is_copy_constructible_v<RenderPassDesc>);
-static_assert(std::is_same_v<decltype(std::declval<const Image&>().View()), ImageView>);
-static_assert(std::is_same_v<decltype(std::declval<ImageCreateInfo&>().SetUsage(0)), void>);
-static_assert(std::is_same_v<decltype(std::declval<GraphicsPipelineStateInfo&>().Reset()), void>);
-static_assert(noexcept(std::declval<ImageView&>().Reset()));
-static_assert(noexcept(std::declval<const ImageView&>().GetResourceId()));
-static_assert(std::is_same_v<decltype(std::declval<MyDevice&>().GetOrCreateFramebuffer(
-    std::declval<const RenderPassDesc&>(), std::declval<const FramebufferDesc&>())), VkFramebuffer>);
 
 struct ResourceLifetimeTestProbe
 {

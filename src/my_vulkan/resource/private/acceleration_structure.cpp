@@ -1,7 +1,7 @@
-#include "acceleration_structure.h"
-#include "device.h"
-#include "private/acceleration_structure_storage.h"
-#include "../allocator/private/memory_allocator.h"
+#include "../acceleration_structure.h"
+#include "../../device.h"
+#include "acceleration_structure_storage.h"
+#include "../../allocator/private/memory_allocator.h"
 #include <limits>
 
 namespace
@@ -228,7 +228,7 @@ auto TopLevelAccelStructCreateInfo::GetInstanceCount() const noexcept -> uint32_
 
 auto TopLevelAccelStructCreateInfo::GetInstanceBufferSize() const noexcept -> VkDeviceSize
 {
-    return static_cast<VkDeviceSize>(m_instances.size()) * sizeof(VkAccelerationStructureInstanceKHR);
+    return static_cast<VkDeviceSize>(m_instances.size()) * TopLevelAccelStruct::GetBuildInfoLayout().recordStride;
 }
 
 auto BottomLevelAccelStruct::_Describe(const BottomLevelAccelStructCreateInfo& inInfo,
@@ -437,7 +437,7 @@ auto TopLevelAccelStruct::_BuildInfo(const TopLevelAccelStructCreateInfo& inInfo
         CHECK_TRUE(SameLayout(result, inSrc->m_layout), "Source TLAS update layout is incompatible!");
     }
     result.geometries[0].geometry.instances.data.deviceAddress = BufferAddress(inInstanceBuffer,
-        inInstanceOffset, inInfo.GetInstanceBufferSize(), InputUsage, 16);
+        inInstanceOffset, inInfo.GetInstanceBufferSize(), InputUsage, GetBuildInfoLayout().addressAlignment);
     auto& info = result.buildGeometryInfo;
     info.mode = inSrc == nullptr ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR : VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
     info.srcAccelerationStructure = inSrc == nullptr ? VK_NULL_HANDLE : inSrc->GetVkAccelerationStructure();

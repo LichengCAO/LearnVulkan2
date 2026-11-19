@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cluster Template 速查</title><link rel="stylesheet" href="../assets/teaching.css"></head>
+<body><main><div class="eyebrow">CLUSTER TEMPLATE · 速查</div><h1>两种任务，三种模式</h1>
+<table><thead><tr><th>阶段</th><th>opType 后缀</th><th>GPU srcInfosArray 元素</th></tr></thead><tbody><tr><td>构建模板</td><td>BUILD_TRIANGLE_CLUSTER_TEMPLATE_NV</td><td>VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV</td></tr><tr><td>实例化 CLAS</td><td>INSTANTIATE_TRIANGLE_CLUSTER_NV</td><td>VkClusterAccelerationStructureInstantiateClusterInfoNV</td></tr><tr><td>构建 Cluster BLAS</td><td>BUILD_CLUSTERS_BOTTOM_LEVEL_NV</td><td>VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV</td></tr></tbody></table>
+<p><code>COMPUTE_SIZES</code>：只输出大小；<code>IMPLICIT_DESTINATIONS</code>：在用户提供的块中安排输出并写地址表；<code>EXPLICIT_DESTINATIONS</code>：读取用户提供的目标地址表并在那里构建。所有模式都用 <code>vkCmdBuildClusterAccelerationStructureIndirectNV</code>，不会自动分配应用的显存。</p>
+<p>模板存储大小 ≠ 实例化 CLAS 的存储大小。模板地址 ≠ CLAS 地址。Template 不可直接用于 BLAS / TLAS。顶点内容改了但地址稳定时，实例化任务可复用；索引与局部顶点编号必须保持一致。</p>
+<p>本地示例索引：<code>renderer_raytrace_clusters.cpp</code>：508 模板初始化；813 实例化大小查询；879 分配 CLAS 并预填任务；360 每帧实例化；283 barrier 与帧内流程；1193 BLAS 引用 CLAS 地址表。</p>
+<p>生命周期：Template → 最后一次实例化完成；CLAS → 依赖的 GPU 遍历完成；任务 / 顶点 / scratch → 使用它们的命令完成。已有输出被 GPU 读取时不能覆盖。</p>
+<p>BBox 非零即约束全部实例化顶点；位置截断影响精度。实际对齐、大小与最大数量以设备查询为准。任务或 count 由 GPU 写入时，同步至 AS_BUILD / INDIRECT_COMMAND_READ。</p>
+<p>RHI 接入边界：同步 Host Create 只完成查询和存储分配；显式 GPU BuildTemplate / Instantiate 命令完成内容生成。当前仓库的模板资源及命令尚待实现。</p>
+<p><a href="../lessons/0001-cluster-template.html#init">回到讲义</a> · <a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildClusterAccelerationStructureIndirectNV.html">Khronos 命令规则</a> · <a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV.html">Template 字段</a></p>
+</main></body></html>

@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cluster Template：从拓扑复用到 RHI 接入</title>
+<link rel="stylesheet" href="../assets/teaching.css">
+<script src="../assets/teaching.js" defer></script>
+</head>
+<body><main>
+<div class="eyebrow">LEARNVULKAN2 · 第 01 课 · 2026-11-19</div>
+<h1>同一份拓扑，生成多份变形 CLAS</h1>
+<p class="lead">这节课的目标：能顺着 NVIDIA 示例，分清“初始化一次的模板”和“每帧生成的 CLAS”，并指出接入现有 RHI 需要补什么。</p>
+<p class="muted">依据本地 <code>E:/GitStorage/nvidia_examples/v2/vk_animated_clusters</code>。阅读约 8 分钟；代码位置均指本地版本。</p>
+
+<section id="model">
+<h2>1. 先把四种东西分开</h2>
+<p>设一个 cluster 的三角形始终是 <code>(0,1,2)</code> 和 <code>(2,1,3)</code>。动画只改变这四个顶点的位置。驱动可以预先完成不依赖最终位置的工作，把结果放进 template；每帧再结合当前顶点生成 CLAS。这是扩展的设计动机。<a href="https://docs.vulkan.org/features/latest/features/proposals/VK_NV_cluster_acceleration_structure.html">[Khronos 设计说明]</a></p>
+<div class="flow" aria-label="构建关系"><span class="node">索引 / 固定属性</span><span class="arrow">→</span><span class="node">Template</span><span class="arrow">＋ 当前顶点 →</span><span class="node">CLAS</span><span class="arrow">→</span><span class="node">Cluster BLAS</span><span class="arrow">→</span><span class="node">TLAS</span></div>
+<table><thead><tr><th>对象</th><th>在本例中的作用</th><th>动画期间</th></tr></thead><tbody>
+<tr><td>Template</td><td>保存拓扑相关的预计算和继承属性</td><td>跨帧、跨同 geometry 的实例复用</td></tr>
+<tr><td>CLAS</td><td>当前顶点位置对应的 cluster 加速结构</td><td>通过模板重新实例化</td></tr>
+<tr><td>Cluster BLAS</td><td>引用一组 CLAS 地址</td><td>CLAS 改变后重建</td></tr>
+<tr><td>TLAS</td><td>引用 BLAS 并提供实例变换</td><td>示例在 BLAS 地址回填后 build/update</td></tr>
+</tbody></table>
+<p>Template 本身不能交给 BLAS，也不能直接追踪。实例化输出才是普通的 CLAS。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV.html">[Template API]</a> 在这个动画示例里，每次都提供当前顶点；把实例化理解为一次优化过的 CLAS 生成过程，而不是旧 CLAS 的 refit。</p>
+<div data-count-demo>
+<div class="controls"><label>每个模型的 cluster 数：<b data-value="clusters">100</b><input type="range" name="clusters" min="1" max="200" value="100"></label><label>独立变形的实例数：<b data-value="instances">20</b><input type="range" name="instances" min="1" max="64" value="20"></label></div>
+<div class="counts" aria-live="polite"><span><strong data-value="templates">100</strong>共享 templates</span><span><strong data-value="clas">2,000</strong>本帧 CLAS</span><span><strong data-value="blas">20</strong>Cluster BLAS</span></div>
+<p class="muted">假设同一个 geometry、每个实例独立变形、每个实例一个 BLAS。静态共享路径和多帧并行存储另计。示例按 geometry 的每个 cluster 建模板，没有自动把不同 geometry 的相同拓扑去重。</p>
+</div>
+</section>
+
+<section id="init"><h2>2. 初始化：先建模板，再给未来 CLAS 留空间</h2>
+<p>主文件是 <code>src/renderer_raytrace_clusters.cpp</code>。入口 482–485 依次调用 <code>initRayTracingTemplates()</code> 和 <code>initRayTracingTemplateInstantiations()</code>。</p>
+<p><b>第一步，构建模板。</b>508 行开始，为每个 geometry 的每个 cluster 填一条 <code>VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV</code>：</p>
+<pre><code>// 结构示意；省略了 flags、对齐与预算检查。
+templateTask.clusterID = c;
+templateTask.triangleCount = cluster.numTriangles;
+templateTask.vertexCount = cluster.numVertices;
+templateTask.indexBuffer = clusterIndices;
+templateTask.vertexBuffer = referencePositions;
+templateTask.instantiationBoundingBoxLimit = boundsAddress;
+// opType = BUILD_TRIANGLE_CLUSTER_TEMPLATE_NV</code></pre>
+<p>这里的参考顶点可以帮助构建器组织三角形；动画实例化仍使用当前顶点。索引固定意味着顶点编号的意义也必须保持。例如模板索引 3 对应实例顶点表中的同一个逻辑顶点，不能只保证顶点数量一样。</p>
+<p>示例提供两条模板分配路径：隐式构建到临时块，再用 <code>MOVE_OBJECTS</code> 紧凑搬运；或者先用 <code>COMPUTE_SIZES</code> 查询模板大小，再显式构建到最终地址。初学时重点看后者：717–720、793–810 行。</p>
+<p><b>第二步，查询实例化后 CLAS 的大小。</b>813–867 行把 opType 换成 <code>INSTANTIATE_TRIANGLE_CLUSTER_NV</code>，opMode 设为 <code>COMPUTE_SIZES_NV</code>。示例把查询任务的顶点地址设为 0，取得不依赖实际动画顶点的保守实例化大小。它不是在这个步骤生成 CLAS，也不意味着实际动画实例化能省掉顶点。</p>
+<div class="callout"><b>两次大小不能混用：</b><br>模板大小 → 给共享的 Template Buffer 分配空间。<br>实例化大小 → 给每个变形实例的 CLAS Buffer 分配空间。<br>Host 的 <code>vkGetClusterAccelerationStructureBuildSizesNV</code> 负责预算 / scratch；GPU 的 <code>COMPUTE_SIZES</code> 利用具体任务获得更紧的大小界。</div>
+<p><b>第三步，准备固定的任务与输出地址。</b>879–999 行，为每个动画实例分配 CLAS 输出 Buffer，并缓存以下数据：</p>
+<pre><code>task.clusterTemplateAddress = templateAddresses[c];
+task.clusterIdOffset = 0;
+task.geometryIndexOffset = 0;
+task.vertexBuffer.startAddress = instancePositions + localVertexOffset;
+task.vertexBuffer.strideInBytes = sizeof(glm::vec3);
+
+clasDstAddresses[i] = instanceClasBufferBase + instantiationOffsets[c];</code></pre>
+<p><code>instantiationOffsets</code> 是每个 CLAS 预留大小的前缀和。若模板、顶点 Buffer 的地址和布局稳定，任务也能跨帧复用：每帧改的是顶点内容。轮换不同的顶点 Buffer 时，要相应选择或更新任务里的地址。</p>
+<p>注意索引空间：独立 cluster 顶点路径使用 8 位局部索引，顶点地址需要加 <code>firstLocalVertex</code> 偏移；共享顶点路径使用全局 32 位索引，顶点地址使用整块 positions 的起点。参见 666–683 与 971–982 行。</p>
+</section>
+
+<section id="frame"><h2>3. 每帧：实例化命令到底读写什么</h2>
+<p>360–388 行的关键操作可以缩成下面这段。名称仍是 Vulkan 类型；这是字段关系示意，不是可直接编译的完整程序。</p>
+<pre><code>inputs.opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV;
+inputs.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
+inputs.maxAccelerationStructureCount = totalClusters;
+inputs.opInput.pTriangleClusters = &amp;triangleLimits;
+inputs.flags = instantiateFlags;
+
+cmdInfo.input = inputs;
+cmdInfo.srcInfosArray = tasksRegion;          // GPU 中的实例化任务数组
+cmdInfo.dstAddressesArray = clasDstRegion;   // 预先填好的 CLAS 目标地址数组
+cmdInfo.scratchData = scratchAddress;
+vkCmdBuildClusterAccelerationStructureIndirectNV(cmd, &amp;cmdInfo);</code></pre>
+<p>EXPLICIT 模式会读取目标地址数组，把 CLAS 写到那些地址。IMPLICIT 模式则在提供的存储块里安排输出并写回地址表。两者都不会替应用分配一块新的 VkDeviceMemory。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureOpModeNV.html">[模式定义]</a></p>
+<div class="callout"><b>原地覆盖的前提：</b>必须先让所有读取旧 CLAS 的 GPU 工作完成，包括通过旧 BLAS / TLAS 进行的遍历。BLAS 引用 CLAS 存储，不会保存一份旧内容。下面的帧内流程还需要跨帧的“旧遍历读取 → 新实例化写入”依赖；容量和地址固定并不保证并发安全。</div>
+<pre><code>旧版本最后一次 GPU 使用结束 / 建立相应执行依赖
+  →
+Compute 变形顶点
+  → barrier
+Template + 当前顶点 → 实例化 CLAS
+  → barrier
+CLAS 地址表 → 重建 Cluster BLAS
+  → barrier
+Compute 回填 TLAS instance 的 BLAS 地址
+  → barrier
+TLAS build/update
+  → barrier
+TraceRays</code></pre>
+<p>完整依赖链见 283–357 行。BLAS 输入在 1193 行指向 CLAS 地址表；显式地址没变，也不代表 CLAS 的包围信息没变，仍须重建依赖的 BLAS。</p>
+<p>同一 queue 可用适当 stage 范围的 barrier 排序旧遍历与新构建，跨 queue 则需要 semaphore 依赖及必要的所有权转移。如果想让旧版本遍历和新版本构建重叠，给它们分别保留 CLAS 及相应的 BLAS / TLAS 存储；复用一个 frame slot 前，等覆盖该 slot 全部使用的完成信号。只读模板可以共享。</p>
+<p>如果 GPU 生成任务或 count，要把写入同步到 <code>AS_BUILD</code> 阶段的 <code>INDIRECT_COMMAND_READ</code>；这个输入访问和顶点读取不能混为一谈。scratch 的复用也需要同步。参见 <a href="https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildClusterAccelerationStructureIndirectNV.html">命令同步规则</a>。</p>
+</section>
+
+<section id="bounds"><h2>4. BBox 是你对未来变形的承诺</h2>
+<p><code>instantiationBoundingBoxLimit</code> 不为 0 时，后续实例化的顶点必须落在给定范围内。范围太小，未来动画可能违反约束；不确定范围时可不提供这个限制。<a href="https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV.html">[字段定义]</a></p>
+<p>示例 639–655 行实际这样膨胀：</p>
+<pre><code>bloat = length(geometry.bbox.hi - geometry.bbox.lo) * templateBBoxBloat;
+clusterBBox.lo -= bloat;
+clusterBBox.hi += bloat;</code></pre>
+<p>它用的是整个 geometry 的 bbox 对角线长度，不是每个 cluster 自身尺寸的百分比。限制处于传入顶点的坐标空间；TLAS 的物体世界变换不要求把这个框也扩到世界空间。</p>
+<p><code>positionTruncateBitCount</code> 会舍弃 float 位置的低位以改善压缩，是精度与存储之间的权衡。开始验证时可用 0，再用误差与性能测量决定是否增加。BBox 和目标地址的对齐应查询设备属性，不能把样例的具体字节数当成所有设备的常量。</p>
+</section>
+
+<section id="rhi"><h2>5. 对照 LearnVulkan2：已有下半段，补上模板路径</h2>
+<p>本次读取的工作树中，<code>ClusterLevelAccelStructBatch</code> 已有普通 CLAS 的分配与地址表；命令层把 opType 固定为 <code>BUILD_TRIANGLE_CLUSTER_NV</code>。<code>BuildClusterAccelerationStructuresNVCommand::SetParameters</code> 当前只接受 implicit 模式、flags=0，以及普通 CLAS / Cluster BLAS 两类操作。</p>
+<table><thead><tr><th>示例能力</th><th>当前 RHI 状态 / 接入点</th></tr></thead><tbody>
+<tr><td>普通 CLAS → Cluster BLAS</td><td>已有 Batch、BuildInfo 与间接构建命令；沿用其容量和生命周期契约。</td></tr>
+<tr><td>共享 Template 存储与地址表</td><td>需要新增资源表示，例如 Template Batch；这是建议名称。</td></tr>
+<tr><td>模板构建任务 / 实例化任务</td><td>新增两种任务编码；不能把现有 TriangleCluster BuildInfo 直接重解释成它们。</td></tr>
+<tr><td>GPU 操作类型与模式</td><td>扩展命令校验、Record 的 opInput 选择、task stride 与大小查询。先用 implicit 模式能验证功能；完整复现样例的内存布局还需 COMPUTE_SIZES / explicit 模式。</td></tr>
+<tr><td>实例化结果给 BLAS</td><td>结果应接入 CLAS 地址表契约。现有 SetClusterReferences 接受具体 CLAS Batch，设计时需让实例化结果能复用它或抽出受验证的地址表视图。</td></tr>
+<tr><td>RT pipeline opt-in</td><td>已有 <code>CustomizeAllowClusterAccelerationStructure(true)</code>；创建 Program 前启用。</td></tr>
+</tbody></table>
+<p>对应文件：<code>src/my_vulkan/resource/acceleration_structure.h</code>（166、204、249 行）、<code>resource/cluster_acceleration_structure.cpp</code>（206 行）、<code>command/command_buffer_commands.cpp</code>（483、535 行）、<code>command/private/command.cpp</code>（179 行）。</p>
+<div class="callout"><b>保持项目的 Host / GPU 边界：</b>资源的 <code>Create()</code> 同步完成预算查询与 Buffer 分配；模板真正的 GPU build 和 CLAS instantiate 由命令显式完成。不要把样例初始化中的提交并等待藏进新资源的 Create。</div>
+<p>Template 存储保留到最后一次实例化读取完成；输出 CLAS 保留到引用它的 BLAS / TLAS 遍历完成。任务、顶点和 scratch 至少覆盖相应 GPU 命令的执行。Buffer RAII 不会代替 GPU 等待。参阅 <a href="../docs/resource_lifetimes.md#cluster-acceleration-structure-batches">当前 Batch 生命周期</a>。</p>
+</section>
+
+<section id="practice"><h2>6. 两个检查，再做一次示例实验</h2>
+<fieldset data-quiz data-answer="reuse" data-explanation="索引和固定属性没变、顶点仍满足范围与格式约束时，模板可复用；CLAS 按当前顶点重新生成。"><legend>只改顶点位置，拓扑与模板约束都满足。应该怎样做？</legend><label><input type="radio" name="q1" value="reuse"> 复用模板，重建CLAS</label><label><input type="radio" name="q1" value="rebuild"> 重建模板，复用CLAS</label><p class="feedback" aria-live="polite">选择后查看理由。</p></fieldset>
+<fieldset data-quiz data-answer="bounds" data-explanation="未来位置超出已声明的范围时，原模板的约束不再成立。可扩大范围重建模板，并重新检查输出预算；也可在新模板中取消该限制。"><legend>顶点动画跑出了模板声明的 BBox，下一步怎么处理？</legend><label><input type="radio" name="q2" value="ignore"> 保持边界并继续构建</label><label><input type="radio" name="q2" value="bounds"> 扩大边界并重建模板</label><p class="feedback" aria-live="polite">选择后查看理由。</p></fieldset>
+<p>在 NVIDIA 示例中选择 <code>ray trace clusters</code>，开启动画，固定场景、动画时间和其他 flags，切换 <code>Use templates</code>，比较 profiler 的 <code>clas</code>、<code>blas</code> 和 trace 总时间。再固定模板开关，只改变 bbox bloat 观察内存与有效变形范围。每次只改变一个因素；示例中的历史性能表不能代替本机测量。</p>
+<p>练习：同一模型有 100 个 cluster，20 个实例各自变形；为什么只需 100 个模板，却需要 2,000 个 CLAS？如果你能解释共享的是什么、独立的是什么，就可以开始设计模板任务接口了。</p>
+</section>
+<p class="footer">优先阅读：本地 renderer_raytrace_clusters.cpp 的 813–867、961–988、360–388 行。<a href="../reference/cluster-template.html">打开速查表</a>。任何一步不清楚，都可以继续问我，尤其是 GPU 大小查询、地址表或 RHI 资源边界。</p>
+</main></body></html>
