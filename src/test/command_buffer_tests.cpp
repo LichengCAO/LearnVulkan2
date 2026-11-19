@@ -1456,18 +1456,18 @@ namespace
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(BottomLevelAccelStructBuildIndirectInfo{}); });
         ClusterLevelAccelStructDirectBuildIndirectInfo clasInfo;
         BottomLevelAccelStructBuildIndirectInfo blasInfo;
-        ExpectRejected(commands, [&] { clasInfo.SetTarget(clas); });
-        ExpectRejected(commands, [&] { blasInfo.SetTarget(blas); });
+        ExpectRejected(commands, [&] { clasInfo.SetImplicitTarget(clas); });
+        ExpectRejected(commands, [&] { blasInfo.SetImplicitTarget(blas); });
         CommandBufferTestProbe::PrepareClusterBatch(clas);
         CommandBufferTestProbe::PrepareClusterBatch(blas);
-        clasInfo.SetTarget(clas);
-        blasInfo.SetTarget(blas);
+        clasInfo.SetImplicitTarget(clas);
+        blasInfo.SetImplicitTarget(blas);
         clasInfo.SetScratchAddress(8192);
         blasInfo.SetScratchAddress(8192);
         clasInfo.SetBuildInfoAddress(4096);
         blasInfo.SetBuildInfoAddress(4096);
         ClusterLevelAccelStructInstantiateBuildIndirectInfo instances;
-        ExpectRejected(commands, [&] { instances.SetTarget(clas); });
+        ExpectRejected(commands, [&] { instances.SetImplicitTarget(clas); });
         CommandBufferTestProbe::ChangeClusterLayout(clas);
         CommandBufferTestProbe::ChangeClusterLayout(blas);
         CommandBuffer capacityBuild;
@@ -1566,8 +1566,8 @@ namespace
         {
             ClusterLevelAccelStructBatch temporary;
             CommandBufferTestProbe::PrepareClusterBatch(temporary, true);
-            ExpectRejected(joined, [&] { clasInfo.SetTarget(temporary); });
-            instances.SetTarget(temporary);
+            ExpectRejected(joined, [&] { clasInfo.SetImplicitTarget(temporary); });
+            instances.SetImplicitTarget(temporary);
         }
         instances.SetScratchAddress(8192);
         instances.SetBuildInfoAddress(4096);
@@ -1587,7 +1587,7 @@ namespace
         CommandBufferTestProbe::Resources resources;
         CommandBuffer inside;
         inside.BeginRenderPass(resources.pass, resources.framebuffer, 0, 0, 32, 32);
-        clasInfo.SetTarget(clas);
+        clasInfo.SetImplicitTarget(clas);
         clasInfo.SetScratchAddress(8192);
         clasInfo.SetBuildInfoAddress(4096);
         ExpectRejected(inside, [&] { inside.BuildAccelerationStructureIndirect(clasInfo); });

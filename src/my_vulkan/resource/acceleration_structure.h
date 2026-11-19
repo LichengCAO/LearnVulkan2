@@ -75,6 +75,7 @@ public:
     auto GetInstanceBufferSize() const noexcept -> VkDeviceSize;
 };
 
+// TODO: Add explicit ClusterBLAS Build
 class BottomLevelAccelStruct final : public RefCounted
 {
     friend class CommandBuffer;

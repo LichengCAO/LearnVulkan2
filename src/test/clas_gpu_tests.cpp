@@ -589,7 +589,7 @@ private:
         const auto addClusterBuild = [&](CommandBuffer& cmd, VkDeviceAddress count = 0)
         {
             const auto add = [&](auto args) {
-                args.SetTarget(clusters);
+                args.SetImplicitTarget(clusters);
                 args.SetBuildInfoAddress(clusterTasks.GetDeviceAddress());
                 args.SetScratchAddress(scratchAddress(clusterScratch));
                 args.CustomizeBuildCountAddress(count);
@@ -601,7 +601,7 @@ private:
         addClusterBuild(commands);
         AppendBarrier(commands, barrier, buildStage, buildWrite, buildStage, buildRead);
         BottomLevelAccelStructBuildIndirectInfo blasBuild;
-        blasBuild.SetTarget(blases);
+        blasBuild.SetImplicitTarget(blases);
         blasBuild.SetBuildInfoAddress(blasTasks.GetDeviceAddress());
         blasBuild.SetScratchAddress(scratchAddress(blasScratch));
         commands.BuildAccelerationStructureIndirect(blasBuild);

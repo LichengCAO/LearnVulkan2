@@ -215,21 +215,21 @@ namespace
     }
 }
 
-void ClusterLevelAccelStructDirectBuildIndirectInfo::SetTarget(const ClusterLevelAccelStructBatch& inBatch)
+void ClusterLevelAccelStructDirectBuildIndirectInfo::SetImplicitTarget(const ClusterLevelAccelStructBatch& inBatch)
 {
     CHECK_TRUE(inBatch.GetCapacity() && !inBatch.m_useTemplate, "Direct CLAS requires a matching created target!");
     m_addresses = SnapshotAddresses(*inBatch.m_storageBuffer, *inBatch.m_referenceBuffer, inBatch.GetSizesInfo(), inBatch.GetCapacity());
     m_limits = inBatch.GetBuildLimits();
 }
 
-void ClusterLevelAccelStructInstantiateBuildIndirectInfo::SetTarget(const ClusterLevelAccelStructBatch& inBatch)
+void ClusterLevelAccelStructInstantiateBuildIndirectInfo::SetImplicitTarget(const ClusterLevelAccelStructBatch& inBatch)
 {
     CHECK_TRUE(inBatch.GetCapacity() && inBatch.m_useTemplate, "Instantiate CLAS requires a matching created target!");
     m_addresses = SnapshotAddresses(*inBatch.m_storageBuffer, *inBatch.m_referenceBuffer, inBatch.GetSizesInfo(), inBatch.GetCapacity());
     m_limits = inBatch.GetBuildLimits();
 }
 
-void BottomLevelAccelStructBuildIndirectInfo::SetTarget(const BottomLevelAccelStructBatch& inBatch)
+void BottomLevelAccelStructBuildIndirectInfo::SetImplicitTarget(const BottomLevelAccelStructBatch& inBatch)
 {
     CHECK_TRUE(inBatch.GetCapacity(), "Cluster BLAS requires a matching created target!");
     m_addresses = SnapshotAddresses(*inBatch.m_storageBuffer, *inBatch.m_referenceBuffer, inBatch.GetSizesInfo(), inBatch.GetCapacity());

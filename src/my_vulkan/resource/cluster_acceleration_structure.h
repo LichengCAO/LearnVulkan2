@@ -49,6 +49,16 @@ public:
 
 class ClusterLevelAccelStructBatch;
 
+class ClusterLevelAccelStructCreateInfo final
+{
+public:
+	void SetMaxTriangleCount(uint32_t inCount);
+	void SetMaxVertexCount(uint32_t inCount);
+	void CustomizeVertexFormat(VkFormat inFormat);
+	void CustomizeIndexType(VkIndexType inType);
+	void CustomizeTemplateUsage(bool inUseTemplate);
+};
+
 class ClusterLevelAccelStructBatchCreateInfo final
 {
 	friend class ClusterLevelAccelStructBatch;
@@ -135,7 +145,8 @@ public:
 class ClusterLevelAccelStruct final : public RefCounted
 {
 public:
-
+	void Create(const ClusterLevelAccelStructCreateInfo&);
+	auto GetReference() const noexcept->VkDeviceAddress;
 };
 
 // Implicit CLAS
@@ -171,25 +182,6 @@ public:
 	auto GetBuildLimits() const noexcept -> VkClusterAccelerationStructureTriangleClusterInputNV { return m_triangleInput; }
 };
 
-class BottomLevelAccelStructBuildInfo final
-{
-private:
-	VkDeviceAddress m_clusterReferencesAddress = 0;
-	uint32_t m_clusterCount = 0;
-
-public:
-	// Borrows a packed VkDeviceAddress array. The caller keeps the table alive through
-	// the BLAS build and the referenced CLAS alive through dependent GPU uses.
-	void SetClusterReferences(VkDeviceAddress inReferenceBufferAddress, uint32_t inCount);
-
-	static constexpr auto GetBuildInfoLayout() noexcept -> AccelStructBuildInfoLayout
-	{ return AccelStructGpuLayout::ClusterBlas::Layout; }
-
-	// Encodes and uploads Host tasks to a host-visible, host-coherent Buffer.
-	// The caller guarantees the tasks fit the eventual build's batch budgets.
-	static void CommitToDeviceInline(std::span<const BottomLevelAccelStructBuildInfo> inHostInfo, Buffer& inoutTargetBuffer, VkDeviceSize inOffset = 0);
-};
-
 class BottomLevelAccelStructBatchCreateInfo final
 {
 	friend class BottomLevelAccelStructBatch;
@@ -203,6 +195,27 @@ public:
 	void SetMaxAccelStructCount(uint32_t inCount) { m_maxAccelStructCount = inCount; }
 	void SetMaxClusterCountPerAccelStruct(uint32_t inCount) { m_maxClusterCountPerAccelStruct = inCount; }
 	void SetMaxTotalClusterCount(uint32_t inCount) { m_maxTotalClusterCount = inCount; }
+};
+
+class BottomLevelAccelStructBuildInfo final
+{
+private:
+	VkDeviceAddress m_clusterReferencesAddress = 0;
+	uint32_t m_clusterCount = 0;
+
+public:
+	// Borrows a packed VkDeviceAddress array. The caller keeps the table alive through
+	// the BLAS build and the referenced CLAS alive through dependent GPU uses.
+	void SetClusterReferences(VkDeviceAddress inReferenceBufferAddress, uint32_t inCount);
+
+	static constexpr auto GetBuildInfoLayout() noexcept -> AccelStructBuildInfoLayout
+	{
+		return AccelStructGpuLayout::ClusterBlas::Layout;
+	}
+
+	// Encodes and uploads Host tasks to a host-visible, host-coherent Buffer.
+	// The caller guarantees the tasks fit the eventual build's batch budgets.
+	static void CommitToDeviceInline(std::span<const BottomLevelAccelStructBuildInfo> inHostInfo, Buffer& inoutTargetBuffer, VkDeviceSize inOffset = 0);
 };
 
 class BottomLevelAccelStructBatch final : public RefCounted
@@ -240,7 +253,8 @@ private:
 	VkDeviceAddress m_scratch = 0;
 	VkDeviceAddress m_count = 0;
 public:
-	void SetTarget(const ClusterLevelAccelStructBatch& inBatch);
+	void SetImplicitTarget(const ClusterLevelAccelStructBatch& inBatch);
+	void SetExplicitTarget(std::span<ClusterLevelAccelStruct*> inTarget);
 	void SetBuildInfoAddress(VkDeviceAddress inAddress) { m_tasks = inAddress; }
 	void SetScratchAddress(VkDeviceAddress inAddress) { m_scratch = inAddress; }
 	void CustomizeBuildCountAddress(VkDeviceAddress inAddress) { m_count = inAddress; }
@@ -256,16 +270,11 @@ private:
 	VkDeviceAddress m_scratch = 0;
 	VkDeviceAddress m_count = 0;
 public:
-	void SetTarget(const ClusterLevelAccelStructBatch& inBatch);
+	void SetImplicitTarget(const ClusterLevelAccelStructBatch& inBatch);
+	void SetExplicitTarget(std::span<ClusterLevelAccelStruct*> inTarget);
 	void SetBuildInfoAddress(VkDeviceAddress inAddress) { m_tasks = inAddress; }
 	void SetScratchAddress(VkDeviceAddress inAddress) { m_scratch = inAddress; }
 	void CustomizeBuildCountAddress(VkDeviceAddress inAddress) { m_count = inAddress; }
-};
-
-struct ClusterLevelAccelStructDirectBuildInfo final
-{
-public:
-	void SetTargets()
 };
 
 struct BottomLevelAccelStructBuildIndirectInfo final
@@ -278,7 +287,8 @@ private:
 	VkDeviceAddress m_scratch = 0;
 	VkDeviceAddress m_count = 0;
 public:
-	void SetTarget(const BottomLevelAccelStructBatch& inBatch);
+	void SetImplicitTarget(const BottomLevelAccelStructBatch& inBatch);
+	void SetExplicitTarget(std::span<BottomLevelAccelStruct*> inTarget);
 	void SetBuildInfoAddress(VkDeviceAddress inAddress) { m_tasks = inAddress; }
 	void SetScratchAddress(VkDeviceAddress inAddress) { m_scratch = inAddress; }
 	void CustomizeBuildCountAddress(VkDeviceAddress inAddress) { m_count = inAddress; }
