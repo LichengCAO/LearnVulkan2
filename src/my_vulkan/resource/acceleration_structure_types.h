@@ -12,9 +12,17 @@ struct VkAccelStructBuildInfo
 
 struct AccelStructSizesInfo
 {
+	// Scratch requirements cover the whole queried batch; unsupported updates require zero bytes.
 	VkDeviceSize updateScratchBufferSize = 0;
 	VkDeviceSize buildScratchBufferSize = 0;
 	VkDeviceSize scratchAlignment = 0;
+	// Task array capacity for the queried maximum target count, not the GPU actual count.
 	VkDeviceSize buildInfoBufferSize = 0;
+	// Output capacity bound, not the actual GPU-built size. For CLAS and Cluster BLAS:
+	// implicit destinations require this many bytes for the whole contiguous batch;
+	// explicit destinations require this many bytes for each individual destination.
 	VkDeviceSize accelerationStructureSize = 0;
+	// Required alignment of the implicit storage base or each explicit destination address.
+	// For fixed explicit slots, align the slot stride up from accelerationStructureSize.
+	VkDeviceSize accelerationStructureAlignment = 0;
 };

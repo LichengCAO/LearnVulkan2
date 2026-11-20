@@ -104,7 +104,7 @@ public:
 
 class ClusterLevelAccelStructBatch final : public RefCounted
 {
-	friend struct ClusterLevelAccelStructDirectBuildIndirectInfo;
+	friend struct ClusterLevelAccelStructBuildIndirectInfo;
 	friend struct ClusterLevelAccelStructInstantiateBuildIndirectInfo;
 	friend struct CommandBufferTestProbe;
 	friend struct ClusterAccelerationStructureTestProbe;
@@ -274,21 +274,27 @@ public:
 	static void CommitToDeviceInline(std::span<const BottomLevelAccelStructBuildInfo> inHostInfo, Buffer& inoutTargetBuffer, VkDeviceSize inOffset = 0);
 };
 
-// All target addresses are borrowed; address arrays contain packed VkDeviceAddress values.
-// inMaxTargetCount is capacity in [1, UINT32_MAX], checked before native conversion.
-// Each Set*Target replaces the mode, capacity and addresses, clearing the previous target.
-// The caller provides sufficient destination storage and retains it through dependent GPU uses.
-class ClusterLevelAccelStructBuildIndirectTarget final
+class ClusterLevelAccelStructBuildLayout final
 {
 public:
+	enum class BuildType
+	{
+		EXPLICIT_DIRECT,
+		EXPLICIT_INSTANTIATE,
+		IMPLICIT_DIRECT,
+		IMPLICIT_INSTANTIATE,
+	};
 	void SetMaxTriangleCount(uint32_t inMaxPerCluster, uint32_t inMaxInTotal);
 	void SetMaxVertexCount(uint32_t inMaxPerCluster, uint32_t inMaxInTotal);
 	void CustomizeVertexFormat(VkFormat inFormat);
-	void SetExplicitTarget(VkDeviceAddress inTargetAddressArray, size_t inMaxTargetCount);
-	void SetImplicitTarget(VkDeviceAddress inTargetAddressOutputArray, size_t inMaxTargetCount, VkDeviceAddress inStorageBuffer);
+	// Synchronous Host query with no allocation or submission; no GPU addresses are required.
+	// Requires an initialized Device with CLAS support and a positive maximum target count.
+	// Use matching layout budgets/format, operation, destination mode and capacity when binding
+	// the build target. Returned scratch and task-array requirements cover the whole batch.
+	auto QuerySizesInfo(BuildType inType, uint32_t inMaxTargetCount) const -> AccelStructSizesInfo;
 };
 
-struct ClusterLevelAccelStructDirectBuildIndirectInfo final
+struct ClusterLevelAccelStructBuildIndirectInfo final
 {
 	friend class CommandBuffer;
 private:
@@ -300,41 +306,31 @@ private:
 public:
 	// Snapshots target parameters and budget; GPU addresses remain borrowed.
 	// Retain target storage through dependent GPU uses and arrays through the build.
+	// Every target setter replaces the operation, destination mode, capacity and addresses.
+	// Address arrays contain packed VkDeviceAddress values: explicit reads, implicit writes.
 	void SetBuildTarget(const ClusterLevelAccelStructBatch& inBatch);
-	void SetBuildTarget(const ClusterLevelAccelStructBuildIndirectTarget& inTarget);
+	void SetExplicitTarget(const ClusterLevelAccelStructBuildLayout& inLayout, VkDeviceAddress inTargetAddressArray, uint32_t inMaxTargetCount);
+	void SetExplicitInstantiateTarget(const ClusterLevelAccelStructBuildLayout& inLayout, VkDeviceAddress inTargetAddressArray, uint32_t inMaxTargetCount);
+	void SetImplicitTarget(const ClusterLevelAccelStructBuildLayout& inLayout, VkDeviceAddress inTargetAddressOutputArray, uint32_t inMaxTargetCount, VkDeviceAddress inStorageBuffer);
+	void SetImplicitInstantiateTarget(const ClusterLevelAccelStructBuildLayout& inLayout, VkDeviceAddress inTargetAddressOutputArray, uint32_t inMaxTargetCount, VkDeviceAddress inStorageBuffer);
 	void SetBuildInfoAddress(VkDeviceAddress inAddress) { m_tasks = inAddress; }
 	void SetScratchAddress(VkDeviceAddress inAddress) { m_scratch = inAddress; }
 	// Optional GPU actual count; defaults to the target's maximum capacity.
 	void CustomizeBuildCountAddress(VkDeviceAddress inAddress) { m_count = inAddress; }
 };
 
-struct ClusterLevelAccelStructInstantiateBuildIndirectInfo final
-{
-	friend class CommandBuffer;
-private:
-	VulkanDetail::ClusterBuildAddresses m_addresses{};
-	VkClusterAccelerationStructureTriangleClusterInputNV m_limits{};
-	VkDeviceAddress m_tasks = 0;
-	VkDeviceAddress m_scratch = 0;
-	VkDeviceAddress m_count = 0;
-public:
-	// Same target snapshot and borrowed-resource contract as direct CLAS builds.
-	void SetBuildTarget(const ClusterLevelAccelStructBatch& inBatch);
-	void SetBuildTarget(const ClusterLevelAccelStructBuildIndirectTarget& inTarget);
-	void SetBuildInfoAddress(VkDeviceAddress inAddress) { m_tasks = inAddress; }
-	void SetScratchAddress(VkDeviceAddress inAddress) { m_scratch = inAddress; }
-	// Optional GPU actual count; defaults to the target's maximum capacity.
-	void CustomizeBuildCountAddress(VkDeviceAddress inAddress) { m_count = inAddress; }
-};
-
-// CLAS reference limits for Cluster BLAS builds, independent of triangle/vertex limits.
-// Same packed-array, capacity, target replacement and borrowed-address contract as the CLAS target.
-class BottomLevelAccelStructBuildIndirectTarget final
+class BottomLevelAccelStructBuildLayout final
 {
 public:
+	enum class BuildType
+	{
+		EXPLICIT,
+		IMPLICIT,
+	};
 	void SetMaxClusterCount(uint32_t inMaxPerAccelStruct, uint32_t inMaxInTotal);
-	void SetExplicitTarget(VkDeviceAddress inTargetAddressArray, size_t inMaxTargetCount);
-	void SetImplicitTarget(VkDeviceAddress inTargetAddressOutputArray, size_t inMaxTargetCount, VkDeviceAddress inStorageBuffer);
+	// Same Host query contract as the CLAS layout: no addresses, allocation or submission.
+	// Bind targets with matching budgets, destination mode and positive maximum target count.
+	auto QuerySizesInfo(BuildType inType, uint32_t inMaxTargetCount) const -> AccelStructSizesInfo;
 };
 
 struct BottomLevelAccelStructBuildIndirectInfo final
@@ -348,8 +344,11 @@ private:
 	VkDeviceAddress m_count = 0;
 public:
 	// Same target snapshot and borrowed-resource contract as direct CLAS builds.
+	// Every target setter replaces the destination mode, capacity and addresses.
+	// Address arrays contain packed VkDeviceAddress values: explicit reads, implicit writes.
 	void SetBuildTarget(const BottomLevelAccelStructBatch& inBatch);
-	void SetBuildTarget(const BottomLevelAccelStructBuildIndirectTarget& inTarget);
+	void SetExplicitTarget(const BottomLevelAccelStructBuildLayout& inLayout, VkDeviceAddress inTargetAddressArray, uint32_t inMaxTargetCount);
+	void SetImplicitTarget(const BottomLevelAccelStructBuildLayout& inLayout, VkDeviceAddress inTargetAddressOutputArray, uint32_t inMaxTargetCount, VkDeviceAddress inStorageBuffer);
 	void SetBuildInfoAddress(VkDeviceAddress inAddress) { m_tasks = inAddress; }
 	void SetScratchAddress(VkDeviceAddress inAddress) { m_scratch = inAddress; }
 	// Optional GPU actual count; defaults to the target's maximum capacity.
