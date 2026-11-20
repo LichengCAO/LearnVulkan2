@@ -13,6 +13,7 @@ class ClusterLevelAccelStructTemplateBatch;
 class DescriptorSetLayoutAllocator;
 namespace VulkanDetail
 {
+	struct ClusterSizeQuery;
 	class RenderTargetCache;
     class ShaderModuleAllocator;
 	struct RenderPassSnapshot;
@@ -76,8 +77,7 @@ class MyDevice final
 	friend struct ClusterAccelerationStructureTestProbe;
 	friend struct ClusterAccelerationStructureGpuTestProbe;
 	friend struct ClasPipelineTestProbe;
-	friend class ClusterLevelAccelStructBuildLayout;
-	friend class BottomLevelAccelStructBuildLayout;
+	friend struct VulkanDetail::ClusterSizeQuery;
 	friend class GraphicsShaderProgram;
     friend class ComputeShaderProgram;
 	friend class RayTracingShaderProgram;

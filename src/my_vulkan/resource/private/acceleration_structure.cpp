@@ -347,7 +347,7 @@ void BottomLevelAccelStruct::Create(const BottomLevelAccelStructCreateInfo& inCr
         CHECK_TRUE(inCreateInfo.m_flags == 0, "Cluster BLAS layouts use default build flags!");
         BottomLevelAccelStructBuildLayout layout;
         layout.SetMaxClusterCount(inCreateInfo.m_clusterCount, inCreateInfo.m_clusterCount);
-        const auto sizes = layout.QuerySizesInfo(BottomLevelAccelStructBuildLayout::BuildType::EXPLICIT, 1);
+        const auto sizes = VulkanDetail::ClusterSizeQuery::Get(layout, VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV, 1);
         auto storage = std::make_unique<VulkanDetail::AccelerationStructureStorage>();
         storage->buffer = VulkanDetail::CreateClusterDestination(sizes);
         const auto reference = storage->buffer->GetDeviceAddress();

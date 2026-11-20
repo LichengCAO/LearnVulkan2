@@ -301,18 +301,22 @@ CLAS references, synchronize GPU-produced table contents and retain the table
 through the BLAS build. Referenced CLAS storage remains alive through the last
 dependent GPU use.
 
-The direct CLAS, instantiate CLAS and Cluster BLAS indirect arguments snapshot
-native limits, capacity, layout and borrowed destination addresses at `SetBuildTarget`
-or the raw explicit/implicit target setter. Layout size queries use the selected
-operation and destination mode, require no addresses and allocate no Buffers.
-Each appended command freezes these values and an optional borrowed GPU
-count address. With no count address they build the full capacity and require
-valid tasks for that whole range. Otherwise the GPU count supplies the actual
+Each CLAS CommandInput snapshots limits and capacity at operation selection.
+Selecting a layout queries the Device synchronously. A matching explicit or
+implicit Batch supplies its creation results and borrowed output addresses.
+The const `QueryCurrentTargetSizesInfo()` reads the selected requirements.
+Changing targets preserves arguments, scratch and GPU count and replaces all
+destination bindings. Copies own independent Host snapshots and moving transfers
+the target binding. Commands borrow GPU arguments, scratch, count, reference
+tables, size tables and AS storage. Compute sizes writes packed `uint32_t` values,
+and implicit builds may write the same output alongside packed references.
+Each appended command freezes these values. With no count address it uses the full
+capacity and requires valid tasks for that whole range. Otherwise the GPU count supplies the actual
 number and its producer must ensure it does not exceed capacity. The RHI neither
 reads back nor clamps that value. A zero read from a supplied count Buffer builds
 no structures but still executes a native command with the existing queue requirements.
-Only the resulting address-table prefix is valid; no path clears inactive
-entries. Uploading a shorter BuildInfo span does not change the command count.
+Only the active prefix of output references and sizes is valid. Inactive entries
+retain their previous contents. Uploading a shorter BuildInfo span does not change the command count.
 Both implicit address tables support explicit
 transfer initialization, but the Batch does not initialize them automatically.
 

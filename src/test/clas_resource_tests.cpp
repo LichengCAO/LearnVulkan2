@@ -171,49 +171,84 @@ namespace
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
-    void TestLayoutQueries()
+    struct HostQueryDeviceCalls
+    {
+        static inline uint32_t allocations = 0;
+        static inline uint32_t submissions = 0;
+        static auto VKAPI_PTR Create(VkDevice, const VkBufferCreateInfo*, const VkAllocationCallbacks*, VkBuffer*) -> VkResult
+        {
+            ++allocations;
+            return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        }
+        static auto VKAPI_PTR Submit(VkQueue, uint32_t, const VkSubmitInfo2*, VkFence) -> VkResult
+        {
+            ++submissions;
+            return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        }
+        decltype(vkCreateBuffer) oldCreate = std::exchange(vkCreateBuffer, Create);
+        decltype(vkQueueSubmit2) oldSubmit = std::exchange(vkQueueSubmit2, Submit);
+        HostQueryDeviceCalls() { allocations = submissions = 0; }
+        ~HostQueryDeviceCalls() { vkCreateBuffer = oldCreate; vkQueueSubmit2 = oldSubmit; }
+    };
+
+    void TestCommandInputQueries()
     {
         Hooks hooks;
+        HostQueryDeviceCalls calls;
         ClusterLevelAccelStructBuildLayout layout;
-        using Type = ClusterLevelAccelStructBuildLayout::BuildType;
+        BuildExplicitClusterAccelStructCommandInput explicitBuild;
+        BuildImplicitClusterAccelStructCommandInput implicitBuild;
+        ComputeClusterAccelStructSizesCommandInput compute;
+        ExpectFailure([&] { compute.QueryCurrentTargetSizesInfo(); });
         layout.SetMaxTriangleCount(3, 6);
-        ExpectFailure([&] { layout.QuerySizesInfo(Type::EXPLICIT_DIRECT, 3); });
+        ExpectFailure([&] { explicitBuild.SetClusterTarget(layout, 3); });
         layout.SetMaxVertexCount(5, 12);
-        ExpectFailure([&] { layout.QuerySizesInfo(Type::EXPLICIT_DIRECT, 0); });
-        ExpectFailure([&] { layout.QuerySizesInfo(static_cast<Type>(99), 3); });
+        ExpectFailure([&] { explicitBuild.SetClusterTarget(layout, 0); });
         caps.supportsVertexFormat = false;
-        ExpectFailure([&] { layout.QuerySizesInfo(Type::EXPLICIT_DIRECT, 3); });
+        ExpectFailure([&] { explicitBuild.SetClusterTarget(layout, 3); });
         caps.supportsVertexFormat = true;
         ClusterAccelerationStructureTestProbe::ExchangeEnabled(false);
-        ExpectFailure([&] { layout.QuerySizesInfo(Type::IMPLICIT_DIRECT, 3); });
+        ExpectFailure([&] { implicitBuild.SetClusterTarget(layout, 3); });
         ClusterAccelerationStructureTestProbe::ExchangeEnabled(true);
         CHECK_TRUE(sizeQueries == 0);
         scratchSize = 0;
-        for (const auto type : {Type::EXPLICIT_DIRECT, Type::EXPLICIT_INSTANTIATE, Type::IMPLICIT_DIRECT, Type::IMPLICIT_INSTANTIATE})
+        const auto check = [&](const auto& input, auto operation, auto mode, size_t stride, bool blas = false)
         {
-            const auto sizes = layout.QuerySizesInfo(type, 3);
-            const bool implicit = type == Type::IMPLICIT_DIRECT || type == Type::IMPLICIT_INSTANTIATE;
-            const bool direct = type == Type::IMPLICIT_DIRECT || type == Type::EXPLICIT_DIRECT;
-            CHECK_TRUE(queriedMode == (implicit ? VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV :
-                VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV));
-            CHECK_TRUE(queriedOp == (direct ? VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV :
-                VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV));
-            CHECK_TRUE(sizes.accelerationStructureSize == (implicit ? 1024 : 768) && sizes.accelerationStructureAlignment == 128 &&
+            const auto sizes = input.QueryCurrentTargetSizesInfo();
+            const bool sizing = mode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV;
+            const bool implicit = mode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
+            CHECK_TRUE(queriedMode == mode && queriedOp == operation);
+            CHECK_TRUE(sizes.accelerationStructureSize == (sizing ? 0 : implicit ? 1024 : blas ? 1280 : 768) &&
+                sizes.accelerationStructureAlignment == (sizing ? 0 : blas ? 512 : 128) &&
                 sizes.scratchAlignment == 256 && sizes.buildScratchBufferSize == 0 && sizes.updateScratchBufferSize == 0 &&
-                sizes.buildInfoBufferSize == 3 * (direct ? sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV) :
-                    sizeof(VkClusterAccelerationStructureInstantiateClusterInfoNV)));
-            CHECK_TRUE(queriedOutputCount == 3 && lastTriangleInput.maxTotalTriangleCount == 6 && lastTriangleInput.maxTotalVertexCount == 12);
-        }
+                sizes.buildInfoBufferSize == 3 * stride);
+            CHECK_TRUE(queriedOutputCount == 3);
+            if (blas) CHECK_TRUE(lastClustersInput.maxTotalClusterCount == 7);
+            else CHECK_TRUE(lastTriangleInput.maxTotalTriangleCount == 6 && lastTriangleInput.maxTotalVertexCount == 12);
+        };
         BottomLevelAccelStructBuildLayout blas;
-        using BlasType = BottomLevelAccelStructBuildLayout::BuildType;
-        ExpectFailure([&] { blas.QuerySizesInfo(BlasType::EXPLICIT, 2); });
+        ExpectFailure([&] { compute.SetBottomLevelAccelStructTarget(blas, 3); });
         blas.SetMaxClusterCount(5, 7);
-        ExpectFailure([&] { blas.QuerySizesInfo(static_cast<BlasType>(99), 2); });
-        const auto sizes = blas.QuerySizesInfo(BlasType::EXPLICIT, 2);
-        CHECK_TRUE(queriedOutputCount == 2 && lastClustersInput.maxTotalClusterCount == 7 &&
-            sizes.accelerationStructureSize == 1280 && sizes.accelerationStructureAlignment == 512 &&
-            sizes.buildInfoBufferSize == 2 * sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV));
-        CHECK_TRUE(ClasBufferTestFixture::LiveBufferCount() == 0);
+        const auto checkOperations = [&](auto& input, auto mode)
+        {
+            input.SetClusterTarget(layout, 3);
+            check(input, VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV, mode,
+                sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV));
+            input.SetInstantiateClusterTarget(layout, 3);
+            check(input, VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV, mode,
+                sizeof(VkClusterAccelerationStructureInstantiateClusterInfoNV));
+            input.SetBottomLevelAccelStructTarget(blas, 3);
+            check(input, VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV, mode,
+                sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV), true);
+        };
+        checkOperations(explicitBuild, VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV);
+        checkOperations(implicitBuild, VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV);
+        checkOperations(compute, VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV);
+        compute.SetClusterTemplateTarget(layout, 3);
+        check(compute, VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_TEMPLATE_NV,
+            VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV,
+            sizeof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV));
+        CHECK_TRUE(sizeQueries == 10 && !calls.allocations && !calls.submissions && !ClasBufferTestFixture::LiveBufferCount());
     }
 
     void TestExplicitOwnership()
@@ -870,7 +905,7 @@ namespace
 
 void RunClasResourceTests()
 {
-    ClasBufferTestFixture::Run(TestLayoutQueries);
+    ClasBufferTestFixture::Run(TestCommandInputQueries);
     ClasBufferTestFixture::Run(TestExplicitOwnership);
     ClasBufferTestFixture::Run(TestClusterBlasOwners);
     ClasBufferTestFixture::Run([] { ClasBufferTestFixture::WithInlineExecutor(TestTemplatePackingAndRollback); });
@@ -887,8 +922,9 @@ void RunClasResourceTests()
     ClasBufferTestFixture::Run(TestClusterBlasUploadValidatesBeforeWriting);
 }
 
-void ClasBufferTestFixture::WithClusterQueries(void (*inTest)())
+void ClasBufferTestFixture::WithClusterQueries(void (*inTest)(), VkDeviceSize inScratchBytes)
 {
     Hooks hooks;
+    scratchSize = inScratchBytes;
     inTest();
 }

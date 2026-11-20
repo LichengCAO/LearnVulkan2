@@ -22,6 +22,7 @@ struct AccelStructSizesInfo
 	// implicit destinations require this many bytes for the whole contiguous batch;
 	// an explicit object using the layout maxima fits this many bytes. In a managed
 	// heterogeneous batch, task i must fit owner i's separately queried capacities.
+	// Compute-sizes commands return zero for both AS fields and write per-task byte sizes on the GPU.
 	VkDeviceSize accelerationStructureSize = 0;
 	// Required alignment of the implicit storage base or each explicit destination address.
 	// For fixed explicit slots, align the slot stride up from accelerationStructureSize.

@@ -95,6 +95,20 @@ The Host encoder writes packed reference stride 8. Each task's references must
 be unique addresses of built CLAS objects, and the array must have enough entries.
 See the native [Cluster BLAS record](https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV.html).
 
+## CLAS command outputs
+
+A reference table contains one packed 8-byte `VkDeviceAddress` per slot.
+Explicit builds read that table. Implicit builds write references and may also
+write a separate size table. Compute sizes writes only the size table. Allocate
+four bytes per maximum target for packed `uint32_t` byte sizes, with a four-byte
+aligned base, storage-buffer usage and device address usage. Both output tables
+preserve entries beyond the GPU count. Synchronize their writes before dependent
+GPU reads or Host readback. Template sizing takes
+`VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV` records at an
+eight-byte aligned base. Each 72-byte record uses the direct task layout for its
+first 64 bytes, followed by the optional `instantiationBoundingBoxLimit` address.
+[Native command fields](https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureCommandsInfoNV.html)
+
 ## TLAS instances
 
 | Offset | Size | Native field / packed word |

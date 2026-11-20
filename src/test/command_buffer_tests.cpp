@@ -1455,21 +1455,30 @@ namespace
         ClusterLevelAccelStructBatch clas;
         BottomLevelAccelStructBatch blas;
         CommandBuffer commands;
-        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(ClusterLevelAccelStructBuildIndirectInfo{}); });
-        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(BottomLevelAccelStructBuildIndirectInfo{}); });
-        ClusterLevelAccelStructBuildIndirectInfo clasInfo;
-        BottomLevelAccelStructBuildIndirectInfo blasInfo;
-        ExpectRejected(commands, [&] { clasInfo.SetBuildTarget(clas); });
-        ExpectRejected(commands, [&] { blasInfo.SetBuildTarget(blas); });
+        ExpectRejected(commands, [&] { commands.ComputeClusterAccelStructSizes(ComputeClusterAccelStructSizesCommandInput{}); });
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(BuildExplicitClusterAccelStructCommandInput{}); });
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(BuildImplicitClusterAccelStructCommandInput{}); });
+        BuildImplicitClusterAccelStructCommandInput clasInfo;
+        BuildImplicitClusterAccelStructCommandInput blasInfo;
+        ExpectRejected(commands, [&] { clasInfo.SetClusterTarget(clas); });
+        ExpectRejected(commands, [&] { blasInfo.SetBottomLevelAccelStructTarget(blas); });
         CommandBufferTestProbe::PrepareClusterBatch(clas);
         CommandBufferTestProbe::PrepareClusterBatch(blas);
-        clasInfo.SetBuildTarget(clas);
-        blasInfo.SetBuildTarget(blas);
+        clasInfo.SetClusterTarget(clas);
+        blasInfo.SetBottomLevelAccelStructTarget(blas);
+        clasInfo.SetOutputReferencesArray(16384);
+        clasInfo.SetStorageAddress(12288);
+        ExpectRejected(commands, [&] { clasInfo.SetOutputReferencesArray(16400); });
+        ExpectRejected(commands, [&] { clasInfo.SetStorageAddress(0x9000); });
+        ExpectRejected(commands, [&] { clasInfo.SetInstantiateClusterTarget(clas); });
+        BuildExplicitClusterAccelStructCommandInput explicitInfo;
+        ExpectRejected(commands, [&] { explicitInfo.SetClusterTarget(clas); });
+        ExpectRejected(commands, [&] { explicitInfo.SetBottomLevelAccelStructTarget(blas); });
         clasInfo.SetScratchAddress(8192);
         blasInfo.SetScratchAddress(8192);
-        clasInfo.SetBuildInfoAddress(4096);
-        blasInfo.SetBuildInfoAddress(4096);
-        ClusterLevelAccelStructBuildIndirectInfo instances;
+        clasInfo.SetArgumentAddress(4096);
+        blasInfo.SetArgumentAddress(4096);
+        BuildImplicitClusterAccelStructCommandInput instances;
         CommandBufferTestProbe::ChangeClusterLayout(clas);
         CommandBufferTestProbe::ChangeClusterLayout(blas);
         CommandBuffer capacityBuild;
@@ -1482,9 +1491,9 @@ namespace
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalid); });
         invalid = clasInfo; invalid.SetScratchAddress(8193);
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalid); });
-        invalid = clasInfo; invalid.SetBuildInfoAddress(0);
+        invalid = clasInfo; invalid.SetArgumentAddress(0);
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalid); });
-        invalid = clasInfo; invalid.SetBuildInfoAddress(4097);
+        invalid = clasInfo; invalid.SetArgumentAddress(4097);
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalid); });
         invalid = clasInfo; invalid.SetScratchAddress(12288);
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalid); });
@@ -1502,9 +1511,9 @@ namespace
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalidBlas); });
         invalidBlas.SetScratchAddress(16384);
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalidBlas); });
-        invalidBlas = blasInfo; invalidBlas.SetBuildInfoAddress(0);
+        invalidBlas = blasInfo; invalidBlas.SetArgumentAddress(0);
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalidBlas); });
-        invalidBlas.SetBuildInfoAddress(4097);
+        invalidBlas.SetArgumentAddress(4097);
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(invalidBlas); });
         commands.BuildAccelerationStructureIndirect(clasInfo);
         clasInfo.CustomizeBuildCountAddress(2048);
@@ -1568,10 +1577,10 @@ namespace
         {
             ClusterLevelAccelStructBatch temporary;
             CommandBufferTestProbe::PrepareClusterBatch(temporary, true);
-            instances.SetBuildTarget(temporary);
+            instances.SetInstantiateClusterTarget(temporary);
         }
         instances.SetScratchAddress(8192);
-        instances.SetBuildInfoAddress(4096);
+        instances.SetArgumentAddress(4096);
         instances.CustomizeBuildCountAddress(2048);
         CommandBuffer instanceCommands;
         instanceCommands.BuildAccelerationStructureIndirect(instances);
@@ -1588,9 +1597,9 @@ namespace
         CommandBufferTestProbe::Resources resources;
         CommandBuffer inside;
         inside.BeginRenderPass(resources.pass, resources.framebuffer, 0, 0, 32, 32);
-        clasInfo.SetBuildTarget(clas);
+        clasInfo.SetClusterTarget(clas);
         clasInfo.SetScratchAddress(8192);
-        clasInfo.SetBuildInfoAddress(4096);
+        clasInfo.SetArgumentAddress(4096);
         ExpectRejected(inside, [&] { inside.BuildAccelerationStructureIndirect(clasInfo); });
         ExpectRejected(inside, [&] { inside.BuildAccelerationStructureIndirect(blasInfo); });
         CommandBuffer pending;
@@ -1606,33 +1615,50 @@ namespace
         ClusterLevelAccelStructBuildLayout layout;
         layout.SetMaxTriangleCount(3, 6);
         layout.SetMaxVertexCount(5, 12);
-        ClusterLevelAccelStructBuildIndirectInfo info;
-        info.SetScratchAddress(0x1000);
-        info.SetBuildInfoAddress(0x2000);
+        BuildImplicitClusterAccelStructCommandInput implicitBuild;
+        BuildExplicitClusterAccelStructCommandInput explicitBuild;
+        implicitBuild.SetScratchAddress(0x1000);
+        implicitBuild.SetArgumentAddress(0x2000);
+        explicitBuild.SetScratchAddress(0x1000);
+        explicitBuild.SetArgumentAddress(0x2000);
         CommandBuffer commands;
-        info.SetImplicitInstantiateTarget(layout, 0x3000, 3, 0x4000);
-        commands.BuildAccelerationStructureIndirect(info);
-        info.SetExplicitTarget(layout, 0x5000, 2);
-        ExpectRejected(commands, [&] { info.SetImplicitTarget(layout, 0x5000, 2, 0x4101); });
-        ExpectRejected(commands, [&] { info.SetExplicitTarget(layout, UINT64_MAX - 7, 2); });
-        commands.BuildAccelerationStructureIndirect(info);
-        info.SetImplicitTarget(layout, 0x6000, 2, 0x7000);
-        commands.BuildAccelerationStructureIndirect(info);
-        info.SetExplicitInstantiateTarget(layout, 0x8000, 3);
+        implicitBuild.SetInstantiateClusterTarget(layout, 3);
+        implicitBuild.SetOutputReferencesArray(0x3000);
+        implicitBuild.SetStorageAddress(0x4000);
+        ExpectRejected(commands, [&] {
+            auto overlap = implicitBuild;
+            overlap.SetOutputReferencesArray(0x4008);
+            commands.BuildAccelerationStructureIndirect(overlap);
+        });
+        implicitBuild.CustomizeOutputSizesArray(0x9000);
+        commands.BuildAccelerationStructureIndirect(implicitBuild);
+        explicitBuild.SetClusterTarget(layout, 2);
+        explicitBuild.SetReferencesArray(0x5000);
+        ExpectRejected(commands, [&] { explicitBuild.SetReferencesArray(UINT64_MAX - 7); });
+        commands.BuildAccelerationStructureIndirect(explicitBuild);
+        implicitBuild.SetClusterTarget(layout, 2);
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(implicitBuild); });
+        implicitBuild.SetOutputReferencesArray(0x6000);
+        ExpectRejected(commands, [&] { implicitBuild.SetStorageAddress(0x7101); });
+        implicitBuild.SetStorageAddress(0x7000);
+        commands.BuildAccelerationStructureIndirect(implicitBuild);
+        explicitBuild.SetInstantiateClusterTarget(layout, 3);
+        explicitBuild.SetReferencesArray(0x8000);
         layout.SetMaxVertexCount(2, 2);
-        info.CustomizeBuildCountAddress(0xa000);
-        commands.BuildAccelerationStructureIndirect(info);
-        info.SetScratchAddress(0x8000);
-        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(info); });
+        explicitBuild.CustomizeBuildCountAddress(0xa000);
+        commands.BuildAccelerationStructureIndirect(explicitBuild);
+        explicitBuild.SetScratchAddress(0x8000);
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(explicitBuild); });
         BottomLevelAccelStructBuildLayout blasLayout;
         blasLayout.SetMaxClusterCount(4, 7);
-        BottomLevelAccelStructBuildIndirectInfo blas;
-        blas.SetBuildInfoAddress(0x2000);
-        blas.SetScratchAddress(0x1000);
-        blas.SetImplicitTarget(blasLayout, 0x3000, 2, 0x4000);
-        commands.BuildAccelerationStructureIndirect(blas);
-        blas.SetExplicitTarget(blasLayout, 0x5000, 3);
-        commands.BuildAccelerationStructureIndirect(blas);
+        implicitBuild.SetBottomLevelAccelStructTarget(blasLayout, 2);
+        implicitBuild.SetOutputReferencesArray(0x3000);
+        implicitBuild.SetStorageAddress(0x4000);
+        commands.BuildAccelerationStructureIndirect(implicitBuild);
+        explicitBuild.SetBottomLevelAccelStructTarget(blasLayout, 3);
+        explicitBuild.SetReferencesArray(0x5000);
+        explicitBuild.SetScratchAddress(0x1000);
+        commands.BuildAccelerationStructureIndirect(explicitBuild);
         CommandBufferTestProbe::Record(commands);
         CHECK_TRUE(clusterCommands.size() == 6 && clusterTriangleInputs.size() == 4 && clusterBlasInputs.size() == 2);
         constexpr std::array<uint32_t, 6> capacities{3, 2, 2, 3, 2, 3};
@@ -1651,9 +1677,87 @@ namespace
                 VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV));
             CHECK_TRUE(cmd.input.maxAccelerationStructureCount == capacities[i] && cmd.dstImplicitData == storages[i] &&
                 cmd.dstAddressesArray.deviceAddress == tables[i] && cmd.dstAddressesArray.size == capacities[i] * 8 &&
-                cmd.srcInfosArray.size == capacities[i] * stride && cmd.srcInfosCount == (i == 3 ? 0xa000 : 0));
+                cmd.dstSizesArray.deviceAddress == (i == 0 ? 0x9000 : 0) && cmd.dstSizesArray.size == (i == 0 ? 12 : 0) &&
+                cmd.srcInfosArray.size == capacities[i] * stride && cmd.srcInfosCount == (i == 3 || i == 5 ? 0xa000 : 0));
         }
         CHECK_TRUE(clusterTriangleInputs.back().maxTotalVertexCount == 12 && clusterBlasInputs.back().maxTotalClusterCount == 7);
+        ComputeClusterAccelStructSizesCommandInput compute;
+        compute.SetArgumentAddress(0x2000);
+        compute.SetScratchAddress(0x1000);
+        compute.CustomizeBuildCountAddress(0xa000);
+        CommandBuffer sizing;
+        const auto appendSizing = [&]
+        {
+            ExpectRejected(sizing, [&] { sizing.ComputeClusterAccelStructSizes(compute); });
+            for (auto invalid : std::array<VkDeviceAddress, 5>{0x2000, 0x1000, 0xa000, 0x9001, UINT64_MAX - 3})
+                ExpectRejected(sizing, [&] {
+                    auto copy = compute;
+                    copy.SetOutputSizesArray(invalid);
+                    sizing.ComputeClusterAccelStructSizes(copy);
+                });
+            compute.SetOutputSizesArray(0x9000);
+            sizing.ComputeClusterAccelStructSizes(compute);
+        };
+        compute.SetClusterTarget(layout, 3);
+        appendSizing();
+        compute.SetClusterTemplateTarget(layout, 3);
+        appendSizing();
+        compute.SetInstantiateClusterTarget(layout, 3);
+        appendSizing();
+        compute.SetBottomLevelAccelStructTarget(blasLayout, 3);
+        appendSizing();
+        CommandBufferTestProbe::Record(sizing);
+        constexpr std::array ops{VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV,
+            VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_TEMPLATE_NV,
+            VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV,
+            VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV};
+        constexpr std::array strides{sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV),
+            sizeof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV),
+            sizeof(VkClusterAccelerationStructureInstantiateClusterInfoNV), sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV)};
+        CHECK_TRUE(clusterCommands.size() == 6 + ops.size());
+        for (size_t i = 0; i < ops.size(); ++i)
+        {
+            const auto& cmd = clusterCommands[6 + i];
+            CHECK_TRUE(cmd.input.opMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV && cmd.input.opType == ops[i] &&
+                cmd.srcInfosArray.stride == strides[i] && cmd.srcInfosArray.size == 3 * strides[i] && cmd.srcInfosCount == 0xa000 &&
+                cmd.dstSizesArray.deviceAddress == 0x9000 && cmd.dstSizesArray.stride == 4 && cmd.dstSizesArray.size == 12 &&
+                cmd.dstAddressesArray.deviceAddress == 0 && cmd.dstAddressesArray.size == 0 && cmd.dstImplicitData == 0);
+        }
+        for (auto invalid : std::array<VkDeviceAddress, 6>{0x1000, 0x2000, 0x3000, 0x4000, 0xa000, UINT64_MAX - 3})
+            ExpectRejected(commands, [&] {
+                auto copy = implicitBuild;
+                copy.CustomizeBuildCountAddress(0xa000);
+                copy.CustomizeOutputSizesArray(invalid);
+                commands.BuildAccelerationStructureIndirect(copy);
+            });
+    }
+
+    void TestClusterCommandsWithoutScratch()
+    {
+        ScopedFunction dispatch(vkCmdBuildClusterAccelerationStructureIndirectNV, &CaptureClusterBuild);
+        BottomLevelAccelStructBuildLayout layout;
+        layout.SetMaxClusterCount(2, 4);
+        CommandBuffer commands;
+        ComputeClusterAccelStructSizesCommandInput compute;
+        compute.SetBottomLevelAccelStructTarget(layout, 2);
+        compute.SetArgumentAddress(0x1000);
+        compute.SetOutputSizesArray(0x2000);
+        commands.ComputeClusterAccelStructSizes(compute);
+        BuildImplicitClusterAccelStructCommandInput implicitBuild;
+        implicitBuild.SetBottomLevelAccelStructTarget(layout, 2);
+        implicitBuild.SetArgumentAddress(0x1000);
+        implicitBuild.SetStorageAddress(0x3000);
+        implicitBuild.SetOutputReferencesArray(0x4000);
+        commands.BuildAccelerationStructureIndirect(implicitBuild);
+        BuildExplicitClusterAccelStructCommandInput explicitBuild;
+        explicitBuild.SetBottomLevelAccelStructTarget(layout, 2);
+        explicitBuild.SetArgumentAddress(0x1000);
+        explicitBuild.SetReferencesArray(0x4000);
+        commands.BuildAccelerationStructureIndirect(explicitBuild);
+        clusterCommands.clear();
+        CommandBufferTestProbe::Record(commands);
+        CHECK_TRUE(clusterCommands.size() == 3);
+        for (const auto& command : clusterCommands) CHECK_TRUE(command.scratchData == 0);
     }
 
     template<typename Info>
@@ -1663,6 +1767,8 @@ namespace
         const auto verify = [&](Info& source, Info& target)
         {
             CommandBuffer commands;
+            ExpectRejected(commands, [&] { source.QueryCurrentTargetSizesInfo(); });
+            CHECK_TRUE(target.QueryCurrentTargetSizesInfo().buildInfoBufferSize == bound.QueryCurrentTargetSizesInfo().buildInfoBufferSize);
             source.SetScratchAddress(owner);
             ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(source); });
             source.SetScratchAddress(0x5000);
@@ -1708,10 +1814,15 @@ namespace
         info.SetReferenceBuffer(*table, 24);
         ClusterLevelAccelStructBatch batch;
         batch.Create(info);
-        ClusterLevelAccelStructBuildIndirectInfo buildInfo;
-        buildInfo.SetBuildTarget(batch);
-        buildInfo.SetBuildInfoAddress(0x4000);
+        BuildExplicitClusterAccelStructCommandInput buildInfo;
+        buildInfo.SetInstantiateClusterTarget(batch);
+        buildInfo.SetArgumentAddress(0x4000);
         CommandBuffer commands;
+        buildInfo.SetReferencesArray(table->GetDeviceAddress() + 24);
+        ExpectRejected(commands, [&] { buildInfo.SetReferencesArray(table->GetDeviceAddress()); });
+        ExpectRejected(commands, [&] { buildInfo.SetClusterTarget(batch); });
+        BuildImplicitClusterAccelStructCommandInput implicitBuild;
+        ExpectRejected(commands, [&] { implicitBuild.SetInstantiateClusterTarget(batch); });
         buildInfo.SetScratchAddress(owner->GetReference());
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(buildInfo); });
         buildInfo.SetScratchAddress(0x5000);
@@ -1724,6 +1835,28 @@ namespace
         CheckManagedExplicitMoves(buildInfo, owner->GetReference(), table->GetDeviceAddress() + 24,
             VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV);
 
+        auto rebound = buildInfo;
+        rebound.CustomizeBuildCountAddress(0x6000);
+        BottomLevelAccelStructBuildLayout layout;
+        layout.SetMaxClusterCount(2, 4);
+        rebound.SetBottomLevelAccelStructTarget(layout, 2);
+        CommandBuffer replacements;
+        ExpectRejected(replacements, [&] { replacements.BuildAccelerationStructureIndirect(rebound); });
+        rebound.SetReferencesArray(0x7000);
+        rebound.SetScratchAddress(owner->GetReference());
+        ExpectRejected(replacements, [&] { rebound.SetBottomLevelAccelStructTarget(layout, 0); });
+        replacements.BuildAccelerationStructureIndirect(rebound);
+        rebound.SetInstantiateClusterTarget(batch);
+        ExpectRejected(replacements, [&] { replacements.BuildAccelerationStructureIndirect(rebound); });
+        rebound.SetScratchAddress(0x5000);
+        replacements.BuildAccelerationStructureIndirect(rebound);
+        const auto before = clusterCommands.size();
+        CommandBufferTestProbe::Record(replacements);
+        CHECK_TRUE(clusterCommands.size() == before + 2 &&
+            clusterCommands[before].dstAddressesArray.deviceAddress == 0x7000 &&
+            clusterCommands.back().dstAddressesArray.deviceAddress == table->GetDeviceAddress() + 24 &&
+            clusterCommands.back().srcInfosCount == 0x6000 && clusterCommands.back().srcInfosArray.deviceAddress == 0x4000);
+
         auto blasOwner = MakeIntrusive<BottomLevelAccelStruct>();
         BottomLevelAccelStructCreateInfo blasDesc;
         blasDesc.SetClusters(2);
@@ -1734,9 +1867,9 @@ namespace
         blasInfo.SetSourceAccelStructs(std::span(&blasSource, 1));
         BottomLevelAccelStructBatch blases;
         blases.Create(blasInfo);
-        BottomLevelAccelStructBuildIndirectInfo blasBuild;
-        blasBuild.SetBuildTarget(blases);
-        blasBuild.SetBuildInfoAddress(0x4000);
+        BuildExplicitClusterAccelStructCommandInput blasBuild;
+        blasBuild.SetBottomLevelAccelStructTarget(blases);
+        blasBuild.SetArgumentAddress(0x4000);
         CheckManagedExplicitMoves(blasBuild, blasOwner->GetDeviceAddress(), table->GetDeviceAddress() + 8,
             VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV);
     }
@@ -1745,6 +1878,7 @@ namespace
 void RunCommandBufferTests()
 {
     ClasBufferTestFixture::Run([] { ClasBufferTestFixture::WithClusterQueries(TestRawClusterTargets); });
+    ClasBufferTestFixture::Run([] { ClasBufferTestFixture::WithClusterQueries(TestClusterCommandsWithoutScratch, 0); });
     ClasBufferTestFixture::Run([] { ClasBufferTestFixture::WithClusterQueries(TestManagedExplicitTargetSnapshot); });
     TestClusterBuildCommands();
     TestObjectBlasCommandsUseExternalBuffersAndSnapshots();

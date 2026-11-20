@@ -17,10 +17,11 @@ class ClusterLevelAccelStructBatch;
 class BottomLevelAccelStructCreateInfo;
 class BottomLevelAccelStructBatch;
 class TopLevelAccelStructCreateInfo;
-struct BottomLevelAccelStructBuildIndirectInfo;
-struct ClusterLevelAccelStructBuildIndirectInfo;
+class ComputeClusterAccelStructSizesCommandInput;
+class BuildExplicitClusterAccelStructCommandInput;
+class BuildImplicitClusterAccelStructCommandInput;
 struct VkAccelStructBuildInfo;
-namespace VulkanDetail { class DynamicDescriptorPool; }
+namespace VulkanDetail { class DynamicDescriptorPool; struct ClusterCommandState; }
 
 // Member commands own CPU parameters; image commands retain their image versions.
 // Rendering attachments are borrowed through preparation, recording and GPU use.
@@ -72,6 +73,7 @@ private:
     void _AppendCommands(const Command* const* inCommands, size_t inCount);
     void _AppendOwnedCommand(std::unique_ptr<Command> inCommand);
     void _AppendStateCommand(std::unique_ptr<Command> inCommand);
+    void _AppendClusterCommand(const VulkanDetail::ClusterCommandState& inState);
     void _Append(CommandBuffer&& inCommandBuffer);
     void _BeginRenderPass(const BeginRenderPassCommand::Parameters& inParameters,
         const VulkanDetail::RenderPassSnapshot& inSnapshot, VulkanDetail::ResolvedFramebufferDesc inFramebuffer);
@@ -184,8 +186,9 @@ public:
         VkCopyAccelerationStructureModeKHR inMode = VK_COPY_ACCELERATION_STRUCTURE_MODE_CLONE_KHR);
 	// These overloads snapshot capacity and an optional GPU count address. They borrow the
 	// GPU storage and input ranges and require a compute-capable queue outside a render pass.
-	void BuildAccelerationStructureIndirect(const ClusterLevelAccelStructBuildIndirectInfo& inInfo);
-	void BuildAccelerationStructureIndirect(const BottomLevelAccelStructBuildIndirectInfo& inInfo);
+    void ComputeClusterAccelStructSizes(const ComputeClusterAccelStructSizesCommandInput& inInput);
+    void BuildAccelerationStructureIndirect(const BuildExplicitClusterAccelStructCommandInput& inInput);
+    void BuildAccelerationStructureIndirect(const BuildImplicitClusterAccelStructCommandInput& inInput);
 
     // Executes later during recording, in stream order. The callback must preserve
     // the tracked RenderPass lifecycle and Program/ShaderResource bindings.

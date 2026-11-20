@@ -6,7 +6,7 @@ namespace ClasBufferTestFixture
 {
 void Run(void (*inTest)());
 void WithInlineExecutor(void (*inTest)());
-void WithClusterQueries(void (*inTest)());
+void WithClusterQueries(void (*inTest)(), VkDeviceSize inScratchBytes = 512);
 void FailNextReferenceBufferCreation();
 void SetAllocationFailure(bool inFail);
 void SetBufferAddressOverride(VkDeviceAddress inAddress);

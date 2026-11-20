@@ -476,96 +476,105 @@ void CommandBuffer::TraceRaysKHR(const ShaderBindingTable& inTable, uint32_t inW
     _AppendStateCommand(std::move(command));
 }
 
-namespace
+void CommandBuffer::_AppendClusterCommand(const VulkanDetail::ClusterCommandState& state)
 {
-    auto ClusterBuildParameters(const VulkanDetail::ClusterBuildAddresses& addresses, VkDeviceAddress inScratch,
-        VkDeviceAddress inTasks, AccelStructBuildInfoLayout inTaskLayout, VkDeviceAddress inCountAddress)
-        -> BuildClusterAccelerationStructuresNVCommand::Parameters
+    _RequireOutsideRenderPass();
+    const auto& target = state.target;
+    const auto inTasks = state.arguments;
+    const auto inCountAddress = state.count;
+    const auto inScratch = state.scratch;
+    constexpr auto maximum = (std::numeric_limits<VkDeviceAddress>::max)();
+    CHECK_TRUE(inCountAddress == 0 ||
+        (inCountAddress % AccelStructGpuLayout::CountSize == 0 && AccelStructGpuLayout::CountSize <= maximum - inCountAddress),
+        "Cluster GPU count address range overflows or is misaligned!");
+    CHECK_TRUE(vkCmdBuildClusterAccelerationStructureIndirectNV != nullptr,
+        "Cluster acceleration structure commands are unavailable!");
+    const auto& inSizes = target.sizes;
+    const auto inCapacity = target.capacity;
+    CHECK_TRUE(inCapacity != 0, "Cluster build target is not created!");
+    const auto inTaskLayout = VulkanDetail::ClusterTaskLayout(target.operation);
+    const auto taskSize = VkDeviceSize{ inCapacity } * inTaskLayout.recordStride;
+    CHECK_TRUE(inTasks != 0 && inTasks % inTaskLayout.addressAlignment == 0 &&
+        taskSize <= inSizes.buildInfoBufferSize && taskSize <= maximum - inTasks,
+        "Cluster task address or layout is invalid!");
+    if (inSizes.buildScratchBufferSize != 0)
     {
-        constexpr auto maximum = (std::numeric_limits<VkDeviceAddress>::max)();
-        CHECK_TRUE(inCountAddress == 0 ||
-            (inCountAddress % AccelStructGpuLayout::CountSize == 0 && AccelStructGpuLayout::CountSize <= maximum - inCountAddress),
-            "Cluster GPU count address range overflows or is misaligned!");
-        CHECK_TRUE(vkCmdBuildClusterAccelerationStructureIndirectNV != nullptr,
-            "Cluster acceleration structure commands are unavailable!");
-        const auto& inSizes = addresses.sizes;
-        const auto inCapacity = addresses.capacity;
-        CHECK_TRUE(inCapacity != 0, "Cluster build target is not created!");
-        const auto taskSize = VkDeviceSize{ inCapacity } * inTaskLayout.recordStride;
-        CHECK_TRUE(inTasks != 0 && inTasks % inTaskLayout.addressAlignment == 0 &&
-            taskSize <= inSizes.buildInfoBufferSize && taskSize <= maximum - inTasks,
-            "Cluster task address or layout is invalid!");
-        if (inSizes.buildScratchBufferSize != 0)
-        {
-            CHECK_TRUE(inScratch != 0 && inSizes.scratchAlignment != 0 &&
-                inScratch % inSizes.scratchAlignment == 0 && inSizes.buildScratchBufferSize <= maximum - inScratch,
-                "Cluster scratch address is invalid or misaligned!");
-        }
-        const auto storage = addresses.storage;
-        const auto references = addresses.references;
-        const auto referenceSize = VkDeviceSize{ inCapacity } * sizeof(VkDeviceAddress);
-        const auto disjoint = [](VkDeviceAddress a, VkDeviceSize aSize, VkDeviceAddress b, VkDeviceSize bSize)
-        {
-            return !aSize || !bSize || a + aSize <= b || b + bSize <= a;
-        };
-        const auto countSize = inCountAddress ? AccelStructGpuLayout::CountSize : 0;
-        const auto scratchSize = inSizes.buildScratchBufferSize;
-        const auto checkWrite = [&](VkDeviceAddress base, VkDeviceSize size)
-        {
-            CHECK_TRUE(disjoint(base, size, inTasks, taskSize) && disjoint(base, size, inCountAddress, countSize) &&
-                disjoint(base, size, inScratch, scratchSize), "Cluster output overlaps build inputs or scratch!");
-        };
-        CHECK_TRUE(disjoint(inScratch, scratchSize, inTasks, taskSize) &&
-            disjoint(inScratch, scratchSize, inCountAddress, countSize) &&
-            disjoint(inScratch, scratchSize, references, referenceSize), "Cluster scratch overlaps a build argument!");
-        if (addresses.mode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV)
-        {
-            checkWrite(storage, inSizes.accelerationStructureSize);
-            checkWrite(references, referenceSize);
-        }
-        for (const auto& [destination, size] : addresses.destinations)
-        {
-            checkWrite(destination, size);
-            CHECK_TRUE(disjoint(destination, size, references, referenceSize), "Explicit destination overlaps its address table!");
-        }
-        BuildClusterAccelerationStructuresNVCommand::Parameters parameters;
-        auto& info = parameters.info;
-        info.input = { VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV };
-        info.input.maxAccelerationStructureCount = inCapacity;
-        info.input.opMode = addresses.mode;
-        info.input.opType = addresses.operation;
-        info.dstImplicitData = storage;
-        info.scratchData = inSizes.buildScratchBufferSize == 0 ? 0 : inScratch;
-        info.dstAddressesArray = { references, sizeof(VkDeviceAddress), referenceSize };
-        info.dstSizesArray = { 0, sizeof(uint32_t), 0 }; // Sizes are optional; the Batch exposes addresses only.
-        info.srcInfosArray = { inTasks, inTaskLayout.recordStride, taskSize };
-        info.srcInfosCount = inCountAddress;
-        return parameters;
+        CHECK_TRUE(inScratch != 0 && inSizes.scratchAlignment != 0 &&
+            inScratch % inSizes.scratchAlignment == 0 && inSizes.buildScratchBufferSize <= maximum - inScratch,
+            "Cluster scratch address is invalid or misaligned!");
     }
-}
-
-void CommandBuffer::BuildAccelerationStructureIndirect(const ClusterLevelAccelStructBuildIndirectInfo& inInfo)
-{
-    _RequireOutsideRenderPass();
-    const auto layout = inInfo.m_addresses.operation == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV ?
-        ClusterLevelAccelStructInstantiateBuildInfo::GetBuildInfoLayout() : ClusterLevelAccelStructDirectBuildInfo::GetBuildInfoLayout();
-    auto parameters = ClusterBuildParameters(inInfo.m_addresses, inInfo.m_scratch, inInfo.m_tasks,
-        layout, inInfo.m_count);
-    parameters.triangles = inInfo.m_limits;
+    const auto storage = target.storage;
+    const auto references = target.references;
+    const bool sizing = target.mode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV;
+    const auto referenceSize = sizing ? 0 : VkDeviceSize{ inCapacity } * sizeof(VkDeviceAddress);
+    const auto sizesAddress = target.outputSizes;
+    const auto sizesBytes = sizesAddress ? VkDeviceSize{ inCapacity } * sizeof(uint32_t) : 0;
+    CHECK_TRUE(sizing || references != 0, "A cluster reference array is required!");
+    CHECK_TRUE(!sizing || sizesAddress != 0, "Computing cluster sizes requires a size output array!");
+    CHECK_TRUE(sizesAddress % sizeof(uint32_t) == 0 && sizesBytes <= maximum - sizesAddress,
+        "Cluster size output array overflows or is misaligned!");
+    const auto disjoint = [](VkDeviceAddress a, VkDeviceSize aSize, VkDeviceAddress b, VkDeviceSize bSize)
+    {
+        return !aSize || !bSize || a + aSize <= b || b + bSize <= a;
+    };
+    const auto countSize = inCountAddress ? AccelStructGpuLayout::CountSize : 0;
+    const auto scratchSize = inSizes.buildScratchBufferSize;
+    const auto checkWrite = [&](VkDeviceAddress base, VkDeviceSize size)
+    {
+        CHECK_TRUE(disjoint(base, size, inTasks, taskSize) && disjoint(base, size, inCountAddress, countSize) &&
+            disjoint(base, size, inScratch, scratchSize), "Cluster output overlaps build inputs or scratch!");
+    };
+    CHECK_TRUE(disjoint(inScratch, scratchSize, inTasks, taskSize) &&
+        disjoint(inScratch, scratchSize, inCountAddress, countSize) &&
+        disjoint(inScratch, scratchSize, references, referenceSize), "Cluster scratch overlaps a build argument!");
+    checkWrite(sizesAddress, sizesBytes);
+    CHECK_TRUE(disjoint(sizesAddress, sizesBytes, references, referenceSize), "Cluster size output overlaps its address table!");
+    if (target.mode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV)
+    {
+        CHECK_TRUE(storage && disjoint(storage, inSizes.accelerationStructureSize, references, referenceSize) &&
+            disjoint(storage, inSizes.accelerationStructureSize, sizesAddress, sizesBytes),
+            "Implicit storage is missing or overlaps an output table!");
+        checkWrite(storage, inSizes.accelerationStructureSize);
+        checkWrite(references, referenceSize);
+    }
+    for (const auto& [destination, size] : target.destinations)
+    {
+        checkWrite(destination, size);
+        CHECK_TRUE(disjoint(destination, size, references, referenceSize) && disjoint(destination, size, sizesAddress, sizesBytes),
+            "Explicit destination overlaps a cluster output table!");
+    }
+    BuildClusterAccelerationStructuresNVCommand::Parameters parameters;
+    auto& info = parameters.info;
+    info.input = { VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV };
+    info.input.maxAccelerationStructureCount = inCapacity;
+    info.input.opMode = target.mode;
+    info.input.opType = target.operation;
+    info.dstImplicitData = storage;
+    info.scratchData = inSizes.buildScratchBufferSize == 0 ? 0 : inScratch;
+    info.dstAddressesArray = { references, sizeof(VkDeviceAddress), referenceSize };
+    info.dstSizesArray = { sizesAddress, sizeof(uint32_t), sizesBytes };
+    info.srcInfosArray = { inTasks, inTaskLayout.recordStride, taskSize };
+    info.srcInfosCount = inCountAddress;
+    parameters.triangles = target.triangles;
+    parameters.clusters = target.clusters;
     auto command = std::make_unique<BuildClusterAccelerationStructuresNVCommand>();
     command->SetParameters(parameters);
     _AppendOwnedCommand(std::move(command));
 }
 
-void CommandBuffer::BuildAccelerationStructureIndirect(const BottomLevelAccelStructBuildIndirectInfo& inInfo)
+void CommandBuffer::ComputeClusterAccelStructSizes(const ComputeClusterAccelStructSizesCommandInput& inInput)
 {
-    _RequireOutsideRenderPass();
-    auto parameters = ClusterBuildParameters(inInfo.m_addresses, inInfo.m_scratch, inInfo.m_tasks,
-        BottomLevelAccelStructBuildInfo::GetBuildInfoLayout(), inInfo.m_count);
-    parameters.clusters = inInfo.m_limits;
-    auto command = std::make_unique<BuildClusterAccelerationStructuresNVCommand>();
-    command->SetParameters(parameters);
-    _AppendOwnedCommand(std::move(command));
+    _AppendClusterCommand(inInput.m_state);
+}
+
+void CommandBuffer::BuildAccelerationStructureIndirect(const BuildExplicitClusterAccelStructCommandInput& inInput)
+{
+    _AppendClusterCommand(inInput.m_state);
+}
+
+void CommandBuffer::BuildAccelerationStructureIndirect(const BuildImplicitClusterAccelStructCommandInput& inInput)
+{
+    _AppendClusterCommand(inInput.m_state);
 }
 
 void CommandBuffer::BuildAccelerationStructureKHR(BottomLevelAccelStruct& inDst,

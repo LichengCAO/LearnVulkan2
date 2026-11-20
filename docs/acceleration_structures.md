@@ -187,15 +187,24 @@ GPU build. Empty batches and batches exceeding the device's single Buffer or
 allocation limit reject; callers split large workloads into multiple batches.
 Failure leaves an empty target that can be retried. Release never waits for GPU work.
 
-`ClusterLevelAccelStructBuildLayout::QuerySizesInfo(type, count)` and
-`BottomLevelAccelStructBuildLayout::QuerySizesInfo(type, count)` query the device
-without GPU addresses, allocation or submission. Set positive per-object and total
-budgets, select the destination mode and operation, and pass the maximum number of
-targets. `buildInfoBufferSize` and `buildScratchBufferSize` cover that entire
-batch. `scratchAlignment` applies to scratch. `accelerationStructureSize` bounds
-one explicit object with the layout's maximum capacities or the entire implicit
-storage region. `accelerationStructureAlignment` applies to every destination base.
-For uniform explicit slots, round their byte stride up to this alignment.
+Both BuildLayouts describe positive per-object and aggregate budgets and the CLAS
+vertex format. Select a layout and maximum target count on a CommandInput to
+validate them and synchronously query the Device. Its const
+`QueryCurrentTargetSizesInfo()` returns the saved requirements without GPU bindings.
+Task bytes, build scratch bytes and scratch alignment cover the full batch.
+For explicit builds the AS byte count bounds one object at the layout maxima.
+For implicit builds it bounds the contiguous batch. Align each destination base
+to the reported AS alignment. Round the stride of uniform explicit slots up to
+that alignment.
+
+`ComputeClusterAccelStructSizesCommandInput` supports direct CLAS, Template,
+instantiate and Cluster BLAS tasks. Its Host AS size, AS alignment and update
+scratch are zero. Bind the operation's argument records, any required scratch
+and a packed `uint32_t` size output with `SetOutputSizesArray`, then append
+`commands.ComputeClusterAccelStructSizes(input)`. The GPU writes one byte
+size per active task. To use those values for explicit builds, synchronize the
+size outputs with the allocator or readback, allocate each destination at the
+matching build alignment, and populate a packed destination-address table.
 
 `ClusterLevelAccelStructImplicitBatchCreateInfo` describes capacity, not geometry or a
 list of tasks. All five required budgets must be set to positive values:
@@ -371,30 +380,34 @@ For either Batch, prepare and execute in this order:
 5. Append the matching direct, instantiate or Cluster BLAS command. For example:
 
 ```cpp
-ClusterLevelAccelStructBuildIndirectInfo build;
-build.SetBuildTarget(instances);
-build.SetBuildInfoAddress(taskBuffer.GetDeviceAddress());
+BuildImplicitClusterAccelStructCommandInput build;
+build.SetInstantiateClusterTarget(instances);
+build.SetArgumentAddress(taskBuffer.GetDeviceAddress());
 build.SetScratchAddress(scratchAddress);
 build.CustomizeBuildCountAddress(buildCountAddress);
 commands.BuildAccelerationStructureIndirect(build);
 ```
 
-`ClusterLevelAccelStructBuildIndirectInfo` and `BottomLevelAccelStructBuildIndirectInfo`
-use the same setters with their matching targets. `SetBuildTarget` copies limits,
-capacity, required sizes and output addresses. The recorded command borrows the
-native resources through completion. The optional count address defaults to zero.
-For caller-managed storage the CLAS arguments expose `SetExplicitTarget`,
-`SetExplicitInstantiateTarget`, `SetImplicitTarget` and `SetImplicitInstantiateTarget`.
-The Cluster BLAS arguments expose `SetExplicitTarget` and `SetImplicitTarget`.
-Pass a layout, packed table address and maximum count, plus the contiguous storage
-base for implicit builds. Each accepted setter replaces the previous target
-snapshot. An explicit build reads the supplied addresses. An implicit build writes
-the addresses it assigned. Synchronize producers and consumers of each table.
-Moving an indirect build description transfers its target binding. Set a target
-again before recording with the moved-from description.
+Choose `BuildExplicitClusterAccelStructCommandInput` or
+`BuildImplicitClusterAccelStructCommandInput`, then select `SetClusterTarget`,
+`SetInstantiateClusterTarget` or `SetBottomLevelAccelStructTarget`. The Batch
+overload checks destination mode and operation, copies limits and sizes, and
+binds the Batch table (including its byte offset), storage and known destination
+ranges. A setter for a managed address accepts only that same address.
 
-The native `maxAccelerationStructureCount` always comes from
-`GetCapacity()`. If `buildCountAddress` is 0, the build processes the full
+For caller-managed storage, pass a layout and capacity to the target setter.
+Use `SetReferencesArray` for the packed explicit destination addresses, or
+`SetStorageAddress` and `SetOutputReferencesArray` for implicit output.
+Implicit builds optionally write packed per-object byte sizes through
+`CustomizeOutputSizesArray`. Explicit builds leave the native sizes array absent.
+Every successful target change clears previous target addresses and size output,
+then installs any new Batch bindings. Argument, scratch and GPU count addresses
+survive reselection. Rejected selection preserves the previous input. Moving an
+input transfers the binding and known destination ranges. Select another target
+before querying or recording the moved-from input.
+
+The native `maxAccelerationStructureCount` comes from the selected maximum
+count or Batch capacity. If `buildCountAddress` is 0, the command processes the full
 capacity, so every task in that range must be initialized and valid. Otherwise
 the GPU count selects the actual number, which must not exceed capacity. The
 producer must bound the count before submitting it; the RHI does not read back
@@ -447,8 +460,10 @@ at two poses and builds Cluster BLAS from each path. It also submits direct and
 instantiate builds into fixed CLAS owners and consumes them in explicit Cluster
 BLAS builds using two slices of one caller-populated table. It checks the addresses
 and GPU count values zero, one and full capacity, plus a producer request
-restricted to capacity before submission. Fixed sentinel entries verify that
-inactive address-table tails are not overwritten:
+restricted to capacity before submission. Sentinels check inactive address and
+size tails. The smoke also computes direct, Template, instantiate and Cluster BLAS
+sizes at counts zero, one and full capacity, builds into individually aligned
+GPU-sized allocations and consumes the resulting CLAS in a dependent BLAS build.
 
 ```powershell
 $env:LEARN_VULKAN_CLAS_GPU_TESTS = '1'
