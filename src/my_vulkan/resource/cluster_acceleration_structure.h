@@ -7,6 +7,7 @@
 
 class CommandBuffer;
 class MyDevice;
+class BottomLevelAccelStruct;
 
 class ClusterLevelAccelStructTemplateInfo
 {
@@ -47,8 +48,6 @@ public:
 	auto GetBuildLimits() const noexcept -> VkClusterAccelerationStructureTriangleClusterInputNV { return m_limits; }
 };
 
-class ClusterLevelAccelStructBatch;
-
 class ClusterLevelAccelStructCreateInfo final
 {
 public:
@@ -59,7 +58,14 @@ public:
 	void CustomizeTemplateUsage(bool inUseTemplate);
 };
 
-class ClusterLevelAccelStructBatchCreateInfo final
+class ClusterLevelAccelStruct final : public RefCounted
+{
+public:
+	void Create(const ClusterLevelAccelStructCreateInfo&);
+	auto GetReference() const noexcept->VkDeviceAddress;
+};
+
+class ClusterLevelAccelStructImplicitBatchCreateInfo final
 {
 	friend class ClusterLevelAccelStructBatch;
 private:
@@ -84,7 +90,108 @@ public:
 	void CustomizeTemplateUsage(bool inUseTemplate) { m_useTemplate = inUseTemplate; }
 };
 
-// Build from a cluster template
+class ClusterLevelAccelStructExplicitBatchCreateInfo final
+{
+public:
+	// Borrows a packed VkDeviceAddress table until Batch Create completes.
+	// Successful creation retains a strong reference to this Buffer for the Batch lifetime.
+	// The Buffer must use intrusive reference-counted ownership.
+	void SetReferenceBuffer(Buffer& inReferenceBuffer, VkDeviceSize inOffset);
+	// Copies the pointer list; source objects remain borrowed until Batch Create completes.
+	// Sources must use intrusive reference-counted ownership; the created Batch retains each source.
+	void SetSourceAccelStructs(std::span<const ClusterLevelAccelStruct* const> inAccelStructs);
+};
+
+class ClusterLevelAccelStructBatch final : public RefCounted
+{
+	friend struct ClusterLevelAccelStructDirectBuildIndirectInfo;
+	friend struct ClusterLevelAccelStructInstantiateBuildIndirectInfo;
+	friend struct CommandBufferTestProbe;
+	friend struct ClusterAccelerationStructureTestProbe;
+	friend struct ClusterAccelerationStructureGpuTestProbe;
+private:
+	std::unique_ptr<Buffer> m_storageBuffer;
+	std::unique_ptr<Buffer> m_referenceBuffer;
+	AccelStructSizesInfo m_sizesInfo{};
+	uint32_t m_count = 0;
+	VkClusterAccelerationStructureTriangleClusterInputNV m_triangleInput{
+		VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV };
+	bool m_useTemplate = false;
+	VkIndexType m_indexType = VK_INDEX_TYPE_UINT32;
+
+public:
+	// Synchronous size query and output Buffer allocation for an empty target.
+	// Independent batches can create and release concurrently with stable Device and allocator
+	// dependencies. Exclude conflicting access to one batch and finish GPU uses before release.
+	void Create(const ClusterLevelAccelStructImplicitBatchCreateInfo& inCreateInfo);
+	// Same synchronous empty-target contract; retains strong references to the reference Buffer
+	// and every source AS until Batch destruction. Retain the Batch through dependent GPU uses.
+	void Create(const ClusterLevelAccelStructExplicitBatchCreateInfo& inCreateInfo);
+	// Borrowed address table retained by this batch. Only the GPU-built prefix is valid.
+	auto GetReferenceBuffer() const noexcept->const Buffer*;
+	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo&;
+	auto GetCapacity() const noexcept -> uint32_t;
+	auto GetScratchAlignment() const noexcept -> VkDeviceSize;
+	auto GetVertexFormat() const noexcept -> VkFormat { return m_triangleInput.vertexFormat; }
+	auto GetIndexType() const noexcept -> VkIndexType { return m_indexType; }
+	auto GetBuildLimits() const noexcept -> VkClusterAccelerationStructureTriangleClusterInputNV { return m_triangleInput; }
+};
+
+class BottomLevelAccelStructImplicitBatchCreateInfo final
+{
+	friend class BottomLevelAccelStructBatch;
+private:
+	uint32_t m_maxAccelStructCount = 0;
+	uint32_t m_maxClusterCountPerAccelStruct = 0;
+	uint32_t m_maxTotalClusterCount = 0;
+
+public:
+	// All three capacities are required. The total is an independent bound across the build.
+	void SetMaxAccelStructCount(uint32_t inCount) { m_maxAccelStructCount = inCount; }
+	void SetMaxClusterCountPerAccelStruct(uint32_t inCount) { m_maxClusterCountPerAccelStruct = inCount; }
+	void SetMaxTotalClusterCount(uint32_t inCount) { m_maxTotalClusterCount = inCount; }
+};
+
+class BottomLevelAccelStructExplicitBatchCreateInfo final
+{
+public:
+	// Borrows a packed VkDeviceAddress table until Batch Create completes.
+	// Successful creation retains a strong reference to this Buffer for the Batch lifetime.
+	// The Buffer must use intrusive reference-counted ownership.
+	void SetReferenceBuffer(Buffer& inReferenceBuffer, VkDeviceSize inOffset);
+	// Copies the pointer list; source objects remain borrowed until Batch Create completes.
+	// Sources must use intrusive reference-counted ownership; the created Batch retains each source.
+	void SetSourceAccelStructs(std::span<const BottomLevelAccelStruct* const> inAccelStructs);
+};
+
+class BottomLevelAccelStructBatch final : public RefCounted
+{
+	friend struct BottomLevelAccelStructBuildIndirectInfo;
+	friend struct CommandBufferTestProbe;
+	friend struct ClusterAccelerationStructureTestProbe;
+	friend struct ClusterAccelerationStructureGpuTestProbe;
+private:
+	std::unique_ptr<Buffer> m_storageBuffer;
+	std::unique_ptr<Buffer> m_referenceBuffer;
+	AccelStructSizesInfo m_sizesInfo{};
+	uint32_t m_count = 0;
+	VkClusterAccelerationStructureClustersBottomLevelInputNV m_clustersInput{
+		VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV };
+
+public:
+	// Same empty-target creation and lifetime contract as ClusterLevelAccelStructBatch.
+	void Create(const BottomLevelAccelStructImplicitBatchCreateInfo& inCreateInfo);
+	// Same synchronous empty-target contract; retains strong references to the reference Buffer
+	// and every source AS until Batch destruction. Retain the Batch through dependent GPU uses.
+	void Create(const BottomLevelAccelStructExplicitBatchCreateInfo& inCreateInfo);
+	// Borrowed address table retained by this batch. Only the GPU-built prefix is valid.
+	auto GetReferenceBuffer() const noexcept -> const Buffer*;
+	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo&;
+	auto GetCapacity() const noexcept -> uint32_t;
+	auto GetScratchAlignment() const noexcept -> VkDeviceSize;
+	auto GetBuildLimits() const noexcept -> VkClusterAccelerationStructureClustersBottomLevelInputNV { return m_clustersInput; }
+};
+
 struct ClusterLevelAccelStructInstantiateBuildInfo
 {
 private:
@@ -102,15 +209,18 @@ public:
 	void CustomizeVertexFormat(VkFormat inFormat) { m_vertexFormat = inFormat; }
 
 	static constexpr auto GetBuildInfoLayout() noexcept -> AccelStructBuildInfoLayout
-	{ return AccelStructGpuLayout::Instantiate::Layout; }
+	{
+		return AccelStructGpuLayout::Instantiate::Layout;
+	}
 
 	// Encodes and uploads Host tasks using each task's vertex format.
 	// The caller guarantees matching templates and eventual build formats/budgets.
-	static void CommitToDeviceInline(std::span<const ClusterLevelAccelStructInstantiateBuildInfo> inHostInfo,
-		Buffer& inoutTargetBuffer, VkDeviceSize inOffset = 0);
+	static void CommitToDeviceInline(
+		std::span<const ClusterLevelAccelStructInstantiateBuildInfo> inHostInfo,
+		Buffer& inoutTargetBuffer,
+		VkDeviceSize inOffset = 0);
 };
 
-// Build from a vertex buffer
 struct ClusterLevelAccelStructDirectBuildInfo
 {
 	uint32_t clusterID = 0;
@@ -133,68 +243,14 @@ public:
 	void CustomizeClusterID(uint32_t inID) { clusterID = inID; }
 
 	static constexpr auto GetBuildInfoLayout() noexcept -> AccelStructBuildInfoLayout
-	{ return AccelStructGpuLayout::Direct::Layout; }
+	{
+		return AccelStructGpuLayout::Direct::Layout;
+	}
 
 	// Encodes and uploads Host tasks using each task's vertex format and index type.
 	// The caller guarantees the tasks match the eventual build's formats/budgets.
 	static void CommitToDeviceInline(std::span<const ClusterLevelAccelStructDirectBuildInfo> inHostInfo,
 		Buffer& inoutTargetBuffer, VkDeviceSize inOffset = 0);
-};
-
-// Explicit CLAS
-class ClusterLevelAccelStruct final : public RefCounted
-{
-public:
-	void Create(const ClusterLevelAccelStructCreateInfo&);
-	auto GetReference() const noexcept->VkDeviceAddress;
-};
-
-// Implicit CLAS
-class ClusterLevelAccelStructBatch final : public RefCounted
-{
-	friend struct ClusterLevelAccelStructDirectBuildIndirectInfo;
-	friend struct ClusterLevelAccelStructInstantiateBuildIndirectInfo;
-	friend struct CommandBufferTestProbe;
-	friend struct ClusterAccelerationStructureTestProbe;
-	friend struct ClusterAccelerationStructureGpuTestProbe;
-private:
-	std::unique_ptr<Buffer> m_storageBuffer;
-	std::unique_ptr<Buffer> m_referenceBuffer;
-	AccelStructSizesInfo m_sizesInfo{};
-	uint32_t m_count = 0;
-	VkClusterAccelerationStructureTriangleClusterInputNV m_triangleInput{
-		VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV };
-	bool m_useTemplate = false;
-	VkIndexType m_indexType = VK_INDEX_TYPE_UINT32;
-
-public:
-	// Synchronous size query and output Buffer allocation for an empty target.
-	// Independent batches can create and release concurrently with stable Device and allocator
-	// dependencies. Exclude conflicting access to one batch and finish GPU uses before release.
-	void Create(const ClusterLevelAccelStructBatchCreateInfo& inCreateInfo);
-	// Borrowed address table owned by this batch. Only the GPU-built prefix is valid.
-	auto GetReferenceBuffer() const noexcept->const Buffer*;
-	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo&;
-	auto GetCapacity() const noexcept -> uint32_t;
-	auto GetScratchAlignment() const noexcept -> VkDeviceSize;
-	auto GetVertexFormat() const noexcept -> VkFormat { return m_triangleInput.vertexFormat; }
-	auto GetIndexType() const noexcept -> VkIndexType { return m_indexType; }
-	auto GetBuildLimits() const noexcept -> VkClusterAccelerationStructureTriangleClusterInputNV { return m_triangleInput; }
-};
-
-class BottomLevelAccelStructBatchCreateInfo final
-{
-	friend class BottomLevelAccelStructBatch;
-private:
-	uint32_t m_maxAccelStructCount = 0;
-	uint32_t m_maxClusterCountPerAccelStruct = 0;
-	uint32_t m_maxTotalClusterCount = 0;
-
-public:
-	// All three capacities are required. The total is an independent bound across the build.
-	void SetMaxAccelStructCount(uint32_t inCount) { m_maxAccelStructCount = inCount; }
-	void SetMaxClusterCountPerAccelStruct(uint32_t inCount) { m_maxClusterCountPerAccelStruct = inCount; }
-	void SetMaxTotalClusterCount(uint32_t inCount) { m_maxTotalClusterCount = inCount; }
 };
 
 class BottomLevelAccelStructBuildInfo final
@@ -218,29 +274,18 @@ public:
 	static void CommitToDeviceInline(std::span<const BottomLevelAccelStructBuildInfo> inHostInfo, Buffer& inoutTargetBuffer, VkDeviceSize inOffset = 0);
 };
 
-class BottomLevelAccelStructBatch final : public RefCounted
+// All target addresses are borrowed; address arrays contain packed VkDeviceAddress values.
+// inMaxTargetCount is capacity in [1, UINT32_MAX], checked before native conversion.
+// Each Set*Target replaces the mode, capacity and addresses, clearing the previous target.
+// The caller provides sufficient destination storage and retains it through dependent GPU uses.
+class ClusterLevelAccelStructBuildIndirectTarget final
 {
-	friend struct BottomLevelAccelStructBuildIndirectInfo;
-	friend struct CommandBufferTestProbe;
-	friend struct ClusterAccelerationStructureTestProbe;
-	friend struct ClusterAccelerationStructureGpuTestProbe;
-private:
-	std::unique_ptr<Buffer> m_storageBuffer;
-	std::unique_ptr<Buffer> m_referenceBuffer;
-	AccelStructSizesInfo m_sizesInfo{};
-	uint32_t m_count = 0;
-	VkClusterAccelerationStructureClustersBottomLevelInputNV m_clustersInput{
-		VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV };
-
 public:
-	// Same empty-target creation and lifetime contract as ClusterLevelAccelStructBatch.
-	void Create(const BottomLevelAccelStructBatchCreateInfo& inCreateInfo);
-	// Borrowed address table owned by this batch. Only the GPU-built prefix is valid.
-	auto GetReferenceBuffer() const noexcept -> const Buffer*;
-	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo&;
-	auto GetCapacity() const noexcept -> uint32_t;
-	auto GetScratchAlignment() const noexcept -> VkDeviceSize;
-	auto GetBuildLimits() const noexcept -> VkClusterAccelerationStructureClustersBottomLevelInputNV { return m_clustersInput; }
+	void SetMaxTriangleCount(uint32_t inMaxPerCluster, uint32_t inMaxInTotal);
+	void SetMaxVertexCount(uint32_t inMaxPerCluster, uint32_t inMaxInTotal);
+	void CustomizeVertexFormat(VkFormat inFormat);
+	void SetExplicitTarget(VkDeviceAddress inTargetAddressArray, size_t inMaxTargetCount);
+	void SetImplicitTarget(VkDeviceAddress inTargetAddressOutputArray, size_t inMaxTargetCount, VkDeviceAddress inStorageBuffer);
 };
 
 struct ClusterLevelAccelStructDirectBuildIndirectInfo final
@@ -253,10 +298,13 @@ private:
 	VkDeviceAddress m_scratch = 0;
 	VkDeviceAddress m_count = 0;
 public:
-	void SetImplicitTarget(const ClusterLevelAccelStructBatch& inBatch);
-	void SetExplicitTarget(std::span<ClusterLevelAccelStruct*> inTarget);
+	// Snapshots target parameters and budget; GPU addresses remain borrowed.
+	// Retain target storage through dependent GPU uses and arrays through the build.
+	void SetBuildTarget(const ClusterLevelAccelStructBatch& inBatch);
+	void SetBuildTarget(const ClusterLevelAccelStructBuildIndirectTarget& inTarget);
 	void SetBuildInfoAddress(VkDeviceAddress inAddress) { m_tasks = inAddress; }
 	void SetScratchAddress(VkDeviceAddress inAddress) { m_scratch = inAddress; }
+	// Optional GPU actual count; defaults to the target's maximum capacity.
 	void CustomizeBuildCountAddress(VkDeviceAddress inAddress) { m_count = inAddress; }
 };
 
@@ -270,11 +318,23 @@ private:
 	VkDeviceAddress m_scratch = 0;
 	VkDeviceAddress m_count = 0;
 public:
-	void SetImplicitTarget(const ClusterLevelAccelStructBatch& inBatch);
-	void SetExplicitTarget(std::span<ClusterLevelAccelStruct*> inTarget);
+	// Same target snapshot and borrowed-resource contract as direct CLAS builds.
+	void SetBuildTarget(const ClusterLevelAccelStructBatch& inBatch);
+	void SetBuildTarget(const ClusterLevelAccelStructBuildIndirectTarget& inTarget);
 	void SetBuildInfoAddress(VkDeviceAddress inAddress) { m_tasks = inAddress; }
 	void SetScratchAddress(VkDeviceAddress inAddress) { m_scratch = inAddress; }
+	// Optional GPU actual count; defaults to the target's maximum capacity.
 	void CustomizeBuildCountAddress(VkDeviceAddress inAddress) { m_count = inAddress; }
+};
+
+// CLAS reference limits for Cluster BLAS builds, independent of triangle/vertex limits.
+// Same packed-array, capacity, target replacement and borrowed-address contract as the CLAS target.
+class BottomLevelAccelStructBuildIndirectTarget final
+{
+public:
+	void SetMaxClusterCount(uint32_t inMaxPerAccelStruct, uint32_t inMaxInTotal);
+	void SetExplicitTarget(VkDeviceAddress inTargetAddressArray, size_t inMaxTargetCount);
+	void SetImplicitTarget(VkDeviceAddress inTargetAddressOutputArray, size_t inMaxTargetCount, VkDeviceAddress inStorageBuffer);
 };
 
 struct BottomLevelAccelStructBuildIndirectInfo final
@@ -287,9 +347,11 @@ private:
 	VkDeviceAddress m_scratch = 0;
 	VkDeviceAddress m_count = 0;
 public:
-	void SetImplicitTarget(const BottomLevelAccelStructBatch& inBatch);
-	void SetExplicitTarget(std::span<BottomLevelAccelStruct*> inTarget);
+	// Same target snapshot and borrowed-resource contract as direct CLAS builds.
+	void SetBuildTarget(const BottomLevelAccelStructBatch& inBatch);
+	void SetBuildTarget(const BottomLevelAccelStructBuildIndirectTarget& inTarget);
 	void SetBuildInfoAddress(VkDeviceAddress inAddress) { m_tasks = inAddress; }
 	void SetScratchAddress(VkDeviceAddress inAddress) { m_scratch = inAddress; }
+	// Optional GPU actual count; defaults to the target's maximum capacity.
 	void CustomizeBuildCountAddress(VkDeviceAddress inAddress) { m_count = inAddress; }
 };

@@ -56,6 +56,9 @@ public:
     // Replaces the geometry list and selects its type. Copies descriptions, not Buffer contents.
     void SetTriangles(std::span<const AccelStructTriangleGeometry> inGeometries);
     void SetAabbs(std::span<const AccelStructAabbGeometry> inGeometries);
+    // Replaces triangle/AABB input with cluster-reference mode and its maximum reference count.
+    // The count must be in [1, UINT32_MAX] and is checked before native conversion.
+    void SetClusters(size_t inMaxClusterCount);
     void CustomizeBuildFlags(VkBuildAccelerationStructureFlagsKHR inFlags) noexcept;
     void Reset() noexcept;
 };
@@ -75,7 +78,6 @@ public:
     auto GetInstanceBufferSize() const noexcept -> VkDeviceSize;
 };
 
-// TODO: Add explicit ClusterBLAS Build
 class BottomLevelAccelStruct final : public RefCounted
 {
     friend class CommandBuffer;
