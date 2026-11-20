@@ -20,7 +20,8 @@ struct AccelStructSizesInfo
 	VkDeviceSize buildInfoBufferSize = 0;
 	// Output capacity bound, not the actual GPU-built size. For CLAS and Cluster BLAS:
 	// implicit destinations require this many bytes for the whole contiguous batch;
-	// explicit destinations require this many bytes for each individual destination.
+	// an explicit object using the layout maxima fits this many bytes. In a managed
+	// heterogeneous batch, task i must fit owner i's separately queried capacities.
 	VkDeviceSize accelerationStructureSize = 0;
 	// Required alignment of the implicit storage base or each explicit destination address.
 	// For fixed explicit slots, align the slot stride up from accelerationStructureSize.

@@ -106,7 +106,8 @@ NVAPI 是较早的 NVIDIA 专用 DX12 路线，入口为
 它与 Vulkan NV 接口概念接近，但不能据此把它的结构、大小数组或 shader 扩展约定当作标准 DXR ABI。
 见 [NVIDIA NVAPI 官方头文件](https://github.com/NVIDIA/nvapi/blob/main/nvapi.h)。
 
-本仓库使用 Vulkan 原生任务结构，支持隐式目标的直接 CLAS 构建、模板构建与实例化，以及 Cluster BLAS 构建。
+本仓库使用 Vulkan 原生任务结构。直接构建 CLAS、实例化模板和构建 Cluster BLAS 均支持显式与隐式目标。
+显式构建读取调用方提供的目标地址表，隐式构建将分配的地址写入结果表。模板本身通过隐式目标构建。
 直接构建、实例化和 Cluster BLAS 均可使用 GPU count 选择有效前缀。[当前接口](acceleration_structures.md#clas-and-cluster-blas-batches)
 工程推论：可以共享“Host 容量查询与分配、GPU 批构建、地址表、依赖同步”的上层设计，
 但 GPU task 编码、结果大小格式、能力检测与 shader 开关应由后端负责。

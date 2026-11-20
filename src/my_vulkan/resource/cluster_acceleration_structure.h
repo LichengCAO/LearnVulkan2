@@ -1,6 +1,8 @@
 #pragma once
 #include "acceleration_structure_types.h"
 #include "buffer.h"
+#include "acceleration_structure.h"
+#include "../intrusive_ptr.h"
 #include "../ref_counted.h"
 #include "private/cluster_acceleration_structure_build.h"
 #include <span>
@@ -50,6 +52,13 @@ public:
 
 class ClusterLevelAccelStructCreateInfo final
 {
+	friend class ClusterLevelAccelStruct;
+	friend class ClusterLevelAccelStructBatch;
+	uint32_t m_triangles = 0;
+	uint32_t m_vertices = 0;
+	VkFormat m_vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+	VkIndexType m_indexType = VK_INDEX_TYPE_UINT32;
+	bool m_useTemplate = false;
 public:
 	void SetMaxTriangleCount(uint32_t inCount);
 	void SetMaxVertexCount(uint32_t inCount);
@@ -60,6 +69,11 @@ public:
 
 class ClusterLevelAccelStruct final : public RefCounted
 {
+	friend class ClusterLevelAccelStructBatch;
+	friend struct ClusterLevelAccelStructBuildIndirectInfo;
+	std::unique_ptr<Buffer> m_storage;
+	ClusterLevelAccelStructCreateInfo m_info;
+	VkDeviceAddress m_reference = 0;
 public:
 	void Create(const ClusterLevelAccelStructCreateInfo&);
 	auto GetReference() const noexcept->VkDeviceAddress;
@@ -92,12 +106,17 @@ public:
 
 class ClusterLevelAccelStructExplicitBatchCreateInfo final
 {
+	friend class ClusterLevelAccelStructBatch;
+	Buffer* m_references = nullptr;
+	VkDeviceSize m_offset = 0;
+	std::vector<const ClusterLevelAccelStruct*> m_sources;
 public:
 	// Borrows a packed VkDeviceAddress table until Batch Create completes.
 	// Successful creation retains a strong reference to this Buffer for the Batch lifetime.
 	// The Buffer must use intrusive reference-counted ownership.
 	void SetReferenceBuffer(Buffer& inReferenceBuffer, VkDeviceSize inOffset);
 	// Copies the pointer list; source objects remain borrowed until Batch Create completes.
+	// Entry i must contain source i's reference. Task i must fit that owner's capacities.
 	// Sources must use intrusive reference-counted ownership; the created Batch retains each source.
 	void SetSourceAccelStructs(std::span<const ClusterLevelAccelStruct* const> inAccelStructs);
 };
@@ -105,13 +124,15 @@ public:
 class ClusterLevelAccelStructBatch final : public RefCounted
 {
 	friend struct ClusterLevelAccelStructBuildIndirectInfo;
-	friend struct ClusterLevelAccelStructInstantiateBuildIndirectInfo;
 	friend struct CommandBufferTestProbe;
 	friend struct ClusterAccelerationStructureTestProbe;
 	friend struct ClusterAccelerationStructureGpuTestProbe;
 private:
 	std::unique_ptr<Buffer> m_storageBuffer;
 	std::unique_ptr<Buffer> m_referenceBuffer;
+	IntrusivePtr<Buffer> m_explicitReferences;
+	std::vector<IntrusivePtr<const ClusterLevelAccelStruct>> m_sources;
+	VkDeviceSize m_referenceOffset = 0;
 	AccelStructSizesInfo m_sizesInfo{};
 	uint32_t m_count = 0;
 	VkClusterAccelerationStructureTriangleClusterInputNV m_triangleInput{
@@ -129,6 +150,7 @@ public:
 	void Create(const ClusterLevelAccelStructExplicitBatchCreateInfo& inCreateInfo);
 	// Borrowed address table retained by this batch. Only the GPU-built prefix is valid.
 	auto GetReferenceBuffer() const noexcept->const Buffer*;
+	auto GetReferenceBufferOffset() const noexcept -> VkDeviceSize { return m_referenceOffset; }
 	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo&;
 	auto GetCapacity() const noexcept -> uint32_t;
 	auto GetScratchAlignment() const noexcept -> VkDeviceSize;
@@ -154,12 +176,17 @@ public:
 
 class BottomLevelAccelStructExplicitBatchCreateInfo final
 {
+	friend class BottomLevelAccelStructBatch;
+	Buffer* m_references = nullptr;
+	VkDeviceSize m_offset = 0;
+	std::vector<const BottomLevelAccelStruct*> m_sources;
 public:
 	// Borrows a packed VkDeviceAddress table until Batch Create completes.
 	// Successful creation retains a strong reference to this Buffer for the Batch lifetime.
 	// The Buffer must use intrusive reference-counted ownership.
 	void SetReferenceBuffer(Buffer& inReferenceBuffer, VkDeviceSize inOffset);
 	// Copies the pointer list; source objects remain borrowed until Batch Create completes.
+	// Entry i must contain source i's device address. Task i must fit that owner's cluster capacity.
 	// Sources must use intrusive reference-counted ownership; the created Batch retains each source.
 	void SetSourceAccelStructs(std::span<const BottomLevelAccelStruct* const> inAccelStructs);
 };
@@ -174,6 +201,9 @@ private:
 	std::unique_ptr<Buffer> m_storageBuffer;
 	std::unique_ptr<Buffer> m_referenceBuffer;
 	AccelStructSizesInfo m_sizesInfo{};
+	IntrusivePtr<Buffer> m_explicitReferences;
+	std::vector<IntrusivePtr<const BottomLevelAccelStruct>> m_sources;
+	VkDeviceSize m_referenceOffset = 0;
 	uint32_t m_count = 0;
 	VkClusterAccelerationStructureClustersBottomLevelInputNV m_clustersInput{
 		VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV };
@@ -186,6 +216,7 @@ public:
 	void Create(const BottomLevelAccelStructExplicitBatchCreateInfo& inCreateInfo);
 	// Borrowed address table retained by this batch. Only the GPU-built prefix is valid.
 	auto GetReferenceBuffer() const noexcept -> const Buffer*;
+	auto GetReferenceBufferOffset() const noexcept -> VkDeviceSize { return m_referenceOffset; }
 	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo&;
 	auto GetCapacity() const noexcept -> uint32_t;
 	auto GetScratchAlignment() const noexcept -> VkDeviceSize;
@@ -276,6 +307,10 @@ public:
 
 class ClusterLevelAccelStructBuildLayout final
 {
+	friend struct ClusterLevelAccelStructBuildIndirectInfo;
+	friend class ClusterLevelAccelStructBatch;
+	VkClusterAccelerationStructureTriangleClusterInputNV m_limits{
+		VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV, nullptr, VK_FORMAT_R32G32B32_SFLOAT, 0, 1 };
 public:
 	enum class BuildType
 	{
@@ -303,6 +338,8 @@ private:
 	VkDeviceAddress m_tasks = 0;
 	VkDeviceAddress m_scratch = 0;
 	VkDeviceAddress m_count = 0;
+	void _SetTarget(const ClusterLevelAccelStructBuildLayout&, ClusterLevelAccelStructBuildLayout::BuildType,
+		VkDeviceAddress inReferences, uint32_t inCapacity, VkDeviceAddress inStorage);
 public:
 	// Snapshots target parameters and budget; GPU addresses remain borrowed.
 	// Retain target storage through dependent GPU uses and arrays through the build.
@@ -321,6 +358,10 @@ public:
 
 class BottomLevelAccelStructBuildLayout final
 {
+	friend struct BottomLevelAccelStructBuildIndirectInfo;
+	friend class BottomLevelAccelStructBatch;
+	VkClusterAccelerationStructureClustersBottomLevelInputNV m_limits{
+		VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV };
 public:
 	enum class BuildType
 	{

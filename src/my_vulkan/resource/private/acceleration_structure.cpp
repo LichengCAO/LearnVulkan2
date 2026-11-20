@@ -1,4 +1,5 @@
 #include "../acceleration_structure.h"
+#include "../cluster_acceleration_structure.h"
 #include "../../device.h"
 #include "acceleration_structure_storage.h"
 #include "../../allocator/private/memory_allocator.h"
@@ -182,6 +183,7 @@ void BottomLevelAccelStructCreateInfo::SetTriangles(std::span<const AccelStructT
     std::vector<AccelStructTriangleGeometry> geometries(inGeometries.begin(), inGeometries.end());
     m_triangles = std::move(geometries);
     m_aabbs.clear();
+    m_clusterCount = 0;
 }
 
 void BottomLevelAccelStructCreateInfo::SetAabbs(std::span<const AccelStructAabbGeometry> inGeometries)
@@ -189,6 +191,15 @@ void BottomLevelAccelStructCreateInfo::SetAabbs(std::span<const AccelStructAabbG
     std::vector<AccelStructAabbGeometry> geometries(inGeometries.begin(), inGeometries.end());
     m_aabbs = std::move(geometries);
     m_triangles.clear();
+    m_clusterCount = 0;
+}
+
+void BottomLevelAccelStructCreateInfo::SetClusters(size_t count)
+{
+    CHECK_TRUE(count && count <= UINT32_MAX, "Cluster BLAS requires a representable, nonzero cluster count!");
+    m_clusterCount = static_cast<uint32_t>(count);
+    m_triangles.clear();
+    m_aabbs.clear();
 }
 
 void BottomLevelAccelStructCreateInfo::CustomizeBuildFlags(VkBuildAccelerationStructureFlagsKHR inFlags) noexcept
@@ -198,6 +209,7 @@ void BottomLevelAccelStructCreateInfo::CustomizeBuildFlags(VkBuildAccelerationSt
 
 void BottomLevelAccelStructCreateInfo::Reset() noexcept
 {
+    m_clusterCount = 0;
     m_triangles.clear();
     m_aabbs.clear();
     m_flags = 0;
@@ -330,6 +342,23 @@ auto TopLevelAccelStruct::_Describe(const TopLevelAccelStructCreateInfo& inInfo)
 void BottomLevelAccelStruct::Create(const BottomLevelAccelStructCreateInfo& inCreateInfo)
 {
     CHECK_TRUE(!IsValid(), "BLAS Create requires an empty target!");
+    if (inCreateInfo.m_clusterCount)
+    {
+        CHECK_TRUE(inCreateInfo.m_flags == 0, "Cluster BLAS layouts use default build flags!");
+        BottomLevelAccelStructBuildLayout layout;
+        layout.SetMaxClusterCount(inCreateInfo.m_clusterCount, inCreateInfo.m_clusterCount);
+        const auto sizes = layout.QuerySizesInfo(BottomLevelAccelStructBuildLayout::BuildType::EXPLICIT, 1);
+        auto storage = std::make_unique<VulkanDetail::AccelerationStructureStorage>();
+        storage->buffer = VulkanDetail::CreateClusterDestination(sizes);
+        const auto reference = storage->buffer->GetDeviceAddress();
+        m_storage = std::move(storage);
+        m_accelStructReference = reference;
+        m_clusterCount = inCreateInfo.m_clusterCount;
+        m_buildSizes.accelerationStructureSize = sizes.accelerationStructureSize;
+        m_buildSizes.buildScratchSize = sizes.buildScratchBufferSize;
+        m_scratchAlignment = sizes.scratchAlignment;
+        return;
+    }
     auto& device = MyDevice::GetInstance();
     CHECK_TRUE(device.vkDevice != VK_NULL_HANDLE && device.vkPhysicalDevice != VK_NULL_HANDLE &&
         device.GetMemoryAllocator() != nullptr && device.GetMemoryAllocator()->IsValid(),
@@ -400,7 +429,8 @@ auto BottomLevelAccelStruct::_BuildInfo(const BottomLevelAccelStructCreateInfo& 
     const BottomLevelAccelStruct* inSrc, Buffer& inScratchBuffer, VkDeviceSize inScratchOffset) const
     -> VkAccelStructBuildInfo
 {
-    CHECK_TRUE(IsValid(), "Destination BLAS is not created!");
+    CHECK_TRUE(GetVkAccelerationStructure() && !inInfo.m_clusterCount && (!inSrc || inSrc->GetVkAccelerationStructure()),
+        "KHR geometry builds require handle-backed BLAS owners and geometry descriptions!");
     const auto layout = _Describe(inInfo, false);
     CHECK_TRUE(SameLayout(layout, m_layout), "BLAS build layout differs from its creation layout!");
     if (inSrc != nullptr)
@@ -490,7 +520,7 @@ void TopLevelAccelStruct::WriteBuildInfoBufferInline(const TopLevelAccelStructCr
 BottomLevelAccelStruct::BottomLevelAccelStruct() = default;
 BottomLevelAccelStruct::~BottomLevelAccelStruct() noexcept = default;
 auto BottomLevelAccelStruct::IsValid() const noexcept -> bool
-{ return GetVkAccelerationStructure() != VK_NULL_HANDLE; }
+{ return GetVkAccelerationStructure() != VK_NULL_HANDLE || m_clusterCount != 0; }
 auto BottomLevelAccelStruct::GetVkAccelerationStructure() const noexcept -> VkAccelerationStructureKHR
 { return m_storage ? m_storage->handle : VK_NULL_HANDLE; }
 

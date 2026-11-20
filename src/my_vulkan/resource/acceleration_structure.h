@@ -51,6 +51,7 @@ class BottomLevelAccelStructCreateInfo final
 private:
     std::vector<AccelStructTriangleGeometry> m_triangles;
     std::vector<AccelStructAabbGeometry> m_aabbs;
+    uint32_t m_clusterCount = 0;
     VkBuildAccelerationStructureFlagsKHR m_flags = 0;
 public:
     // Replaces the geometry list and selects its type. Copies descriptions, not Buffer contents.
@@ -58,6 +59,7 @@ public:
     void SetAabbs(std::span<const AccelStructAabbGeometry> inGeometries);
     // Replaces triangle/AABB input with cluster-reference mode and its maximum reference count.
     // The count must be in [1, UINT32_MAX] and is checked before native conversion.
+    // Cluster Create uses default build flags (zero). The destination has an address and no KHR handle.
     void SetClusters(size_t inMaxClusterCount);
     void CustomizeBuildFlags(VkBuildAccelerationStructureFlagsKHR inFlags) noexcept;
     void Reset() noexcept;
@@ -80,12 +82,14 @@ public:
 
 class BottomLevelAccelStruct final : public RefCounted
 {
+    friend class BottomLevelAccelStructBatch;
     friend class CommandBuffer;
     friend struct CommandBufferTestProbe;
 private:
     std::unique_ptr<VulkanDetail::AccelerationStructureStorage> m_storage;
     VkBuildAccelerationStructureFlagsKHR m_flags = 0;
     VkDeviceAddress m_accelStructReference = 0;
+    uint32_t m_clusterCount = 0;
     VkAccelerationStructureBuildSizesInfoKHR m_buildSizes{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
     VkDeviceSize m_scratchAlignment = 1;
     VkAccelStructBuildInfo m_layout;

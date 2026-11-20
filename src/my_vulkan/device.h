@@ -76,8 +76,8 @@ class MyDevice final
 	friend struct ClusterAccelerationStructureTestProbe;
 	friend struct ClusterAccelerationStructureGpuTestProbe;
 	friend struct ClasPipelineTestProbe;
-	friend class ClusterLevelAccelStructBatch;
-	friend class BottomLevelAccelStructBatch;
+	friend class ClusterLevelAccelStructBuildLayout;
+	friend class BottomLevelAccelStructBuildLayout;
 	friend class GraphicsShaderProgram;
     friend class ComputeShaderProgram;
 	friend class RayTracingShaderProgram;

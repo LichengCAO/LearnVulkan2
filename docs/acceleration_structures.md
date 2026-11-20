@@ -176,22 +176,32 @@ query flows are outside this interface.
 ## CLAS and Cluster BLAS batches
 
 `ClusterLevelAccelStructBatch` and `BottomLevelAccelStructBatch` use
-`VK_NV_cluster_acceleration_structure` with implicit destinations. Device
+`VK_NV_cluster_acceleration_structure` with implicit or explicit destinations. Device
 initialization enables the extension and its feature when available; unsupported
 devices keep the existing paths and reject CLAS creation or a CLAS-enabled Program.
 
-Both Batch types keep their output storage and a packed `VkDeviceAddress` table in
+Implicit builds keep their output storage and a packed `VkDeviceAddress` table in
 owned Buffers. `Create()` requires an empty target, queries whole-batch capacity,
 and allocates these Buffers synchronously. It performs no upload, submission, or
 GPU build. Empty batches and batches exceeding the device's single Buffer or
 allocation limit reject; callers split large workloads into multiple batches.
 Failure leaves an empty target that can be retried. Release never waits for GPU work.
 
-`ClusterLevelAccelStructBatchCreateInfo` describes capacity, not geometry or a
+`ClusterLevelAccelStructBuildLayout::QuerySizesInfo(type, count)` and
+`BottomLevelAccelStructBuildLayout::QuerySizesInfo(type, count)` query the device
+without GPU addresses, allocation or submission. Set positive per-object and total
+budgets, select the destination mode and operation, and pass the maximum number of
+targets. `buildInfoBufferSize` and `buildScratchBufferSize` cover that entire
+batch. `scratchAlignment` applies to scratch. `accelerationStructureSize` bounds
+one explicit object with the layout's maximum capacities or the entire implicit
+storage region. `accelerationStructureAlignment` applies to every destination base.
+For uniform explicit slots, round their byte stride up to this alignment.
+
+`ClusterLevelAccelStructImplicitBatchCreateInfo` describes capacity, not geometry or a
 list of tasks. All five required budgets must be set to positive values:
 
 ```cpp
-ClusterLevelAccelStructBatchCreateInfo info;
+ClusterLevelAccelStructImplicitBatchCreateInfo info;
 info.SetMaxClusterCount(2);
 info.SetMaxClusterTriangleCount(100);
 info.SetMaxClusterVertexCount(80);
@@ -226,6 +236,41 @@ batch budgets. `CustomizeIndexStride(bytes)` sets the distance
 between consecutive indices. Zero selects packed indices. Nonzero direct and
 template index strides must fit 16 bits and be a multiple of the index width.
 Direct and template tasks use flags 0, opaque geometry and GeometryIndex 0.
+
+### Fixed destinations
+
+Create each fixed CLAS using `ClusterLevelAccelStructCreateInfo`. Set its maximum
+triangle and vertex counts, then choose a common index type, vertex format and
+template usage. `ClusterLevelAccelStruct::GetReference()` returns its aligned
+device address after creation. For a fixed Cluster BLAS, use
+`BottomLevelAccelStructCreateInfo::SetClusters(maxClusterCount)` and
+`BottomLevelAccelStruct::GetDeviceAddress()`. Cluster mode uses build flags zero.
+Its owner participates in TLAS address encoding and the NV indirect build path.
+KHR geometry builds and updates require triangle/AABB owners.
+
+Create owners and the packed address-table Buffer through `MakeIntrusive`.
+Supply their addresses in a Buffer with `STORAGE_BUFFER_BIT | SHADER_DEVICE_ADDRESS_BIT`.
+An address table subsequently used as Cluster BLAS build input also needs
+`ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR`. Include transfer usage
+if uploading by transfer or reading back. Table offset and effective device address
+must be eight-byte aligned and the Buffer must contain all entries after that offset.
+
+```cpp
+ClusterLevelAccelStructExplicitBatchCreateInfo fixed;
+fixed.SetReferenceBuffer(*table, tableOffset);
+fixed.SetSourceAccelStructs(owners); // Contiguous list of const CLAS pointers.
+ClusterLevelAccelStructBatch batch;
+batch.Create(fixed);
+const auto tableAddress = batch.GetReferenceBuffer()->GetDeviceAddress() + batch.GetReferenceBufferOffset();
+```
+
+`BottomLevelAccelStructExplicitBatchCreateInfo` accepts the same two setters
+with Cluster BLAS owners. The caller fills the table so entry `i` points to owner
+`i`. Each task must fit that owner's individual capacities. The native batch
+query uses the largest per-owner capacities and the sums of individual budgets,
+so a smaller owner can have less storage than the maximum in `GetSizesInfo()`.
+Batch creation copies no GPU data. It retains each distinct owner and the supplied
+Buffer. Keep its allocation stable and retain the Batch through dependent GPU uses.
 
 ### Building and instantiating templates
 
@@ -277,11 +322,11 @@ so supply GPU count 1 or initialize all remaining capacity before a full build.
 
 ### Cluster BLAS and indirect commands
 
-`BottomLevelAccelStructBatchCreateInfo` also describes explicit capacity. Its
+`BottomLevelAccelStructImplicitBatchCreateInfo` describes an implicit Cluster BLAS batch. Its
 three required budgets must be positive:
 
 ```cpp
-BottomLevelAccelStructBatchCreateInfo info;
+BottomLevelAccelStructImplicitBatchCreateInfo info;
 info.SetMaxAccelStructCount(2);
 info.SetMaxClusterCountPerAccelStruct(2);
 info.SetMaxTotalClusterCount(3);
@@ -326,18 +371,25 @@ For either Batch, prepare and execute in this order:
 5. Append the matching direct, instantiate or Cluster BLAS command. For example:
 
 ```cpp
-ClusterLevelAccelStructInstantiateBuildIndirectInfo build;
-build.SetTarget(instances);
+ClusterLevelAccelStructBuildIndirectInfo build;
+build.SetBuildTarget(instances);
 build.SetBuildInfoAddress(taskBuffer.GetDeviceAddress());
 build.SetScratchAddress(scratchAddress);
 build.CustomizeBuildCountAddress(buildCountAddress);
 commands.BuildAccelerationStructureIndirect(build);
 ```
 
-`ClusterLevelAccelStructDirectBuildIndirectInfo` and `BottomLevelAccelStructBuildIndirectInfo`
-use the same setters with their matching targets. `SetTarget` copies limits,
+`ClusterLevelAccelStructBuildIndirectInfo` and `BottomLevelAccelStructBuildIndirectInfo`
+use the same setters with their matching targets. `SetBuildTarget` copies limits,
 capacity, required sizes and output addresses. The recorded command borrows the
 native resources through completion. The optional count address defaults to zero.
+For caller-managed storage the CLAS arguments expose `SetExplicitTarget`,
+`SetExplicitInstantiateTarget`, `SetImplicitTarget` and `SetImplicitInstantiateTarget`.
+The Cluster BLAS arguments expose `SetExplicitTarget` and `SetImplicitTarget`.
+Pass a layout, packed table address and maximum count, plus the contiguous storage
+base for implicit builds. Each accepted setter replaces the previous target
+snapshot. An explicit build reads the supplied addresses. An implicit build writes
+the addresses it assigned. Synchronize producers and consumers of each table.
 
 The native `maxAccelerationStructureCount` always comes from
 `GetCapacity()`. If `buildCountAddress` is 0, the build processes the full
@@ -370,7 +422,7 @@ invalid addresses/alignment reject before appending.
 `GetReferenceBuffer()` becomes non-null after Host creation, but only the actual
 GPU-built prefix is valid after the build and its required synchronization.
 Inactive entries may contain uninitialized or stale addresses; the Batch does not
-clear them. Both address tables have `TRANSFER_DST_BIT` for explicit caller
+clear them. Both implicit address tables have `TRANSFER_DST_BIT` for explicit caller
 initialization when needed; initialization and synchronization remain explicit.
 Do not assume individual implicit object addresses stay unchanged across builds.
 Synchronize CLAS output writes before Cluster BLAS reads and scratch reuse, then
@@ -389,7 +441,9 @@ enabled.
 
 The opt-in native smoke test uses the normal regression executable without a
 window. It builds direct CLAS and implicit templates, instantiates one template
-at two poses and builds Cluster BLAS from each path. It checks the output addresses
+at two poses and builds Cluster BLAS from each path. It also submits direct and
+instantiate builds into fixed CLAS owners and consumes them in explicit Cluster
+BLAS builds using two slices of one caller-populated table. It checks the addresses
 and GPU count values zero, one and full capacity, plus a producer request
 restricted to capacity before submission. Fixed sentinel entries verify that
 inactive address-table tails are not overwritten:

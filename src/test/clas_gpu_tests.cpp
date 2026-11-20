@@ -2,6 +2,7 @@
 #include "my_vulkan/device.h"
 #include "my_vulkan/render_context/device_context.h"
 #include "my_vulkan/resource/cluster_acceleration_structure.h"
+#include "my_vulkan/resource/acceleration_structure.h"
 #include "my_vulkan/resource/private/buffer_storage.h"
 #include "utility/task_scheduler.h"
 
@@ -442,7 +443,7 @@ private:
             addresses.size(), batchName, bytes, alignment);
     }
 
-    static void _BuildAndReadBack(const HeadlessDevice& native, bool useTemplates)
+    static void _BuildAndReadBack(const HeadlessDevice& native, bool useTemplates, bool explicitDestinations)
     {
         constexpr std::array<float, 18> positions{
             0, 0, 0, 1, 0, 0, 0, 1, 0,
@@ -501,27 +502,67 @@ private:
             CHECK_TRUE(explicitTemplates.GetCount() == 2 && explicitTemplates.GetReference(1) != 0);
             std::cout << "Verified two implicit templates from distinct index buffers, worker retry and explicit creation.\n";
         }
-        ClusterLevelAccelStructBatchCreateInfo clusterInfo;
-        clusterInfo.SetMaxClusterCount(2);
-        clusterInfo.SetMaxClusterTriangleCount(1);
-        clusterInfo.SetMaxClusterVertexCount(3);
-        clusterInfo.SetMaxTotalTriangleCount(2);
-        clusterInfo.SetMaxTotalVertexCount(6);
-        clusterInfo.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
-        clusterInfo.CustomizeTemplateUsage(useTemplates);
         ClusterLevelAccelStructBatch clusters;
-        clusters.Create(clusterInfo);
-
+        BottomLevelAccelStructBatch blases;
+        std::array<VkDeviceAddress, 2> fixedClusters{}, fixedBlases{};
+        if (explicitDestinations)
+        {
+            auto table = MakeIntrusive<Buffer>(MakeBuffer(5 * sizeof(VkDeviceAddress), kBuildInputUsage |
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, kHostMemory));
+            std::array<IntrusivePtr<ClusterLevelAccelStruct>, 2> clusterOwners;
+            std::array<IntrusivePtr<BottomLevelAccelStruct>, 2> blasOwners;
+            std::array<const ClusterLevelAccelStruct*, 2> clusterSources;
+            std::array<const BottomLevelAccelStruct*, 2> blasSources;
+            ClusterLevelAccelStructCreateInfo ownerInfo;
+            ownerInfo.SetMaxTriangleCount(1);
+            ownerInfo.SetMaxVertexCount(3);
+            ownerInfo.CustomizeTemplateUsage(useTemplates);
+            ownerInfo.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
+            for (size_t i = 0; i < 2; ++i)
+            {
+                clusterOwners[i] = MakeIntrusive<ClusterLevelAccelStruct>();
+                clusterOwners[i]->Create(ownerInfo);
+                clusterSources[i] = clusterOwners[i].get();
+                fixedClusters[i] = clusterOwners[i]->GetReference();
+                BottomLevelAccelStructCreateInfo blasOwnerInfo;
+                blasOwnerInfo.SetClusters(2 - i);
+                blasOwners[i] = MakeIntrusive<BottomLevelAccelStruct>();
+                blasOwners[i]->Create(blasOwnerInfo);
+                blasSources[i] = blasOwners[i].get();
+                fixedBlases[i] = blasOwners[i]->GetDeviceAddress();
+            }
+            ClusterLevelAccelStructExplicitBatchCreateInfo clusterBatchInfo;
+            clusterBatchInfo.SetReferenceBuffer(*table, 8);
+            clusterBatchInfo.SetSourceAccelStructs(clusterSources);
+            clusters.Create(clusterBatchInfo);
+            BottomLevelAccelStructExplicitBatchCreateInfo blasBatchInfo;
+            blasBatchInfo.SetReferenceBuffer(*table, 24);
+            blasBatchInfo.SetSourceAccelStructs(blasSources);
+            blases.Create(blasBatchInfo);
+            Buffer::UploadToDeviceInline(*table, 8, fixedClusters.data(), sizeof(fixedClusters));
+            Buffer::UploadToDeviceInline(*table, 24, fixedBlases.data(), sizeof(fixedBlases));
+        }
+        else
+        {
+            ClusterLevelAccelStructImplicitBatchCreateInfo clusterInfo;
+            clusterInfo.SetMaxClusterCount(2);
+            clusterInfo.SetMaxClusterTriangleCount(1);
+            clusterInfo.SetMaxClusterVertexCount(3);
+            clusterInfo.SetMaxTotalTriangleCount(2);
+            clusterInfo.SetMaxTotalVertexCount(6);
+            clusterInfo.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
+            clusterInfo.CustomizeTemplateUsage(useTemplates);
+            clusters.Create(clusterInfo);
+            BottomLevelAccelStructImplicitBatchCreateInfo blasInfo;
+            blasInfo.SetMaxAccelStructCount(2);
+            blasInfo.SetMaxClusterCountPerAccelStruct(2);
+            blasInfo.SetMaxTotalClusterCount(3);
+            blases.Create(blasInfo);
+        }
         std::array<BottomLevelAccelStructBuildInfo, 2> blasDescriptions{};
-        const auto clusterReferences = clusters.GetReferenceBuffer()->GetDeviceAddress();
+        const auto clusterReferences = clusters.GetReferenceBuffer()->GetDeviceAddress() + clusters.GetReferenceBufferOffset();
         blasDescriptions[0].SetClusterReferences(clusterReferences, 2);
         blasDescriptions[1].SetClusterReferences(clusterReferences + sizeof(VkDeviceAddress), 1);
-        BottomLevelAccelStructBatchCreateInfo blasInfo;
-        blasInfo.SetMaxAccelStructCount(2);
-        blasInfo.SetMaxClusterCountPerAccelStruct(2);
-        blasInfo.SetMaxTotalClusterCount(3);
-        BottomLevelAccelStructBatch blases;
-        blases.Create(blasInfo);
         CHECK_TRUE(clusters.GetCapacity() == clusterDescriptions.size() && blases.GetCapacity() == blasDescriptions.size(),
             "CLAS GPU smoke found unexpected output counts.");
 
@@ -588,26 +629,23 @@ private:
             buildRead | VK_ACCESS_SHADER_READ_BIT);
         const auto addClusterBuild = [&](CommandBuffer& cmd, VkDeviceAddress count = 0)
         {
-            const auto add = [&](auto args) {
-                args.SetImplicitTarget(clusters);
-                args.SetBuildInfoAddress(clusterTasks.GetDeviceAddress());
-                args.SetScratchAddress(scratchAddress(clusterScratch));
-                args.CustomizeBuildCountAddress(count);
-                cmd.BuildAccelerationStructureIndirect(args);
-            };
-            if (useTemplates) add(ClusterLevelAccelStructInstantiateBuildIndirectInfo{});
-            else add(ClusterLevelAccelStructDirectBuildIndirectInfo{});
+            ClusterLevelAccelStructBuildIndirectInfo args;
+            args.SetBuildTarget(clusters);
+            args.SetBuildInfoAddress(clusterTasks.GetDeviceAddress());
+            args.SetScratchAddress(scratchAddress(clusterScratch));
+            args.CustomizeBuildCountAddress(count);
+            cmd.BuildAccelerationStructureIndirect(args);
         };
         addClusterBuild(commands);
         AppendBarrier(commands, barrier, buildStage, buildWrite, buildStage, buildRead);
         BottomLevelAccelStructBuildIndirectInfo blasBuild;
-        blasBuild.SetImplicitTarget(blases);
+        blasBuild.SetBuildTarget(blases);
         blasBuild.SetBuildInfoAddress(blasTasks.GetDeviceAddress());
         blasBuild.SetScratchAddress(scratchAddress(blasScratch));
         commands.BuildAccelerationStructureIndirect(blasBuild);
         AppendBarrier(commands, barrier, buildStage, buildWrite, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        commands.CopyBuffer(*clusters.GetReferenceBuffer(), readback, 0, 0, sizeof(clusterAddresses));
-        commands.CopyBuffer(*blases.GetReferenceBuffer(), readback, 0, sizeof(clusterAddresses), sizeof(blasAddresses));
+        commands.CopyBuffer(*clusters.GetReferenceBuffer(), readback, clusters.GetReferenceBufferOffset(), 0, sizeof(clusterAddresses));
+        commands.CopyBuffer(*blases.GetReferenceBuffer(), readback, blases.GetReferenceBufferOffset(), sizeof(clusterAddresses), sizeof(blasAddresses));
         AppendBarrier(commands, barrier, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
 
@@ -618,6 +656,13 @@ private:
         std::memcpy(clusterAddresses.data(), mapped, sizeof(clusterAddresses));
         std::memcpy(blasAddresses.data(), mapped + sizeof(clusterAddresses), sizeof(blasAddresses));
         allocation.Unmap();
+        if (explicitDestinations)
+        {
+            CHECK_TRUE(clusterAddresses == fixedClusters && blasAddresses == fixedBlases);
+            std::cout << "Completed explicit " << (useTemplates ? "instantiate" : "direct")
+                << " CLAS and dependent explicit Cluster BLAS at caller-supplied destinations.\n";
+            return;
+        }
         _CheckAddresses(*clusters.m_storageBuffer, clusterAddresses, native.clusterProperties.clusterByteAlignment,
             useTemplates ? "instantiated CLAS" : "direct CLAS");
         _CheckAddresses(*blases.m_storageBuffer, blasAddresses, native.clusterProperties.clusterBottomLevelByteAlignment, "Cluster BLAS");
@@ -771,8 +816,10 @@ public:
         const auto shutdownScheduler = [](MyTaskScheduler* owner) { owner->Destroy(); };
         const std::unique_ptr<MyTaskScheduler, decltype(shutdownScheduler)> schedulerCleanup(&scheduler, shutdownScheduler);
         _CheckInlineTransfers();
-        _BuildAndReadBack(native, false);
-        _BuildAndReadBack(native, true);
+        _BuildAndReadBack(native, false, false);
+        _BuildAndReadBack(native, true, false);
+        _BuildAndReadBack(native, false, true);
+        _BuildAndReadBack(native, true, true);
     }
 };
 

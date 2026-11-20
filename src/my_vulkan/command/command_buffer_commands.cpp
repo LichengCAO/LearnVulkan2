@@ -504,22 +504,36 @@ namespace
         const auto storage = addresses.storage;
         const auto references = addresses.references;
         const auto referenceSize = VkDeviceSize{ inCapacity } * sizeof(VkDeviceAddress);
-        const auto referenceCapacitySize = addresses.referenceSize;
-        CHECK_TRUE(inSizes.accelerationStructureSize <= maximum - storage && referenceCapacitySize <= maximum - references,
-            "Cluster output storage is invalid!");
-        if (inSizes.buildScratchBufferSize != 0)
+        const auto disjoint = [](VkDeviceAddress a, VkDeviceSize aSize, VkDeviceAddress b, VkDeviceSize bSize)
         {
-            const auto scratchEnd = inScratch + inSizes.buildScratchBufferSize;
-            const auto referenceEnd = references + referenceCapacitySize;
-            CHECK_TRUE((scratchEnd <= storage || storage + inSizes.accelerationStructureSize <= inScratch) &&
-                (scratchEnd <= references || referenceEnd <= inScratch),
-                "Cluster scratch must not overlap object storage or the output address table!");
+            return !aSize || !bSize || a + aSize <= b || b + bSize <= a;
+        };
+        const auto countSize = inCountAddress ? AccelStructGpuLayout::CountSize : 0;
+        const auto scratchSize = inSizes.buildScratchBufferSize;
+        const auto checkWrite = [&](VkDeviceAddress base, VkDeviceSize size)
+        {
+            CHECK_TRUE(disjoint(base, size, inTasks, taskSize) && disjoint(base, size, inCountAddress, countSize) &&
+                disjoint(base, size, inScratch, scratchSize), "Cluster output overlaps build inputs or scratch!");
+        };
+        CHECK_TRUE(disjoint(inScratch, scratchSize, inTasks, taskSize) &&
+            disjoint(inScratch, scratchSize, inCountAddress, countSize) &&
+            disjoint(inScratch, scratchSize, references, referenceSize), "Cluster scratch overlaps a build argument!");
+        if (addresses.mode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV)
+        {
+            checkWrite(storage, inSizes.accelerationStructureSize);
+            checkWrite(references, referenceSize);
+        }
+        for (const auto& [destination, size] : addresses.destinations)
+        {
+            checkWrite(destination, size);
+            CHECK_TRUE(disjoint(destination, size, references, referenceSize), "Explicit destination overlaps its address table!");
         }
         BuildClusterAccelerationStructuresNVCommand::Parameters parameters;
         auto& info = parameters.info;
         info.input = { VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV };
         info.input.maxAccelerationStructureCount = inCapacity;
-        info.input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
+        info.input.opMode = addresses.mode;
+        info.input.opType = addresses.operation;
         info.dstImplicitData = storage;
         info.scratchData = inSizes.buildScratchBufferSize == 0 ? 0 : inScratch;
         info.dstAddressesArray = { references, sizeof(VkDeviceAddress), referenceSize };
@@ -530,24 +544,13 @@ namespace
     }
 }
 
-void CommandBuffer::BuildAccelerationStructureIndirect(const ClusterLevelAccelStructDirectBuildIndirectInfo& inInfo)
+void CommandBuffer::BuildAccelerationStructureIndirect(const ClusterLevelAccelStructBuildIndirectInfo& inInfo)
 {
     _RequireOutsideRenderPass();
+    const auto layout = inInfo.m_addresses.operation == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV ?
+        ClusterLevelAccelStructInstantiateBuildInfo::GetBuildInfoLayout() : ClusterLevelAccelStructDirectBuildInfo::GetBuildInfoLayout();
     auto parameters = ClusterBuildParameters(inInfo.m_addresses, inInfo.m_scratch, inInfo.m_tasks,
-        ClusterLevelAccelStructDirectBuildInfo::GetBuildInfoLayout(), inInfo.m_count);
-    parameters.info.input.opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV;
-    parameters.triangles = inInfo.m_limits;
-    auto command = std::make_unique<BuildClusterAccelerationStructuresNVCommand>();
-    command->SetParameters(parameters);
-    _AppendOwnedCommand(std::move(command));
-}
-
-void CommandBuffer::BuildAccelerationStructureIndirect(const ClusterLevelAccelStructInstantiateBuildIndirectInfo& inInfo)
-{
-    _RequireOutsideRenderPass();
-    auto parameters = ClusterBuildParameters(inInfo.m_addresses, inInfo.m_scratch, inInfo.m_tasks,
-        ClusterLevelAccelStructInstantiateBuildInfo::GetBuildInfoLayout(), inInfo.m_count);
-    parameters.info.input.opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV;
+        layout, inInfo.m_count);
     parameters.triangles = inInfo.m_limits;
     auto command = std::make_unique<BuildClusterAccelerationStructuresNVCommand>();
     command->SetParameters(parameters);
@@ -559,7 +562,6 @@ void CommandBuffer::BuildAccelerationStructureIndirect(const BottomLevelAccelStr
     _RequireOutsideRenderPass();
     auto parameters = ClusterBuildParameters(inInfo.m_addresses, inInfo.m_scratch, inInfo.m_tasks,
         BottomLevelAccelStructBuildInfo::GetBuildInfoLayout(), inInfo.m_count);
-    parameters.info.input.opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV;
     parameters.clusters = inInfo.m_limits;
     auto command = std::make_unique<BuildClusterAccelerationStructuresNVCommand>();
     command->SetParameters(parameters);

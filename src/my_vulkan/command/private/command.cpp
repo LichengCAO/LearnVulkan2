@@ -182,7 +182,8 @@ void BuildClusterAccelerationStructuresNVCommand::SetParameters(const Parameters
     CHECK_TRUE(info.pNext == nullptr && info.input.pNext == nullptr &&
         inParameters.triangles.pNext == nullptr && inParameters.clusters.pNext == nullptr,
         "Unsupported cluster build pNext!");
-    CHECK_TRUE(info.input.opMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV &&
+    CHECK_TRUE((info.input.opMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV ||
+                info.input.opMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV) &&
         info.input.maxAccelerationStructureCount != 0 && info.input.flags == 0 &&
         (info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV ||
          info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV ||

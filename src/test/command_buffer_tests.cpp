@@ -13,6 +13,8 @@
 #include "my_vulkan/resource/private/image_storage.h"
 #include "my_vulkan/resource/private/acceleration_structure_storage.h"
 
+#include "clas_buffer_test_fixture.h"
+
 struct CommandBufferTestProbe
 {
     static void ClearBorrowedBuffer(Buffer& buffer) { buffer.m_storage.reset(); }
@@ -186,6 +188,7 @@ struct CommandBufferTestProbe
         inBatch.m_sizesInfo.accelerationStructureSize = 4096;
         inBatch.m_sizesInfo.buildScratchBufferSize = 512;
         inBatch.m_sizesInfo.scratchAlignment = 256;
+        inBatch.m_sizesInfo.accelerationStructureAlignment = 128;
         if constexpr (std::same_as<T, ClusterLevelAccelStructBatch>)
         {
             inBatch.m_useTemplate = useTemplate;
@@ -1452,22 +1455,21 @@ namespace
         ClusterLevelAccelStructBatch clas;
         BottomLevelAccelStructBatch blas;
         CommandBuffer commands;
-        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(ClusterLevelAccelStructDirectBuildIndirectInfo{}); });
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(ClusterLevelAccelStructBuildIndirectInfo{}); });
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(BottomLevelAccelStructBuildIndirectInfo{}); });
-        ClusterLevelAccelStructDirectBuildIndirectInfo clasInfo;
+        ClusterLevelAccelStructBuildIndirectInfo clasInfo;
         BottomLevelAccelStructBuildIndirectInfo blasInfo;
-        ExpectRejected(commands, [&] { clasInfo.SetImplicitTarget(clas); });
-        ExpectRejected(commands, [&] { blasInfo.SetImplicitTarget(blas); });
+        ExpectRejected(commands, [&] { clasInfo.SetBuildTarget(clas); });
+        ExpectRejected(commands, [&] { blasInfo.SetBuildTarget(blas); });
         CommandBufferTestProbe::PrepareClusterBatch(clas);
         CommandBufferTestProbe::PrepareClusterBatch(blas);
-        clasInfo.SetImplicitTarget(clas);
-        blasInfo.SetImplicitTarget(blas);
+        clasInfo.SetBuildTarget(clas);
+        blasInfo.SetBuildTarget(blas);
         clasInfo.SetScratchAddress(8192);
         blasInfo.SetScratchAddress(8192);
         clasInfo.SetBuildInfoAddress(4096);
         blasInfo.SetBuildInfoAddress(4096);
-        ClusterLevelAccelStructInstantiateBuildIndirectInfo instances;
-        ExpectRejected(commands, [&] { instances.SetImplicitTarget(clas); });
+        ClusterLevelAccelStructBuildIndirectInfo instances;
         CommandBufferTestProbe::ChangeClusterLayout(clas);
         CommandBufferTestProbe::ChangeClusterLayout(blas);
         CommandBuffer capacityBuild;
@@ -1566,8 +1568,7 @@ namespace
         {
             ClusterLevelAccelStructBatch temporary;
             CommandBufferTestProbe::PrepareClusterBatch(temporary, true);
-            ExpectRejected(joined, [&] { clasInfo.SetImplicitTarget(temporary); });
-            instances.SetImplicitTarget(temporary);
+            instances.SetBuildTarget(temporary);
         }
         instances.SetScratchAddress(8192);
         instances.SetBuildInfoAddress(4096);
@@ -1587,7 +1588,7 @@ namespace
         CommandBufferTestProbe::Resources resources;
         CommandBuffer inside;
         inside.BeginRenderPass(resources.pass, resources.framebuffer, 0, 0, 32, 32);
-        clasInfo.SetImplicitTarget(clas);
+        clasInfo.SetBuildTarget(clas);
         clasInfo.SetScratchAddress(8192);
         clasInfo.SetBuildInfoAddress(4096);
         ExpectRejected(inside, [&] { inside.BuildAccelerationStructureIndirect(clasInfo); });
@@ -1597,10 +1598,104 @@ namespace
         ExpectRejected(inside, [&] { CommandBufferTestProbe::Append(inside, std::move(pending)); });
         inside.EndRenderPass();
     }
+
+    void TestRawClusterTargets()
+    {
+        ScopedFunction build(vkCmdBuildClusterAccelerationStructureIndirectNV, &CaptureClusterBuild);
+        clusterCommands.clear(); clusterTriangleInputs.clear(); clusterBlasInputs.clear();
+        ClusterLevelAccelStructBuildLayout layout;
+        layout.SetMaxTriangleCount(3, 6);
+        layout.SetMaxVertexCount(5, 12);
+        ClusterLevelAccelStructBuildIndirectInfo info;
+        info.SetScratchAddress(0x1000);
+        info.SetBuildInfoAddress(0x2000);
+        CommandBuffer commands;
+        info.SetImplicitInstantiateTarget(layout, 0x3000, 3, 0x4000);
+        commands.BuildAccelerationStructureIndirect(info);
+        info.SetExplicitTarget(layout, 0x5000, 2);
+        ExpectRejected(commands, [&] { info.SetImplicitTarget(layout, 0x5000, 2, 0x4101); });
+        ExpectRejected(commands, [&] { info.SetExplicitTarget(layout, UINT64_MAX - 7, 2); });
+        commands.BuildAccelerationStructureIndirect(info);
+        info.SetImplicitTarget(layout, 0x6000, 2, 0x7000);
+        commands.BuildAccelerationStructureIndirect(info);
+        info.SetExplicitInstantiateTarget(layout, 0x8000, 3);
+        layout.SetMaxVertexCount(2, 2);
+        info.CustomizeBuildCountAddress(0xa000);
+        commands.BuildAccelerationStructureIndirect(info);
+        info.SetScratchAddress(0x8000);
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(info); });
+        BottomLevelAccelStructBuildLayout blasLayout;
+        blasLayout.SetMaxClusterCount(4, 7);
+        BottomLevelAccelStructBuildIndirectInfo blas;
+        blas.SetBuildInfoAddress(0x2000);
+        blas.SetScratchAddress(0x1000);
+        blas.SetImplicitTarget(blasLayout, 0x3000, 2, 0x4000);
+        commands.BuildAccelerationStructureIndirect(blas);
+        blas.SetExplicitTarget(blasLayout, 0x5000, 3);
+        commands.BuildAccelerationStructureIndirect(blas);
+        CommandBufferTestProbe::Record(commands);
+        CHECK_TRUE(clusterCommands.size() == 6 && clusterTriangleInputs.size() == 4 && clusterBlasInputs.size() == 2);
+        constexpr std::array<uint32_t, 6> capacities{3, 2, 2, 3, 2, 3};
+        constexpr std::array<VkDeviceAddress, 6> tables{0x3000, 0x5000, 0x6000, 0x8000, 0x3000, 0x5000};
+        constexpr std::array<VkDeviceAddress, 6> storages{0x4000, 0, 0x7000, 0, 0x4000, 0};
+        for (size_t i = 0; i < clusterCommands.size(); ++i)
+        {
+            const auto& cmd = clusterCommands[i];
+            const bool instantiate = i == 0 || i == 3;
+            const auto stride = i >= 4 ? sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV) :
+                instantiate ? sizeof(VkClusterAccelerationStructureInstantiateClusterInfoNV) : sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV);
+            CHECK_TRUE(cmd.input.opMode == (storages[i] ? VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV :
+                VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV));
+            CHECK_TRUE(cmd.input.opType == (i >= 4 ? VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV :
+                instantiate ? VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV :
+                VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV));
+            CHECK_TRUE(cmd.input.maxAccelerationStructureCount == capacities[i] && cmd.dstImplicitData == storages[i] &&
+                cmd.dstAddressesArray.deviceAddress == tables[i] && cmd.dstAddressesArray.size == capacities[i] * 8 &&
+                cmd.srcInfosArray.size == capacities[i] * stride && cmd.srcInfosCount == (i == 3 ? 0xa000 : 0));
+        }
+        CHECK_TRUE(clusterTriangleInputs.back().maxTotalVertexCount == 12 && clusterBlasInputs.back().maxTotalClusterCount == 7);
+    }
+
+    void TestManagedExplicitTargetSnapshot()
+    {
+        ScopedFunction build(vkCmdBuildClusterAccelerationStructureIndirectNV, &CaptureClusterBuild);
+        clusterCommands.clear(); clusterTriangleInputs.clear(); clusterBlasInputs.clear();
+        ClusterLevelAccelStructCreateInfo desc;
+        desc.SetMaxTriangleCount(2);
+        desc.SetMaxVertexCount(3);
+        desc.CustomizeTemplateUsage(true);
+        auto owner = MakeIntrusive<ClusterLevelAccelStruct>();
+        owner->Create(desc);
+        auto table = MakeIntrusive<Buffer>();
+        BufferCreateInfo tableInfo;
+        tableInfo.SetBufferSize(64).SetBufferUsage(VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        table->Create(tableInfo);
+        const auto* source = owner.get();
+        ClusterLevelAccelStructExplicitBatchCreateInfo info;
+        info.SetSourceAccelStructs(std::span(&source, 1));
+        info.SetReferenceBuffer(*table, 24);
+        ClusterLevelAccelStructBatch batch;
+        batch.Create(info);
+        ClusterLevelAccelStructBuildIndirectInfo buildInfo;
+        buildInfo.SetBuildTarget(batch);
+        buildInfo.SetBuildInfoAddress(0x4000);
+        CommandBuffer commands;
+        buildInfo.SetScratchAddress(owner->GetReference());
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(buildInfo); });
+        buildInfo.SetScratchAddress(0x5000);
+        commands.BuildAccelerationStructureIndirect(buildInfo);
+        CommandBufferTestProbe::Record(commands);
+        CHECK_TRUE(clusterCommands.size() == 1 && clusterCommands[0].input.opMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV &&
+            clusterCommands[0].input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV &&
+            clusterCommands[0].dstAddressesArray.deviceAddress == table->GetDeviceAddress() + 24 && clusterCommands[0].dstAddressesArray.size == 8 &&
+            !clusterCommands[0].dstImplicitData && clusterTriangleInputs[0].maxClusterTriangleCount == 2);
+    }
 }
 
 void RunCommandBufferTests()
 {
+    ClasBufferTestFixture::Run([] { ClasBufferTestFixture::WithClusterQueries(TestRawClusterTargets); });
+    ClasBufferTestFixture::Run([] { ClasBufferTestFixture::WithClusterQueries(TestManagedExplicitTargetSnapshot); });
     TestClusterBuildCommands();
     TestObjectBlasCommandsUseExternalBuffersAndSnapshots();
     TestAsValidationAndScratchSelection();
