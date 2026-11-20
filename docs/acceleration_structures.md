@@ -10,8 +10,9 @@ Public headers live in `src/my_vulkan/resource/`:
 | `acceleration_structure_gpu_layout.h` | GPU record strides, address alignments, field offsets and bit packing for CLAS tasks and packed TLAS instances. |
 | `acceleration_structure.h` | Ordinary BLAS/TLAS owners, geometry and instance descriptions, and their CreateInfo types. |
 | `cluster_acceleration_structure.h` | CLAS templates, CLAS/Cluster BLAS batch owners and CreateInfo types, CPU task descriptions, and public indirect-build arguments. |
+| `partitioned_acceleration_structure.h` | PTLAS owner, CreateInfo, operation records and command input declarations; implementation is pending. |
 
-Include the ordinary or cluster header explicitly for the path being used.
+Include the ordinary, cluster or partitioned header explicitly for the path being used.
 `resource/private/` contains the implementations, native AS storage owner, and
 `cluster_acceleration_structure_build.h` with the internal `ClusterBuildAddresses`
 value snapshot shared with command recording. It is included by the cluster

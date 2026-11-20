@@ -20,6 +20,7 @@ class TopLevelAccelStructCreateInfo;
 class ComputeClusterAccelStructSizesCommandInput;
 class BuildExplicitClusterAccelStructCommandInput;
 class BuildImplicitClusterAccelStructCommandInput;
+class BuildPartitionedTopLevelAccelStructCommandInput;
 struct VkAccelStructBuildInfo;
 namespace VulkanDetail { class DynamicDescriptorPool; struct ClusterCommandState; }
 
@@ -189,6 +190,9 @@ public:
     void ComputeClusterAccelStructSizes(const ComputeClusterAccelStructSizesCommandInput& inInput);
     void BuildAccelerationStructureIndirect(const BuildExplicitClusterAccelStructCommandInput& inInput);
     void BuildAccelerationStructureIndirect(const BuildImplicitClusterAccelStructCommandInput& inInput);
+    // Snapshots the description; borrows source/target storage and GPU argument/count/scratch ranges.
+    // Requires a compute-capable queue outside a render pass; no implicit barriers, submit or wait.
+    void BuildPartitionedTopLevelAccelStruct(const BuildPartitionedTopLevelAccelStructCommandInput& inInput);
 
     // Executes later during recording, in stream order. The callback must preserve
     // the tracked RenderPass lifecycle and Program/ShaderResource bindings.

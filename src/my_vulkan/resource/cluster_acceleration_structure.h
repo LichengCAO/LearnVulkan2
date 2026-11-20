@@ -280,8 +280,7 @@ public:
 
 	// Encodes and uploads Host tasks using each task's vertex format and index type.
 	// The caller guarantees the tasks match the eventual build's formats/budgets.
-	static void CommitToDeviceInline(std::span<const ClusterLevelAccelStructDirectBuildInfo> inHostInfo,
-		Buffer& inoutTargetBuffer, VkDeviceSize inOffset = 0);
+	static void CommitToDeviceInline(std::span<const ClusterLevelAccelStructDirectBuildInfo> inHostInfo, Buffer& inoutTargetBuffer, VkDeviceSize inOffset = 0);
 };
 
 class BottomLevelAccelStructBuildInfo final
