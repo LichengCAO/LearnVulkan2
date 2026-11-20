@@ -254,7 +254,14 @@ namespace
             CHECK_TRUE(storage + sizes.accelerationStructureSize <= table || table + bytes <= storage,
                 "Implicit storage overlaps the address output table!");
         }
-        return {sizes, storage, table, count, op.mode, op.operation};
+        VulkanDetail::ClusterBuildAddresses addresses;
+        addresses.sizes = sizes;
+        addresses.storage = storage;
+        addresses.references = table;
+        addresses.capacity = count;
+        addresses.mode = op.mode;
+        addresses.operation = op.operation;
+        return addresses;
     }
 }
 

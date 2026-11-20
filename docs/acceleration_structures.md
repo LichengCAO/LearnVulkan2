@@ -390,6 +390,8 @@ Pass a layout, packed table address and maximum count, plus the contiguous stora
 base for implicit builds. Each accepted setter replaces the previous target
 snapshot. An explicit build reads the supplied addresses. An implicit build writes
 the addresses it assigned. Synchronize producers and consumers of each table.
+Moving an indirect build description transfers its target binding. Set a target
+again before recording with the moved-from description.
 
 The native `maxAccelerationStructureCount` always comes from
 `GetCapacity()`. If `buildCountAddress` is 0, the build processes the full

@@ -1656,6 +1656,38 @@ namespace
         CHECK_TRUE(clusterTriangleInputs.back().maxTotalVertexCount == 12 && clusterBlasInputs.back().maxTotalClusterCount == 7);
     }
 
+    template<typename Info>
+    void CheckManagedExplicitMoves(const Info& bound, VkDeviceAddress owner, VkDeviceAddress table,
+        VkClusterAccelerationStructureOpTypeNV operation)
+    {
+        const auto verify = [&](Info& source, Info& target)
+        {
+            CommandBuffer commands;
+            source.SetScratchAddress(owner);
+            ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(source); });
+            source.SetScratchAddress(0x5000);
+            ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(source); });
+            target.SetScratchAddress(owner);
+            ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(target); });
+            target.SetScratchAddress(0x5000);
+            commands.BuildAccelerationStructureIndirect(target);
+            const auto before = clusterCommands.size();
+            CommandBufferTestProbe::Record(commands);
+            CHECK_TRUE(clusterCommands.size() == before + 1 && clusterCommands.back().input.opType == operation &&
+                clusterCommands.back().input.opMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV &&
+                clusterCommands.back().dstAddressesArray.deviceAddress == table && clusterCommands.back().scratchData == 0x5000);
+        };
+        auto source = bound;
+        auto target = std::move(source);
+        verify(source, target);
+        source = bound;
+        target = std::move(source);
+        verify(source, target);
+        auto& alias = target;
+        target = std::move(alias);
+        verify(source, target);
+    }
+
     void TestManagedExplicitTargetSnapshot()
     {
         ScopedFunction build(vkCmdBuildClusterAccelerationStructureIndirectNV, &CaptureClusterBuild);
@@ -1689,6 +1721,24 @@ namespace
             clusterCommands[0].input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV &&
             clusterCommands[0].dstAddressesArray.deviceAddress == table->GetDeviceAddress() + 24 && clusterCommands[0].dstAddressesArray.size == 8 &&
             !clusterCommands[0].dstImplicitData && clusterTriangleInputs[0].maxClusterTriangleCount == 2);
+        CheckManagedExplicitMoves(buildInfo, owner->GetReference(), table->GetDeviceAddress() + 24,
+            VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV);
+
+        auto blasOwner = MakeIntrusive<BottomLevelAccelStruct>();
+        BottomLevelAccelStructCreateInfo blasDesc;
+        blasDesc.SetClusters(2);
+        blasOwner->Create(blasDesc);
+        const auto* blasSource = blasOwner.get();
+        BottomLevelAccelStructExplicitBatchCreateInfo blasInfo;
+        blasInfo.SetReferenceBuffer(*table, 8);
+        blasInfo.SetSourceAccelStructs(std::span(&blasSource, 1));
+        BottomLevelAccelStructBatch blases;
+        blases.Create(blasInfo);
+        BottomLevelAccelStructBuildIndirectInfo blasBuild;
+        blasBuild.SetBuildTarget(blases);
+        blasBuild.SetBuildInfoAddress(0x4000);
+        CheckManagedExplicitMoves(blasBuild, blasOwner->GetDeviceAddress(), table->GetDeviceAddress() + 8,
+            VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV);
     }
 }
 
