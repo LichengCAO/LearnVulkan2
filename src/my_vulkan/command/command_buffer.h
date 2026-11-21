@@ -14,9 +14,8 @@ class ImageView;
 class BottomLevelAccelStruct;
 class TopLevelAccelStruct;
 class ClusterLevelAccelStructBatch;
-class BottomLevelAccelStructCreateInfo;
-class BottomLevelAccelStructBatch;
-class TopLevelAccelStructCreateInfo;
+class ClusterBottomLevelAccelStructBatch;
+class BuildAccelStructCommandInput;
 class ComputeClusterAccelStructSizesCommandInput;
 class BuildExplicitClusterAccelStructCommandInput;
 class BuildImplicitClusterAccelStructCommandInput;
@@ -168,19 +167,10 @@ public:
     void TraceRaysKHR(const ShaderBindingTable& inTable, uint32_t inWidth,
         uint32_t inHeight = 1, uint32_t inDepth = 1, uint32_t inRayGenerationIndex = 0);
     void BuildAccelerationStructuresKHR(std::span<const VkAccelStructBuildInfo> inBuildInfos);
-    // Snapshots descriptions only. External buffers/contents must survive GPU use.
-    void BuildAccelerationStructureKHR(BottomLevelAccelStruct& inDst,
-        const BottomLevelAccelStructCreateInfo& inInfo, Buffer& inScratchBuffer,
-        VkDeviceSize inScratchOffset = 0);
-    void BuildAccelerationStructureKHR(TopLevelAccelStruct& inDst,
-        const TopLevelAccelStructCreateInfo& inInfo, const Buffer& inInstanceBuffer,
-        VkDeviceSize inInstanceOffset, Buffer& inScratchBuffer, VkDeviceSize inScratchOffset = 0);
-    void UpdateAccelerationStructureKHR(const BottomLevelAccelStruct& inSrc, BottomLevelAccelStruct& inDst,
-        const BottomLevelAccelStructCreateInfo& inInfo, Buffer& inScratchBuffer,
-        VkDeviceSize inScratchOffset = 0);
-    void UpdateAccelerationStructureKHR(const TopLevelAccelStruct& inSrc, TopLevelAccelStruct& inDst,
-        const TopLevelAccelStructCreateInfo& inInfo, const Buffer& inInstanceBuffer,
-        VkDeviceSize inInstanceOffset, Buffer& inScratchBuffer, VkDeviceSize inScratchOffset = 0);
+    // One native batch of independent tasks. Validates/copies the whole span atomically.
+    // No execution order or scratch reuse within the batch. GPU resources remain borrowed;
+    // callers synchronize dependencies, including BLAS references inside TLAS input memory.
+    void BuildAccelerationStructuresKHR(std::span<const BuildAccelStructCommandInput> inInputs);
     void CopyAccelerationStructureKHR(const BottomLevelAccelStruct& inSrc, BottomLevelAccelStruct& inDst,
         VkCopyAccelerationStructureModeKHR inMode = VK_COPY_ACCELERATION_STRUCTURE_MODE_CLONE_KHR);
     void CopyAccelerationStructureKHR(const TopLevelAccelStruct& inSrc, TopLevelAccelStruct& inDst,

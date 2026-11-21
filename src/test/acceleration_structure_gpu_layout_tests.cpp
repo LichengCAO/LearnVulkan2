@@ -78,7 +78,7 @@ namespace
         namespace Instantiate = AccelStructGpuLayout::Instantiate;
         namespace Blas = AccelStructGpuLayout::ClusterBlas;
         constexpr auto instanceLayout = ClusterLevelAccelStructInstantiateBuildInfo::GetBuildInfoLayout();
-        constexpr auto blasLayout = BottomLevelAccelStructBuildInfo::GetBuildInfoLayout();
+        constexpr auto blasLayout = ClusterBottomLevelAccelStructBuildInfo::GetBuildInfoLayout();
         static_assert(instanceLayout.recordStride == 32 && instanceLayout.addressAlignment == 8);
         static_assert(blasLayout.recordStride == 16 && blasLayout.addressAlignment == 8);
         VkClusterAccelerationStructureInstantiateClusterInfoNV instance{};
@@ -102,7 +102,7 @@ namespace
     void TestTlasInstanceBinaryLayout()
     {
         namespace Layout = AccelStructGpuLayout::Tlas;
-        constexpr auto layout = TopLevelAccelStruct::GetBuildInfoLayout();
+        constexpr auto layout = TopLevelAccelStructBuildInfo::GetBuildInfoLayout();
         static_assert(layout.recordStride == 64 && layout.addressAlignment == 16);
         VkAccelerationStructureInstanceKHR record{};
         constexpr std::array<float, 12> rows{2, 0, 0, 5, 0, 3, 0, 6, 0, 0, 4, 7};

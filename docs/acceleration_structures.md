@@ -13,6 +13,16 @@ Public headers live in `src/my_vulkan/resource/`:
 | `partitioned_acceleration_structure.h` | PTLAS owner, CreateInfo, operation records and command input declarations; implementation is pending. |
 
 Include the ordinary, cluster or partitioned header explicitly for the path being used.
+`ClusterBottomLevelAccelStructBatch` and its associated CreateInfo/BuildInfo types
+specifically build BLAS from CLAS references. `ClusterLevelAccelStructBuildLimits`
+and `ClusterBottomLevelAccelStructBuildLimits` describe build budgets and formats;
+`AccelStructBuildInfoLayout` describes GPU record byte layout.
+
+The PTLAS declarations distinguish a `PartitionedTopLevelAccelStructOperationGroup`
+from its inner `WriteInstanceRecord`, `UpdateInstanceRecord` and
+`WritePartitionTranslationRecord` arrays. `SetMaxInstanceCount` configures slot
+capacity; `CustomizeMaxOperationGroupCount` configures the outer group-array capacity.
+
 `resource/private/` contains the implementations, native AS storage owner, and
 `cluster_acceleration_structure_build.h` with the internal `ClusterBuildAddresses`
 value snapshot shared with command recording. It is included by the cluster
@@ -27,156 +37,177 @@ See [GPU build-input layout](acceleration_structure_gpu_layout.md) for the stati
 `GetBuildInfoLayout()` queries, native record offsets and bit encodings used by
 GPU task producers, including packed TLAS instances.
 
+Packed input records and counts may be produced entirely by application shaders.
+`CommitToDeviceInline` is an optional convenience for CPU initialization and tests;
+build commands do not depend on it or read back GPU-produced inputs. Producers
+follow the published GPU ABI and capacity limits, then synchronize their writes
+with the build's input reads. Host descriptions and GPU record contents have
+independent lifetimes.
+
 The host path prepares descriptions and resources. GPU work is recorded through
 `CommandBuffer`; recording never allocates an input/scratch Buffer or uploads
 instances. All setters and recording methods return `void`.
 
-## BLAS: host creation and explicit scratch
+## Ordinary AS: creation capacities
 
-Geometry descriptions are independent types. `SetTriangles` and `SetAabbs`
-copy the complete list and select its geometry type. Buffer references are
-borrowed. Setters do not query Vulkan or resolve device addresses.
+BLAS `SetTriangles` and `SetAabbs` copy an ordered, nonempty list of
+`AccelStructTriangleGeometryLimits` or `AccelStructAabbGeometryLimits`.
+Triangle limits contain positive maximum triangle/vertex counts, vertex format,
+index type, transform reservation and geometry flags. AABB limits contain a
+positive maximum count and geometry flags. Build flags belong to CreateInfo.
+Addresses, actual counts and strides belong to each build, because strides do
+not constrain the size-query capacity guarantee.
 
-BLAS `Create()` requires an empty target; repeated creation rejects before native
-queries and preserves the existing object. `IsValid()` reports native ownership.
-There is no public `Destroy()`: scope or external owner release destroys the
-native AS before its backing Buffer/allocation, without a GPU wait. Independent
-BLAS instances can create and release concurrently; keep Device/allocator alive
-and exclude conflicting operations on one instance. See [BLAS ownership](resource_lifetimes.md#blas-ownership).
-
-The following uses an existing `vertexBuffer` with
-`VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`:
+`Create()` synchronously queries sizes and creates an empty native AS plus its
+backing Buffer; it does not execute a GPU build. Repeated creation fails and
+preserves the existing object. There is no public `Destroy()`: RAII releases
+the native AS before the backing allocation, without a GPU wait. Independent
+instances may create/release concurrently; callers exclude conflicting access
+to one instance and keep Device/allocator/dispatch alive through final release.
+See [BLAS ownership](resource_lifetimes.md#blas-ownership) and
+[TLAS ownership](resource_lifetimes.md#tlas-ownership).
 
 ```cpp
-AccelStructTriangleGeometry triangle;
-triangle.vertexBuffer = &vertexBuffer;
-triangle.vertexOffset = 0;
-triangle.vertexStride = 12;
-triangle.vertexCount = 6;
-triangle.primitiveCount = 2;
-// Defaults: R32G32B32_SFLOAT, OPAQUE, non-indexed, no transform.
+AccelStructTriangleGeometryLimits triangleLimits;
+triangleLimits.SetMaxTriangleCount(2);
+triangleLimits.SetMaxVertexCount(6);
+// Defaults: float3, nonindexed, opaque, no transform reservation.
 
 BottomLevelAccelStructCreateInfo blasInfo;
-blasInfo.SetTriangles(std::span(&triangle, 1));
-blasInfo.CustomizeBuildFlags(
-    VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
-    VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
-
+blasInfo.SetTriangles(std::span(&triangleLimits, 1));
+blasInfo.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
 BottomLevelAccelStruct blas;
-blas.Create(blasInfo); // Host: query sizes and create the handle/backing Buffer.
+blas.Create(blasInfo);
 
-Buffer scratch;
-const auto& sizes = blas.GetBuildSizes();
-const auto scratchBytes = std::max(sizes.buildScratchSize, sizes.updateScratchSize);
-if (scratchBytes != 0)
-{
-    BufferCreateInfo scratchInfo{};
-    scratchInfo.SetBufferSize(scratchBytes);
-    scratchInfo.SetBufferUsage(
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-    scratchInfo.CustomizeAlignment(blas.GetScratchAlignment());
-    scratch.Create(scratchInfo);
-}
-
-commandBuffer.BuildAccelerationStructureKHR(blas, blasInfo, scratch);
-// Later, after the original build and required synchronization:
-commandBuffer.UpdateAccelerationStructureKHR(blas, blas, blasInfo, scratch);
+const auto sizes = blas.GetSizesInfo();
+const auto scratchBytes =
+    std::max(sizes.buildScratchBufferSize, sizes.updateScratchBufferSize);
+// Allocate scratchBytes with STORAGE_BUFFER | SHADER_DEVICE_ADDRESS usage,
+// aligning its device address to sizes.scratchAlignment.
 ```
 
-For indexed triangles set `indexBuffer`, `indexOffset` and `indexType`.
-`primitiveCount` is the number of triangles, not the number of indices.
-An optional transform uses `transformBuffer` and `transformOffset`.
-AABBs use `AccelStructAabbGeometry` and `SetAabbs`, with an explicit Buffer,
-offset and primitive count; the default stride is `sizeof(VkAabbPositionsKHR)`.
+`GetSizesInfo()` is shared by ordinary AS and cluster interfaces. For ordinary
+BLAS, `buildInfoBufferSize` is zero; TLAS reports its capacity times the packed
+instance stride. Scratch requirements cover the creation maxima, so they remain
+safe for smaller actual builds. Zero required scratch bytes accept address zero.
+Input buffers require `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+SHADER_DEVICE_ADDRESS_BIT`; scratch needs `STORAGE_BUFFER_BIT |
+SHADER_DEVICE_ADDRESS_BIT`.
 
-Both AS types expose `GetBuildSizes()` and `GetScratchAlignment()`. The latter
-comes from the physical device's AS properties. Offsets are byte offsets from the
-Buffer's device address, and the resulting absolute address must meet alignment
-requirements. A zero scratch requirement accepts an uncreated scratch Buffer.
+## Combined target/data selection and batch builds
 
-## TLAS: explicit host upload
-
-TLAS has the same empty-target Create and RAII release contract as BLAS, including
-`IsValid()` and no public `Destroy()`. Independent instances may create and release
-concurrently; same-instance conflicts require caller exclusion. Empty instance
-lists remain supported. See [TLAS ownership](resource_lifetimes.md#tlas-ownership).
-
-`SetInstances` copies CPU descriptions without resolving BLAS addresses.
-`TopLevelAccelStruct::WriteBuildInfoBufferInline` is static: no TLAS object is required.
-Referenced BLAS objects need valid handles/device addresses; a null BLAS reference
-encodes an inactive instance.
+`BuildAccelStructCommandInput` represents one task. `SetTrianglesTarget`,
+`SetAabbsTarget` and `SetInstancesTarget` validate the target, input and
+capacity together, then copy Host metadata. Successful reselection replaces the
+whole task, clears the update source, restores BUILD and preserves scratch.
+Failure preserves the previous task. Assigning `input = {};` clears both task and scratch.
+Copies/moves own only Host values and retain no GPU resources.
 
 ```cpp
-AccelStructInstance instance;
-instance.accelStruct = &blas;
-// Defaults: identity transform, mask 0xFF, custom index/SBT offset/flags 0.
+AccelStructTriangleBuildInfo triangle;
+triangle.SetVertexBuffer(vertexBuffer.GetDeviceAddress(), 6);
+triangle.SetTriangleCount(2);
+// Optional: CustomizeVertexStride; indexed targets require SetIndexBuffer.
+// Transform addresses require creation-time CustomizeAllowTransform(true).
 
-TopLevelAccelStructCreateInfo tlasInfo;
-tlasInfo.SetInstances(std::span(&instance, 1));
-tlasInfo.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
+AccelStructAabbBuildInfo aabb;
+aabb.SetAabbBuffer(aabbBuffer.GetDeviceAddress(), 3);
+// Default stride: sizeof(VkAabbPositionsKHR).
 
-BufferCreateInfo instanceBufferInfo{};
-instanceBufferInfo.SetBufferSize(
-    std::max(tlasInfo.GetInstanceBufferSize(), VkDeviceSize(sizeof(VkAccelerationStructureInstanceKHR))));
-instanceBufferInfo.SetBufferUsage(
-    VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-instanceBufferInfo.CustomizeAlignment(16);
-instanceBufferInfo.CustomizeMemoryProperty(
-    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-Buffer instanceBuffer;
-instanceBuffer.Create(instanceBufferInfo);
-TopLevelAccelStruct::WriteBuildInfoBufferInline(tlasInfo, instanceBuffer);
-
-TopLevelAccelStruct tlas;
-tlas.Create(tlasInfo);
-// Allocate tlasScratch using tlas.GetBuildSizes()/GetScratchAlignment(), as above.
-commandBuffer.BuildAccelerationStructureKHR(
-    tlas, tlasInfo, instanceBuffer, 0, tlasScratch);
-// Later, after the original build and required synchronization:
-commandBuffer.UpdateAccelerationStructureKHR(
-    tlas, tlas, tlasInfo, instanceBuffer, 0, tlasScratch);
+std::array<BuildAccelStructCommandInput, 2> builds;
+builds[0].SetTrianglesTarget(blas, std::span(&triangle, 1));
+builds[0].SetScratchAddress(triangleScratchAddress);
+builds[1].SetAabbsTarget(aabbBlas, std::span(&aabb, 1));
+builds[1].SetScratchAddress(aabbScratchAddress);
+commands.BuildAccelerationStructuresKHR(builds);
 ```
 
-`WriteBuildInfoBufferInline` validates and encodes the entire list before writing once.
-It requires host-visible, host-coherent destination memory, but no build-input
-usage: a staging Buffer is also valid. For device-local instance data, write a
-staging Buffer, record the existing `CopyBuffer`, and supply the destination to
-the TLAS build. Transfers and BLAS-to-TLAS dependencies require explicit
-synchronization. A build never implicitly calls `WriteBuildInfoBufferInline`.
+The geometry list must be a nonempty prefix of the creation Limits, matching
+each entry by index. Each actual count must fit that entry. Vertex format,
+index type and geometry flags come from the target. Reserved transform capacity
+may be used or omitted; an unreserved transform is rejected. Vertex count
+describes the addressable vertex range, rather than a count of unique indices.
+AABB stride defaults to 24 bytes; zero triangle stride selects packed vertices.
 
-## Snapshots, updates and lifetime
+One call appends one native KHR batch. All tasks are validated before appending;
+any failure appends nothing. Appending snapshots all arrays; later edits,
+destruction or moves of the inputs do not affect the command. Recording neither
+queries sizes, uploads data nor allocates arrays. The low-level
+`BuildAccelerationStructuresKHR(span<const VkAccelStructBuildInfo>)` overload
+and typed `CopyAccelerationStructureKHR` overloads remain available. Ordinary
+KHR inputs reject Cluster BLAS owners, whose build mode remains fixed.
 
-Commands copy descriptions/Vulkan arrays when appended; the arrays may then be
-changed or destroyed. Buffer contents are not copied. Keep input Buffers, scratch,
-and source/destination AS resources alive and stable through GPU use. A TLAS also
-continues to reference its active BLAS objects after its own build completes.
+## TLAS: required capacity and explicit upload
 
-Use separate Buffer regions for overlapping in-flight tasks. Reusing scratch
-between builds, overwriting instance data, recreating an AS, and resource access
-across queues all remain the caller's responsibility. Record builds outside a
-RenderPass and submit to an actual compute-capable queue family. Recording order
-does not replace memory barriers.
+TLAS CreateInfo requires `SetMaxInstanceCount(n)` with `n > 0`; a default or
+cleared (`info = {};`) CreateInfo cannot create a TLAS. Actual BUILD count may be zero.
+`TopLevelAccelStructBuildInfo` stores a raw BLAS address; zero encodes an
+inactive instance. Its static layout and upload functions require no AS owner.
 
-The object interfaces require the creation layout/counts/flags to match.
-Update supports identical source/destination (in-place) or compatible distinct AS
-objects, and requires an earlier GPU build with `ALLOW_UPDATE`. Host creation
-does not imply that build has executed. The caller preserves Vulkan's update
-constraints on index contents, topology and active/inactive primitives.
-Changing layout or counts requires creating a new AS owner and building it again.
+```cpp
+TopLevelAccelStructCreateInfo tlasInfo;
+tlasInfo.SetMaxInstanceCount(128);
+TopLevelAccelStruct tlas;
+tlas.Create(tlasInfo);
 
-The existing `BuildAccelerationStructuresKHR(span<const VkAccelStructBuildInfo>)`
-batch interface and typed Copy overloads remain available. A single batch is for
-independent builds; dependent BLAS/TLAS builds need separate calls and synchronization.
-Host Build, automatic submission/waiting, implicit barriers and new compaction
-query flows are outside this interface.
+TopLevelAccelStructBuildInfo instance;
+instance.accelStructReference = blas.GetDeviceAddress();
+// Defaults: identity transform, mask 0xFF, zero custom index/SBT offset/flags.
+// Allocate instanceBuffer using tlas.GetSizesInfo().buildInfoBufferSize,
+// input usage, and TopLevelAccelStructBuildInfo::GetBuildInfoLayout() alignment.
+TopLevelAccelStructBuildInfo::CommitToDeviceInline(
+    std::span(&instance, 1), instanceBuffer);
+
+BuildAccelStructCommandInput input;
+input.SetInstancesTarget(tlas, instanceBuffer.GetDeviceAddress(), 1);
+input.SetScratchAddress(tlasScratchAddress);
+commands.BuildAccelerationStructuresKHR(std::span(&input, 1));
+// An empty BUILD is selected with input.SetInstancesTarget(tlas, 0, 0).
+```
+
+`CommitToDeviceInline` validates and encodes the complete span before one
+synchronous Buffer upload. Empty spans do not access Device or Buffer.
+Coherent Host memory uses mapped copies; other destinations follow Buffer's
+staged-transfer contract and require transfer-destination usage. Build commands
+never upload instances implicitly. GPU-produced packed instances can be passed
+directly by address.
+
+## Updates, batch independence and lifetime
+
+Configure an update source after selecting a target:
+
+```cpp
+input.SetTrianglesTarget(blas, std::span(&triangle, 1));
+input.CustomizeSourceAccelStruct(blas); // In-place UPDATE is allowed.
+input.SetScratchAddress(updateScratchAddress);
+commands.BuildAccelerationStructuresKHR(std::span(&input, 1));
+```
+
+The source and target must have compatible kinds, flags and creation capacities
+for the actual task, and must permit UPDATE. Host checks cannot establish GPU
+history: the source must have completed an earlier build with ALLOW_UPDATE.
+Callers preserve Vulkan's UPDATE constraints, including actual geometry and
+primitive counts, format, maxVertex, index topology/content, transform presence
+and active/inactive state. BUILD can change actual counts within capacity;
+changes forbidden by UPDATE require BUILD again.
+
+Tasks in a batch must be independent. Duplicate destinations, cross-task
+source/destination handles and known destination/source/scratch storage overlaps
+are rejected; scratch regions must be disjoint. Shared read-only sources are
+allowed, and one task may update its own source in place. Dependencies hidden
+in GPU instance/index data remain the caller's responsibility. Build a BLAS and
+its dependent TLAS in separate calls with explicit synchronization.
+
+Keep AS owners, input buffers and scratch alive through command recording and
+GPU completion. A built TLAS continues to borrow its active BLAS addresses.
+Snapshots copy Host arrays, not Buffer contents or resource ownership. Callers
+exclude conflicting access to each input/CommandBuffer and synchronize resource
+reuse, queue access and transfers. Record outside RenderPass on a compute-capable
+queue; recording order does not substitute for barriers.
 
 ## CLAS and Cluster BLAS batches
 
-`ClusterLevelAccelStructBatch` and `BottomLevelAccelStructBatch` use
+`ClusterLevelAccelStructBatch` and `ClusterBottomLevelAccelStructBatch` use
 `VK_NV_cluster_acceleration_structure` with implicit or explicit destinations. Device
 initialization enables the extension and its feature when available; unsupported
 devices keep the existing paths and reject CLAS creation or a CLAS-enabled Program.
@@ -188,12 +219,12 @@ GPU build. Empty batches and batches exceeding the device's single Buffer or
 allocation limit reject; callers split large workloads into multiple batches.
 Failure leaves an empty target that can be retried. Release never waits for GPU work.
 
-Both BuildLayouts describe positive per-object and aggregate budgets and the CLAS
-vertex format. Select a layout and maximum target count on a CommandInput to
+Both BuildLimits types describe positive per-object and aggregate budgets and the CLAS
+vertex format. Select build limits and a maximum target count on a CommandInput to
 validate them and synchronously query the Device. Its const
 `QueryCurrentTargetSizesInfo()` returns the saved requirements without GPU bindings.
 Task bytes, build scratch bytes and scratch alignment cover the full batch.
-For explicit builds the AS byte count bounds one object at the layout maxima.
+For explicit builds the AS byte count bounds one object at the configured maxima.
 For implicit builds it bounds the contiguous batch. Align each destination base
 to the reported AS alignment. Round the stride of uniform explicit slots up to
 that alignment.
@@ -213,8 +244,8 @@ list of tasks. All five required budgets must be set to positive values:
 ```cpp
 ClusterLevelAccelStructImplicitBatchCreateInfo info;
 info.SetMaxClusterCount(2);
-info.SetMaxClusterTriangleCount(100);
-info.SetMaxClusterVertexCount(80);
+info.SetMaxTriangleCountPerCluster(100);
+info.SetMaxVertexCountPerCluster(80);
 info.SetMaxTotalTriangleCount(160);
 info.SetMaxTotalVertexCount(130);
 ClusterLevelAccelStructBatch batch;
@@ -251,8 +282,11 @@ Direct and template tasks use flags 0, opaque geometry and GeometryIndex 0.
 
 Create each fixed CLAS using `ClusterLevelAccelStructCreateInfo`. Set its maximum
 triangle and vertex counts, then choose a common index type, vertex format and
-template usage. `ClusterLevelAccelStruct::GetReference()` returns its aligned
-device address after creation. For a fixed Cluster BLAS, use
+template usage. `ClusterLevelAccelStruct::GetDeviceAddress()` returns its aligned
+device address after creation. `IsValid()` reports allocated storage, not GPU build
+completion. `GetSizesInfo()` reads the saved creation requirements without queries,
+uploads or GPU work. Failed creation leaves these values empty; repeated Create
+preserves the existing owner. For a fixed Cluster BLAS, use
 `BottomLevelAccelStructCreateInfo::SetClusters(maxClusterCount)` and
 `BottomLevelAccelStruct::GetDeviceAddress()`. Cluster mode uses build flags zero.
 Its owner participates in TLAS address encoding and the NV indirect build path.
@@ -268,24 +302,24 @@ must be eight-byte aligned and the Buffer must contain all entries after that of
 ```cpp
 ClusterLevelAccelStructExplicitBatchCreateInfo fixed;
 fixed.SetReferenceBuffer(*table, tableOffset);
-fixed.SetSourceAccelStructs(owners); // Contiguous list of const CLAS pointers.
+fixed.SetDestinationAccelStructs(owners); // Contiguous list of const CLAS pointers.
 ClusterLevelAccelStructBatch batch;
 batch.Create(fixed);
 const auto tableAddress = batch.GetReferenceBuffer()->GetDeviceAddress() + batch.GetReferenceBufferOffset();
 ```
 
-`BottomLevelAccelStructExplicitBatchCreateInfo` accepts the same two setters
+`ClusterBottomLevelAccelStructExplicitBatchCreateInfo` accepts the same two setters
 with Cluster BLAS owners. The caller fills the table so entry `i` points to owner
 `i`. Each task must fit that owner's individual capacities. The native batch
 query uses the largest per-owner capacities and the sums of individual budgets,
 so a smaller owner can have less storage than the maximum in `GetSizesInfo()`.
-Batch creation copies no GPU data. It retains each distinct owner and the supplied
+Batch creation copies no GPU data. It retains each distinct destination owner and the supplied
 Buffer. Keep its allocation stable and retain the Batch through dependent GPU uses.
 
 ### Building and instantiating templates
 
 ```cpp
-ClusterLevelAccelStructTemplateInfo topology;
+ClusterLevelAccelStructTemplateBuildInfo topology;
 topology.SetIndexBuffer(indexAddress, 3);
 topology.SetVertexCount(3);
 topology.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
@@ -332,22 +366,22 @@ so supply GPU count 1 or initialize all remaining capacity before a full build.
 
 ### Cluster BLAS and indirect commands
 
-`BottomLevelAccelStructImplicitBatchCreateInfo` describes an implicit Cluster BLAS batch. Its
+`ClusterBottomLevelAccelStructImplicitBatchCreateInfo` describes an implicit Cluster BLAS batch. Its
 three required budgets must be positive:
 
 ```cpp
-BottomLevelAccelStructImplicitBatchCreateInfo info;
+ClusterBottomLevelAccelStructImplicitBatchCreateInfo info;
 info.SetMaxAccelStructCount(2);
 info.SetMaxClusterCountPerAccelStruct(2);
 info.SetMaxTotalClusterCount(3);
-BottomLevelAccelStructBatch batch;
+ClusterBottomLevelAccelStructBatch batch;
 batch.Create(info);
 ```
 
 The total cluster budget is independent of the product of the other two limits.
 Creation snapshots all three values and needs no source CLAS Batch.
 `GetCapacity()` returns the maximum Cluster
-BLAS count. Each `BottomLevelAccelStructBuildInfo` describes an actual task through
+BLAS count. Each `ClusterBottomLevelAccelStructBuildInfo` describes an actual task through
 `SetClusterReferences(referenceAddress, count)`. This sole input setter borrows a
 packed array of `VkDeviceAddress` values and requires a nonzero, aligned address,
 a positive count and a non-overflowing address range. Native reference stride is
@@ -366,7 +400,7 @@ For either Batch, prepare and execute in this order:
    for the build. A staging Buffer can instead be written and copied explicitly.
 3. Use `ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(infos, taskBuffer)`
    or the corresponding instantiate uploader. For Cluster BLAS call
-   `BottomLevelAccelStructBuildInfo::CommitToDeviceInline(infos, taskBuffer)`.
+   `ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(infos, taskBuffer)`.
    All three encoders require no target Batch and validate the entire task span
    before one upload. They check native field representation, addresses, strides
    and the upload range; the caller ensures matching formats/templates and
@@ -396,7 +430,7 @@ overload checks destination mode and operation, copies limits and sizes, and
 binds the Batch table (including its byte offset), storage and known destination
 ranges. A setter for a managed address accepts only that same address.
 
-For caller-managed storage, pass a layout and capacity to the target setter.
+For caller-managed storage, pass build limits and capacity to the target setter.
 Use `SetReferencesArray` for the packed explicit destination addresses, or
 `SetStorageAddress` and `SetOutputReferencesArray` for implicit output.
 Implicit builds optionally write packed per-object byte sizes through

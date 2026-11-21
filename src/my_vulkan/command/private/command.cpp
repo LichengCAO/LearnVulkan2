@@ -122,6 +122,7 @@ auto BuildAccelerationStructuresKHRCommand::SetParameters(const Parameters& inPa
     CHECK_TRUE(inParameters.buildInfos.size() == inParameters.buildRanges.size(), "Build info/range count mismatch!");
     Parameters parameters = inParameters;
     std::vector<std::vector<VkAccelerationStructureGeometryKHR>> geometries(parameters.buildInfos.size());
+    std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> ranges(parameters.buildInfos.size());
     for (size_t i = 0; i < parameters.buildInfos.size(); ++i)
     {
         auto& info = parameters.buildInfos[i];
@@ -152,12 +153,14 @@ auto BuildAccelerationStructuresKHRCommand::SetParameters(const Parameters& inPa
             }
             geometries[i].push_back(*geometry);
         }
-        // Record reconstructs all pointers from the owned arrays.
-        info.pGeometries = nullptr;
+        // Moves of the owning vectors preserve their allocated storage and these views.
+        info.pGeometries = geometries[i].data();
         info.ppGeometries = nullptr;
+        ranges[i] = parameters.buildRanges[i].data();
     }
     m_parameters = std::move(parameters);
     m_geometries = std::move(geometries);
+    m_rangePointers = std::move(ranges);
     return *this;
 }
 
@@ -165,15 +168,8 @@ void BuildAccelerationStructuresKHRCommand::Record(VkCommandBuffer inVkCommandBu
 {
     CHECK_TRUE(inVkCommandBuffer != VK_NULL_HANDLE, "Invalid command buffer!");
     CHECK_TRUE(vkCmdBuildAccelerationStructuresKHR != nullptr, "Acceleration structure commands are unavailable!");
-    auto infos = m_parameters.buildInfos;
-    std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> ranges(infos.size());
-    for (size_t i = 0; i < infos.size(); ++i)
-    {
-        infos[i].pGeometries = m_geometries[i].data();
-        ranges[i] = m_parameters.buildRanges[i].data();
-    }
-    vkCmdBuildAccelerationStructuresKHR(inVkCommandBuffer, static_cast<uint32_t>(infos.size()),
-        infos.data(), ranges.data());
+    vkCmdBuildAccelerationStructuresKHR(inVkCommandBuffer, static_cast<uint32_t>(m_parameters.buildInfos.size()),
+        m_parameters.buildInfos.data(), m_rangePointers.data());
 }
 
 void BuildClusterAccelerationStructuresNVCommand::SetParameters(const Parameters& inParameters)

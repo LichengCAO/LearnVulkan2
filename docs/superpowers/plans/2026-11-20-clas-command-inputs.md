@@ -54,7 +54,7 @@ void CommandBuffer::BuildAccelerationStructureIndirect(
 - [x] Add behavioral regressions and migrate test callers first. A representative address-free query is:
 
 ```cpp
-ClusterLevelAccelStructBuildLayout layout;
+ClusterLevelAccelStructBuildLimits layout;
 layout.SetMaxTriangleCount(3, 6);
 layout.SetMaxVertexCount(5, 12);
 ComputeClusterAccelStructSizesCommandInput input;

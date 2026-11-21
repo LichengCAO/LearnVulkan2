@@ -577,48 +577,67 @@ void CommandBuffer::BuildAccelerationStructureIndirect(const BuildImplicitCluste
     _AppendClusterCommand(inInput.m_state);
 }
 
-void CommandBuffer::BuildAccelerationStructureKHR(BottomLevelAccelStruct& inDst,
-    const BottomLevelAccelStructCreateInfo& inInfo, Buffer& inScratchBuffer, VkDeviceSize inScratchOffset)
+void CommandBuffer::BuildAccelerationStructuresKHR(std::span<const BuildAccelStructCommandInput> inputs)
 {
     _RequireOutsideRenderPass();
-    const auto build = inDst._BuildInfo(inInfo, nullptr, inScratchBuffer, inScratchOffset);
-    BuildAccelerationStructuresKHR(std::span(&build, 1));
-}
-
-void CommandBuffer::BuildAccelerationStructureKHR(TopLevelAccelStruct& inDst,
-    const TopLevelAccelStructCreateInfo& inInfo, const Buffer& inInstanceBuffer,
-    VkDeviceSize inInstanceOffset, Buffer& inScratchBuffer, VkDeviceSize inScratchOffset)
-{
-    _RequireOutsideRenderPass();
-    const auto build = inDst._BuildInfo(inInfo, nullptr, inInstanceBuffer, inInstanceOffset,
-        inScratchBuffer, inScratchOffset);
-    BuildAccelerationStructuresKHR(std::span(&build, 1));
-}
-
-void CommandBuffer::UpdateAccelerationStructureKHR(const BottomLevelAccelStruct& inSrc,
-    BottomLevelAccelStruct& inDst, const BottomLevelAccelStructCreateInfo& inInfo,
-    Buffer& inScratchBuffer, VkDeviceSize inScratchOffset)
-{
-    _RequireOutsideRenderPass();
-    const auto build = inDst._BuildInfo(inInfo, &inSrc, inScratchBuffer, inScratchOffset);
-    BuildAccelerationStructuresKHR(std::span(&build, 1));
-}
-
-void CommandBuffer::UpdateAccelerationStructureKHR(const TopLevelAccelStruct& inSrc,
-    TopLevelAccelStruct& inDst, const TopLevelAccelStructCreateInfo& inInfo,
-    const Buffer& inInstanceBuffer, VkDeviceSize inInstanceOffset,
-    Buffer& inScratchBuffer, VkDeviceSize inScratchOffset)
-{
-    _RequireOutsideRenderPass();
-    const auto build = inDst._BuildInfo(inInfo, &inSrc, inInstanceBuffer, inInstanceOffset,
-        inScratchBuffer, inScratchOffset);
-    BuildAccelerationStructuresKHR(std::span(&build, 1));
+    ValidateRegions(inputs);
+    using Range = std::pair<VkDeviceAddress, VkDeviceSize>;
+    const auto overlaps = [](Range a, Range b)
+    {
+        if (!a.first || !a.second || !b.first || !b.second) return false;
+        return a.first <= b.first ? b.first - a.first < a.second : a.first - b.first < b.second;
+    };
+    std::vector<VkAccelStructBuildInfo> builds;
+    std::vector<Range> scratch;
+    builds.reserve(inputs.size());
+    scratch.reserve(inputs.size());
+    for (const auto& input : inputs)
+    {
+        auto build = input._GetBuild();
+        const bool update = build.buildGeometryInfo.mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+        scratch.emplace_back(build.buildGeometryInfo.scratchData.deviceAddress,
+            update ? input.m_sizes.updateScratchBufferSize : input.m_sizes.buildScratchBufferSize);
+        builds.push_back(std::move(build));
+    }
+    for (size_t i = 0; i < inputs.size(); ++i)
+    {
+        const auto& current = builds[i].buildGeometryInfo;
+        for (size_t j = 0; j < inputs.size(); ++j)
+        {
+            CHECK_TRUE(!overlaps(scratch[i], inputs[j].m_targetRange) &&
+                !overlaps(scratch[i], inputs[j].m_sourceRange), "Scratch overlaps AS storage!");
+            if (i != j)
+            {
+                CHECK_TRUE(!overlaps(scratch[i], scratch[j]), "Batch scratch ranges overlap!");
+                CHECK_TRUE(!overlaps(inputs[i].m_targetRange, inputs[j].m_targetRange),
+                    "Batch destination storage overlaps!");
+            }
+            if (i != j || current.srcAccelerationStructure != current.dstAccelerationStructure)
+                CHECK_TRUE(!overlaps(inputs[i].m_targetRange, inputs[j].m_sourceRange),
+                    "Destination storage overlaps an update source!");
+        }
+    }
+    BuildAccelerationStructuresKHR(std::span<const VkAccelStructBuildInfo>(builds));
 }
 
 void CommandBuffer::BuildAccelerationStructuresKHR(std::span<const VkAccelStructBuildInfo> inBuildInfos)
 {
     _RequireOutsideRenderPass();
     ValidateRegions(inBuildInfos);
+    for (size_t i = 0; i < inBuildInfos.size(); ++i)
+    {
+        const auto& a = inBuildInfos[i].buildGeometryInfo;
+        for (size_t j = i + 1; j < inBuildInfos.size(); ++j)
+        {
+            const auto& b = inBuildInfos[j].buildGeometryInfo;
+            CHECK_TRUE(a.dstAccelerationStructure != b.dstAccelerationStructure &&
+                (a.mode != VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR ||
+                    a.srcAccelerationStructure != b.dstAccelerationStructure) &&
+                (b.mode != VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR ||
+                    b.srcAccelerationStructure != a.dstAccelerationStructure),
+                "Batch destination/source handles conflict!");
+        }
+    }
     BuildAccelerationStructuresKHRCommand::Parameters parameters;
     parameters.buildInfos.reserve(inBuildInfos.size());
     parameters.buildRanges.reserve(inBuildInfos.size());

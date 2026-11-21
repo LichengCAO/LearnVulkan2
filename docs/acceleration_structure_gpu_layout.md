@@ -11,8 +11,8 @@ The layout queries are static, `constexpr`, and perform no allocation or Device 
 ```cpp
 constexpr auto direct = ClusterLevelAccelStructDirectBuildInfo::GetBuildInfoLayout();
 constexpr auto instantiate = ClusterLevelAccelStructInstantiateBuildInfo::GetBuildInfoLayout();
-constexpr auto clusterBlas = BottomLevelAccelStructBuildInfo::GetBuildInfoLayout();
-constexpr auto tlas = TopLevelAccelStruct::GetBuildInfoLayout();
+constexpr auto clusterBlas = ClusterBottomLevelAccelStructBuildInfo::GetBuildInfoLayout();
+constexpr auto tlas = TopLevelAccelStructBuildInfo::GetBuildInfoLayout();
 ```
 
 | Input record | `recordStride` | `addressAlignment` | Constant namespace |

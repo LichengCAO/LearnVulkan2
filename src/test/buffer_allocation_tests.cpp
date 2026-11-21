@@ -314,7 +314,7 @@ void VKAPI_PTR AsSizes(VkDevice, VkAccelerationStructureBuildTypeKHR,
     {
         const auto& triangle = info->pGeometries[0].geometry.triangles;
         CHECK_TRUE(info->geometryCount == 1 && info->flags == VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR &&
-            counts[0] == 2 && triangle.vertexFormat == VK_FORMAT_R16G16B16A16_SFLOAT && triangle.vertexStride == 16 &&
+            counts[0] == 2 && triangle.vertexFormat == VK_FORMAT_R16G16B16A16_SFLOAT && triangle.vertexStride == 8 &&
             triangle.maxVertex == 5 && triangle.indexType == VK_INDEX_TYPE_NONE_KHR && triangle.transformData.deviceAddress == 1 &&
             triangle.vertexData.deviceAddress == 0 && active->bufferAddresses == 0,
             "Size queries must use copied geometry layout without resolving input addresses!");
@@ -856,21 +856,20 @@ void RunBufferAllocationTests()
     static_assert(!std::is_move_constructible_v<ShaderBindingTable> &&
         !std::is_copy_constructible_v<ShaderBindingTable> && std::is_nothrow_destructible_v<ShaderBindingTable>);
     {
-        Hooks hooks; TopLevelAccelStructCreateInfo info;
-        std::array<AccelStructInstance, 2> instances{};
-        info.SetInstances(instances); info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
-        instances[0].mask = 0x100; instances[1].accelStruct = reinterpret_cast<BottomLevelAccelStruct*>(1);
+        Hooks hooks; TopLevelAccelStructCreateInfo info; info.SetMaxInstanceCount(1);
+        info.SetMaxInstanceCount(2);
+        info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
         hooks.state.checkTlasSnapshot = true;
         TopLevelAccelStruct tlas; tlas.Create(info);
-        CHECK_TRUE(tlas.GetBuildSizes().accelerationStructureSize == 512 && tlas.GetScratchAlignment() == 256 &&
-            info.GetInstanceCount() == 2 && info.GetInstanceBufferSize() == 128);
+        CHECK_TRUE(tlas.GetSizesInfo().accelerationStructureSize == 512 && tlas.GetScratchAlignment() == 256 &&
+            tlas.GetCapacity() == 2 && tlas.GetSizesInfo().buildInfoBufferSize == 128);
     }
     {
-        Hooks hooks; TopLevelAccelStruct tlas; TopLevelAccelStructCreateInfo info;
+        Hooks hooks; TopLevelAccelStruct tlas; TopLevelAccelStructCreateInfo info; info.SetMaxInstanceCount(1);
         const auto empty = [&]
         {
             CHECK_TRUE(!tlas.IsValid() && tlas.GetVkBuildAccelerationStructureFlags() == 0 &&
-                tlas.GetBuildSizes().accelerationStructureSize == 0 && tlas.GetScratchAlignment() == 1 &&
+                tlas.GetSizesInfo().accelerationStructureSize == 0 && tlas.GetScratchAlignment() == 1 &&
                 hooks.state.accelerationStructures.empty() && hooks.state.buffers.empty() &&
                 BufferAllocationTestProbe::AllocationCount() == 0, "Failed TLAS creation must stay empty and retryable!");
         };
@@ -890,7 +889,7 @@ void RunBufferAllocationTests()
         for (auto flag : {&hooks.state.zeroAsSize, &hooks.state.failCreate, &hooks.state.failAllocate,
             &hooks.state.failBind, &hooks.state.failAsCreate, &hooks.state.nullAsCreate})
         { *flag = true; ExpectFailure([&] { tlas.Create(info); }); *flag = false; empty(); }
-        AccelStructInstance instance{}; info.SetInstances(std::span(&instance, 1));
+        info.SetMaxInstanceCount(1);
         for (auto flag : {&hooks.state.badTlasLimits, &hooks.state.zeroAsAlignment})
         { *flag = true; ExpectFailure([&] { tlas.Create(info); }); *flag = false; empty(); }
 #ifdef _DEBUG
@@ -905,7 +904,7 @@ void RunBufferAllocationTests()
                 catch (const std::bad_alloc&)
                 {
                     failPublication = false; ++observedFailures;
-                    CHECK_TRUE(!candidate.IsValid() && candidate.GetBuildSizes().accelerationStructureSize == 0 &&
+                    CHECK_TRUE(!candidate.IsValid() && candidate.GetSizesInfo().accelerationStructureSize == 0 &&
                         candidate.GetScratchAlignment() == 1 && hooks.state.buffers.empty() &&
                         BufferAllocationTestProbe::AllocationCount() == 0);
                 }
@@ -915,7 +914,10 @@ void RunBufferAllocationTests()
         catch (...) { failPublication = false; _CrtSetAllocHook(oldHook); throw; }
         _CrtSetAllocHook(oldHook); CHECK_TRUE(observedFailures == 3);
 #endif
-        info.Reset();
+        info = {};
+        ExpectFailure([&] { tlas.Create(info); });
+        ExpectFailure([&] { info.SetMaxInstanceCount(0); });
+        info.SetMaxInstanceCount(1);
         const auto formats = vkGetPhysicalDeviceFormatProperties; const auto address = vkGetAccelerationStructureDeviceAddressKHR;
         vkGetPhysicalDeviceFormatProperties = nullptr; vkGetAccelerationStructureDeviceAddressKHR = nullptr;
         tlas.Create(info); CHECK_TRUE(tlas.IsValid() && hooks.state.asFormats == 0 && hooks.state.asAddresses == 0);
@@ -1023,7 +1025,7 @@ void RunBufferAllocationTests()
         VkPhysicalDeviceRayTracingPipelinePropertiesKHR props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
         props.shaderGroupHandleSize = 4; props.shaderGroupHandleAlignment = 8; props.shaderGroupBaseAlignment = 64; props.maxShaderGroupStride = 128;
         const auto oldProperties = BufferAllocationTestProbe::SwapRtProperties(props);
-        TopLevelAccelStructCreateInfo tlasInfo;
+        TopLevelAccelStructCreateInfo tlasInfo; tlasInfo.SetMaxInstanceCount(1);
         ShaderBindingTableCreateInfo sbtInfo; sbtInfo.SetShaderGroupSet(BufferAllocationTestProbe::Groups())
             .SetTableCapacity(ShaderTableType::RayGeneration, 1, 0);
         std::mutex mutex; std::vector<std::exception_ptr> failures; std::vector<std::thread> workers;
@@ -1070,7 +1072,7 @@ void RunBufferAllocationTests()
     }
     {
         Hooks hooks;
-        TopLevelAccelStruct tlas; TopLevelAccelStructCreateInfo info;
+        TopLevelAccelStruct tlas; TopLevelAccelStructCreateInfo info; info.SetMaxInstanceCount(1);
         tlas.Create(info);
         const auto handle = tlas.GetVkAccelerationStructure();
         const auto calls = hooks.state.asCreates, queries = hooks.state.asProperties, sizes = hooks.state.asSizes,
@@ -1080,18 +1082,18 @@ void RunBufferAllocationTests()
         try { tlas.Create(info); } catch (const std::exception&) { rejected = true; }
         CHECK_TRUE(rejected && calls == hooks.state.asCreates && queries == hooks.state.asProperties &&
             sizes == hooks.state.asSizes && buffers == hooks.state.creates && handle == tlas.GetVkAccelerationStructure() &&
-            tlas.GetBuildSizes().accelerationStructureSize == 512 && tlas.GetBuildSizes().buildScratchSize == 256 &&
-            tlas.GetBuildSizes().updateScratchSize == 128 && tlas.GetScratchAlignment() == 256 &&
+            tlas.GetSizesInfo().accelerationStructureSize == 512 && tlas.GetSizesInfo().buildScratchBufferSize == 256 &&
+            tlas.GetSizesInfo().updateScratchBufferSize == 128 && tlas.GetScratchAlignment() == 256 &&
             tlas.GetVkBuildAccelerationStructureFlags() == 0 && handle != VK_NULL_HANDLE,
             "TLAS must reject duplicate creation before native work!");
     }
     {
         Hooks hooks; Buffer input;
-        AccelStructTriangleGeometry geometry; geometry.vertexBuffer = &input; geometry.transformBuffer = &input;
-        geometry.vertexFormat = VK_FORMAT_R16G16B16A16_SFLOAT; geometry.vertexStride = 16; geometry.vertexCount = 6; geometry.primitiveCount = 2;
+        AccelStructTriangleGeometryLimits geometry; geometry.CustomizeAllowTransform(true);
+        geometry.CustomizeVertexFormat(VK_FORMAT_R16G16B16A16_SFLOAT); geometry.SetMaxVertexCount(6); geometry.SetMaxTriangleCount(2);
         BottomLevelAccelStructCreateInfo info; info.SetTriangles(std::span(&geometry, 1));
         info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
-        geometry.vertexFormat = VK_FORMAT_UNDEFINED; geometry.vertexCount = 0; geometry.primitiveCount = 0;
+        geometry.CustomizeVertexFormat(VK_FORMAT_UNDEFINED); geometry.SetMaxVertexCount(0); geometry.SetMaxTriangleCount(0);
         hooks.state.checkAsSnapshot = true;
         BottomLevelAccelStruct blas; blas.Create(info);
     }
@@ -1099,13 +1101,13 @@ void RunBufferAllocationTests()
     {
         Hooks hooks;
         Buffer input;
-        AccelStructTriangleGeometry geometry; geometry.vertexBuffer = &input; geometry.vertexStride = 12; geometry.vertexCount = 3; geometry.primitiveCount = 1;
+        AccelStructTriangleGeometryLimits geometry; geometry.SetMaxVertexCount(3); geometry.SetMaxTriangleCount(1);
         BottomLevelAccelStructCreateInfo info; info.SetTriangles(std::span(&geometry, 1));
         BottomLevelAccelStruct blas;
         const auto empty = [&]
         {
             CHECK_TRUE(!blas.IsValid() && blas.GetVkAccelerationStructure() == VK_NULL_HANDLE && blas.GetDeviceAddress() == 0 &&
-                blas.GetVkBuildAccelerationStructureFlags() == 0 && blas.GetBuildSizes().accelerationStructureSize == 0 &&
+                blas.GetVkBuildAccelerationStructureFlags() == 0 && blas.GetSizesInfo().accelerationStructureSize == 0 &&
                 blas.GetScratchAlignment() == 1 && hooks.state.accelerationStructures.empty() && hooks.state.buffers.empty() &&
                 BufferAllocationTestProbe::AllocationCount() == 0, "Failed BLAS creation must retain default state and release all allocations!");
         };
@@ -1151,8 +1153,8 @@ void RunBufferAllocationTests()
                 ++observedFailures;
                 CHECK_TRUE(!candidate.IsValid() && candidate.GetVkAccelerationStructure() == VK_NULL_HANDLE &&
                     candidate.GetDeviceAddress() == 0 && candidate.GetVkBuildAccelerationStructureFlags() == 0 &&
-                    candidate.GetBuildSizes().accelerationStructureSize == 0 && candidate.GetBuildSizes().buildScratchSize == 0 &&
-                    candidate.GetBuildSizes().updateScratchSize == 0 && candidate.GetScratchAlignment() == 1 &&
+                    candidate.GetSizesInfo().accelerationStructureSize == 0 && candidate.GetSizesInfo().buildScratchBufferSize == 0 &&
+                    candidate.GetSizesInfo().updateScratchBufferSize == 0 && candidate.GetScratchAlignment() == 1 &&
                     hooks.state.accelerationStructures.empty() && hooks.state.buffers.empty() &&
                     BufferAllocationTestProbe::AllocationCount() == 0,
                     "Host allocation failure must leave the failed BLAS empty before its destructor runs!");
@@ -1163,14 +1165,14 @@ void RunBufferAllocationTests()
         empty();
 #endif
         blas.Create(info);
-        CHECK_TRUE(blas.IsValid() && blas.GetDeviceAddress() == 0x800000 && blas.GetBuildSizes().accelerationStructureSize == 512,
+        CHECK_TRUE(blas.IsValid() && blas.GetDeviceAddress() == 0x800000 && blas.GetSizesInfo().accelerationStructureSize == 512,
             "BLAS must support retry after all native and host failures!");
     }
     // Catch incorrect saved-device release and premature release while strong owners remain.
     {
         Hooks hooks; hooks.state.requireAllocationOnDestroy = true;
         Buffer input;
-        AccelStructAabbGeometry geometry; geometry.buffer = &input; geometry.primitiveCount = 1;
+        AccelStructAabbGeometryLimits geometry; geometry.SetMaxAabbCount(1);
         BottomLevelAccelStructCreateInfo info; info.SetAabbs(std::span(&geometry, 1));
         auto blas = MakeIntrusive<BottomLevelAccelStruct>(); blas->Create(info);
         auto copy = blas; blas = nullptr;
@@ -1183,7 +1185,7 @@ void RunBufferAllocationTests()
     // Catch accidental affinity/shared mutable allocation records during independent creation.
     {
         Hooks hooks; Buffer input;
-        AccelStructAabbGeometry geometry; geometry.buffer = &input; geometry.primitiveCount = 1;
+        AccelStructAabbGeometryLimits geometry; geometry.SetMaxAabbCount(1);
         BottomLevelAccelStructCreateInfo info; info.SetAabbs(std::span(&geometry, 1));
         std::mutex mutex; std::vector<std::exception_ptr> failures; std::vector<std::thread> workers;
         for (int n = 0; n < 4; ++n) workers.emplace_back([&]
@@ -1205,7 +1207,7 @@ void RunBufferAllocationTests()
     {
         Hooks hooks;
         Buffer input;
-        AccelStructTriangleGeometry geometry; geometry.vertexBuffer = &input; geometry.vertexStride = 12; geometry.vertexCount = 3; geometry.primitiveCount = 1;
+        AccelStructTriangleGeometryLimits geometry; geometry.SetMaxVertexCount(3); geometry.SetMaxTriangleCount(1);
         BottomLevelAccelStructCreateInfo info; info.SetTriangles(std::span(&geometry, 1));
         BottomLevelAccelStruct blas; blas.Create(info);
         const auto handle = blas.GetVkAccelerationStructure();
@@ -1213,7 +1215,7 @@ void RunBufferAllocationTests()
         const auto formats = hooks.state.asFormats, sizes = hooks.state.asSizes, creates = hooks.state.asCreates,
             addresses = hooks.state.asAddresses, buffers = hooks.state.creates;
         const auto address = blas.GetDeviceAddress();
-        const auto originalSizes = blas.GetBuildSizes();
+        const auto originalSizes = blas.GetSizesInfo();
         const auto alignment = blas.GetScratchAlignment();
         const auto flags = blas.GetVkBuildAccelerationStructureFlags();
         info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
@@ -1222,9 +1224,9 @@ void RunBufferAllocationTests()
             hooks.state.asFormats == formats && hooks.state.asSizes == sizes && hooks.state.asCreates == creates &&
             hooks.state.asAddresses == addresses && hooks.state.creates == buffers && blas.GetDeviceAddress() == address &&
             blas.GetVkBuildAccelerationStructureFlags() == flags && blas.GetScratchAlignment() == alignment &&
-            blas.GetBuildSizes().accelerationStructureSize == originalSizes.accelerationStructureSize &&
-            blas.GetBuildSizes().buildScratchSize == originalSizes.buildScratchSize &&
-            blas.GetBuildSizes().updateScratchSize == originalSizes.updateScratchSize,
+            blas.GetSizesInfo().accelerationStructureSize == originalSizes.accelerationStructureSize &&
+            blas.GetSizesInfo().buildScratchBufferSize == originalSizes.buildScratchBufferSize &&
+            blas.GetSizesInfo().updateScratchBufferSize == originalSizes.updateScratchBufferSize,
             "Duplicate BLAS Create must reject before native queries and preserve its original owner!");
     }
     TestImageValidationAndRollback();

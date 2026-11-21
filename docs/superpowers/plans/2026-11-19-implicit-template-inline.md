@@ -52,10 +52,10 @@ Static Direct/Instantiate CommitToDeviceInline accepts (span<const matching Info
 MyDevice gets default and explicit synchronous template builders:
 
 ```cpp
-void CreateClusterLevelAccelStructTemplatesAndWait(std::span<const ClusterLevelAccelStructTemplateInfo> inInfos,
+void CreateClusterLevelAccelStructTemplatesAndWait(std::span<const ClusterLevelAccelStructTemplateBuildInfo> inInfos,
     ClusterLevelAccelStructTemplateBatch& outBatch);
 void CreateClusterLevelAccelStructTemplatesAndWait(DeviceContext& inContext, QueueFamilyType inQueue,
-    std::span<const ClusterLevelAccelStructTemplateInfo> inInfos, ClusterLevelAccelStructTemplateBatch& outBatch);
+    std::span<const ClusterLevelAccelStructTemplateBuildInfo> inInfos, ClusterLevelAccelStructTemplateBatch& outBatch);
 ```
 
 Require a nonempty valid input and empty output, a capable queue and ready inputs. Derive exact per-batch budgets, build templates with native BUILD_TRIANGLE_CLUSTER_TEMPLATE/IMPLICIT, wait and read back template addresses with Task 2 Download. Publish outBatch only after success. Own template storage/address table through Buffer RAII and CPU address/metadata vectors. GetReferenceBuffer returns const Buffer*; GetReference(index), GetCount(), GetVertexFormat(), GetIndexType(), GetTriangleCount(index), GetVertexCount(index), GetBuildLimits() are queries. Default execution uses Task 1 private executor; explicit execution uses supplied context. No public CreateAndBuildInline on TemplateBatch.

@@ -9,7 +9,7 @@ class PartitionedTopLevelAccelStructCreateInfo final
 {
 public:
 	// Fixed PTLAS slot/partition capacities, not the number of records changed by a command.
-	void SetInstanceCount(uint32_t inInstanceCount) noexcept;
+	void SetMaxInstanceCount(uint32_t inMaxInstanceCount) noexcept;
 	void SetPartitionCount(uint32_t inPartitionCount) noexcept;
 	void SetMaxInstanceCountInPartition(uint32_t inMaxInstancePerPartition, uint32_t inMaxInstanceInGlobalPartition) noexcept;
 	// Defaults to zero.
@@ -18,7 +18,7 @@ public:
 	// Defaults to 3: WRITE_INSTANCE, UPDATE_INSTANCE and WRITE_PARTITION_TRANSLATION.
 	// Capacity of the outer operation-group array, in [1, 3]; each type appears at most once.
 	// This is a wrapper command budget, not an instance count or native AS size-query input.
-	void CustomizeMaxOperationCount(uint32_t inCount);
+	void CustomizeMaxOperationGroupCount(uint32_t inCount);
 };
 
 // Address-based PTLAS storage, distinct from a KHR TopLevelAccelStruct/handle.
@@ -45,16 +45,16 @@ public:
 	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo&;
 };
 
-// One descriptor for one operation type and its inner GPU record array.
+// One operation group selects one operation type and its inner GPU record array.
 // Host records use GLM types and must be encoded; their sizeof/layout is not the GPU ABI.
-class BuildPartitionedTopLevelAccelStructCommandArgument final
+class PartitionedTopLevelAccelStructOperationGroup final
 {
 public:
-	struct WriteInstanceOp
+	struct WriteInstanceRecord
 	{
 		glm::mat4 transform{ 1.0f };
 		// Used only with ENABLE_EXPLICIT_BOUNDING_BOX_NV. Must contain transformed geometry,
-		// before partition translation, including replacements made through UpdateInstanceOp.
+		// before partition translation, including replacements made through UpdateInstanceRecord.
 		VkAabbPositionsKHR explicitAABB{};
 		uint32_t shaderGroupIndexOffset = 0; // Low 24 bits only.
 		uint32_t instanceCustomIndex = 0; // Full 32-bit PTLAS instance ID.
@@ -73,7 +73,7 @@ public:
 	// Changes only the AS reference and SBT offset; transform/partition changes require WRITE.
 	// A previously WRITE-assigned AS requires ENABLE_EXPLICIT_BOUNDING_BOX_NV for UPDATE.
 	// A slot disabled by WRITE with a zero AS reference must be enabled again through WRITE.
-	struct UpdateInstanceOp
+	struct UpdateInstanceRecord
 	{
 		uint32_t shaderGroupIndexOffset = 0; // Low 24 bits only.
 		VkDeviceAddress accelStructReference = 0; // Zero disables the slot.
@@ -83,7 +83,7 @@ public:
 		static auto GetBuildInfoLayout() noexcept -> AccelStructBuildInfoLayout;
 	};
 
-	struct WritePartitionTranslationOp
+	struct WritePartitionTranslationRecord
 	{
 		// In range and unique within the submitted WRITE_PARTITION_TRANSLATION group.
 		uint32_t partitionIndex = 0;
@@ -94,9 +94,9 @@ public:
 
 	// Each setter replaces the selected operation group. inCount counts inner records.
 	// Addresses refer to arrays encoded with the corresponding record type's GPU layout.
-	void SetWriteInstanceOpAsArgument(VkDeviceAddress inArgumentAddress, uint32_t inCount);
-	void SetUpdateInstanceOpAsArgument(VkDeviceAddress inArgumentAddress, uint32_t inCount);
-	void SetWritePartitionTranslationOpAsArgument(VkDeviceAddress inArgumentAddress, uint32_t inCount);
+	void SetWriteInstances(VkDeviceAddress inArgumentAddress, uint32_t inCount);
+	void SetUpdateInstances(VkDeviceAddress inArgumentAddress, uint32_t inCount);
+	void SetWritePartitionTranslations(VkDeviceAddress inArgumentAddress, uint32_t inCount);
 
 	// GPU layout of the outer operation-group array, not any of its inner record arrays.
 	static auto GetBuildInfoLayout() noexcept -> AccelStructBuildInfoLayout;
@@ -104,10 +104,10 @@ public:
 	// With a source PTLAS, submit only changed slots; each WRITE record still describes a full slot.
 	// Encodes Host descriptions to native GPU layouts and uploads synchronously; never memcpy
 	// the Host structures. Caller excludes conflicting Host/GPU access to the destination range.
-	static void CommitToDeviceInline(std::span<const WriteInstanceOp> inArgumentToCommit, Buffer& inDstBuffer, VkDeviceSize inOffset);
-	static void CommitToDeviceInline(std::span<const UpdateInstanceOp> inArgumentToCommit, Buffer& inDstBuffer, VkDeviceSize inOffset);
-	static void CommitToDeviceInline(std::span<const WritePartitionTranslationOp> inArgumentToCommit, Buffer& inDstBuffer, VkDeviceSize inOffset);
-	static void CommitToDeviceInline(std::span<const BuildPartitionedTopLevelAccelStructCommandArgument> inArgumentToCommit, Buffer& inDstBuffer, VkDeviceSize inOffset);
+	static void CommitToDeviceInline(std::span<const WriteInstanceRecord> inArgumentToCommit, Buffer& inDstBuffer, VkDeviceSize inOffset);
+	static void CommitToDeviceInline(std::span<const UpdateInstanceRecord> inArgumentToCommit, Buffer& inDstBuffer, VkDeviceSize inOffset);
+	static void CommitToDeviceInline(std::span<const WritePartitionTranslationRecord> inArgumentToCommit, Buffer& inDstBuffer, VkDeviceSize inOffset);
+	static void CommitToDeviceInline(std::span<const PartitionedTopLevelAccelStructOperationGroup> inArgumentToCommit, Buffer& inDstBuffer, VkDeviceSize inOffset);
 };
 
 // Value description: setters snapshot addresses, capacities, flags and requirements.
@@ -120,7 +120,7 @@ public:
 	void SetScratchAddress(VkDeviceAddress inScratchAddress);
 	// Outer operation-group array; each operation type may appear at most once.
 	void SetArgumentAddress(VkDeviceAddress inArgumentAddress);
-	// GPU uint32_t outer group count, bounded by CustomizeMaxOperationCount; not an instance count.
+	// GPU uint32_t outer group count, bounded by CustomizeMaxOperationGroupCount; not an instance count.
 	// The producer supplies a valid count. Host code does not read it back.
 	void SetArgumentCountAddress(VkDeviceAddress inCountAddress);
 

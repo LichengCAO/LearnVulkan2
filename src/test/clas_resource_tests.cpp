@@ -150,8 +150,8 @@ namespace
     {
         ClusterLevelAccelStructImplicitBatchCreateInfo info;
         info.SetMaxClusterCount(3);
-        info.SetMaxClusterTriangleCount(3);
-        info.SetMaxClusterVertexCount(5);
+        info.SetMaxTriangleCountPerCluster(3);
+        info.SetMaxVertexCountPerCluster(5);
         info.SetMaxTotalTriangleCount(6);
         info.SetMaxTotalVertexCount(12);
         return info;
@@ -195,7 +195,7 @@ namespace
     {
         Hooks hooks;
         HostQueryDeviceCalls calls;
-        ClusterLevelAccelStructBuildLayout layout;
+        ClusterLevelAccelStructBuildLimits layout;
         BuildExplicitClusterAccelStructCommandInput explicitBuild;
         BuildImplicitClusterAccelStructCommandInput implicitBuild;
         ComputeClusterAccelStructSizesCommandInput compute;
@@ -226,7 +226,7 @@ namespace
             if (blas) CHECK_TRUE(lastClustersInput.maxTotalClusterCount == 7);
             else CHECK_TRUE(lastTriangleInput.maxTotalTriangleCount == 6 && lastTriangleInput.maxTotalVertexCount == 12);
         };
-        BottomLevelAccelStructBuildLayout blas;
+        ClusterBottomLevelAccelStructBuildLimits blas;
         ExpectFailure([&] { compute.SetBottomLevelAccelStructTarget(blas, 3); });
         blas.SetMaxClusterCount(5, 7);
         const auto checkOperations = [&](auto& input, auto mode)
@@ -261,19 +261,39 @@ namespace
         info.SetMaxTriangleCount(2);
         info.SetMaxVertexCount(5);
         auto first = MakeIntrusive<ClusterLevelAccelStruct>();
+        CHECK_TRUE(!first->IsValid() && first->GetDeviceAddress() == 0 &&
+            first->GetSizesInfo().accelerationStructureSize == 0 &&
+            first->GetSizesInfo().buildScratchBufferSize == 0);
         ClasBufferTestFixture::SetAllocationFailure(true);
         ExpectFailure([&] { first->Create(info); });
         ClasBufferTestFixture::SetAllocationFailure(false);
-        CHECK_TRUE(first->GetReference() == 0);
+        CHECK_TRUE(!first->IsValid() && first->GetDeviceAddress() == 0 &&
+            first->GetSizesInfo().accelerationStructureSize == 0);
+        ClasBufferTestFixture::SetBufferAddressOverride(1);
+        ExpectFailure([&] { first->Create(info); });
+        ClasBufferTestFixture::SetBufferAddressOverride(0);
+        CHECK_TRUE(!first->IsValid() && first->GetSizesInfo().accelerationStructureSize == 0 &&
+            ClasBufferTestFixture::LiveBufferCount() == 0);
         table->Create(bufferInfo);
         first->Create(info);
+        const auto savedAddress = first->GetDeviceAddress();
+        const auto savedSizes = first->GetSizesInfo();
+        const auto savedQueries = sizeQueries;
+        CHECK_TRUE(first->IsValid() && savedAddress != 0 && savedSizes.accelerationStructureSize == 512 &&
+            savedSizes.accelerationStructureAlignment == 128 && savedSizes.buildScratchBufferSize == 512 &&
+            savedSizes.scratchAlignment == 256 && savedSizes.buildInfoBufferSize ==
+                sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV) &&
+            savedSizes.updateScratchBufferSize == 0);
         ExpectFailure([&] { first->Create(info); });
+        CHECK_TRUE(sizeQueries == savedQueries && first->GetDeviceAddress() == savedAddress &&
+            first->GetSizesInfo().accelerationStructureSize == savedSizes.accelerationStructureSize,
+            "CLAS queries must use saved Host data and duplicate Create must preserve it!");
         info.SetMaxTriangleCount(3);
         auto second = MakeIntrusive<ClusterLevelAccelStruct>();
         second->Create(info);
         ClusterLevelAccelStructExplicitBatchCreateInfo explicitInfo;
         std::array<const ClusterLevelAccelStruct*, 2> owners{first.get(), second.get()};
-        explicitInfo.SetSourceAccelStructs(owners);
+        explicitInfo.SetDestinationAccelStructs(owners);
         owners.fill(nullptr);
         {
             ClusterLevelAccelStructBatch batch;
@@ -298,13 +318,13 @@ namespace
                 auto other = MakeIntrusive<ClusterLevelAccelStruct>();
                 other->Create(different);
                 const std::array mixed{first.get(), other.get()};
-                invalid.SetSourceAccelStructs(mixed);
+                invalid.SetDestinationAccelStructs(mixed);
                 ExpectFailure([&] { batch.Create(invalid); });
             }
-            invalid.SetSourceAccelStructs({});
+            invalid.SetDestinationAccelStructs({});
             ExpectFailure([&] { batch.Create(invalid); });
             const std::array duplicate{first.get(), first.get()};
-            invalid.SetSourceAccelStructs(duplicate);
+            invalid.SetDestinationAccelStructs(duplicate);
             ExpectFailure([&] { batch.Create(invalid); });
             batch.Create(explicitInfo);
             CHECK_TRUE(batch.GetCapacity() == 2 && batch.GetReferenceBuffer() == table.get() && batch.GetReferenceBufferOffset() == 8 &&
@@ -339,24 +359,25 @@ namespace
             queriedOp == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV && lastClustersInput.maxTotalClusterCount == 3);
         ExpectFailure([&] { owner->Create(info); });
         CommandBuffer commands;
-        Buffer scratch;
-        ExpectFailure([&] { commands.BuildAccelerationStructureKHR(*owner, info, scratch, 0); });
-        ExpectFailure([&] { commands.UpdateAccelerationStructureKHR(*owner, *owner, info, scratch, 0); });
+        BuildAccelStructCommandInput input;
+        AccelStructTriangleBuildInfo triangle;
+        ExpectFailure([&] { input.SetTrianglesTarget(*owner, std::span(&triangle, 1)); });
+        ExpectFailure([&] { input.CustomizeSourceAccelStruct(*owner); });
         auto table = MakeIntrusive<Buffer>();
         BufferCreateInfo bufferInfo;
         bufferInfo.SetBufferSize(32).SetBufferUsage(ReferenceUsage);
         table->Create(bufferInfo);
-        BottomLevelAccelStructExplicitBatchCreateInfo explicitInfo;
+        ClusterBottomLevelAccelStructExplicitBatchCreateInfo explicitInfo;
         explicitInfo.SetReferenceBuffer(*table, 16);
         const BottomLevelAccelStruct* source = owner.get();
-        explicitInfo.SetSourceAccelStructs(std::span(&source, 1));
+        explicitInfo.SetDestinationAccelStructs(std::span(&source, 1));
         {
-            BottomLevelAccelStructBatch batch;
-            ExpectFailure([&] { batch.Create(BottomLevelAccelStructExplicitBatchCreateInfo{}); });
+            ClusterBottomLevelAccelStructBatch batch;
+            ExpectFailure([&] { batch.Create(ClusterBottomLevelAccelStructExplicitBatchCreateInfo{}); });
             auto empty = MakeIntrusive<BottomLevelAccelStruct>();
             const auto* emptySource = empty.get();
             auto invalid = explicitInfo;
-            invalid.SetSourceAccelStructs(std::span(&emptySource, 1));
+            invalid.SetDestinationAccelStructs(std::span(&emptySource, 1));
             ExpectFailure([&] { batch.Create(invalid); });
             batch.Create(explicitInfo);
             ExpectFailure([&] { batch.Create(explicitInfo); });
@@ -404,8 +425,8 @@ namespace
         using Setter = void (ClusterLevelAccelStructImplicitBatchCreateInfo::*)(uint32_t);
         constexpr std::array<Setter, 5> required{
             &ClusterLevelAccelStructImplicitBatchCreateInfo::SetMaxClusterCount,
-            &ClusterLevelAccelStructImplicitBatchCreateInfo::SetMaxClusterTriangleCount,
-            &ClusterLevelAccelStructImplicitBatchCreateInfo::SetMaxClusterVertexCount,
+            &ClusterLevelAccelStructImplicitBatchCreateInfo::SetMaxTriangleCountPerCluster,
+            &ClusterLevelAccelStructImplicitBatchCreateInfo::SetMaxVertexCountPerCluster,
             &ClusterLevelAccelStructImplicitBatchCreateInfo::SetMaxTotalTriangleCount,
             &ClusterLevelAccelStructImplicitBatchCreateInfo::SetMaxTotalVertexCount,
         };
@@ -425,16 +446,16 @@ namespace
         caps.maxTriangles = 2;
         ExpectFailure([&] { batch.Create(info); });
         caps.maxTriangles = 512;
-        info.SetMaxClusterTriangleCount(512);
+        info.SetMaxTriangleCountPerCluster(512);
         ExpectFailure([&] { batch.Create(info); });
-        info.SetMaxClusterTriangleCount(3);
+        info.SetMaxTriangleCountPerCluster(3);
         caps.maxTriangles = 16;
         caps.maxVertices = 4;
         ExpectFailure([&] { batch.Create(info); });
         caps.maxVertices = 512;
-        info.SetMaxClusterVertexCount(512);
+        info.SetMaxVertexCountPerCluster(512);
         ExpectFailure([&] { batch.Create(info); });
-        info.SetMaxClusterVertexCount(5);
+        info.SetMaxVertexCountPerCluster(5);
         caps.maxVertices = 32;
         info.CustomizeIndexType(VK_INDEX_TYPE_NONE_KHR);
         ExpectFailure([&] { batch.Create(info); });
@@ -589,7 +610,7 @@ namespace
         const TemplateHook barrier(vkCmdPipelineBarrier2, &TemplateBarrier);
         auto& device = MyDevice::GetInstance();
         ClusterLevelAccelStructTemplateBatch batch;
-        std::array<ClusterLevelAccelStructTemplateInfo, 2> infos;
+        std::array<ClusterLevelAccelStructTemplateBuildInfo, 2> infos;
         for (auto& info : infos) info.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
         infos[0].SetIndexBuffer(0x1000, 3);
         infos[0].SetVertexCount(3);
@@ -759,9 +780,9 @@ namespace
         }
     }
 
-    auto MakeClusterBlasCapacity() -> BottomLevelAccelStructImplicitBatchCreateInfo
+    auto MakeClusterBlasCapacity() -> ClusterBottomLevelAccelStructImplicitBatchCreateInfo
     {
-        BottomLevelAccelStructImplicitBatchCreateInfo info;
+        ClusterBottomLevelAccelStructImplicitBatchCreateInfo info;
         info.SetMaxAccelStructCount(2);
         info.SetMaxClusterCountPerAccelStruct(2);
         info.SetMaxTotalClusterCount(3);
@@ -771,7 +792,7 @@ namespace
     void TestClusterBlasCreationUsesExplicitCapacity()
     {
         Hooks hooks;
-        BottomLevelAccelStructBatch batch;
+        ClusterBottomLevelAccelStructBatch batch;
         auto info = MakeClusterBlasCapacity();
         CHECK_TRUE(batch.GetCapacity() == 0 && batch.GetReferenceBuffer() == nullptr &&
             batch.GetSizesInfo().buildScratchBufferSize == 0 && batch.GetScratchAlignment() == 0);
@@ -795,13 +816,13 @@ namespace
     void TestClusterBlasCreateRejectionAndRetry()
     {
         Hooks hooks;
-        BottomLevelAccelStructBatch batch;
+        ClusterBottomLevelAccelStructBatch batch;
         const auto info = MakeClusterBlasCapacity();
-        ExpectFailure([&] { batch.Create(BottomLevelAccelStructImplicitBatchCreateInfo{}); });
+        ExpectFailure([&] { batch.Create(ClusterBottomLevelAccelStructImplicitBatchCreateInfo{}); });
         constexpr std::array required{
-            &BottomLevelAccelStructImplicitBatchCreateInfo::SetMaxAccelStructCount,
-            &BottomLevelAccelStructImplicitBatchCreateInfo::SetMaxClusterCountPerAccelStruct,
-            &BottomLevelAccelStructImplicitBatchCreateInfo::SetMaxTotalClusterCount,
+            &ClusterBottomLevelAccelStructImplicitBatchCreateInfo::SetMaxAccelStructCount,
+            &ClusterBottomLevelAccelStructImplicitBatchCreateInfo::SetMaxClusterCountPerAccelStruct,
+            &ClusterBottomLevelAccelStructImplicitBatchCreateInfo::SetMaxTotalClusterCount,
         };
         for (const auto set : required)
         {
@@ -844,7 +865,7 @@ namespace
         Hooks hooks;
         constexpr VkDeviceAddress firstReferences = 0x100008;
         constexpr VkDeviceAddress secondReferences = 0x200000;
-        std::array<BottomLevelAccelStructBuildInfo, 2> tasks{};
+        std::array<ClusterBottomLevelAccelStructBuildInfo, 2> tasks{};
         tasks[0].SetClusterReferences(firstReferences, 2);
         tasks[1].SetClusterReferences(secondReferences, 1);
 
@@ -855,11 +876,11 @@ namespace
         ExpectFailure([&] { tasks[0].SetClusterReferences(0x100001, 1); });
 
         Buffer empty;
-        BottomLevelAccelStructBuildInfo::CommitToDeviceInline({}, empty, std::numeric_limits<VkDeviceSize>::max());
-        ExpectFailure([&] { BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, empty); });
+        ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline({}, empty, std::numeric_limits<VkDeviceSize>::max());
+        ExpectFailure([&] { ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, empty); });
         Buffer upload = UploadBuffer(HostMemory);
         constexpr VkDeviceSize offset = 8;
-        BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload, offset);
+        ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload, offset);
         const auto bytes = ClasBufferTestFixture::Bytes(upload);
         std::array<VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, 2> records{};
         std::memcpy(records.data(), bytes.data() + offset, sizeof(records));
@@ -875,11 +896,11 @@ namespace
         Hooks hooks;
         constexpr VkDeviceAddress references = 0x100000;
         Buffer upload = UploadBuffer(HostMemory);
-        std::array<BottomLevelAccelStructBuildInfo, 3> tasks{};
+        std::array<ClusterBottomLevelAccelStructBuildInfo, 3> tasks{};
         tasks[0].SetClusterReferences(references + sizeof(VkDeviceAddress), 2);
         tasks[1].SetClusterReferences(references, 3);
         tasks[2].SetClusterReferences(references, 4);
-        BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload);
+        ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload);
         const auto bytes = ClasBufferTestFixture::Bytes(upload);
         std::array<VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, 3> records{};
         std::memcpy(records.data(), bytes.data(), sizeof(records));
@@ -889,16 +910,16 @@ namespace
         const std::vector<uint8_t> saved(bytes.begin(), bytes.end());
 
         tasks.back() = {};
-        ExpectFailure([&] { BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload); });
+        ExpectFailure([&] { ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload); });
         CHECK_TRUE(std::ranges::equal(bytes, saved), "A late rejected BLAS task must preserve the entire upload buffer!");
 
         tasks.back().SetClusterReferences(references, 4);
-        ExpectFailure([&] { BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload, 255); });
-        ExpectFailure([&] { BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload, std::numeric_limits<VkDeviceSize>::max()); });
+        ExpectFailure([&] { ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload, 255); });
+        ExpectFailure([&] { ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, upload, std::numeric_limits<VkDeviceSize>::max()); });
         Buffer deviceLocal = UploadBuffer(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        ExpectFailure([&] { BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, deviceLocal); });
+        ExpectFailure([&] { ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, deviceLocal); });
         Buffer nonCoherent = UploadBuffer(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-        ExpectFailure([&] { BottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, nonCoherent); });
+        ExpectFailure([&] { ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(tasks, nonCoherent); });
         CHECK_TRUE(std::ranges::equal(bytes, saved));
     }
 }

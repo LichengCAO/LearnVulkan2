@@ -180,7 +180,7 @@ queries NV Cluster BLAS sizes for one explicit destination and owns an aligned
 storage Buffer with the default build flags. `GetDeviceAddress()` returns that
 destination and `GetVkAccelerationStructure()` returns a null KHR handle.
 Use the NV indirect command to build it. Setting triangles or AABBs, or
-resetting CreateInfo, clears its cluster capacity.
+assigning `info = {};`, clears its cluster capacity.
 
 Private `VulkanDetail::AccelerationStructureStorage` saves the creating VkDevice
 and owns the native AS and backing Buffer. The public header exposes no VMA
@@ -196,10 +196,26 @@ creation. VMA internal synchronization remains enabled; Device, allocator and
 native dispatch must remain valid through final release, and teardown/recreation
 must not overlap related operations. Finish all GPU uses before final release.
 
-Build/Update/Copy command descriptions keep their current snapshot behavior and
-do not automatically retain the BLAS or input buffers. Vertex/index/transform
-buffers, scratch buffers and TLAS references to BLAS remain borrowed; callers
-preserve the lifetimes needed for command enqueue, recording and GPU use.
+CreateInfo copies ordered geometry Limits containing capacities, formats and
+flags, without Buffer bindings or strides. `BuildAccelStructCommandInput` combines
+target selection with actual triangle/AABB input descriptions. Selection validates
+the corresponding nonempty prefix of Limits and snapshots Host metadata; failed
+selection preserves state. Successful reselection clears UPDATE and keeps scratch;
+Assigning `input = {};` clears both. These AS descriptions expose no Reset;
+copies/moves retain no resources.
+
+The span-based Build command validates the complete batch before appending one
+native KHR command. It snapshots all arrays and prepares native pointers before
+recording, which performs no queries, uploads or allocations. Tasks must be
+independent, with distinct destinations, no cross-task source/destination conflicts
+and disjoint scratch/storage write regions. In-place UPDATE is allowed. Callers
+preserve previous actual build counts, topology, transform presence and the other
+Vulkan UPDATE constraints; GPU history and dependencies hidden in GPU data cannot
+be inferred from creation Limits. Typed Copy remains borrowed as well.
+
+Vertex/index/transform buffers, scratch buffers and TLAS references to BLAS remain
+borrowed; callers preserve resource lifetimes through recording and GPU completion.
+`GetSizesInfo()` exposes saved creation requirements without querying the Device.
 
 ## TLAS ownership
 
@@ -214,15 +230,20 @@ Both AS types own the same private `AccelerationStructureStorage`, which saves
 VkDevice and destroys native AS before its backing Buffer and allocation. TLAS
 creation validates initialized dependencies and its required native entrypoints,
 then prepares metadata and resources locally before publication. It does not
-query a BLAS address, upload instances or perform a GPU Build. An empty instance
-list remains supported.
+query a BLAS address, upload instances or perform a GPU Build. CreateInfo requires
+an explicit positive `SetMaxInstanceCount`; default construction or assignment from `{}` is unconfigured. The
+actual BUILD count may be zero, with a zero instance address.
 
-`WriteBuildInfoBufferInline` remains a separate static upload operation and never requires a
-TLAS owner. An empty list accepts an uncreated destination Buffer without accessing
-Device. Nonempty uploads retain their existing
-range, payload and BLAS-address validation. TLAS does not retain referenced BLAS
-objects, instance buffers or scratch buffers. Callers preserve their native
-lifetimes for all uses, including BLAS references used by a built TLAS.
+`TopLevelAccelStructBuildInfo::CommitToDeviceInline` is a separate static upload
+operation and never requires a TLAS owner. Its Host descriptions hold raw BLAS
+addresses; zero encodes an inactive instance. The entire list is validated and
+encoded before one synchronous Buffer upload. An empty list accepts an uncreated
+destination Buffer without Device access. Noncoherent/device-local destinations
+use Buffer's staged-transfer contract and require transfer-destination usage.
+`SetInstancesTarget` borrows already encoded packed instances by address and count;
+it never uploads. TLAS retains no referenced BLAS, instance or scratch resources.
+Callers preserve their native lifetimes for all uses, including BLAS references
+used by a built TLAS.
 
 Independent TLAS instances can create and release concurrently, including final
 strong-reference release from any thread. Same-instance conflicts require caller
@@ -230,7 +251,7 @@ exclusion. Keep Device/allocator/native dispatch stable and alive through final
 release, exclude teardown/recreation, and complete GPU work before release. No
 automatic retention, internal lock or GPU wait is introduced.
 
-`TopLevelAccelStruct::GetBuildInfoLayout()` is a static Host-only query for the
+`TopLevelAccelStructBuildInfo::GetBuildInfoLayout()` is a static Host-only query for the
 64-byte packed GPU instance layout and its 16-byte input address alignment. It
 requires no owner or Device. [GPU input layout](acceleration_structure_gpu_layout.md)
 describes the transform rows, packed words and borrowed BLAS address.
@@ -238,7 +259,7 @@ describes the transform rows, packed words and borrowed BLAS address.
 ## Cluster acceleration structure batches
 
 For implicit creation, `ClusterLevelAccelStructBatch` and
-`BottomLevelAccelStructBatch` own their opaque native contents through ordinary
+`ClusterBottomLevelAccelStructBatch` own their opaque native contents through ordinary
 Buffer storage and a separate output address
 table. They do not own a `VkAccelerationStructureKHR` handle. Host creation
 finishes allocation and size queries without uploading tasks or submitting GPU
@@ -246,16 +267,20 @@ work. Output address values are generated by the later GPU build. Buffer RAII
 releases both allocations synchronously, without waiting for GPU work.
 
 Explicit Batch creation retains strong references to the supplied reference Buffer
-and every source AS until Batch destruction.
-CreateInfo copies the source pointer list but borrows the objects and Buffer until
+and every destination AS until Batch destruction.
+CreateInfo copies the destination pointer list but borrows the objects and Buffer until
 creation completes. These inputs must use intrusive reference-counted ownership;
 stack objects and independently deleting owners do not satisfy this contract.
 After creation, callers retain the Batch through all dependent GPU uses instead
-of separately retaining its source objects and reference Buffer. Commands still
+of separately retaining its destination objects and reference Buffer. Commands still
 borrow native addresses, and Batch destruction does not wait for GPU completion.
 
 Each explicitly created CLAS or Cluster BLAS owns one aligned output Buffer.
-Callers populate packed table entry `i` with source owner `i`'s device address,
+Single CLAS owners expose `IsValid()`, `GetDeviceAddress()` and `GetSizesInfo()`.
+These read saved Host state: validity means allocated storage, not GPU completion,
+and sizes are creation requirements. Failed creation leaves the owner empty and
+retryable; duplicate Create preserves its address and requirements.
+Callers populate packed table entry `i` with destination owner `i`'s device address,
 keep the table Buffer's native storage stable, and bound each GPU task to the
 corresponding owner's capacities. CLAS owners share format, index type and
 direct/instantiation operation. The Batch preserves the supplied byte offset
@@ -292,7 +317,7 @@ overload uses the caller's thread-affine DeviceContext and compute-capable queue
 Each independent output can be created on any thread using the default overload.
 Retain template storage and supplied vertices until all instantiations finish.
 
-`BottomLevelAccelStructBuildInfo::SetClusterReferences(address, count)` borrows a
+`ClusterBottomLevelAccelStructBuildInfo::SetClusterReferences(address, count)` borrows a
 packed array of `VkDeviceAddress` values. It requires a nonzero, aligned address,
 a positive count and a non-overflowing address range, and stores only the address
 and count. It retains no source owner and does not inspect the table contents or
@@ -302,7 +327,7 @@ through the BLAS build. Referenced CLAS storage remains alive through the last
 dependent GPU use.
 
 Each CLAS CommandInput snapshots limits and capacity at operation selection.
-Selecting a layout queries the Device synchronously. A matching explicit or
+Selecting build limits queries the Device synchronously. A matching explicit or
 implicit Batch supplies its creation results and borrowed output addresses.
 The const `QueryCurrentTargetSizesInfo()` reads the selected requirements.
 Changing targets preserves arguments, scratch and GPU count and replaces all

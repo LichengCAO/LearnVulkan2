@@ -556,7 +556,7 @@ private:
     static void _CheckComputedDestinations(const HeadlessDevice& native, bool instantiate,
         const Buffer& clusterTasks, VkDeviceAddress indices)
     {
-        ClusterLevelAccelStructBuildLayout layout;
+        ClusterLevelAccelStructBuildLimits layout;
         layout.SetMaxTriangleCount(1, 2);
         layout.SetMaxVertexCount(3, 6);
         ComputeClusterAccelStructSizesCommandInput sizing;
@@ -588,15 +588,15 @@ private:
         }
         const auto sizes = _ComputeSizes(native, sizing, clusterTasks, instantiate ? "instantiate CLAS" : "direct CLAS");
         auto clusters = _BuildSizedDestinations(native, build, clusterTasks, sizes);
-        BottomLevelAccelStructBuildLayout blasLayout;
+        ClusterBottomLevelAccelStructBuildLimits blasLayout;
         blasLayout.SetMaxClusterCount(2, 3);
         sizing.SetBottomLevelAccelStructTarget(blasLayout, 2);
         build.SetBottomLevelAccelStructTarget(blasLayout, 2);
-        std::array<BottomLevelAccelStructBuildInfo, 2> descriptions{};
+        std::array<ClusterBottomLevelAccelStructBuildInfo, 2> descriptions{};
         descriptions[0].SetClusterReferences(clusters.references.GetDeviceAddress(), 2);
         descriptions[1].SetClusterReferences(clusters.references.GetDeviceAddress() + sizeof(VkDeviceAddress), 1);
         auto blasTasks = MakeBuffer(sizing.QueryCurrentTargetSizesInfo().buildInfoBufferSize, kBuildInputUsage, kHostMemory);
-        BottomLevelAccelStructBuildInfo::CommitToDeviceInline(descriptions, blasTasks);
+        ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(descriptions, blasTasks);
         const auto blasSizes = _ComputeSizes(native, sizing, blasTasks, "dependent Cluster BLAS");
         _BuildSizedDestinations(native, build, blasTasks, blasSizes);
         std::cout << "Built explicit CLAS and dependent explicit Cluster BLAS in GPU-sized allocations.\n";
@@ -627,7 +627,7 @@ private:
             constexpr std::array<uint16_t, 6> paddedIndices{ 0, 99, 2, 99, 1, 99 };
             auto otherIndices = MakeBuffer(sizeof(paddedIndices), kBuildInputUsage, kHostMemory);
             Buffer::UploadToDeviceInline(otherIndices, 0, paddedIndices.data(), sizeof(paddedIndices));
-            std::array<ClusterLevelAccelStructTemplateInfo, 2> infos;
+            std::array<ClusterLevelAccelStructTemplateBuildInfo, 2> infos;
             for (auto& info : infos)
             {
                 info.SetVertexCount(3);
@@ -662,7 +662,7 @@ private:
             std::cout << "Verified two implicit templates from distinct index buffers, worker retry and explicit creation.\n";
         }
         ClusterLevelAccelStructBatch clusters;
-        BottomLevelAccelStructBatch blases;
+        ClusterBottomLevelAccelStructBatch blases;
         std::array<VkDeviceAddress, 2> fixedClusters{}, fixedBlases{};
         if (explicitDestinations)
         {
@@ -682,7 +682,7 @@ private:
                 clusterOwners[i] = MakeIntrusive<ClusterLevelAccelStruct>();
                 clusterOwners[i]->Create(ownerInfo);
                 clusterSources[i] = clusterOwners[i].get();
-                fixedClusters[i] = clusterOwners[i]->GetReference();
+                fixedClusters[i] = clusterOwners[i]->GetDeviceAddress();
                 BottomLevelAccelStructCreateInfo blasOwnerInfo;
                 blasOwnerInfo.SetClusters(2 - i);
                 blasOwners[i] = MakeIntrusive<BottomLevelAccelStruct>();
@@ -692,11 +692,11 @@ private:
             }
             ClusterLevelAccelStructExplicitBatchCreateInfo clusterBatchInfo;
             clusterBatchInfo.SetReferenceBuffer(*table, 8);
-            clusterBatchInfo.SetSourceAccelStructs(clusterSources);
+            clusterBatchInfo.SetDestinationAccelStructs(clusterSources);
             clusters.Create(clusterBatchInfo);
-            BottomLevelAccelStructExplicitBatchCreateInfo blasBatchInfo;
+            ClusterBottomLevelAccelStructExplicitBatchCreateInfo blasBatchInfo;
             blasBatchInfo.SetReferenceBuffer(*table, 24);
-            blasBatchInfo.SetSourceAccelStructs(blasSources);
+            blasBatchInfo.SetDestinationAccelStructs(blasSources);
             blases.Create(blasBatchInfo);
             Buffer::UploadToDeviceInline(*table, 8, fixedClusters.data(), sizeof(fixedClusters));
             Buffer::UploadToDeviceInline(*table, 24, fixedBlases.data(), sizeof(fixedBlases));
@@ -705,20 +705,20 @@ private:
         {
             ClusterLevelAccelStructImplicitBatchCreateInfo clusterInfo;
             clusterInfo.SetMaxClusterCount(2);
-            clusterInfo.SetMaxClusterTriangleCount(1);
-            clusterInfo.SetMaxClusterVertexCount(3);
+            clusterInfo.SetMaxTriangleCountPerCluster(1);
+            clusterInfo.SetMaxVertexCountPerCluster(3);
             clusterInfo.SetMaxTotalTriangleCount(2);
             clusterInfo.SetMaxTotalVertexCount(6);
             clusterInfo.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
             clusterInfo.CustomizeTemplateUsage(useTemplates);
             clusters.Create(clusterInfo);
-            BottomLevelAccelStructImplicitBatchCreateInfo blasInfo;
+            ClusterBottomLevelAccelStructImplicitBatchCreateInfo blasInfo;
             blasInfo.SetMaxAccelStructCount(2);
             blasInfo.SetMaxClusterCountPerAccelStruct(2);
             blasInfo.SetMaxTotalClusterCount(3);
             blases.Create(blasInfo);
         }
-        std::array<BottomLevelAccelStructBuildInfo, 2> blasDescriptions{};
+        std::array<ClusterBottomLevelAccelStructBuildInfo, 2> blasDescriptions{};
         const auto clusterReferences = clusters.GetReferenceBuffer()->GetDeviceAddress() + clusters.GetReferenceBufferOffset();
         blasDescriptions[0].SetClusterReferences(clusterReferences, 2);
         blasDescriptions[1].SetClusterReferences(clusterReferences + sizeof(VkDeviceAddress), 1);
@@ -743,7 +743,7 @@ private:
         }
         else
             ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(clusterDescriptions, clusterTasks);
-        BottomLevelAccelStructBuildInfo::CommitToDeviceInline(blasDescriptions, blasTasks);
+        ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(blasDescriptions, blasTasks);
 
         const VkDeviceSize scratchAlignment = native.clusterProperties.clusterScratchByteAlignment;
         auto clusterScratch = _MakeScratch(native, clusters.GetSizesInfo());

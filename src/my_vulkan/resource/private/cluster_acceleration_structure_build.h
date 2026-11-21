@@ -2,18 +2,18 @@
 #include "../acceleration_structure_types.h"
 #include <utility>
 class Buffer;
-class ClusterLevelAccelStructBuildLayout;
-class BottomLevelAccelStructBuildLayout;
+class ClusterLevelAccelStructBuildLimits;
+class ClusterBottomLevelAccelStructBuildLimits;
 class ClusterLevelAccelStructBatch;
-class BottomLevelAccelStructBatch;
+class ClusterBottomLevelAccelStructBatch;
 
 namespace VulkanDetail
 {
     struct ClusterSizeQuery
     {
-        static auto Get(const ClusterLevelAccelStructBuildLayout&, VkClusterAccelerationStructureOpTypeNV,
+        static auto Get(const ClusterLevelAccelStructBuildLimits&, VkClusterAccelerationStructureOpTypeNV,
             VkClusterAccelerationStructureOpModeNV, uint32_t inCapacity) -> AccelStructSizesInfo;
-        static auto Get(const BottomLevelAccelStructBuildLayout&, VkClusterAccelerationStructureOpModeNV,
+        static auto Get(const ClusterBottomLevelAccelStructBuildLimits&, VkClusterAccelerationStructureOpModeNV,
             uint32_t inCapacity) -> AccelStructSizesInfo;
     };
 
@@ -69,12 +69,12 @@ namespace VulkanDetail
         VkDeviceAddress scratch = 0;
         VkDeviceAddress count = 0;
 
-        void Select(const ClusterLevelAccelStructBuildLayout&, uint32_t inCapacity,
+        void Select(const ClusterLevelAccelStructBuildLimits&, uint32_t inCapacity,
             VkClusterAccelerationStructureOpModeNV, VkClusterAccelerationStructureOpTypeNV);
-        void Select(const BottomLevelAccelStructBuildLayout&, uint32_t inCapacity, VkClusterAccelerationStructureOpModeNV);
+        void Select(const ClusterBottomLevelAccelStructBuildLimits&, uint32_t inCapacity, VkClusterAccelerationStructureOpModeNV);
         void Select(const ClusterLevelAccelStructBatch&, VkClusterAccelerationStructureOpModeNV,
             VkClusterAccelerationStructureOpTypeNV);
-        void Select(const BottomLevelAccelStructBatch&, VkClusterAccelerationStructureOpModeNV);
+        void Select(const ClusterBottomLevelAccelStructBatch&, VkClusterAccelerationStructureOpModeNV);
         auto GetSizes() const -> AccelStructSizesInfo;
         void SetReferences(VkDeviceAddress inAddress);
         void SetStorage(VkDeviceAddress inAddress);

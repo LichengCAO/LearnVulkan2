@@ -213,7 +213,7 @@ struct CommandBufferTestProbe
         inBatch.m_triangleInput.maxClusterTriangleCount = 31;
         inBatch.m_triangleInput.maxTotalTriangleCount = 61;
     }
-    static void ChangeClusterLayout(BottomLevelAccelStructBatch& inBatch)
+    static void ChangeClusterLayout(ClusterBottomLevelAccelStructBatch& inBatch)
     {
         inBatch.m_count = 3;
         inBatch.m_clustersInput.maxTotalClusterCount = 18;
@@ -262,26 +262,28 @@ struct CommandBufferTestProbe
         const BottomLevelAccelStructCreateInfo& inInfo, VkDeviceSize inBuildScratch = 512,
         VkDeviceSize inUpdateScratch = 128)
     {
-        inResource.m_layout = BottomLevelAccelStruct::_Describe(inInfo, false);
+        inResource.m_layout = BottomLevelAccelStruct::_Describe(inInfo);
         inResource.m_flags = inResource.m_layout.buildGeometryInfo.flags;
-        inResource.m_buildSizes.accelerationStructureSize = 2048;
-        inResource.m_buildSizes.buildScratchSize = inBuildScratch;
-        inResource.m_buildSizes.updateScratchSize = inUpdateScratch;
-        inResource.m_scratchAlignment = 256;
+        inResource.m_sizesInfo.accelerationStructureSize = 2048;
+        inResource.m_sizesInfo.buildScratchBufferSize = inBuildScratch;
+        inResource.m_sizesInfo.updateScratchBufferSize = inUpdateScratch;
+        inResource.m_sizesInfo.scratchAlignment = 256;
+        inResource.m_storageAddress = reinterpret_cast<uintptr_t>(inResource.GetVkAccelerationStructure()) * 4096;
         inResource.m_accelStructReference = 32768;
     }
     static void PrepareTop(TopLevelAccelStruct& inResource, const TopLevelAccelStructCreateInfo& inInfo)
     {
         inResource.m_layout = TopLevelAccelStruct::_Describe(inInfo);
         inResource.m_flags = inResource.m_layout.buildGeometryInfo.flags;
-        inResource.m_buildSizes.accelerationStructureSize = 2048;
-        inResource.m_buildSizes.buildScratchSize = 512;
-        inResource.m_buildSizes.updateScratchSize = 128;
-        inResource.m_scratchAlignment = 256;
+        inResource.m_sizesInfo.accelerationStructureSize = 2048;
+        inResource.m_sizesInfo.buildScratchBufferSize = 512;
+        inResource.m_sizesInfo.updateScratchBufferSize = 128;
+        inResource.m_sizesInfo.scratchAlignment = 256;
+        inResource.m_storageAddress = reinterpret_cast<uintptr_t>(inResource.GetVkAccelerationStructure()) * 4096;
     }
-    static void SetBlasAddress(BottomLevelAccelStruct& inResource, VkDeviceAddress inAddress)
+    static void SetStorageAddress(BottomLevelAccelStruct& inResource, VkDeviceAddress inAddress)
     {
-        inResource.m_accelStructReference = inAddress;
+        inResource.m_storageAddress = inAddress;
     }
     static void RecordLast(const CommandBuffer& inBuffer)
     {
@@ -944,247 +946,345 @@ namespace
         throw SizeQueryStop{};
     }
 
+    auto TriangleCapacity(uint32_t triangles = 4, uint32_t vertices = 12) -> BottomLevelAccelStructCreateInfo
+    {
+        AccelStructTriangleGeometryLimits limits;
+        limits.SetMaxTriangleCount(triangles);
+        limits.SetMaxVertexCount(vertices);
+        BottomLevelAccelStructCreateInfo info;
+        info.SetTriangles(std::span(&limits, 1));
+        info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
+        return info;
+    }
+
+    auto TriangleTask(const BottomLevelAccelStruct& target, VkDeviceAddress scratch = 8192)
+        -> BuildAccelStructCommandInput
+    {
+        AccelStructTriangleBuildInfo geometry;
+        geometry.SetVertexBuffer(4096, 6);
+        geometry.SetTriangleCount(2);
+        BuildAccelStructCommandInput input;
+        input.SetTrianglesTarget(target, std::span(&geometry, 1));
+        input.SetScratchAddress(scratch);
+        return input;
+    }
+
     void TestObjectBlasCommandsUseExternalBuffersAndSnapshots()
     {
         CommandBufferTestProbe::Resources resources;
-        CommandBufferTestProbe::ExternalBuffer vertices(101, 4096, asInputUsage);
-        CommandBufferTestProbe::ExternalBuffer scratch(102, 4096, asScratchUsage);
-        CommandBufferTestProbe::ExternalBuffer indices(103, 4096, asInputUsage);
-        CommandBufferTestProbe::ExternalBuffer transform(104, 4096, asInputUsage);
-        ScopedFunction address(vkGetBufferDeviceAddress, &CaptureAsAddress);
         ScopedFunction build(vkCmdBuildAccelerationStructuresKHR, &CaptureBuild);
-        ScopedFunction sizeQueries(vkGetAccelerationStructureBuildSizesKHR, &CaptureAsSizes);
+        ScopedFunction sizes(vkGetAccelerationStructureBuildSizesKHR, &CaptureAsSizes);
         ScopedFunction properties(vkGetPhysicalDeviceProperties2, &CaptureAsProperties);
         asAddressQueries = asSizeQueries = asPropertyQueries = 0;
-        AccelStructTriangleGeometry geometry;
-        geometry.vertexBuffer = &vertices.buffer;
-        geometry.vertexOffset = 64;
-        geometry.vertexStride = 16;
-        geometry.vertexCount = 7;
-        geometry.primitiveCount = 2;
-        geometry.vertexFormat = VK_FORMAT_R32G32_SFLOAT;
-        geometry.indexBuffer = &indices.buffer;
-        geometry.indexOffset = 12;
-        geometry.indexType = VK_INDEX_TYPE_UINT16;
-        geometry.transformBuffer = &transform.buffer;
-        geometry.transformOffset = 16;
-        BottomLevelAccelStructCreateInfo info;
-        info.SetTriangles(std::span(&geometry, 1));
-        info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
+        auto info = TriangleCapacity();
         CommandBufferTestProbe::PrepareBottom(resources.bottomSrc, info);
         CommandBufferTestProbe::PrepareBottom(resources.bottomDst, info);
-        capture = {};
+        auto input = TriangleTask(resources.bottomDst);
+        CHECK_TRUE(input.QueryCurrentTargetSizesInfo().buildScratchBufferSize == 512);
         CommandBuffer commands;
-        commands.BuildAccelerationStructureKHR(resources.bottomDst, info, scratch.buffer, 256);
-        commands.UpdateAccelerationStructureKHR(resources.bottomSrc, resources.bottomDst, info, scratch.buffer, 512);
-        commands.UpdateAccelerationStructureKHR(resources.bottomDst, resources.bottomDst, info, scratch.buffer);
-        CHECK_TRUE(capture.order.empty(), "Object AS commands must be deferred!");
-        info.Reset();
-        geometry.vertexOffset = 0;
+        commands.BuildAccelerationStructuresKHR(std::span(&input, 1));
+        input.CustomizeSourceAccelStruct(resources.bottomSrc);
+        input.SetScratchAddress(8704);
+        commands.BuildAccelerationStructuresKHR(std::span(&input, 1));
+        input.CustomizeSourceAccelStruct(resources.bottomDst);
+        commands.BuildAccelerationStructuresKHR(std::span(&input, 1));
+        input = {};
+        info = {};
+        capture = {};
         CommandBuffer moved(std::move(commands));
         CommandBuffer appended;
         CommandBufferTestProbe::Append(appended, std::move(moved));
-        const auto addressCount = asAddressQueries;
         CommandBufferTestProbe::Record(appended);
-        CHECK_TRUE(capture.order == std::vector<std::string>({ "build", "build", "build" }) &&
-            capture.builds.size() == 3 && capture.geometries.size() == 3 &&
-            asAddressQueries == addressCount && asSizeQueries == 0 && asPropertyQueries == 0,
-            "Recording must preserve order and perform no host preparation!");
-        const auto& triangle = capture.geometries[0][0].geometry.triangles;
-        CHECK_TRUE(triangle.vertexData.deviceAddress == 4160 && triangle.indexData.deviceAddress == 12300 &&
-            triangle.transformData.deviceAddress == 16400 && triangle.vertexStride == 16 &&
-            triangle.maxVertex == 6 && triangle.vertexFormat == VK_FORMAT_R32G32_SFLOAT &&
-            triangle.indexType == VK_INDEX_TYPE_UINT16 && capture.buildRanges[0][0].primitiveCount == 2 &&
-            capture.builds[0].scratchData.deviceAddress == 8448 &&
-            capture.builds[0].mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR &&
-            capture.builds[1].mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR &&
+        CHECK_TRUE(capture.order == std::vector<std::string>({"build", "build", "build"}) &&
+            capture.builds.size() == 3 && asSizeQueries == 0 && asPropertyQueries == 0 && asAddressQueries == 0);
+        CHECK_TRUE(capture.geometries[0][0].geometry.triangles.vertexData.deviceAddress == 4096 &&
+            capture.geometries[0][0].geometry.triangles.maxVertex == 5 &&
+            capture.buildRanges[0][0].primitiveCount == 2 &&
+            capture.builds[0].scratchData.deviceAddress == 8192 &&
             capture.builds[1].scratchData.deviceAddress == 8704 &&
+            capture.builds[1].mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR &&
             capture.builds[1].srcAccelerationStructure == resources.bottomSrc.GetVkAccelerationStructure() &&
-            capture.builds[2].srcAccelerationStructure == resources.bottomDst.GetVkAccelerationStructure(),
-            "BLAS addresses, offsets, format, or build/update mapping is wrong!");
+            capture.builds[2].srcAccelerationStructure == resources.bottomDst.GetVkAccelerationStructure());
     }
 
     void TestAsValidationAndScratchSelection()
     {
         CommandBufferTestProbe::Resources resources;
-        CommandBufferTestProbe::ExternalBuffer vertices(101, 512, asInputUsage);
-        CommandBufferTestProbe::ExternalBuffer scratch(102, 128, asScratchUsage);
-        ScopedFunction address(vkGetBufferDeviceAddress, &CaptureAsAddress);
-        ScopedFunction build(vkCmdBuildAccelerationStructuresKHR, &CaptureBuild);
-        AccelStructTriangleGeometry geometry;
-        geometry.vertexBuffer = &vertices.buffer;
-        geometry.vertexStride = 12;
-        geometry.vertexCount = 6;
-        geometry.primitiveCount = 2;
-        BottomLevelAccelStructCreateInfo info;
-        info.SetTriangles(std::span(&geometry, 1));
-        info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
+        auto info = TriangleCapacity();
         CommandBufferTestProbe::PrepareBottom(resources.bottomSrc, info);
         CommandBufferTestProbe::PrepareBottom(resources.bottomDst, info);
+        auto input = TriangleTask(resources.bottomDst);
         CommandBuffer commands;
-        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureKHR(resources.bottomDst, info, scratch.buffer); });
-        commands.UpdateAccelerationStructureKHR(resources.bottomSrc, resources.bottomDst, info, scratch.buffer);
-        ExpectRejected(commands, [&] { commands.UpdateAccelerationStructureKHR(
-            resources.bottomSrc, resources.bottomDst, info, scratch.buffer, 1); });
-        CommandBufferTestProbe::ExternalBuffer wrongUsage(102, 4096, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureKHR(resources.bottomDst, info, wrongUsage.buffer); });
-        geometry.vertexOffset = 500;
-        info.SetTriangles(std::span(&geometry, 1));
-        ExpectRejected(commands, [&] { commands.UpdateAccelerationStructureKHR(
-            resources.bottomSrc, resources.bottomDst, info, scratch.buffer); });
-        geometry.vertexOffset = 0;
-        geometry.vertexCount = 0;
-        info.SetTriangles(std::span(&geometry, 1));
-        ExpectRejected(commands, [&] { commands.UpdateAccelerationStructureKHR(
-            resources.bottomSrc, resources.bottomDst, info, scratch.buffer); });
-        geometry.vertexCount = 6;
-        geometry.flags = 0;
-        info.SetTriangles(std::span(&geometry, 1));
-        ExpectRejected(commands, [&] { commands.UpdateAccelerationStructureKHR(
-            resources.bottomSrc, resources.bottomDst, info, scratch.buffer); });
-        geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
-        info.SetTriangles(std::span(&geometry, 1));
+        BuildAccelStructCommandInput empty;
+        ExpectRejected(commands, [&] { empty.QueryCurrentTargetSizesInfo(); });
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(std::span(&empty, 1)); });
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(std::span<const BuildAccelStructCommandInput>{}); });
+        input.SetScratchAddress(8193);
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(std::span(&input, 1)); });
+        input.SetScratchAddress(UINT64_MAX - 255);
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(std::span(&input, 1)); });
+        input.SetScratchAddress(8192);
+        AccelStructTriangleBuildInfo geometry;
+        geometry.SetVertexBuffer(4096, 6);
+        geometry.SetTriangleCount(5);
+        ExpectRejected(commands, [&] { input.SetTrianglesTarget(resources.bottomDst, std::span(&geometry, 1)); });
+        geometry.SetTriangleCount(2);
+        geometry.SetVertexBuffer(4097, 6);
+        ExpectRejected(commands, [&] { input.SetTrianglesTarget(resources.bottomDst, std::span(&geometry, 1)); });
+        geometry.SetVertexBuffer(UINT64_MAX - 3, 6);
+        ExpectRejected(commands, [&] { input.SetTrianglesTarget(resources.bottomDst, std::span(&geometry, 1)); });
+        geometry.SetVertexBuffer(4096, 6);
+        geometry.CustomizeTransformBuffer(16384);
+        ExpectRejected(commands, [&] { input.SetTrianglesTarget(resources.bottomDst, std::span(&geometry, 1)); });
+        AccelStructAabbBuildInfo aabb;
+        aabb.SetAabbBuffer(4096, 1);
+        ExpectRejected(commands, [&] { input.SetAabbsTarget(resources.bottomDst, std::span(&aabb, 1)); });
+        ExpectRejected(commands, [&] { input.CustomizeSourceAccelStruct(resources.topSrc); });
+        // Failed selection left the original build and scratch intact.
+        commands.BuildAccelerationStructuresKHR(std::span(&input, 1));
         info.CustomizeBuildFlags(0);
         CommandBufferTestProbe::PrepareBottom(resources.bottomSrc, info);
+        ExpectRejected(commands, [&] { input.CustomizeSourceAccelStruct(resources.bottomSrc); });
         CommandBufferTestProbe::PrepareBottom(resources.bottomDst, info, 0, 0);
-        Buffer emptyScratch;
-        commands.BuildAccelerationStructureKHR(resources.bottomDst, info, emptyScratch);
+        input = TriangleTask(resources.bottomDst, 0);
+        ScopedFunction build(vkCmdBuildAccelerationStructuresKHR, &CaptureBuild);
+        commands.BuildAccelerationStructuresKHR(std::span(&input, 1));
         capture = {};
         CommandBufferTestProbe::RecordLast(commands);
-        CHECK_TRUE(capture.builds[0].scratchData.deviceAddress == 0,
-            "Zero scratch requirements must not require an allocated Buffer!");
-        ExpectRejected(commands, [&] { commands.UpdateAccelerationStructureKHR(
-            resources.bottomSrc, resources.bottomDst, info, emptyScratch); });
+        CHECK_TRUE(capture.builds[0].scratchData.deviceAddress == 0);
         commands.BeginRenderPass(resources.pass, resources.framebuffer, 0, 0, 8, 8);
-        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureKHR(resources.bottomDst, info, emptyScratch); });
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(std::span(&input, 1)); });
         commands.EndRenderPass();
     }
 
     void TestNonIndexedTrianglesAndAabbMapping()
     {
         CommandBufferTestProbe::Resources resources;
-        CommandBufferTestProbe::ExternalBuffer inputs(101, 4096, asInputUsage);
-        CommandBufferTestProbe::ExternalBuffer scratch(102, 4096, asScratchUsage);
-        ScopedFunction address(vkGetBufferDeviceAddress, &CaptureAsAddress);
         ScopedFunction build(vkCmdBuildAccelerationStructuresKHR, &CaptureBuild);
+        std::array<AccelStructTriangleGeometryLimits, 2> limits;
+        for (auto& limit : limits)
+        {
+            limit.SetMaxTriangleCount(4);
+            limit.SetMaxVertexCount(12);
+            limit.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
+            limit.CustomizeAllowTransform(true);
+        }
         BottomLevelAccelStructCreateInfo info;
-        AccelStructTriangleGeometry triangle;
-        triangle.vertexBuffer = &inputs.buffer;
-        triangle.vertexOffset = 12;
-        triangle.vertexStride = 12;
-        triangle.vertexCount = 6;
-        triangle.primitiveCount = 2;
-        info.SetTriangles(std::span(&triangle, 1));
+        info.SetTriangles(limits);
         CommandBufferTestProbe::PrepareBottom(resources.bottomDst, info);
+        AccelStructTriangleBuildInfo triangle;
+        triangle.SetVertexBuffer(4096, 7);
+        triangle.SetTriangleCount(2);
+        triangle.SetIndexBuffer(12288);
+        triangle.CustomizeVertexStride(16);
+        triangle.CustomizeTransformBuffer(16384);
+        BuildAccelStructCommandInput input;
+        input.SetScratchAddress(8192);
+        input.SetTrianglesTarget(resources.bottomDst, std::span(&triangle, 1)); // Prefix.
         CommandBuffer commands;
-        commands.BuildAccelerationStructureKHR(resources.bottomDst, info, scratch.buffer);
-        AccelStructAabbGeometry aabb;
-        aabb.buffer = &inputs.buffer;
-        aabb.offset = 8;
-        aabb.stride = 32;
-        aabb.primitiveCount = 3;
-        aabb.flags = 0;
-        info.SetAabbs(std::span(&aabb, 1));
+        commands.BuildAccelerationStructuresKHR(std::span(&input, 1));
+        triangle.CustomizeVertexStride(24);
+        triangle.CustomizeTransformBuffer(0); // Reserved transform need not be used.
+        input.SetTrianglesTarget(resources.bottomDst, std::span(&triangle, 1));
+        commands.BuildAccelerationStructuresKHR(std::span(&input, 1));
+        AccelStructAabbGeometryLimits aabbLimits;
+        aabbLimits.SetMaxAabbCount(5);
+        aabbLimits.CustomizeGeometryFlags(0);
+        info.SetAabbs(std::span(&aabbLimits, 1));
         CommandBufferTestProbe::PrepareBottom(resources.bottomDst, info);
-        commands.BuildAccelerationStructureKHR(resources.bottomDst, info, scratch.buffer);
-        info.Reset();
+        AccelStructAabbBuildInfo aabb;
+        aabb.SetAabbBuffer(4104, 3);
+        aabb.CustomizeStride(32);
+        input.SetAabbsTarget(resources.bottomDst, std::span(&aabb, 1));
+        commands.BuildAccelerationStructuresKHR(std::span(&input, 1));
+        input = {};
         capture = {};
         CommandBufferTestProbe::Record(commands);
-        CHECK_TRUE(capture.geometries[0][0].geometry.triangles.indexType == VK_INDEX_TYPE_NONE_KHR &&
-            capture.geometries[0][0].geometry.triangles.indexData.deviceAddress == 0 &&
-            capture.geometries[0][0].geometry.triangles.vertexData.deviceAddress == 4108 &&
-            capture.geometries[1][0].geometryType == VK_GEOMETRY_TYPE_AABBS_KHR &&
-            capture.geometries[1][0].flags == 0 &&
-            capture.geometries[1][0].geometry.aabbs.data.deviceAddress == 4104 &&
-            capture.geometries[1][0].geometry.aabbs.stride == 32 &&
-            capture.buildRanges[1][0].primitiveCount == 3,
-            "Non-indexed triangles or AABB descriptions were not copied/mapped correctly!");
+        const auto& first = capture.geometries[0][0].geometry.triangles;
+        CHECK_TRUE(capture.builds[0].geometryCount == 1 && first.indexType == VK_INDEX_TYPE_UINT16 &&
+            first.indexData.deviceAddress == 12288 && first.vertexStride == 16 && first.maxVertex == 6 &&
+            first.transformData.deviceAddress == 16384 &&
+            capture.geometries[1][0].geometry.triangles.vertexStride == 24 &&
+            capture.geometries[1][0].geometry.triangles.transformData.deviceAddress == 0 &&
+            capture.geometries[2][0].flags == 0 &&
+            capture.geometries[2][0].geometry.aabbs.data.deviceAddress == 4104 &&
+            capture.geometries[2][0].geometry.aabbs.stride == 32 &&
+            capture.buildRanges[2][0].primitiveCount == 3);
     }
 
     void TestStaticInstanceUploadIsExplicitAndAtomic()
     {
-        TopLevelAccelStructCreateInfo emptyInfo;
         Buffer emptyBuffer;
-        TopLevelAccelStruct::WriteBuildInfoBufferInline(emptyInfo, emptyBuffer);
-
-        CommandBufferTestProbe::Resources resources;
-        CommandBufferTestProbe::SetBlasAddress(resources.bottomSrc, 32768);
-        std::array<AccelStructInstance, 2> instances{};
-        instances[0].accelStruct = &resources.bottomSrc;
+        TopLevelAccelStructBuildInfo::CommitToDeviceInline({}, emptyBuffer);
+        std::array<TopLevelAccelStructBuildInfo, 2> instances{};
+        instances[0].accelStructReference = 32768;
         instances[0].transform[3][0] = 7.f;
         instances[0].instanceCustomIndex = 0x123456;
         instances[0].shaderGroupIndexOffset = 0x654321;
         instances[0].mask = 0xAA;
         instances[0].flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR;
-        TopLevelAccelStructCreateInfo info;
-        info.SetInstances(instances);
-        instances[0].instanceCustomIndex = 0;
         std::array<uint8_t, 256> memory;
         memory.fill(0xCD);
         CommandBufferTestProbe::ExternalBuffer upload(105, memory.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             memory.data(), VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        TopLevelAccelStruct::WriteBuildInfoBufferInline(info, upload.buffer, 16);
+        TopLevelAccelStructBuildInfo::CommitToDeviceInline(instances, upload.buffer, 16);
         VkAccelerationStructureInstanceKHR first{}, second{};
         std::memcpy(&first, memory.data() + 16, sizeof(first));
         std::memcpy(&second, memory.data() + 80, sizeof(second));
-        CHECK_TRUE(memory[0] == 0xCD && memory[15] == 0xCD && memory[144] == 0xCD &&
+        CHECK_TRUE(memory[15] == 0xCD && memory[144] == 0xCD &&
             first.accelerationStructureReference == 32768 && first.instanceCustomIndex == 0x123456 &&
             first.instanceShaderBindingTableRecordOffset == 0x654321 && first.mask == 0xAA &&
-            first.flags == VK_GEOMETRY_INSTANCE_TRIANGLE_FLIP_FACING_BIT_KHR &&
-            first.transform.matrix[0][0] == 1.f && first.transform.matrix[0][3] == 7.f &&
-            second.accelerationStructureReference == 0 && second.mask == 0xFF &&
-            second.transform.matrix[1][1] == 1.f, "Static instance encoding, defaults, or upload offset is wrong!");
+            first.transform.matrix[0][3] == 7.f && second.accelerationStructureReference == 0 &&
+            second.mask == 0xFF);
         const auto previous = memory;
-        instances[1].instanceCustomIndex = 0x1000000;
-        info.SetInstances(instances);
         CommandBuffer commands;
-        ExpectRejected(commands, [&] { TopLevelAccelStruct::WriteBuildInfoBufferInline(info, upload.buffer, 16); });
-        CHECK_TRUE(memory == previous, "A rejected instance list must not partially overwrite the destination!");
-        instances[1].instanceCustomIndex = 0;
-        info.SetInstances(instances);
-        ExpectRejected(commands, [&] { TopLevelAccelStruct::WriteBuildInfoBufferInline(info, upload.buffer, 200); });
-        CommandBufferTestProbe::ExternalBuffer invisible(105, 256, 0, memory.data(), 0);
-        ExpectRejected(commands, [&] { TopLevelAccelStruct::WriteBuildInfoBufferInline(info, invisible.buffer); });
-        CommandBufferTestProbe::SetBlasAddress(resources.bottomSrc, 0);
-        ExpectRejected(commands, [&] { TopLevelAccelStruct::WriteBuildInfoBufferInline(info, upload.buffer); });
-        CHECK_TRUE(memory == previous, "Host validation must precede all writes!");
+        for (auto field : {&instances[1].instanceCustomIndex, &instances[1].shaderGroupIndexOffset,
+            &instances[1].mask})
+        {
+            const auto saved = *field;
+            *field = UINT32_MAX;
+            ExpectRejected(commands, [&] { TopLevelAccelStructBuildInfo::CommitToDeviceInline(instances, upload.buffer); });
+            *field = saved;
+        }
+        ExpectRejected(commands, [&] { TopLevelAccelStructBuildInfo::CommitToDeviceInline(instances, upload.buffer, 200); });
+        CHECK_TRUE(memory == previous, "Rejected uploads must preserve the destination!");
     }
 
     void TestTlasCommandsDoNotUploadAndSnapshotInstanceCount()
     {
         CommandBufferTestProbe::Resources resources;
-        std::array<uint8_t, 256> memory;
-        memory.fill(0xCD);
-        CommandBufferTestProbe::ExternalBuffer instances(101, memory.size(), asInputUsage,
-            memory.data(), VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        CommandBufferTestProbe::ExternalBuffer scratch(102, 4096, asScratchUsage);
-        ScopedFunction address(vkGetBufferDeviceAddress, &CaptureAsAddress);
-        ScopedFunction build(vkCmdBuildAccelerationStructuresKHR, &CaptureBuild);
-        std::array<AccelStructInstance, 2> descriptions{};
         TopLevelAccelStructCreateInfo info;
-        info.SetInstances(descriptions);
+        info.SetMaxInstanceCount(4);
         info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
         CommandBufferTestProbe::PrepareTop(resources.topSrc, info);
         CommandBufferTestProbe::PrepareTop(resources.topDst, info);
+        auto blasInfo = TriangleCapacity();
+        CommandBufferTestProbe::PrepareBottom(resources.bottomSrc, blasInfo);
+        CommandBufferTestProbe::PrepareBottom(resources.bottomDst, blasInfo);
+        ScopedFunction build(vkCmdBuildAccelerationStructuresKHR, &CaptureBuild);
+        std::array<BuildAccelStructCommandInput, 2> inputs;
+        inputs[0] = TriangleTask(resources.bottomDst);
+        inputs[1].SetInstancesTarget(resources.topDst, 12288, 2);
+        inputs[1].SetScratchAddress(8704);
+        inputs[1].CustomizeSourceAccelStruct(resources.topSrc);
         CommandBuffer commands;
-        commands.BuildAccelerationStructureKHR(resources.topDst, info, instances.buffer, 32, scratch.buffer, 256);
-        commands.UpdateAccelerationStructureKHR(resources.topSrc, resources.topDst, info, instances.buffer, 32, scratch.buffer);
-        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureKHR(
-            resources.topDst, info, instances.buffer, 1, scratch.buffer); });
-        ExpectRejected(commands, [&] { commands.BuildAccelerationStructureKHR(
-            resources.topDst, info, instances.buffer, 144, scratch.buffer); });
-        info.Reset();
+        commands.BuildAccelerationStructuresKHR(inputs);
+        inputs[0] = {};
+        inputs[1] = {};
+        info = {};
         capture = {};
-        CommandBufferTestProbe::Record(commands);
-        CHECK_TRUE(capture.geometries[0][0].geometry.instances.data.deviceAddress == 4128 &&
-            capture.geometries[0][0].geometry.instances.arrayOfPointers == VK_FALSE &&
-            capture.buildRanges[0][0].primitiveCount == 2 &&
-            capture.builds[0].scratchData.deviceAddress == 8448 &&
-            capture.builds[1].srcAccelerationStructure == resources.topSrc.GetVkAccelerationStructure() &&
-            capture.builds[1].dstAccelerationStructure == resources.topDst.GetVkAccelerationStructure() &&
+        CommandBufferTestProbe::RecordLast(commands);
+        CHECK_TRUE(capture.order == std::vector<std::string>{"build"} && capture.builds.size() == 2 &&
+            capture.builds[0].type == VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR &&
+            capture.builds[1].type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR &&
             capture.builds[1].mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR &&
-            std::all_of(memory.begin(), memory.end(), [](uint8_t value) { return value == 0xCD; }),
-            "TLAS recording must snapshot count/offsets without uploading or changing external Buffer contents!");
+            capture.geometries[1][0].geometry.instances.data.deviceAddress == 12288 &&
+            capture.buildRanges[1][0].primitiveCount == 2);
+
+        // Snapshot copies/moves and target reselection clear UPDATE but preserve scratch.
+        inputs[0] = TriangleTask(resources.bottomDst);
+        auto copy = inputs[0];
+        auto moved = std::move(copy);
+        inputs[0] = {};
+        moved.CustomizeSourceAccelStruct(resources.bottomSrc);
+        moved.SetInstancesTarget(resources.topDst, 0, 0);
+        commands.BuildAccelerationStructuresKHR(std::span(&moved, 1));
+        capture = {};
+        CommandBufferTestProbe::RecordLast(commands);
+        CHECK_TRUE(capture.builds[0].mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR &&
+            capture.builds[0].srcAccelerationStructure == VK_NULL_HANDLE &&
+            capture.builds[0].scratchData.deviceAddress == 8192 && capture.buildRanges[0][0].primitiveCount == 0);
+
+        // Batch validation must be atomic, including errors in later tasks.
+        inputs[0] = TriangleTask(resources.bottomDst);
+        inputs[1] = inputs[0];
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(inputs); }); // Duplicate output.
+        inputs[1] = TriangleTask(resources.bottomSrc); // Same scratch.
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(inputs); });
+        inputs[1].SetScratchAddress(8448); // Partially overlapping scratch.
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(inputs); });
+        inputs[1].SetScratchAddress(8704);
+        inputs[0].CustomizeSourceAccelStruct(resources.bottomSrc); // Another task's destination.
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(inputs); });
+        inputs[0] = TriangleTask(resources.bottomDst);
+        inputs[1] = {}; // Missing second task.
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(inputs); });
+        inputs[1].SetInstancesTarget(resources.topDst, 12288, 2);
+        inputs[1].SetScratchAddress(reinterpret_cast<uintptr_t>(resources.bottomDst.GetVkAccelerationStructure()) * 4096);
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(inputs); }); // Output overlap.
+        ExpectRejected(commands, [&] { inputs[1].SetInstancesTarget(resources.topDst, 12289, 2); });
+        ExpectRejected(commands, [&] { inputs[1].SetInstancesTarget(resources.topDst, 12288, 5); });
+        ExpectRejected(commands, [&] { inputs[1].CustomizeSourceAccelStruct(resources.bottomSrc); });
+        inputs[1].SetScratchAddress(8704);
+        commands.BuildAccelerationStructuresKHR(inputs); // Recovered previous valid target.
+    }
+
+    void TestOrdinaryAsOrderedLimitsAndStorageConflicts()
+    {
+        CommandBufferTestProbe::Resources resources, extra;
+        CommandBufferTestProbe::ClearBorrowedAccelStruct(extra.bottomDst);
+        CommandBufferTestProbe::SetBorrowedAccelStruct(extra.bottomDst,
+            CommandBufferTestProbe::Handle<VkAccelerationStructureKHR>(405));
+        auto info = TriangleCapacity();
+        CommandBufferTestProbe::PrepareBottom(resources.bottomSrc, info);
+        CommandBufferTestProbe::PrepareBottom(resources.bottomDst, info);
+        CommandBufferTestProbe::PrepareBottom(extra.bottomDst, info);
+        ScopedFunction build(vkCmdBuildAccelerationStructuresKHR, &CaptureBuild);
+        CommandBuffer commands;
+        std::array<BuildAccelStructCommandInput, 2> inputs{
+            TriangleTask(resources.bottomDst), TriangleTask(extra.bottomDst, 8704)};
+        for (auto& input : inputs) input.CustomizeSourceAccelStruct(resources.bottomSrc);
+        commands.BuildAccelerationStructuresKHR(inputs); // Shared read-only source is legal.
+        capture = {};
+        CommandBufferTestProbe::RecordLast(commands);
+        CHECK_TRUE(capture.order == std::vector<std::string>{"build"} && capture.builds.size() == 2 &&
+            capture.builds[0].srcAccelerationStructure == capture.builds[1].srcAccelerationStructure);
+
+        const auto destinationAddress = VkDeviceAddress(402) * 4096;
+        CommandBufferTestProbe::SetStorageAddress(extra.bottomDst, destinationAddress + 256);
+        inputs[1] = TriangleTask(extra.bottomDst, 8704);
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(inputs); });
+        CommandBufferTestProbe::SetStorageAddress(extra.bottomDst, VkDeviceAddress(405) * 4096);
+        inputs[1] = TriangleTask(extra.bottomDst, 8704);
+        CommandBufferTestProbe::SetStorageAddress(resources.bottomSrc, destinationAddress + 256);
+        inputs[1].CustomizeSourceAccelStruct(resources.bottomSrc);
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(inputs); }); // Cross-task alias.
+        inputs[0].CustomizeSourceAccelStruct(resources.bottomSrc);
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(std::span(&inputs[0], 1)); });
+        CommandBufferTestProbe::SetStorageAddress(resources.bottomSrc, 8192);
+        inputs[1].CustomizeSourceAccelStruct(resources.bottomSrc);
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(std::span(&inputs[1], 1)); });
+
+        std::array<AccelStructAabbGeometryLimits, 2> limits;
+        limits[0].SetMaxAabbCount(1);
+        limits[1].SetMaxAabbCount(3);
+        limits[1].CustomizeGeometryFlags(0);
+        info.SetAabbs(limits);
+        CommandBufferTestProbe::PrepareBottom(resources.bottomDst, info);
+        std::array<AccelStructAabbBuildInfo, 2> geometries;
+        geometries[0].SetAabbBuffer(4096, 1);
+        geometries[1].SetAabbBuffer(12288, 3);
+        inputs[0].SetAabbsTarget(resources.bottomDst, geometries);
+        commands.BuildAccelerationStructuresKHR(std::span(&inputs[0], 1));
+        std::swap(geometries[0], geometries[1]);
+        ExpectRejected(commands, [&] { inputs[0].SetAabbsTarget(resources.bottomDst, geometries); });
+        commands.BuildAccelerationStructuresKHR(std::span(&inputs[0], 1));
+        capture = {};
+        CommandBufferTestProbe::RecordLast(commands);
+        CHECK_TRUE(capture.buildRanges[0][0].primitiveCount == 1 && capture.buildRanges[0][1].primitiveCount == 3 &&
+            capture.geometries[0][0].flags == VK_GEOMETRY_OPAQUE_BIT_KHR && capture.geometries[0][1].flags == 0 &&
+            capture.geometries[0][0].geometry.aabbs.data.deviceAddress == 4096);
+
+        auto copied = inputs[0];
+        BuildAccelStructCommandInput assigned;
+        assigned = std::move(copied);
+        ExpectRejected(commands, [&] { copied.QueryCurrentTargetSizesInfo(); });
+        inputs[0] = {};
+        ExpectRejected(commands, [&] { inputs[0].CustomizeSourceAccelStruct(resources.bottomDst); });
+        commands.BuildAccelerationStructuresKHR(std::span(&assigned, 1));
+        assigned = {};
+        assigned.SetAabbsTarget(resources.bottomDst, std::span(&geometries[1], 1));
+        ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(std::span(&assigned, 1)); });
     }
 
     void TestAccelerationStructureAndSbtSnapshots()
@@ -1223,6 +1323,7 @@ namespace
             info.geometries.push_back(geometry);
             info.buildRangesInfos.push_back({ 7, 16, 3, 64 });
         }
+        builds[1].buildGeometryInfo.dstAccelerationStructure = resources.bottomSrc.GetVkAccelerationStructure();
         builds[1].geometries[0].geometry.triangles.vertexData.deviceAddress = 16384;
         builds[1].buildRangesInfos[0].primitiveCount = 11;
         buffer.BuildAccelerationStructuresKHR(builds);
@@ -1453,7 +1554,7 @@ namespace
         CommandBufferTestProbe::ClusterQueueState queueState;
         clusterCommands.clear(); clusterTriangleInputs.clear(); clusterBlasInputs.clear();
         ClusterLevelAccelStructBatch clas;
-        BottomLevelAccelStructBatch blas;
+        ClusterBottomLevelAccelStructBatch blas;
         CommandBuffer commands;
         ExpectRejected(commands, [&] { commands.ComputeClusterAccelStructSizes(ComputeClusterAccelStructSizesCommandInput{}); });
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(BuildExplicitClusterAccelStructCommandInput{}); });
@@ -1612,7 +1713,7 @@ namespace
     {
         ScopedFunction build(vkCmdBuildClusterAccelerationStructureIndirectNV, &CaptureClusterBuild);
         clusterCommands.clear(); clusterTriangleInputs.clear(); clusterBlasInputs.clear();
-        ClusterLevelAccelStructBuildLayout layout;
+        ClusterLevelAccelStructBuildLimits layout;
         layout.SetMaxTriangleCount(3, 6);
         layout.SetMaxVertexCount(5, 12);
         BuildImplicitClusterAccelStructCommandInput implicitBuild;
@@ -1649,7 +1750,7 @@ namespace
         commands.BuildAccelerationStructureIndirect(explicitBuild);
         explicitBuild.SetScratchAddress(0x8000);
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(explicitBuild); });
-        BottomLevelAccelStructBuildLayout blasLayout;
+        ClusterBottomLevelAccelStructBuildLimits blasLayout;
         blasLayout.SetMaxClusterCount(4, 7);
         implicitBuild.SetBottomLevelAccelStructTarget(blasLayout, 2);
         implicitBuild.SetOutputReferencesArray(0x3000);
@@ -1735,7 +1836,7 @@ namespace
     void TestClusterCommandsWithoutScratch()
     {
         ScopedFunction dispatch(vkCmdBuildClusterAccelerationStructureIndirectNV, &CaptureClusterBuild);
-        BottomLevelAccelStructBuildLayout layout;
+        ClusterBottomLevelAccelStructBuildLimits layout;
         layout.SetMaxClusterCount(2, 4);
         CommandBuffer commands;
         ComputeClusterAccelStructSizesCommandInput compute;
@@ -1810,7 +1911,7 @@ namespace
         table->Create(tableInfo);
         const auto* source = owner.get();
         ClusterLevelAccelStructExplicitBatchCreateInfo info;
-        info.SetSourceAccelStructs(std::span(&source, 1));
+        info.SetDestinationAccelStructs(std::span(&source, 1));
         info.SetReferenceBuffer(*table, 24);
         ClusterLevelAccelStructBatch batch;
         batch.Create(info);
@@ -1823,7 +1924,7 @@ namespace
         ExpectRejected(commands, [&] { buildInfo.SetClusterTarget(batch); });
         BuildImplicitClusterAccelStructCommandInput implicitBuild;
         ExpectRejected(commands, [&] { implicitBuild.SetInstantiateClusterTarget(batch); });
-        buildInfo.SetScratchAddress(owner->GetReference());
+        buildInfo.SetScratchAddress(owner->GetDeviceAddress());
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructureIndirect(buildInfo); });
         buildInfo.SetScratchAddress(0x5000);
         commands.BuildAccelerationStructureIndirect(buildInfo);
@@ -1832,18 +1933,18 @@ namespace
             clusterCommands[0].input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV &&
             clusterCommands[0].dstAddressesArray.deviceAddress == table->GetDeviceAddress() + 24 && clusterCommands[0].dstAddressesArray.size == 8 &&
             !clusterCommands[0].dstImplicitData && clusterTriangleInputs[0].maxClusterTriangleCount == 2);
-        CheckManagedExplicitMoves(buildInfo, owner->GetReference(), table->GetDeviceAddress() + 24,
+        CheckManagedExplicitMoves(buildInfo, owner->GetDeviceAddress(), table->GetDeviceAddress() + 24,
             VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV);
 
         auto rebound = buildInfo;
         rebound.CustomizeBuildCountAddress(0x6000);
-        BottomLevelAccelStructBuildLayout layout;
+        ClusterBottomLevelAccelStructBuildLimits layout;
         layout.SetMaxClusterCount(2, 4);
         rebound.SetBottomLevelAccelStructTarget(layout, 2);
         CommandBuffer replacements;
         ExpectRejected(replacements, [&] { replacements.BuildAccelerationStructureIndirect(rebound); });
         rebound.SetReferencesArray(0x7000);
-        rebound.SetScratchAddress(owner->GetReference());
+        rebound.SetScratchAddress(owner->GetDeviceAddress());
         ExpectRejected(replacements, [&] { rebound.SetBottomLevelAccelStructTarget(layout, 0); });
         replacements.BuildAccelerationStructureIndirect(rebound);
         rebound.SetInstantiateClusterTarget(batch);
@@ -1862,10 +1963,10 @@ namespace
         blasDesc.SetClusters(2);
         blasOwner->Create(blasDesc);
         const auto* blasSource = blasOwner.get();
-        BottomLevelAccelStructExplicitBatchCreateInfo blasInfo;
+        ClusterBottomLevelAccelStructExplicitBatchCreateInfo blasInfo;
         blasInfo.SetReferenceBuffer(*table, 8);
-        blasInfo.SetSourceAccelStructs(std::span(&blasSource, 1));
-        BottomLevelAccelStructBatch blases;
+        blasInfo.SetDestinationAccelStructs(std::span(&blasSource, 1));
+        ClusterBottomLevelAccelStructBatch blases;
         blases.Create(blasInfo);
         BuildExplicitClusterAccelStructCommandInput blasBuild;
         blasBuild.SetBottomLevelAccelStructTarget(blases);
@@ -1886,6 +1987,7 @@ void RunCommandBufferTests()
     TestNonIndexedTrianglesAndAabbMapping();
     TestStaticInstanceUploadIsExplicitAndAtomic();
     TestTlasCommandsDoNotUploadAndSnapshotInstanceCount();
+    TestOrdinaryAsOrderedLimitsAndStorageConflicts();
     TestFlattenedViewportIsDeferred();
     TestOwnedAppendCallback();
     TestScalarRegionsAndOwnedBytes();

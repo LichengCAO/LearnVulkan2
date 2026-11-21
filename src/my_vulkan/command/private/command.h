@@ -244,8 +244,12 @@ public:
 private:
 	Parameters m_parameters;
 	std::vector<std::vector<VkAccelerationStructureGeometryKHR>> m_geometries;
+	std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> m_rangePointers;
 
 public:
+	BuildAccelerationStructuresKHRCommand() = default;
+	BuildAccelerationStructuresKHRCommand(const BuildAccelerationStructuresKHRCommand&) = delete;
+	auto operator=(const BuildAccelerationStructuresKHRCommand&) -> BuildAccelerationStructuresKHRCommand& = delete;
 	auto SetParameters(const Parameters& inParameters) -> BuildAccelerationStructuresKHRCommand&;
 	virtual auto Record(VkCommandBuffer inVkCommandBuffer) const->void override;
 };

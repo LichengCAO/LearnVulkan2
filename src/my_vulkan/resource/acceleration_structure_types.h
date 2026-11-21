@@ -17,6 +17,7 @@ struct AccelStructSizesInfo
 	VkDeviceSize buildScratchBufferSize = 0;
 	VkDeviceSize scratchAlignment = 0;
 	// Task array capacity for the queried maximum target count, not the GPU actual count.
+	// Ordinary BLAS uses zero; TLAS uses maximum instance count times packed record stride.
 	// For PTLAS, this covers the outer operation-group array; inner record arrays are separate.
 	VkDeviceSize buildInfoBufferSize = 0;
 	// Output capacity bound, not the actual GPU-built size. For CLAS and Cluster BLAS:

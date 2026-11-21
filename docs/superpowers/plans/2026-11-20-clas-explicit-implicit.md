@@ -49,11 +49,11 @@ CLAS indirect info uses one unified type. SetBuildTarget infers its operation/mo
 - [x] Write regression cases before implementation. The size fixture must distinguish EXPLICIT/IMPLICIT modes and direct/instantiate operations; query without target addresses must allocate no buffers. Representative caller setup:
 
 ```cpp
-ClusterLevelAccelStructBuildLayout layout;
+ClusterLevelAccelStructBuildLimits layout;
 layout.SetMaxTriangleCount(3, 6);
 layout.SetMaxVertexCount(5, 12);
 auto sizes = layout.QuerySizesInfo(
-    ClusterLevelAccelStructBuildLayout::BuildType::EXPLICIT_INSTANTIATE, 3);
+    ClusterLevelAccelStructBuildLimits::BuildType::EXPLICIT_INSTANTIATE, 3);
 CHECK_TRUE(sizes.buildInfoBufferSize == 3 * sizeof(VkClusterAccelerationStructureInstantiateClusterInfoNV));
 CHECK_TRUE(sizes.accelerationStructureAlignment == 128);
 ```
