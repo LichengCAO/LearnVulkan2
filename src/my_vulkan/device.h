@@ -75,6 +75,9 @@ class MyDevice final
 	friend struct ClusterAccelerationStructureTestProbe;
 	friend struct ClusterAccelerationStructureGpuTestProbe;
 	friend struct ClasPipelineTestProbe;
+	friend class PartitionedTopLevelAccelStruct;
+	friend struct PartitionedAccelerationStructureTestProbe;
+	friend struct PartitionedAccelerationStructureGpuTestProbe;
 	friend struct VulkanDetail::ClusterSizeQuery;
 	friend class GraphicsShaderProgram;
     friend class ComputeShaderProgram;
@@ -129,6 +132,7 @@ private:
 	bool				m_needRecreate = false;
 	bool				m_initialized = false;
 	bool m_clusterAccelerationStructureEnabled = false;
+	bool m_partitionedAccelerationStructureEnabled = false;
 	UserInput			m_userInput{};
 	std::vector<std::unique_ptr<SwapchainImage>> m_uptrSwapchainImages;
 	std::unique_ptr<MemoryAllocator> m_uptrMemoryAllocator;
@@ -150,7 +154,7 @@ private:
 	static auto _WaitForFenceCompletion(VkDevice inDevice, VkFence inFence) -> VkResult;
 	void _ExecuteInlineAndWait(std::function<void(VkCommandBuffer)> inRecord);
 	void _DestroyInlineExecution() noexcept;
-	void _RequireClusterBuildQueue(QueueFamilyType inQueue) const;
+	void _RequireComputeBuildQueue(QueueFamilyType inQueue) const;
 
 	std::vector<const char*> _GetInstanceRequiredExtensions() const;
 	QueueFamilyIndices		 _GetQueueFamilyIndices(VkPhysicalDevice physicalDevice) const;
@@ -165,6 +169,7 @@ private:
 	void _CreateSurface();
 	void _SelectPhysicalDevice();
 	auto _EnableClusterAccelerationStructureIfSupported() -> bool;
+	auto _EnablePartitionedAccelerationStructureIfSupported() -> bool;
 	void _CreateLogicalDevice();
 	void _CreateDescriptorSetLayoutAllocator();
 	void _DestroyDescriptorSetLayoutAllocator();

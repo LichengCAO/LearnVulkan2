@@ -308,18 +308,6 @@ void ClusterLevelAccelStructTemplateBatch::Create(
     m_references = std::move(references);
 }
 
-void MyDevice::_RequireClusterBuildQueue(QueueFamilyType inQueue) const
-{
-    CHECK_TRUE(vkPhysicalDevice != VK_NULL_HANDLE && vkGetPhysicalDeviceQueueFamilyProperties != nullptr,
-        "Cluster builds require initialized physical device queue properties!");
-    uint32_t count = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(vkPhysicalDevice, &count, nullptr);
-    std::vector<VkQueueFamilyProperties> properties(count);
-    vkGetPhysicalDeviceQueueFamilyProperties(vkPhysicalDevice, &count, properties.data());
-    const auto family = GetQueueFamilyIndexOfType(inQueue);
-    CHECK_TRUE(family < count && (properties[family].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0,
-        "Cluster builds require a compute-capable queue family!");
-}
 
 void ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(
     std::span<const ClusterLevelAccelStructTemplateBuildInfo> infos, Buffer& destination, VkDeviceSize offset)

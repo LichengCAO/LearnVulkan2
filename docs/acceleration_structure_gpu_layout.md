@@ -3,7 +3,7 @@
 `src/my_vulkan/resource/acceleration_structure_gpu_layout.h` publishes byte
 offsets, unshifted masks and shifts for native GPU build inputs. This is a C++
 header; shaders can follow this contract without a shared-language include or
-changes to existing shaders. Both public AS headers expose it through
+changes to existing shaders. All public AS headers expose it through
 `acceleration_structure_types.h`.
 
 The layout queries are static, `constexpr`, and perform no allocation or Device access:
@@ -23,6 +23,10 @@ constexpr auto tlas = TopLevelAccelStructBuildInfo::GetBuildInfoLayout();
 | Instantiate CLAS task | 32 | 8 | `AccelStructGpuLayout::Instantiate` |
 | Cluster BLAS task | 16 | 8 | `AccelStructGpuLayout::ClusterBlas` |
 | Packed TLAS instance | 64 | 16 | `AccelStructGpuLayout::Tlas` |
+| PTLAS operation group | 24 | 8 | `AccelStructGpuLayout::Partitioned::Operation` |
+| PTLAS write instance | 104 | 8 | `AccelStructGpuLayout::Partitioned::WriteInstance` |
+| PTLAS update instance | 16 | 8 | `AccelStructGpuLayout::Partitioned::UpdateInstance` |
+| PTLAS partition translation | 16 | 4 | `AccelStructGpuLayout::Partitioned::Translation` |
 
 Sizes and offsets are bytes. Record `i` starts at `base + i * recordStride`.
 `addressAlignment` applies to the GPU input address, including a suballocation
@@ -142,6 +146,79 @@ address an ordinary BLAS or a Cluster BLAS. Native definitions:
 [instance](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureInstanceKHR.html),
 [transform](https://docs.vulkan.org/refpages/latest/refpages/source/VkTransformMatrixKHR.html).
 
+## Partitioned TLAS
+
+All four `GetBuildInfoLayout()` queries are static constexpr. Public constants
+live under `AccelStructGpuLayout::Partitioned`; static assertions compare every
+published offset and stride with the native Vulkan structures. Addresses are
+raw 64-bit GPU addresses, not KHR handles or Host pointers.
+
+| Operation offset | Bytes | Native field |
+| ---: | ---: | --- |
+| 0 | 4 | `opType`: WRITE_INSTANCE = 0, UPDATE_INSTANCE = 1, WRITE_PARTITION_TRANSLATION = 2 |
+| 4 | 4 | `argCount`, number of inner records |
+| 8 | 8 | `argData.startAddress`, inner array address |
+| 16 | 8 | `argData.strideInBytes`, fixed 104/16/16 for the chosen operation |
+
+The outer table requires **72 accessible bytes**, eight-byte aligned, even when
+the GPU count selects fewer than three groups. Its count is a separate required
+four-byte aligned `uint32_t`; zero means zero groups. The producer bounds it by
+three, supplies unique operation types and initializes the selected prefix. There
+is no readback or clamp. An individual group's record count may be zero; its
+address may then be zero. GPU producers must follow native stride requirements;
+the optional Host setters always emit the fixed packed strides shown here.
+
+| WRITE_INSTANCE offset | Bytes | Native field |
+| ---: | ---: | --- |
+| 0 | 48 | Three transform rows, four floats per row |
+| 48 | 24 | Explicit AABB: minX, minY, minZ, maxX, maxY, maxZ |
+| 72 | 4 | Full 32-bit instance ID |
+| 76 | 4 | Instance mask, only low 8 bits used |
+| 80 | 4 | Hit-group offset, only low 24 bits used |
+| 84 | 4 | Instance flags (native bits 0-4) |
+| 88 | 4 | Persistent instance slot index |
+| 92 | 4 | Ordinary partition index, or `UINT32_MAX` for global |
+| 96 | 8 | BLAS/Cluster BLAS address; zero disables the slot |
+
+The Host encoder writes `transform.matrix[row][column] = glm[column][row]`;
+translation is the last column. The AABB is used only with
+`ENABLE_EXPLICIT_BOUNDING_BOX_NV` (bit 4); it describes transformed geometry
+before partition translation and must contain later replacement geometry.
+The Host encoder checks finite, ordered bounds when enabled. It rejects unknown
+flags, simultaneous FORCE_OPAQUE/FORCE_NO_OPAQUE and mask/SBT overflow. Disabled
+AABBs are ignored. Full 32-bit IDs, zero references and the global marker are
+preserved.
+
+| UPDATE_INSTANCE offset | Bytes | Native field |
+| ---: | ---: | --- |
+| 0 | 4 | Persistent instance slot index |
+| 4 | 4 | Hit-group offset, low 24 bits |
+| 8 | 8 | Replacement BLAS address, zero disables |
+
+UPDATE_INSTANCE cannot change transform, flags or partition membership. A slot
+previously assigned a BLAS through WRITE requires the explicit-bounding-box flag;
+a WRITE-disabled slot must be reenabled by WRITE. These are GPU history rules,
+not properties the Host encoder can check.
+
+| WRITE_PARTITION_TRANSLATION offset | Bytes | Native field |
+| ---: | ---: | --- |
+| 0 | 4 | Ordinary partition index |
+| 4 | 12 | Translation x, y, z |
+
+The target must have partition translation enabled during creation. Global
+instances are outside ordinary partitions and do not use their translations.
+
+Each optional CPU encoder rejects duplicate indices within its own record type;
+the outer encoder rejects duplicate operation types and more than three groups.
+The complete input is encoded before one upload. Empty spans are no-ops. These
+helpers do not access an owner or validate slot/partition capacity, occupancy,
+translation enablement, BLAS contents or previous GPU operations. Shader producers
+must enforce all those native constraints and remain within the saved creation
+capacities. Host records have no GPU ABI guarantee; use the published byte layout,
+not `sizeof(WriteInstanceRecord)` or raw GLM storage.
+
+[Native PTLAS command](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBuildPartitionedAccelerationStructuresNV.html)
+
 ## Buffer use and synchronization
 
 GPU-written input Buffers need `STORAGE_BUFFER` alongside
@@ -149,7 +226,7 @@ GPU-written input Buffers need `STORAGE_BUFFER` alongside
 this path. Callers provide adequate allocation size, address alignment,
 producer/consumer synchronization and resource lifetime.
 
-CLAS task/count producers synchronize with `ACCELERATION_STRUCTURE_BUILD` /
+CLAS and PTLAS task/count producers synchronize with `ACCELERATION_STRUCTURE_BUILD` /
 `INDIRECT_COMMAND_READ`. TLAS instance producers synchronize with
 `ACCELERATION_STRUCTURE_BUILD` / `SHADER_READ`. Builds introduce no implicit
 barrier or CPU inspection of GPU records. Native requirements:

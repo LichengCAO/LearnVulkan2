@@ -3,6 +3,7 @@
 #include "my_vulkan/render_context/device_context.h"
 #include "my_vulkan/resource/cluster_acceleration_structure.h"
 #include "my_vulkan/resource/acceleration_structure.h"
+#include "my_vulkan/resource/partitioned_acceleration_structure.h"
 #include "my_vulkan/resource/private/buffer_storage.h"
 #include "utility/task_scheduler.h"
 
@@ -25,7 +26,7 @@
 
 namespace
 {
-constexpr std::array kDeviceExtensions{
+constexpr std::array kClusterDeviceExtensions{
     VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
     VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
     VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME
@@ -115,6 +116,13 @@ class HeadlessDevice final
         return std::nullopt;
     }
 
+    auto _DeviceExtensions() const -> std::array<const char*, 3>
+    {
+        auto extensions = kClusterDeviceExtensions;
+        if (partitionedMode) extensions[2] = VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME;
+        return extensions;
+    }
+
     auto _GetExtensionRevision(VkPhysicalDevice candidate) const -> uint32_t
     {
         uint32_t count = 0;
@@ -124,22 +132,23 @@ class HeadlessDevice final
         CheckResult(instanceFunctions.vkEnumerateDeviceExtensionProperties(candidate, nullptr, &count, extensions.data()),
             "enumerating device extensions");
         uint32_t revision = 0;
-        for (const char* name : kDeviceExtensions)
+        for (const char* name : _DeviceExtensions())
         {
             auto entry = std::find_if(extensions.begin(), extensions.begin() + count,
                 [name](const VkExtensionProperties& extension) { return std::strcmp(extension.extensionName, name) == 0; });
             if (entry == extensions.begin() + count)
                 return 0;
-            if (std::strcmp(name, VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME) == 0)
+            if (std::strcmp(name, _DeviceExtensions()[2]) == 0)
                 revision = entry->specVersion;
         }
         return revision;
     }
 
-    void _SelectPhysicalDevice()
+    auto _SelectPhysicalDevice() -> bool
     {
         uint32_t count = 0;
         CheckResult(instanceFunctions.vkEnumeratePhysicalDevices(instance, &count, nullptr), "counting physical devices");
+        if (!count && partitionedMode) return false;
         CHECK_TRUE(count > 0, "CLAS GPU smoke found no Vulkan physical devices.");
         std::vector<VkPhysicalDevice> candidates(count);
         CheckResult(instanceFunctions.vkEnumeratePhysicalDevices(instance, &count, candidates.data()),
@@ -153,9 +162,11 @@ class HeadlessDevice final
                 continue;
             const uint32_t revision = _GetExtensionRevision(candidate);
             const auto family = _FindQueue(candidate);
-            if (revision < 2 || !family)
+            if (revision < (partitionedMode ? 1u : 2u) || !family)
                 continue;
 
+            VkPhysicalDevicePartitionedAccelerationStructureFeaturesNV partitioned{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PARTITIONED_ACCELERATION_STRUCTURE_FEATURES_NV};
             VkPhysicalDeviceClusterAccelerationStructureFeaturesNV cluster{
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV };
             VkPhysicalDeviceAccelerationStructureFeaturesKHR accel{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR };
@@ -165,17 +176,19 @@ class HeadlessDevice final
             features.pNext = &sync;
             sync.pNext = &address;
             address.pNext = &accel;
-            accel.pNext = &cluster;
+            accel.pNext = partitionedMode ? static_cast<void*>(&partitioned) : static_cast<void*>(&cluster);
             instanceFunctions.vkGetPhysicalDeviceFeatures2(candidate, &features);
-            if (sync.synchronization2 && address.bufferDeviceAddress && accel.accelerationStructure && cluster.clusterAccelerationStructure)
+            if (sync.synchronization2 && address.bufferDeviceAddress && accel.accelerationStructure &&
+                (partitionedMode ? partitioned.partitionedAccelerationStructure : cluster.clusterAccelerationStructure))
             {
                 physicalDevice = candidate;
                 properties = candidateProperties;
                 queueFamily = *family;
                 clusterRevision = revision;
-                return;
+                return true;
             }
         }
+        if (partitionedMode) return false;
         throw std::runtime_error(
             "CLAS GPU smoke requires Vulkan 1.3, a graphics and compute queue, synchronization2, buffer device addresses, "
             "acceleration structures and VK_NV_cluster_acceleration_structure revision 2 or newer.");
@@ -195,7 +208,8 @@ public:
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV };
     VolkInstanceTable instanceFunctions{};
     VolkDeviceTable deviceFunctions{};
-    HeadlessDevice() = default;
+    bool partitionedMode = false;
+    explicit HeadlessDevice(bool partitioned = false) : partitionedMode(partitioned) {}
     HeadlessDevice(const HeadlessDevice&) = delete;
     ~HeadlessDevice()
     {
@@ -205,7 +219,7 @@ public:
             instanceFunctions.vkDestroyInstance(instance, nullptr);
     }
 
-    void Create()
+    auto Create() -> bool
     {
         const auto createInstance = reinterpret_cast<PFN_vkCreateInstance>(vkGetInstanceProcAddr(nullptr, "vkCreateInstance"));
         CHECK_TRUE(createInstance, "CLAS GPU smoke could not load vkCreateInstance.");
@@ -218,24 +232,27 @@ public:
         CheckResult(createInstance(&instanceInfo, nullptr, &createdInstance), "creating a Vulkan 1.3 instance");
         instance = createdInstance;
         volkLoadInstanceTable(&instanceFunctions, instance);
-        _SelectPhysicalDevice();
+        if (!_SelectPhysicalDevice()) return false;
 
         VkPhysicalDeviceDriverProperties driver{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
         VkPhysicalDeviceProperties2 queried{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
         queried.pNext = &driver;
         driver.pNext = &accelerationStructureProperties;
-        accelerationStructureProperties.pNext = &clusterProperties;
+        accelerationStructureProperties.pNext = partitionedMode ? nullptr : &clusterProperties;
         instanceFunctions.vkGetPhysicalDeviceProperties2(physicalDevice, &queried);
         accelerationStructureProperties.pNext = nullptr;
-        std::cout << std::format("CLAS GPU smoke using {} (driver {}, CLAS revision {}).\n",
-            properties.deviceName, driver.driverInfo, clusterRevision);
+        std::cout << std::format("{} GPU smoke using {} (driver {}, extension revision {}).\n",
+            partitionedMode ? "PTLAS" : "CLAS", properties.deviceName, driver.driverInfo, clusterRevision);
 
+        VkPhysicalDevicePartitionedAccelerationStructureFeaturesNV partitioned{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PARTITIONED_ACCELERATION_STRUCTURE_FEATURES_NV};
+        partitioned.partitionedAccelerationStructure = VK_TRUE;
         VkPhysicalDeviceClusterAccelerationStructureFeaturesNV cluster{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV };
         cluster.clusterAccelerationStructure = VK_TRUE;
         VkPhysicalDeviceAccelerationStructureFeaturesKHR accel{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR };
         accel.accelerationStructure = VK_TRUE;
-        accel.pNext = &cluster;
+        accel.pNext = partitionedMode ? static_cast<void*>(&partitioned) : static_cast<void*>(&cluster);
         VkPhysicalDeviceBufferDeviceAddressFeatures address{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES };
         address.bufferDeviceAddress = VK_TRUE;
         address.pNext = &accel;
@@ -251,16 +268,19 @@ public:
         deviceInfo.pNext = &sync;
         deviceInfo.queueCreateInfoCount = 1;
         deviceInfo.pQueueCreateInfos = &queueInfo;
-        deviceInfo.enabledExtensionCount = static_cast<uint32_t>(kDeviceExtensions.size());
-        deviceInfo.ppEnabledExtensionNames = kDeviceExtensions.data();
+        const auto extensions = _DeviceExtensions();
+        deviceInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+        deviceInfo.ppEnabledExtensionNames = extensions.data();
         VkDevice createdDevice = VK_NULL_HANDLE;
         CheckResult(instanceFunctions.vkCreateDevice(physicalDevice, &deviceInfo, nullptr, &createdDevice), "creating a logical device");
         device = createdDevice;
         volkLoadDeviceTable(&deviceFunctions, device);
-        CHECK_TRUE(deviceFunctions.vkGetClusterAccelerationStructureBuildSizesNV &&
-            deviceFunctions.vkCmdBuildClusterAccelerationStructureIndirectNV,
+        CHECK_TRUE(partitionedMode ? (deviceFunctions.vkGetPartitionedAccelerationStructuresBuildSizesNV &&
+            deviceFunctions.vkCmdBuildPartitionedAccelerationStructuresNV) : (deviceFunctions.vkGetClusterAccelerationStructureBuildSizesNV &&
+            deviceFunctions.vkCmdBuildClusterAccelerationStructureIndirectNV),
             "CLAS GPU smoke could not resolve the enabled CLAS device commands.");
         deviceFunctions.vkGetDeviceQueue(device, queueFamily, 0, &queue);
+        return true;
     }
 };
 
@@ -347,6 +367,121 @@ void AppendBarrier(CommandBuffer& commands, PFN_vkCmdPipelineBarrier barrier,
     });
 }
 }
+
+// PTLAS reuses the headless allocation/submission fixture, with CLAS disabled.
+struct PartitionedAccelerationStructureGpuTestProbe
+{
+private:
+    static void _Submit(const HeadlessDevice& native, const CommandBuffer& commands)
+    {
+        commands._ValidateQueueCapabilities(QueueFamilyType::COMPUTE);
+        SmokeSubmission submission(native);
+        const auto command = submission.Begin();
+        for (const auto* recorded : commands.m_commands) recorded->Record(command);
+        submission.SubmitAndWait(command);
+    }
+public:
+    static void Build(const HeadlessDevice& native)
+    {
+        using Group = PartitionedTopLevelAccelStructOperationGroup;
+        constexpr auto stage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        constexpr auto read = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+        constexpr auto write = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        const auto barrier = native.deviceFunctions.vkCmdPipelineBarrier;
+        const std::array<float, 9> triangle{0, 0, 0, 1, 0, 0, 0, 1, 0};
+        auto vertices = MakeBuffer(sizeof(triangle), kBuildInputUsage, kHostMemory);
+        Buffer::UploadToDeviceInline(vertices, 0, triangle.data(), sizeof(triangle));
+        AccelStructTriangleGeometryLimits geometry;
+        geometry.SetMaxTriangleCount(1); geometry.SetMaxVertexCount(3);
+        BottomLevelAccelStructCreateInfo blasInfo; blasInfo.SetTriangles(std::span(&geometry, 1));
+        BottomLevelAccelStruct blas; blas.Create(blasInfo);
+        auto blasScratch = MakeBuffer(blas.GetSizesInfo().buildScratchBufferSize, kScratchUsage,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, blas.GetSizesInfo().scratchAlignment);
+        AccelStructTriangleBuildInfo triangleBuild;
+        triangleBuild.SetVertexBuffer(vertices.GetDeviceAddress(), 3); triangleBuild.SetTriangleCount(1);
+        BuildAccelStructCommandInput blasBuild; blasBuild.SetTrianglesTarget(blas, std::span(&triangleBuild, 1));
+        blasBuild.SetScratchAddress(blasScratch.GetDeviceAddress());
+
+        PartitionedTopLevelAccelStructCreateInfo info;
+        info.SetMaxInstanceCount(2); info.SetPartitionCount(2); info.SetMaxInstanceCountPerPartition(2);
+        info.CustomizeMaxInstanceCountInGlobalPartition(2); info.CustomizePartitionTranslation(true);
+        info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
+        PartitionedTopLevelAccelStruct a, b; a.Create(info); b.Create(info);
+        const auto& sizes = a.GetSizesInfo();
+        auto scratch = sizes.buildScratchBufferSize ? MakeBuffer(sizes.buildScratchBufferSize, kScratchUsage,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, sizes.scratchAlignment) : Buffer{};
+        auto writes = MakeBuffer(208, kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        auto updates = MakeBuffer(32, kBuildInputUsage, kHostMemory);
+        auto translations = MakeBuffer(32, kBuildInputUsage, kHostMemory);
+        auto operations = MakeBuffer(72, kBuildInputUsage, kHostMemory);
+        auto count = MakeBuffer(4, kBuildInputUsage, kHostMemory);
+        std::array<Group::WriteInstanceRecord, 2> records;
+        for (uint32_t i = 0; i < records.size(); ++i)
+        {
+            records[i].instanceIndex = i;
+            records[i].instanceCustomIndex = 0xFFFF0000 + i;
+            records[i].accelStructReference = blas.GetDeviceAddress();
+            records[i].flags = VK_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCE_FLAG_ENABLE_EXPLICIT_BOUNDING_BOX_NV;
+            records[i].explicitAABB = {-10, -10, -10, 10, 10, 10};
+        }
+        records[1].partitionIndex = VK_PARTITIONED_ACCELERATION_STRUCTURE_PARTITION_INDEX_GLOBAL_NV;
+        Group::CommitToDeviceInline(records, writes, 0);
+        const std::array<Group::WritePartitionTranslationRecord, 2> initialTranslations{{{0, {0, 0, 0}}, {1, {0, 0, 0}}}};
+        Group::CommitToDeviceInline(initialTranslations, translations, 0);
+        std::array<Group, 2> initialGroups;
+        initialGroups[0].SetWriteInstances(writes.GetDeviceAddress(), 2);
+        initialGroups[1].SetWritePartitionTranslations(translations.GetDeviceAddress(), 2);
+        Group::CommitToDeviceInline(initialGroups, operations, 0);
+        uint32_t groupCount = 2;
+        Buffer::UploadToDeviceInline(count, 0, &groupCount, sizeof(groupCount));
+        const auto append = [&](CommandBuffer& commands, const PartitionedTopLevelAccelStruct& target,
+            const PartitionedTopLevelAccelStruct* source)
+        {
+            BuildPartitionedTopLevelAccelStructCommandInput input;
+            input.SetTarget(target, operations.GetDeviceAddress(), count.GetDeviceAddress());
+            input.SetScratchAddress(scratch.IsValid() ? scratch.GetDeviceAddress() : 0);
+            if (source) input.CustomizeSourceAccelStruct(*source);
+            commands.BuildPartitionedTopLevelAccelStruct(input);
+        };
+        CommandBuffer initial;
+        AppendBarrier(initial, barrier, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_WRITE_BIT,
+            stage, read | VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+        initial.BuildAccelerationStructuresKHR(std::span(&blasBuild, 1));
+        AppendBarrier(initial, barrier, stage, write, stage, read | write);
+        append(initial, a, nullptr);
+        _Submit(native, initial);
+
+        const auto submitChanges = [&](std::span<const Group> groups, const PartitionedTopLevelAccelStruct& target,
+            const PartitionedTopLevelAccelStruct& source)
+        {
+            Group::CommitToDeviceInline(groups, operations, 0);
+            const auto actual = static_cast<uint32_t>(groups.size());
+            Buffer::UploadToDeviceInline(count, 0, &actual, sizeof(actual));
+            CommandBuffer commands;
+            AppendBarrier(commands, barrier, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_WRITE_BIT,
+                stage, VK_ACCESS_INDIRECT_COMMAND_READ_BIT | read);
+            AppendBarrier(commands, barrier, stage, write | read, stage, write | read);
+            append(commands, target, &source);
+            _Submit(native, commands);
+        };
+        records[0].partitionIndex = VK_PARTITIONED_ACCELERATION_STRUCTURE_PARTITION_INDEX_GLOBAL_NV;
+        records[1].partitionIndex = 1;
+        Group::CommitToDeviceInline(records, writes, 0);
+        submitChanges(std::span(initialGroups).first(1), a, a); // Ordinary/global migration.
+        records[1].transform[3][0] = 2;
+        Group::CommitToDeviceInline(records, writes, 0);
+        submitChanges(std::span(initialGroups).first(1), a, a); // In-place transform modification.
+        std::array<Group::UpdateInstanceRecord, 2> replacements{{{0, blas.GetDeviceAddress(), 0}, {0, blas.GetDeviceAddress(), 1}}};
+        Group::CommitToDeviceInline(replacements, updates, 0);
+        Group update; update.SetUpdateInstances(updates.GetDeviceAddress(), 2);
+        submitChanges(std::span(&update, 1), b, a); // Copy persistent contents and replace references.
+        const std::array<Group::WritePartitionTranslationRecord, 1> translated{{{1, {3, 4, 5}}}};
+        Group::CommitToDeviceInline(translated, translations, 0);
+        Group translation; translation.SetWritePartitionTranslations(translations.GetDeviceAddress(), 1);
+        submitChanges(std::span(&translation, 1), b, b);
+        std::cout << "Completed PTLAS initial build, ordinary/global migration, in-place writes, distinct source/destination and translation.\n";
+    }
+};
 
 struct ClusterAccelerationStructureGpuTestProbe
 {
@@ -990,6 +1125,13 @@ public:
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkResetFences);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkUnmapMemory);
         CLAS_BIND_VK_FUNCTION(deviceFunctions, vkWaitForFences);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkGetPartitionedAccelerationStructuresBuildSizesNV);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkCmdBuildPartitionedAccelerationStructuresNV);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkGetAccelerationStructureBuildSizesKHR);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkCreateAccelerationStructureKHR);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkDestroyAccelerationStructureKHR);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkGetAccelerationStructureDeviceAddressKHR);
+        CLAS_BIND_VK_FUNCTION(deviceFunctions, vkCmdBuildAccelerationStructuresKHR);
 #undef CLAS_BIND_VK_FUNCTION
 
         const ScopedValue singleton(MyDevice::s_uptrInstance, std::make_unique<MyDevice>());
@@ -1003,7 +1145,8 @@ public:
         device.m_vkComputeQueue = native.queue;
         device.m_vkTransferQueue = native.queue;
         device.m_cachedPhysicalDeviceProperties = native.properties;
-        device.m_clusterAccelerationStructureEnabled = true;
+        device.m_clusterAccelerationStructureEnabled = !native.partitionedMode;
+        device.m_partitionedAccelerationStructureEnabled = native.partitionedMode;
         device._CreateMemoryAllocator();
         const auto destroyInlineExecution = [](MyDevice* owner) { owner->_DestroyInlineExecution(); };
         const std::unique_ptr<MyDevice, decltype(destroyInlineExecution)> inlineExecutionCleanup(&device, destroyInlineExecution);
@@ -1011,6 +1154,11 @@ public:
         scheduler.Create();
         const auto shutdownScheduler = [](MyTaskScheduler* owner) { owner->Destroy(); };
         const std::unique_ptr<MyTaskScheduler, decltype(shutdownScheduler)> schedulerCleanup(&scheduler, shutdownScheduler);
+        if (native.partitionedMode)
+        {
+            PartitionedAccelerationStructureGpuTestProbe::Build(native);
+            return;
+        }
         _CheckInlineTransfers();
         _BuildAndReadBack(native, false, false);
         _BuildAndReadBack(native, true, false);
@@ -1044,4 +1192,32 @@ void RunClasGpuTests()
     headless.Create();
     ClusterAccelerationStructureGpuTestProbe::Run(headless);
     std::cout << "CLAS GPU smoke passed.\n";
+}
+
+
+void RunPartitionedAccelerationStructureGpuTests()
+{
+    bool enabled = false;
+#if defined(_WIN32)
+    char* value = nullptr;
+    size_t length = 0;
+    CHECK_TRUE(_dupenv_s(&value, &length, "LEARN_VULKAN_PTLAS_GPU_TESTS") == 0);
+    const std::unique_ptr<char, decltype(&std::free)> owner(value, &std::free);
+    enabled = value && std::string_view(value) == "1";
+#else
+    const char* value = std::getenv("LEARN_VULKAN_PTLAS_GPU_TESTS");
+    enabled = value && std::string_view(value) == "1";
+#endif
+    if (!enabled) return;
+    const VulkanLoader loader;
+    const ScopedValue instanceProc(vkGetInstanceProcAddr, loader.GetInstanceProcAddr());
+    const ScopedValue deviceProc(vkGetDeviceProcAddr, PFN_vkGetDeviceProcAddr{});
+    HeadlessDevice headless(true);
+    if (!headless.Create())
+    {
+        std::cout << "PTLAS GPU smoke SKIPPED: no device supports the required PTLAS feature and Vulkan 1.3 build dependencies.\n";
+        return;
+    }
+    ClusterAccelerationStructureGpuTestProbe::Run(headless);
+    std::cout << "PTLAS GPU smoke passed (build completion only; traversal is not tested).\n";
 }

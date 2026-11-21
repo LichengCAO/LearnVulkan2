@@ -256,6 +256,62 @@ automatic retention, internal lock or GPU wait is introduced.
 requires no owner or Device. [GPU input layout](acceleration_structure_gpu_layout.md)
 describes the transform rows, packed words and borrowed BLAS address.
 
+## Partitioned TLAS ownership
+
+`PartitionedTopLevelAccelStruct` owns one device-local Buffer and its allocation,
+with a 256-byte aligned address and no KHR AS handle. Synchronous public `Create`
+queries sizes and allocates empty storage; it never uploads, builds, submits or
+waits. Creation requires positive slot, ordinary-partition and per-partition
+capacities; global capacity defaults to zero. Partition translation and build
+flags are saved for identical size-query/build inputs. Native pNext nodes are
+rebuilt locally and never retained. Failure leaves an empty, retryable owner;
+duplicate creation preserves the existing owner. Getters read only saved Host
+metadata; valid storage does not mean GPU-ready contents.
+
+The owner is RefCounted, noncopyable/nonmovable, has a noexcept destructor and no
+public Destroy/Reset. Buffer RAII releases native storage/allocation synchronously
+using saved creation dependencies, without GPU waits or a MyDevice lookup. Finish
+all GPU uses before final release. Independent owners may create/release
+concurrently; callers exclude conflicts on one owner and keep Device, allocator
+and dispatch alive/stable through final release. Device teardown/recreation is
+exclusive relative to these operations. PTLAS feature negotiation is independent
+of CLAS; unsupported hardware rejects PTLAS creation without preventing ordinary
+Device initialization.
+
+CommandInput transactionally snapshots target capacities, options, sizes and
+borrowed addresses together with the outer operation/count input. Reselection
+clears source and preserves scratch; failed setters preserve the old snapshot.
+Source selection follows target selection and requires exact creation compatibility.
+Copies/moves hold no strong resource references; assignment from `{}` clears the
+input. A command owns the appended Host snapshot and no longer accesses Input or
+owner. Recording only constructs stack-local native parameters and issues one
+native build. It performs no size query, upload, allocation, submit or wait.
+
+All PTLAS builds, including source builds, use buildScratchBufferSize; KHR UPDATE
+scratch is not used. Outer input storage always provides 72 accessible bytes,
+with an independent required GPU uint32_t count bounded by three. Host append
+checks range alignment, overflow and known overlaps; an identical source and
+destination address allows in-place modification. A distinct source remains
+unchanged and its persistent contents carry forward. Builds require a
+compute-capable queue outside rendering scopes, without CLAS pipeline opt-in.
+
+The four static CommitToDeviceInline helpers are optional CPU encoders/uploads,
+independent of any owner. Empty spans are no-ops; invalid encodings cannot modify
+the destination. Coherent Host memory uses mapped copy; other memory follows the
+Buffer staged-transfer contract and requires transfer-destination usage. These
+uploads execute no PTLAS build. Shaders can instead produce every record/count
+using the [GPU ABI](acceleration_structure_gpu_layout.md#partitioned-tlas).
+
+Callers preserve owners, input/count/scratch Buffers and all referenced BLAS
+through GPU use; commands retain none of them. The producer enforces actual
+indices, partition occupancy, translation enablement, unique operations/indices
+and UPDATE_INSTANCE history. Callers synchronize task/count producers, source
+reads, AS/scratch writes, consecutive builds and later traversal, including queue
+ownership transfers. Host code neither reads GPU arrays nor infers history or
+hidden reference dependencies. No CPU instance mirror, dirty list or ready flag
+is maintained. The optional smoke checks construction and completion without
+claiming traversal coverage.
+
 ## Cluster acceleration structure batches
 
 For implicit creation, `ClusterLevelAccelStructBatch` and

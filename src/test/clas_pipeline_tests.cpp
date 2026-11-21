@@ -55,6 +55,11 @@ struct ClasPipelineTestProbe
         return program.m_allowClusterAccelerationStructure;
     }
 
+    static void AppendPartitionedBuild(CommandBuffer& stream, const BuildPartitionedAccelerationStructuresNVCommand& build)
+    {
+        stream._AppendCommand(build);
+    }
+
     static void AppendClusterBuild(CommandBuffer& stream, const BuildClusterAccelerationStructuresNVCommand& build)
     {
         stream._AppendCommand(build);
@@ -282,6 +287,12 @@ void TestClusterBuildValidatesThePipelineBoundAtItsPosition(
     reboundBeforeBuild.BindRayTracingProgram(clusterProgram);
     ClasPipelineTestProbe::AppendClusterBuild(reboundBeforeBuild, clusterBuild);
     ClasPipelineTestProbe::ValidateComputeQueue(reboundBeforeBuild);
+
+    const BuildPartitionedAccelerationStructuresNVCommand partitionedBuild{};
+    CommandBuffer partitioned;
+    partitioned.BindRayTracingProgram(regularProgram);
+    ClasPipelineTestProbe::AppendPartitionedBuild(partitioned, partitionedBuild);
+    ClasPipelineTestProbe::ValidateComputeQueue(partitioned);
 
     CommandBuffer regularAfterBuild;
     ClasPipelineTestProbe::AppendClusterBuild(regularAfterBuild, clusterBuild);

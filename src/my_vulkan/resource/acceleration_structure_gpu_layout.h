@@ -85,6 +85,36 @@ namespace AccelStructGpuLayout
         inline constexpr uint32_t PackedReferenceStride = 8;
     }
 
+    namespace Partitioned
+    {
+        inline constexpr uint32_t MaxOperationGroupCount = 3;
+        inline constexpr VkDeviceSize OperationBufferSize = 72;
+        inline constexpr VkDeviceSize StorageAlignment = 256;
+        namespace Operation
+        {
+            inline constexpr AccelStructBuildInfoLayout Layout{24, 8};
+            inline constexpr uint32_t TypeOffset = 0, CountOffset = 4, AddressOffset = 8, StrideOffset = 16;
+        }
+        namespace WriteInstance
+        {
+            inline constexpr AccelStructBuildInfoLayout Layout{104, 8};
+            inline constexpr uint32_t TransformOffset = 0, TransformRowStride = 16;
+            inline constexpr uint32_t BoundingBoxOffset = 48, InstanceIdOffset = 72, MaskOffset = 76;
+            inline constexpr uint32_t SbtOffset = 80, FlagsOffset = 84, InstanceIndexOffset = 88;
+            inline constexpr uint32_t PartitionIndexOffset = 92, ReferenceOffset = 96;
+        }
+        namespace UpdateInstance
+        {
+            inline constexpr AccelStructBuildInfoLayout Layout{16, 8};
+            inline constexpr uint32_t InstanceIndexOffset = 0, SbtOffset = 4, ReferenceOffset = 8;
+        }
+        namespace Translation
+        {
+            inline constexpr AccelStructBuildInfoLayout Layout{16, 4};
+            inline constexpr uint32_t PartitionIndexOffset = 0, TranslationOffset = 4;
+        }
+    }
+
     namespace Tlas
     {
         // A packed VkAccelerationStructureInstanceKHR array (arrayOfPointers = VK_FALSE).
@@ -103,6 +133,28 @@ namespace AccelStructGpuLayout
     }
 
     static_assert(sizeof(VkDeviceAddress) == AddressSize && sizeof(uint32_t) == CountSize);
+    static_assert(sizeof(VkBuildPartitionedAccelerationStructureIndirectCommandNV) == Partitioned::Operation::Layout.recordStride &&
+        offsetof(VkBuildPartitionedAccelerationStructureIndirectCommandNV, opType) == Partitioned::Operation::TypeOffset &&
+        offsetof(VkBuildPartitionedAccelerationStructureIndirectCommandNV, argCount) == Partitioned::Operation::CountOffset &&
+        offsetof(VkBuildPartitionedAccelerationStructureIndirectCommandNV, argData) == Partitioned::Operation::AddressOffset &&
+        offsetof(VkStridedDeviceAddressNV, strideInBytes) + Partitioned::Operation::AddressOffset == Partitioned::Operation::StrideOffset);
+    static_assert(sizeof(VkPartitionedAccelerationStructureWriteInstanceDataNV) == Partitioned::WriteInstance::Layout.recordStride &&
+        offsetof(VkPartitionedAccelerationStructureWriteInstanceDataNV, transform) == Partitioned::WriteInstance::TransformOffset &&
+        offsetof(VkPartitionedAccelerationStructureWriteInstanceDataNV, explicitAABB) == Partitioned::WriteInstance::BoundingBoxOffset &&
+        offsetof(VkPartitionedAccelerationStructureWriteInstanceDataNV, instanceID) == Partitioned::WriteInstance::InstanceIdOffset &&
+        offsetof(VkPartitionedAccelerationStructureWriteInstanceDataNV, instanceMask) == Partitioned::WriteInstance::MaskOffset &&
+        offsetof(VkPartitionedAccelerationStructureWriteInstanceDataNV, instanceContributionToHitGroupIndex) == Partitioned::WriteInstance::SbtOffset &&
+        offsetof(VkPartitionedAccelerationStructureWriteInstanceDataNV, instanceFlags) == Partitioned::WriteInstance::FlagsOffset &&
+        offsetof(VkPartitionedAccelerationStructureWriteInstanceDataNV, instanceIndex) == Partitioned::WriteInstance::InstanceIndexOffset &&
+        offsetof(VkPartitionedAccelerationStructureWriteInstanceDataNV, partitionIndex) == Partitioned::WriteInstance::PartitionIndexOffset &&
+        offsetof(VkPartitionedAccelerationStructureWriteInstanceDataNV, accelerationStructure) == Partitioned::WriteInstance::ReferenceOffset);
+    static_assert(sizeof(VkPartitionedAccelerationStructureUpdateInstanceDataNV) == Partitioned::UpdateInstance::Layout.recordStride &&
+        offsetof(VkPartitionedAccelerationStructureUpdateInstanceDataNV, instanceIndex) == Partitioned::UpdateInstance::InstanceIndexOffset &&
+        offsetof(VkPartitionedAccelerationStructureUpdateInstanceDataNV, instanceContributionToHitGroupIndex) == Partitioned::UpdateInstance::SbtOffset &&
+        offsetof(VkPartitionedAccelerationStructureUpdateInstanceDataNV, accelerationStructure) == Partitioned::UpdateInstance::ReferenceOffset);
+    static_assert(sizeof(VkPartitionedAccelerationStructureWritePartitionTranslationDataNV) == Partitioned::Translation::Layout.recordStride &&
+        offsetof(VkPartitionedAccelerationStructureWritePartitionTranslationDataNV, partitionIndex) == Partitioned::Translation::PartitionIndexOffset &&
+        offsetof(VkPartitionedAccelerationStructureWritePartitionTranslationDataNV, partitionTranslation) == Partitioned::Translation::TranslationOffset);
     static_assert(sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV) == Direct::Layout.recordStride);
     static_assert(offsetof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV, clusterID) == Direct::ClusterIdOffset &&
         offsetof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV, clusterFlags) == Direct::ClusterFlagsOffset &&

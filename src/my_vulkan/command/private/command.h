@@ -2,8 +2,11 @@
 #include "common.h"
 #include "resource/private/vulkan_handle_resource.h"
 #include "pipeline/private/render_target_description.h"
+#include "resource/private/partitioned_acceleration_structure_build.h"
 
 class CommandBuffer;
+
+class BuildPartitionedAccelerationStructuresNVCommand;
 
 class Command
 {
@@ -488,5 +491,12 @@ public:
     uint32_t width = 1;
     uint32_t height = 1;
     uint32_t depth = 1;
+    void Record(VkCommandBuffer inVkCommandBuffer) const override;
+};
+
+class BuildPartitionedAccelerationStructuresNVCommand final : public Command
+{
+public:
+    VulkanDetail::PartitionedBuildSnapshot snapshot;
     void Record(VkCommandBuffer inVkCommandBuffer) const override;
 };

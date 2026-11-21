@@ -7,10 +7,10 @@ Public headers live in `src/my_vulkan/resource/`:
 | Header | Types and purpose |
 | --- | --- |
 | `acceleration_structure_types.h` | `VkAccelStructBuildInfo` for the public low-level KHR batch command and `AccelStructSizesInfo` for caller-owned batch task/scratch allocation. |
-| `acceleration_structure_gpu_layout.h` | GPU record strides, address alignments, field offsets and bit packing for CLAS tasks and packed TLAS instances. |
+| `acceleration_structure_gpu_layout.h` | GPU record strides, address alignments, field offsets and bit packing for CLAS, TLAS and PTLAS inputs. |
 | `acceleration_structure.h` | Ordinary BLAS/TLAS owners, geometry and instance descriptions, and their CreateInfo types. |
 | `cluster_acceleration_structure.h` | CLAS templates, CLAS/Cluster BLAS batch owners and CreateInfo types, CPU task descriptions, and public indirect-build arguments. |
-| `partitioned_acceleration_structure.h` | PTLAS owner, CreateInfo, operation records and command input declarations; implementation is pending. |
+| `partitioned_acceleration_structure.h` | PTLAS owner, CreateInfo, operation records, optional CPU encoders and GPU command input. |
 
 Include the ordinary, cluster or partitioned header explicitly for the path being used.
 `ClusterBottomLevelAccelStructBatch` and its associated CreateInfo/BuildInfo types
@@ -18,15 +18,40 @@ specifically build BLAS from CLAS references. `ClusterLevelAccelStructBuildLimit
 and `ClusterBottomLevelAccelStructBuildLimits` describe build budgets and formats;
 `AccelStructBuildInfoLayout` describes GPU record byte layout.
 
-The PTLAS declarations distinguish a `PartitionedTopLevelAccelStructOperationGroup`
+The PTLAS interface distinguishes a `PartitionedTopLevelAccelStructOperationGroup`
 from its inner `WriteInstanceRecord`, `UpdateInstanceRecord` and
 `WritePartitionTranslationRecord` arrays. `SetMaxInstanceCount` configures slot
-capacity; `CustomizeMaxOperationGroupCount` configures the outer group-array capacity.
+capacity. The outer operation array supports at most three groups, one each for
+WRITE_INSTANCE, UPDATE_INSTANCE and WRITE_PARTITION_TRANSLATION. It has no
+configurable capacity in CreateInfo or CommandInput.
+PTLAS `GetSizesInfo().buildInfoBufferSize` is a fixed 72-byte allocation
+budget for three 24-byte native operation records; it is independent of
+the native AS/scratch size query. Callers allocate inner record arrays separately
+using their record types' `GetBuildInfoLayout()`.
+The GPU count specifies the actual number of outer groups. Its producer keeps
+the count within three and the available array entries, and emits each operation
+type at most once. Host code neither reads back nor clamps the count. Each group's
+inner record count is independent of the number of outer groups.
+
+PTLAS CreateInfo exposes `CustomizePartitionTranslation(bool)`, defaulting to
+`false`. Enabling it requires extra storage for untranslated instance transforms,
+so it belongs to creation configuration. The creation size query and subsequent
+builds must both chain `VkPartitionedAccelerationStructureFlagsNV` through
+`VkPartitionedAccelerationStructureInstancesInputNV::pNext` with the same saved
+`enablePartitionTranslation` value. Native chain pointers must be reconstructed
+from owned values rather than retained from the CreateInfo. Source compatibility
+also includes this setting.
+`WritePartitionTranslationRecord` and `SetWritePartitionTranslations()` require
+an eventual target created with translation enabled. Encoding/uploading records
+does not enable translation or apply it; the explicit GPU build consumes them.
+PTLAS creation saves this setting and commands rebuild the native chain from the saved values.
 
 `resource/private/` contains the implementations, native AS storage owner, and
 `cluster_acceleration_structure_build.h` with the internal `ClusterBuildAddresses`
 value snapshot shared with command recording. It is included by the cluster
 header to store snapshots by value; callers do not construct or use it directly.
+`partitioned_acceleration_structure_build.h` similarly holds the pointer-free
+PTLAS configuration and borrowed build snapshot.
 Single-implementation helpers remain in anonymous namespaces in the `.cpp` files.
 
 Regression sources and test fixtures live in `src/test/`; `main.cpp` is the
@@ -535,4 +560,143 @@ GPU-sized allocations and consumes the resulting CLAS in a dependent BLAS build.
 $env:LEARN_VULKAN_CLAS_GPU_TESTS = '1'
 ctest --test-dir build -C Debug --output-on-failure -V -R '^learn_vulkan_tests$'
 Remove-Item Env:LEARN_VULKAN_CLAS_GPU_TESTS
+```
+
+
+## Partitioned TLAS
+
+PTLAS support is enabled independently of CLAS when the Device supports
+`VK_NV_partitioned_acceleration_structure` and its feature. An unsupported device
+can still initialize; PTLAS `Create` rejects without allocating storage. This
+path does not add descriptors, pipeline binding, traversal or an application task
+producer shader.
+
+`PartitionedTopLevelAccelStruct::Create` queries sizes and allocates only a
+Device-local Buffer with `ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+SHADER_DEVICE_ADDRESS_BIT`, aligned to 256 bytes. It does not create a KHR AS
+handle, upload records, build, submit or wait. All getters read saved Host data;
+`IsValid` means allocated storage. Failed creation leaves the owner empty and
+retryable. The owner is noncopyable/nonmovable and releases its Buffer through
+RAII, synchronously without a GPU wait.
+
+```cpp
+PartitionedTopLevelAccelStructCreateInfo info;
+info.SetMaxInstanceCount(1024);                 // Persistent instance slots; required > 0.
+info.SetPartitionCount(16);                    // Ordinary partitions; required > 0.
+info.SetMaxInstanceCountPerPartition(128);      // Each ordinary partition; required > 0.
+info.CustomizeMaxInstanceCountInGlobalPartition(32); // Optional, default 0.
+info.CustomizePartitionTranslation(true);      // Optional, default false.
+info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
+PartitionedTopLevelAccelStruct ptlas;
+ptlas.Create(info);
+const auto sizes = ptlas.GetSizesInfo();
+```
+
+The number of ordinary partitions plus global instance capacity must fit the
+Device's `maxPartitionCount`. AS and scratch sizes must fit both maximum Buffer
+and allocation sizes. `sizes.buildScratchBufferSize` is used for **every** PTLAS
+build, including builds with a source. `updateScratchBufferSize` is zero because
+PTLAS does not use the KHR UPDATE scratch requirement. AS/scratch alignment is
+256. `buildInfoBufferSize` is always 72 for the outer table; this value is
+independent of the native size query and does not cover inner records or count.
+
+Allocate a 72-byte outer operation Buffer, a separate four-byte GPU `uint32_t`
+count and the inner record arrays. The count is required even for zero groups.
+Input Buffers need `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+SHADER_DEVICE_ADDRESS_BIT`; shader producers also need `STORAGE_BUFFER_BIT`.
+Scratch uses `STORAGE_BUFFER_BIT | SHADER_DEVICE_ADDRESS_BIT`. Record arrays and
+outer table may be entirely GPU-produced. The optional CPU upload is separate:
+
+```cpp
+using Group = PartitionedTopLevelAccelStructOperationGroup;
+std::array<Group::WriteInstanceRecord, 2> instances;
+instances[0].instanceIndex = 0;
+instances[0].partitionIndex = 2;                // An ordinary partition.
+instances[0].accelStructReference = blasAddress;
+instances[1].instanceIndex = 1;
+instances[1].partitionIndex = VK_PARTITIONED_ACCELERATION_STRUCTURE_PARTITION_INDEX_GLOBAL_NV;
+instances[1].accelStructReference = blasAddress; // The same API selects global.
+Group::CommitToDeviceInline(instances, instanceRecords, 0);
+
+Group group;
+group.SetWriteInstances(instanceRecords.GetDeviceAddress(), 2);
+Group::CommitToDeviceInline(std::span(&group, 1), operationGroups, 0);
+const uint32_t groupCount = 1;
+Buffer::UploadToDeviceInline(operationCount, 0, &groupCount, sizeof(groupCount));
+
+BuildPartitionedTopLevelAccelStructCommandInput build;
+build.SetTarget(ptlas, operationGroups.GetDeviceAddress(), operationCount.GetDeviceAddress());
+build.SetScratchAddress(sizes.buildScratchBufferSize ? scratch.GetDeviceAddress() : 0);
+commands.BuildPartitionedTopLevelAccelStruct(build);
+```
+
+Here `instanceRecords`, `operationGroups`, `operationCount` and `scratch` are
+caller-owned Buffers allocated from the published layouts/requirements; uploads
+do not record the build or supply its synchronization. CPU descriptions are
+encoded into native layouts rather than copied as GLM structures. Encoding
+validates the whole array before one upload, so an invalid later element leaves
+the destination unchanged. Empty spans are no-ops even with an empty Buffer.
+Coherent Host memory uses a mapped copy; other memory uses Buffer's synchronous
+staged-transfer path and requires `TRANSFER_DST_BIT`. Outer upload validates
+that all 72 bytes are accessible even when only a prefix is uploaded. Uploads
+never execute a PTLAS build. See [GPU ABI](acceleration_structure_gpu_layout.md#partitioned-tlas)
+for field offsets and producer constraints.
+
+`SetTarget` validates a created owner and the outer/count address ranges,
+snapshots capacities/options/sizes/addresses, clears source and preserves scratch.
+Failure preserves its old description. Call `CustomizeSourceAccelStruct(source)`
+after target selection to modify persistent contents. Source and destination
+must have identical capacities, build flags and translation setting; source may
+be the target itself. A distinct source remains unchanged, while its persistent
+contents carry into the destination. The caller must have built that source and
+synchronized its writes. Use WRITE_INSTANCE to move an existing slot between
+ordinary/global partitions or change its transform. UPDATE_INSTANCE only changes
+BLAS/SBT fields and has additional history restrictions below.
+
+CommandInput copies/moves retain no resource references. Assign `build = {};`
+to clear it, including scratch; no Reset is provided. Appending validates aligned,
+non-overflowing AS, scratch, 72-byte outer and four-byte count ranges, rejecting
+known overlap except an in-place source/destination. Each call snapshots one
+native PTLAS command; later changes/destruction of the Input do not change it.
+Recording only constructs local native parameters and invokes Vulkan, without
+queries, uploads, allocation, submission or waits. Builds must be outside any
+rendering scope on a compute-capable queue. CLAS ray-pipeline opt-in checks do
+not apply to PTLAS. PTLAS commands support stream movement, merge and splitting.
+
+The producer guarantees actual slot and partition indices, ordinary/global
+occupancy, unique indices per operation type, translation enablement, counts at
+most three and unique outer operation types. The global sentinel is `UINT32_MAX`
+and does not increase the ordinary partition count. `instanceCustomIndex` is a
+full 32-bit PTLAS instance ID; mask and SBT offset are limited to 8 and 24 bits.
+A zero BLAS reference disables a slot. A slot disabled through WRITE must be
+reenabled through WRITE. UPDATE of a slot assigned a BLAS through WRITE requires
+that slot's explicit-bounding-box flag, and the stored box must contain any
+replacement geometry. Host encoders do not validate target capacities, GPU
+history or indirect BLAS dependencies. Explicit AABBs are transformed geometry
+bounds before partition translation. Translation records require creation with
+translation enabled; global instances do not receive ordinary-partition
+translation.
+
+Synchronize task/count writes with `ACCELERATION_STRUCTURE_BUILD` /
+`INDIRECT_COMMAND_READ`; synchronize source/destination and scratch access with
+AS build read/write access, including consecutive builds and scratch reuse.
+Before traversal, make the resulting AS writes visible to the consuming shader
+stage. Keep owners, input/count/scratch Buffers and referenced BLAS storage alive
+through their GPU uses. The RHI inserts no implicit barriers, queue transfer or
+resource retention and does not inspect GPU arrays or infer build history.
+
+Independent owners may create and release concurrently after Device startup;
+exclude conflicting access to the same owner, mutable CreateInfo or CommandInput.
+Keep Device/allocator/dispatch stable through final release and complete GPU uses
+first. See [PTLAS lifetime](resource_lifetimes.md#partitioned-tlas-ownership).
+
+An independent opt-in smoke builds a real triangle BLAS and executes initial
+PTLAS construction, ordinary/global migration, in-place writes, reference updates
+with distinct source/destination, and partition translation. It waits for each
+submission and exercises staged CPU record uploads, without enabling CLAS. It
+checks completion only, not traversal results. Unsupported devices explicitly
+print `SKIPPED`.
+
+```powershell
+cmake -E env LEARN_VULKAN_PTLAS_GPU_TESTS=1 ./bin/learn_vulkan.exe
 ```

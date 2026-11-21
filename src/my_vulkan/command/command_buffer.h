@@ -38,6 +38,8 @@ class CommandBuffer final
     friend struct ResourceSubmissionTestProbe;
     friend struct ClusterAccelerationStructureGpuTestProbe;
     friend struct ClasPipelineTestProbe;
+    friend struct PartitionedAccelerationStructureTestProbe;
+    friend struct PartitionedAccelerationStructureGpuTestProbe;
 
 private:
     struct LegacyRenderPassState final
@@ -57,6 +59,7 @@ private:
     bool m_hasRenderingCommands = false;
     bool m_hasProgramBindings = false;
     bool m_hasClusterBuilds = false;
+    bool m_hasPartitionedBuilds = false;
     bool m_requiresSingleVkCommandBuffer = false;
     GraphicsShaderProgram* m_graphicsProgram = nullptr;
     ComputeShaderProgram* m_computeProgram = nullptr;

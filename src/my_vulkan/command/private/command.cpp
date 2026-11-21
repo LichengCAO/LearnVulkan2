@@ -218,3 +218,17 @@ void CopyAccelerationStructureKHRCommand::Record(VkCommandBuffer inVkCommandBuff
     info.mode = m_parameters.mode;
     vkCmdCopyAccelerationStructureKHR(inVkCommandBuffer, &info);
 }
+
+void BuildPartitionedAccelerationStructuresNVCommand::Record(VkCommandBuffer commandBuffer) const
+{
+    CHECK_TRUE(commandBuffer && vkCmdBuildPartitionedAccelerationStructuresNV, "PTLAS build entrypoint is unavailable!");
+    VkPartitionedAccelerationStructureFlagsNV flags{};
+    VkBuildPartitionedAccelerationStructureInfoNV info{VK_STRUCTURE_TYPE_BUILD_PARTITIONED_ACCELERATION_STRUCTURE_INFO_NV};
+    info.input = snapshot.configuration.MakeInput(flags);
+    info.srcAccelerationStructureData = snapshot.source;
+    info.dstAccelerationStructureData = snapshot.target;
+    info.scratchData = snapshot.scratch;
+    info.srcInfos = snapshot.arguments;
+    info.srcInfosCount = snapshot.count;
+    vkCmdBuildPartitionedAccelerationStructuresNV(commandBuffer, &info);
+}

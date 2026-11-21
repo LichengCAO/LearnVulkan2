@@ -284,9 +284,21 @@ auto MyDevice::_EnableClusterAccelerationStructureIfSupported() -> bool
 		m_physicalDevice.enable_extension_if_present(extensionName);
 }
 
+auto MyDevice::_EnablePartitionedAccelerationStructureIfSupported() -> bool
+{
+	const char* extension = VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME;
+	if (!m_physicalDevice.is_extension_present(extension)) return false;
+	VkPhysicalDevicePartitionedAccelerationStructureFeaturesNV features{
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PARTITIONED_ACCELERATION_STRUCTURE_FEATURES_NV};
+	features.partitionedAccelerationStructure = VK_TRUE;
+	return m_physicalDevice.enable_extension_features_if_present(features) &&
+		m_physicalDevice.enable_extension_if_present(extension);
+}
+
 void MyDevice::_CreateLogicalDevice()
 {
 	const bool enableClusterAccelerationStructure = _EnableClusterAccelerationStructureIfSupported();
+	const bool enablePartitionedAccelerationStructure = _EnablePartitionedAccelerationStructureIfSupported();
 	vkb::DeviceBuilder deviceBuilder{ m_physicalDevice };
 
 	std::vector<vkb::CustomQueueDescription> queueDescription;
@@ -335,6 +347,7 @@ void MyDevice::_CreateLogicalDevice()
 		vkGetDeviceQueue(vkDevice, queueFamilyIndex, 0, &m_vkTransferQueue);
 	}
 	m_clusterAccelerationStructureEnabled = enableClusterAccelerationStructure;
+	m_partitionedAccelerationStructureEnabled = enablePartitionedAccelerationStructure;
 }
 
 void MyDevice::_CreateSwapchain(VkSwapchainKHR inOldSwapchain)
@@ -801,6 +814,7 @@ void MyDevice::_DestroySamplerAllocator()
 void MyDevice::Create()
 {
 	m_clusterAccelerationStructureEnabled = false;
+	m_partitionedAccelerationStructureEnabled = false;
 	_InitVolk();
 	_InitGLFW();
 	_CreateInstance();
@@ -831,6 +845,7 @@ void MyDevice::Destroy()
 	_DestroyMemoryAllocator();
 	vkb::destroy_device(m_device);
 	m_clusterAccelerationStructureEnabled = false;
+	m_partitionedAccelerationStructureEnabled = false;
 	vkb::destroy_surface(m_instance, vkSurface);
 	vkb::destroy_instance(m_instance);
 	glfwDestroyWindow(pWindow);
@@ -1731,4 +1746,17 @@ void MyDevice::CursorPosCallBack(GLFWwindow* _pWindow, double _xPos, double _yPo
 	auto& userInput = mydevice->m_userInput;
 	userInput.xPos = _xPos;
 	userInput.yPos = _yPos;
+}
+
+void MyDevice::_RequireComputeBuildQueue(QueueFamilyType inQueue) const
+{
+    CHECK_TRUE(vkPhysicalDevice != VK_NULL_HANDLE && vkGetPhysicalDeviceQueueFamilyProperties != nullptr,
+        "Acceleration structure builds require initialized physical device queue properties!");
+    uint32_t count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(vkPhysicalDevice, &count, nullptr);
+    std::vector<VkQueueFamilyProperties> properties(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(vkPhysicalDevice, &count, properties.data());
+    const auto family = GetQueueFamilyIndexOfType(inQueue);
+    CHECK_TRUE(family < count && (properties[family].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0,
+        "Acceleration structure builds require a compute-capable queue family!");
 }
