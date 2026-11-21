@@ -54,6 +54,13 @@ namespace AccelStructGpuLayout
         inline constexpr uint32_t StrideMask = 0xFFFF;
     }
 
+    namespace Template
+    {
+        // Same first 64 bytes and packing as Direct, followed by one optional bounds address.
+        inline constexpr AccelStructBuildInfoLayout Layout{72, 8};
+        inline constexpr uint32_t InstantiationBoundingBoxLimitOffset = 64;
+    }
+
     namespace Instantiate
     {
         inline constexpr AccelStructBuildInfoLayout Layout{32, 8};
@@ -112,6 +119,21 @@ namespace AccelStructGpuLayout
     static_assert(Direct::IndexFormat8Bit == VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV &&
         Direct::IndexFormat16Bit == VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_16BIT_NV &&
         Direct::IndexFormat32Bit == VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_32BIT_NV);
+
+    static_assert(sizeof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV) == Template::Layout.recordStride);
+    static_assert(offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, clusterID) == Direct::ClusterIdOffset &&
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, clusterFlags) == Direct::ClusterFlagsOffset &&
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, baseGeometryIndexAndGeometryFlags) == Direct::GeometryIndexAndFlagsOffset &&
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, indexBufferStride) == Direct::IndexAndVertexStridesOffset &&
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, vertexBufferStride) == Direct::IndexAndVertexStridesOffset + 2 &&
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, geometryIndexAndFlagsBufferStride) == Direct::GeometryAndOpacityStridesOffset &&
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, opacityMicromapIndexBufferStride) == Direct::GeometryAndOpacityStridesOffset + 2 &&
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, indexBuffer) == Direct::IndexBufferOffset &&
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, vertexBuffer) == Direct::VertexBufferOffset &&
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, geometryIndexAndFlagsBuffer) == Direct::GeometryBufferOffset &&
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, opacityMicromapArray) == Direct::OpacityArrayOffset &&
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, opacityMicromapIndexBuffer) == Direct::OpacityIndexBufferOffset &&
+        offsetof(VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV, instantiationBoundingBoxLimit) == Template::InstantiationBoundingBoxLimitOffset);
 
     static_assert(sizeof(VkClusterAccelerationStructureInstantiateClusterInfoNV) == Instantiate::Layout.recordStride);
     static_assert(offsetof(VkClusterAccelerationStructureInstantiateClusterInfoNV, clusterIdOffset) == Instantiate::ClusterIdOffset &&

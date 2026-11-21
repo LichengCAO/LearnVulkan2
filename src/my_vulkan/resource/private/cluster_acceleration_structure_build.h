@@ -6,6 +6,7 @@ class ClusterLevelAccelStructBuildLimits;
 class ClusterBottomLevelAccelStructBuildLimits;
 class ClusterLevelAccelStructBatch;
 class ClusterBottomLevelAccelStructBatch;
+class ClusterLevelAccelStructTemplateBatch;
 
 namespace VulkanDetail
 {
@@ -74,6 +75,7 @@ namespace VulkanDetail
         void Select(const ClusterBottomLevelAccelStructBuildLimits&, uint32_t inCapacity, VkClusterAccelerationStructureOpModeNV);
         void Select(const ClusterLevelAccelStructBatch&, VkClusterAccelerationStructureOpModeNV,
             VkClusterAccelerationStructureOpTypeNV);
+        void Select(const ClusterLevelAccelStructTemplateBatch&, VkClusterAccelerationStructureOpModeNV);
         void Select(const ClusterBottomLevelAccelStructBatch&, VkClusterAccelerationStructureOpModeNV);
         auto GetSizes() const -> AccelStructSizesInfo;
         void SetReferences(VkDeviceAddress inAddress);

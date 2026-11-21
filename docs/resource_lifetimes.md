@@ -292,7 +292,7 @@ also snapshots
 the direct or instantiation mode and common vertex/index formats. Cluster BLAS
 creation needs no source CLAS Batch. The CreateInfo may be changed or destroyed
 afterward. `GetCapacity()` reports the allocated
-maximum. All three static `CommitToDeviceInline(infos, buffer, offset)` encoders
+maximum. All four static `CommitToDeviceInline(infos, buffer, offset)` encoders
 operate without a target Batch. They validate task representation, addresses,
 strides and the upload range before one upload. Direct encoding uses each task's
 vertex format and index type; instantiation uses each task's vertex format to
@@ -300,22 +300,32 @@ resolve a zero vertex stride and queries the active physical device for template
 address alignment. Callers guarantee format support, matching templates/build
 formats and compliance with the eventual build's task, per-task and aggregate
 budgets. Cluster BLAS uploads require a host-visible, host-coherent Buffer;
-direct and instantiate uploads also support Buffer's staged transfer path.
-All three BuildInfo types expose static `GetBuildInfoLayout()` queries for their
+direct, template and instantiate uploads also support Buffer's staged transfer path.
+All four BuildInfo types expose static `GetBuildInfoLayout()` queries for their
 GPU record stride and input address alignment; they access no owner or Device.
 Field offsets and bit encodings are documented in [GPU input layout](acceleration_structure_gpu_layout.md).
 Raw template addresses carry no Host topology metadata.
 The caller guarantees their base ID is zero, their formats match and their actual
 counts fit the batch's per-task and aggregate budgets.
 
-`MyDevice::CreateClusterLevelAccelStructTemplatesAndWait` borrows ready index
-buffers through completion and publishes an initially empty TemplateBatch only
-after reading back its addresses. It owns template storage, a reference Buffer
-and independent CPU copies of addresses, counts and format/budget metadata.
-Its default executor serializes recording and completion on COMPUTE. Its explicit
-overload uses the caller's thread-affine DeviceContext and compute-capable queue.
-Each independent output can be created on any thread using the default overload.
-Retain template storage and supplied vertices until all instantiations finish.
+`ClusterLevelAccelStructTemplateBatch::Create()` synchronously queries sizes and
+allocates template storage and a reference Buffer from five positive capacity
+budgets and an optional vertex format. Independent batches may create/release
+concurrently with stable Device/allocator dependencies and caller exclusion of
+same-instance conflicts. Creation performs no upload, build, submission, wait or
+readback. Validity and getters describe saved Host allocation state; the owner
+keeps no actual count, CPU address/topology cache or GPU-ready flag.
+`BuildImplicitClusterAccelStructCommandInput::SetClusterTemplateTarget()` borrows
+the batch and snapshots requirements and addresses. Its raw limits/capacity
+overload instead borrows caller-supplied storage and address-table ranges.
+Task records and an optional GPU count may be shader-produced; the CPU template
+upload helper is optional. The producer bounds counts and consumers use only the
+active prefix. Callers synchronize task/count writes, template/table writes and
+dependent shader/AS reads, and explicitly submit and wait when needed. CPU address
+readback uses Buffer operations and local results without publishing owner state.
+Keep index inputs through template building, vertices through instantiation, and
+template storage through the last dependent GPU use. Private template storage
+uses exclusive sharing; dependent builds use a compatible queue family.
 
 `ClusterBottomLevelAccelStructBuildInfo::SetClusterReferences(address, count)` borrows a
 packed array of `VkDeviceAddress` values. It requires a nonzero, aligned address,

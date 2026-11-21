@@ -13,7 +13,6 @@ class BottomLevelAccelStruct;
 
 class ClusterLevelAccelStructTemplateBuildInfo
 {
-	friend class MyDevice;
 	VkDeviceAddress m_indices = 0;
 	uint32_t m_triangles = 0;
 	uint32_t m_vertices = 0;
@@ -26,27 +25,54 @@ public:
 	void CustomizeIndexType(VkIndexType inType) { m_indexType = inType; }
 	void CustomizeIndexStride(VkDeviceSize inStride) { m_indexStride = inStride; }
 	void CustomizeVertexFormat(VkFormat inFormat) { m_vertexFormat = inFormat; }
+	static constexpr auto GetBuildInfoLayout() noexcept -> AccelStructBuildInfoLayout
+	{ return AccelStructGpuLayout::Template::Layout; }
+	// Optional CPU initialization helper; shader producers write the same published GPU ABI.
+	static void CommitToDeviceInline(std::span<const ClusterLevelAccelStructTemplateBuildInfo> inInfos,
+		Buffer& inDstBuffer, VkDeviceSize inOffset = 0);
+};
+
+class ClusterLevelAccelStructTemplateBatchCreateInfo final
+{
+	friend class ClusterLevelAccelStructTemplateBatch;
+	uint32_t m_maxTemplateCount = 0;
+	uint32_t m_maxTriangleCountPerTemplate = 0;
+	uint32_t m_maxVertexCountPerTemplate = 0;
+	uint32_t m_maxTotalTriangleCount = 0;
+	uint32_t m_maxTotalVertexCount = 0;
+	VkFormat m_vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+public:
+	// All five capacities are required; index bindings/types belong to task records.
+	void SetMaxTemplateCount(uint32_t inCount) { m_maxTemplateCount = inCount; }
+	void SetMaxTriangleCountPerTemplate(uint32_t inCount) { m_maxTriangleCountPerTemplate = inCount; }
+	void SetMaxVertexCountPerTemplate(uint32_t inCount) { m_maxVertexCountPerTemplate = inCount; }
+	void SetMaxTotalTriangleCount(uint32_t inCount) { m_maxTotalTriangleCount = inCount; }
+	void SetMaxTotalVertexCount(uint32_t inCount) { m_maxTotalVertexCount = inCount; }
+	void CustomizeVertexFormat(VkFormat inFormat) { m_vertexFormat = inFormat; }
 };
 
 class ClusterLevelAccelStructTemplateBatch final : public RefCounted
 {
-	friend class MyDevice;
-	struct Metadata { uint32_t triangles; uint32_t vertices; };
+	friend struct VulkanDetail::ClusterCommandState;
 	std::unique_ptr<Buffer> m_storage;
 	std::unique_ptr<Buffer> m_references;
-	std::vector<VkDeviceAddress> m_addresses;
-	std::vector<Metadata> m_metadata;
-	VkIndexType m_indexType = VK_INDEX_TYPE_UINT32;
 	VkClusterAccelerationStructureTriangleClusterInputNV m_limits{
 		VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV };
+	AccelStructSizesInfo m_sizesInfo{};
+	uint32_t m_capacity = 0;
 public:
+	// Host-only creation: queries and allocates template storage and its address table.
+	// It does not upload tasks, submit GPU work, wait, or read back addresses.
+	// Independent batches may create/release concurrently with stable Device dependencies;
+	// exclude same-instance conflicts and retain templates through dependent GPU use.
+	void Create(const ClusterLevelAccelStructTemplateBatchCreateInfo& inCreateInfo);
+	// Saved Host allocation state; validity does not mean the GPU build has completed.
+	auto IsValid() const noexcept -> bool { return m_storage != nullptr; }
+	auto GetCapacity() const noexcept -> uint32_t { return m_capacity; }
+	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo& { return m_sizesInfo; }
+	// Borrowed packed GPU address table. Only the built active prefix is valid.
 	auto GetReferenceBuffer() const noexcept -> const Buffer* { return m_references.get(); }
-	auto GetReference(size_t inIndex) const -> VkDeviceAddress { return m_addresses.at(inIndex); }
-	auto GetCount() const noexcept -> uint32_t { return static_cast<uint32_t>(m_addresses.size()); }
-	auto GetTriangleCount(size_t inIndex) const -> uint32_t { return m_metadata.at(inIndex).triangles; }
-	auto GetVertexCount(size_t inIndex) const -> uint32_t { return m_metadata.at(inIndex).vertices; }
 	auto GetVertexFormat() const noexcept -> VkFormat { return m_limits.vertexFormat; }
-	auto GetIndexType() const noexcept -> VkIndexType { return m_indexType; }
 	auto GetBuildLimits() const noexcept -> VkClusterAccelerationStructureTriangleClusterInputNV { return m_limits; }
 };
 
@@ -316,6 +342,7 @@ class ClusterLevelAccelStructBuildLimits final
 	friend struct VulkanDetail::ClusterSizeQuery;
 	friend struct VulkanDetail::ClusterCommandState;
 	friend class ClusterLevelAccelStructBatch;
+	friend class ClusterLevelAccelStructTemplateBatch;
 	VkClusterAccelerationStructureTriangleClusterInputNV m_limits{
 		VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV, nullptr, VK_FORMAT_R32G32B32_SFLOAT, 0, 1 };
 public:
@@ -388,6 +415,8 @@ public:
 	void SetClusterTarget(const ClusterLevelAccelStructBatch& inBatch);
 	void SetClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
 	void SetInstantiateClusterTarget(const ClusterLevelAccelStructBatch& inBatch);
+	void SetClusterTemplateTarget(const ClusterLevelAccelStructTemplateBatch& inBatch);
+	void SetClusterTemplateTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
 	void SetInstantiateClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
 	auto QueryCurrentTargetSizesInfo() const -> AccelStructSizesInfo { return m_state.GetSizes(); }
 

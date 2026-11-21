@@ -551,47 +551,6 @@ namespace
         CHECK_TRUE(std::ranges::equal(bytes, saved));
     }
 
-    auto VKAPI_PTR TemplateBufferAddress(VkDevice, const VkBufferDeviceAddressInfo* info) -> VkDeviceAddress
-    {
-        return reinterpret_cast<uintptr_t>(info->buffer) << 16;
-    }
-
-    bool validTemplateOutput = false;
-    VkQueueFlags templateQueueFlags = VK_QUEUE_COMPUTE_BIT;
-    void VKAPI_PTR TemplateQueueProperties(VkPhysicalDevice, uint32_t* count, VkQueueFamilyProperties* families)
-    {
-        *count = 8;
-        if (families) families[7].queueFlags = templateQueueFlags;
-    }
-
-    void VKAPI_PTR CaptureTemplates(VkCommandBuffer, const VkClusterAccelerationStructureCommandsInfoNV* build)
-    {
-        using Task = VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV;
-        CHECK_TRUE(build->input.maxAccelerationStructureCount == 2 && build->input.flags == 0 &&
-            build->input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_TEMPLATE_NV &&
-            build->input.opMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV &&
-            build->srcInfosArray.stride == sizeof(Task) && build->srcInfosArray.size == 2 * sizeof(Task));
-        const auto* limits = build->input.opInput.pTriangleClusters;
-        CHECK_TRUE(limits->maxClusterTriangleCount == 2 && limits->maxTotalTriangleCount == 3 &&
-            limits->maxClusterVertexCount == 4 && limits->maxTotalVertexCount == 7 && limits->maxClusterUniqueGeometryCount == 1);
-        const auto bytes = ClasBufferTestFixture::Bytes(reinterpret_cast<VkBuffer>(build->srcInfosArray.deviceAddress >> 16));
-        std::array<Task, 2> tasks;
-        std::memcpy(tasks.data(), bytes.data(), sizeof(tasks));
-        CHECK_TRUE(tasks[0].indexBuffer == 0x1000 && tasks[1].indexBuffer == 0x2000 &&
-            tasks[0].indexBufferStride == 0 && tasks[1].indexBufferStride == 6 &&
-            tasks[0].triangleCount == 1 && tasks[1].triangleCount == 2 && tasks[0].vertexCount == 3 && tasks[1].vertexCount == 4);
-        for (const auto& task : tasks)
-            CHECK_TRUE(task.clusterID == 0 && task.clusterFlags == 0 && task.vertexBuffer == 0 && task.vertexBufferStride == 0 &&
-                task.opacityMicromapArray == 0 && task.opacityMicromapIndexBuffer == 0 && task.instantiationBoundingBoxLimit == 0 &&
-                task.opacityMicromapIndexType == VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV &&
-                task.indexType == VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_16BIT_NV &&
-                task.baseGeometryIndexAndGeometryFlags.geometryIndex == 0 && task.positionTruncateBitCount == 0 &&
-                task.baseGeometryIndexAndGeometryFlags.geometryFlags == VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV);
-        const std::array addresses{ build->dstImplicitData, validTemplateOutput ? build->dstImplicitData + 32 : 0 };
-        auto dst = ClasBufferTestFixture::Bytes(reinterpret_cast<VkBuffer>(build->dstAddressesArray.deviceAddress >> 16));
-        std::memcpy(dst.data(), addresses.data(), sizeof(addresses));
-    }
-
     template<class Fn> struct TemplateHook
     {
         Fn& target;
@@ -599,46 +558,126 @@ namespace
         TemplateHook(Fn& fn, Fn replacement) : target(fn), saved(std::exchange(fn, replacement)) {}
         ~TemplateHook() { target = saved; }
     };
-    void VKAPI_PTR TemplateBarrier(VkCommandBuffer, const VkDependencyInfo*) {}
 
     void TestTemplatePackingAndRollback()
     {
         Hooks hooks;
-        const TemplateHook address(vkGetBufferDeviceAddress, &TemplateBufferAddress);
-        const TemplateHook queue(vkGetPhysicalDeviceQueueFamilyProperties, &TemplateQueueProperties);
-        const TemplateHook build(vkCmdBuildClusterAccelerationStructureIndirectNV, &CaptureTemplates);
-        const TemplateHook barrier(vkCmdPipelineBarrier2, &TemplateBarrier);
-        auto& device = MyDevice::GetInstance();
         ClusterLevelAccelStructTemplateBatch batch;
+        ClusterLevelAccelStructTemplateBatchCreateInfo capacity;
+        const auto empty = [&] {
+            CHECK_TRUE(!batch.IsValid() && batch.GetCapacity() == 0 && !batch.GetReferenceBuffer() &&
+                batch.GetSizesInfo().accelerationStructureSize == 0 && ClasBufferTestFixture::LiveBufferCount() == 0);
+        };
+        empty();
+        ExpectFailure([&] { batch.Create(capacity); });
+        capacity.SetMaxTemplateCount(2);
+        capacity.SetMaxTriangleCountPerTemplate(2);
+        capacity.SetMaxVertexCountPerTemplate(4);
+        capacity.SetMaxTotalTriangleCount(3);
+        ExpectFailure([&] { batch.Create(capacity); });
+        capacity.SetMaxTotalVertexCount(7);
+        constexpr std::array required{
+            &ClusterLevelAccelStructTemplateBatchCreateInfo::SetMaxTemplateCount,
+            &ClusterLevelAccelStructTemplateBatchCreateInfo::SetMaxTriangleCountPerTemplate,
+            &ClusterLevelAccelStructTemplateBatchCreateInfo::SetMaxVertexCountPerTemplate,
+            &ClusterLevelAccelStructTemplateBatchCreateInfo::SetMaxTotalTriangleCount,
+            &ClusterLevelAccelStructTemplateBatchCreateInfo::SetMaxTotalVertexCount
+        };
+        for (const auto set : required)
+        {
+            auto missing = capacity;
+            (missing.*set)(0);
+            ExpectFailure([&] { batch.Create(missing); });
+        }
+        auto invalid = capacity;
+        invalid.SetMaxTriangleCountPerTemplate(17);
+        ExpectFailure([&] { batch.Create(invalid); });
+        invalid = capacity;
+        invalid.CustomizeVertexFormat(VK_FORMAT_UNDEFINED);
+        ExpectFailure([&] { batch.Create(invalid); });
+        ClasBufferTestFixture::SetAllocationFailure(true);
+        ExpectFailure([&] { batch.Create(capacity); });
+        ClasBufferTestFixture::SetAllocationFailure(false);
+        empty();
+        ClasBufferTestFixture::FailNextReferenceBufferCreation();
+        ExpectFailure([&] { batch.Create(capacity); });
+        empty();
+        const TemplateHook submit(vkQueueSubmit2, &HostQueryDeviceCalls::Submit);
+        const TemplateHook build(vkCmdBuildClusterAccelerationStructureIndirectNV,
+            static_cast<PFN_vkCmdBuildClusterAccelerationStructureIndirectNV>(nullptr));
+        HostQueryDeviceCalls::submissions = 0;
+        batch.Create(capacity); // No native build entrypoint or queue is needed.
+        capacity = {};
+        const auto queries = sizeQueries;
+        const auto sizes = batch.GetSizesInfo();
+        CHECK_TRUE(batch.IsValid() && batch.GetCapacity() == 2 && batch.GetReferenceBuffer() &&
+            sizes.buildInfoBufferSize == 2 * ClusterLevelAccelStructTemplateBuildInfo::GetBuildInfoLayout().recordStride &&
+            sizes.accelerationStructureSize == 1024 && sizes.accelerationStructureAlignment == 32 &&
+            sizes.buildScratchBufferSize == 512 && sizes.scratchAlignment == 256 &&
+            batch.GetBuildLimits().maxTotalVertexCount == 7 &&
+            batch.GetBuildLimits().maxClusterTriangleCount == 2 &&
+            batch.GetVertexFormat() == VK_FORMAT_R32G32B32_SFLOAT &&
+            queriedOutputCount == 2 && queriedOp == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_TEMPLATE_NV &&
+            queriedMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV &&
+            ClasBufferTestFixture::LiveBufferCount() == 2 && HostQueryDeviceCalls::submissions == 0);
+        ExpectFailure([&] { batch.Create(capacity); });
+        CHECK_TRUE(sizeQueries == queries && batch.GetCapacity() == 2 &&
+            batch.GetSizesInfo().accelerationStructureSize == sizes.accelerationStructureSize);
+    }
+
+    void TestTemplatePackingAndAtomicUpload()
+    {
+        Buffer empty;
+        ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline({}, empty);
         std::array<ClusterLevelAccelStructTemplateBuildInfo, 2> infos;
         for (auto& info : infos) info.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
         infos[0].SetIndexBuffer(0x1000, 3);
         infos[0].SetVertexCount(3);
         infos[1].SetIndexBuffer(0x2000, 6);
         infos[1].SetVertexCount(4);
-        infos[1].CustomizeIndexStride(6);
-        ExpectFailure([&] { device.CreateClusterLevelAccelStructTemplatesAndWait({}, batch); });
+        infos[1].CustomizeIndexType(VK_INDEX_TYPE_UINT32);
+        infos[1].CustomizeIndexStride(8);
+        ExpectFailure([&] { ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(infos, empty); });
+        Buffer upload = UploadBuffer(HostMemory);
+        // Encoding with coherent memory requires no physical device properties or GPU submission.
+        const TemplateHook properties(vkGetPhysicalDeviceProperties2,
+            static_cast<PFN_vkGetPhysicalDeviceProperties2>(nullptr));
+        const TemplateHook submit(vkQueueSubmit2, &HostQueryDeviceCalls::Submit);
+        HostQueryDeviceCalls::submissions = 0;
+        ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(infos, upload, 8);
+        using Task = VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV;
+        std::array<Task, 2> tasks;
+        const auto bytes = ClasBufferTestFixture::Bytes(upload);
+        std::memcpy(tasks.data(), bytes.data() + 8, sizeof(tasks));
+        CHECK_TRUE(tasks[0].indexBuffer == 0x1000 && tasks[1].indexBuffer == 0x2000 &&
+            tasks[0].indexBufferStride == 0 && tasks[1].indexBufferStride == 8 &&
+            tasks[0].indexType == VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_16BIT_NV &&
+            tasks[1].indexType == VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_32BIT_NV &&
+            tasks[0].triangleCount == 1 && tasks[1].triangleCount == 2 &&
+            tasks[0].vertexCount == 3 && tasks[1].vertexCount == 4 && !HostQueryDeviceCalls::submissions);
+        for (const auto& task : tasks)
+            CHECK_TRUE(task.clusterID == 0 && task.clusterFlags == 0 && task.vertexBuffer == 0 && task.vertexBufferStride == 0 &&
+                task.geometryIndexAndFlagsBuffer == 0 && task.opacityMicromapArray == 0 &&
+                task.opacityMicromapIndexBuffer == 0 && task.instantiationBoundingBoxLimit == 0 &&
+                task.opacityMicromapIndexType == VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV &&
+                task.baseGeometryIndexAndGeometryFlags.geometryIndex == 0 && task.positionTruncateBitCount == 0 &&
+                task.baseGeometryIndexAndGeometryFlags.geometryFlags == VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV);
+        const std::vector<uint8_t> saved(bytes.begin(), bytes.end());
         auto invalid = infos;
-        invalid[1].CustomizeIndexType(VK_INDEX_TYPE_UINT8);
-        ExpectFailure([&] { device.CreateClusterLevelAccelStructTemplatesAndWait(invalid, batch); });
+        invalid.back().SetVertexCount(512);
+        ExpectFailure([&] { ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(invalid, upload, 8); });
         invalid = infos;
-        invalid[1].CustomizeVertexFormat(VK_FORMAT_R16G16B16A16_SFLOAT);
-        ExpectFailure([&] { device.CreateClusterLevelAccelStructTemplatesAndWait(invalid, batch); });
-        templateQueueFlags = VK_QUEUE_TRANSFER_BIT;
-        ExpectFailure([&] { device.CreateClusterLevelAccelStructTemplatesAndWait(infos, batch); });
-        templateQueueFlags = VK_QUEUE_COMPUTE_BIT;
-        CHECK_TRUE(sizeQueries == 0);
-        validTemplateOutput = false;
-        ExpectFailure([&] { device.CreateClusterLevelAccelStructTemplatesAndWait(infos, batch); });
-        CHECK_TRUE(batch.GetCount() == 0 && !batch.GetReferenceBuffer() && ClasBufferTestFixture::LiveBufferCount() == 0);
-        validTemplateOutput = true;
-        device.CreateClusterLevelAccelStructTemplatesAndWait(infos, batch);
-        CHECK_TRUE(batch.GetCount() == 2 && batch.GetReferenceBuffer() && batch.GetReference(1) == batch.GetReference(0) + 32 &&
-            batch.GetVertexCount(1) == 4 && batch.GetTriangleCount(0) == 1 && sizeQueries == 2 &&
-            queriedOutputCount == 2 && lastTriangleInput.maxTotalVertexCount == 7 && ClasBufferTestFixture::LiveBufferCount() == 2);
-        ExpectFailure([&] { device.CreateClusterLevelAccelStructTemplatesAndWait(infos, batch); });
-        ExpectFailure([&] { (void)batch.GetReference(2); });
-        CHECK_TRUE(sizeQueries == 2 && batch.GetReference(1) == batch.GetReference(0) + 32);
+        invalid.back().SetIndexBuffer(0, 6);
+        ExpectFailure([&] { ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(invalid, upload, 8); });
+        invalid = infos;
+        invalid.back().CustomizeIndexStride(3);
+        ExpectFailure([&] { ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(invalid, upload, 8); });
+        invalid = infos;
+        invalid.back().CustomizeIndexType(VK_INDEX_TYPE_NONE_KHR);
+        ExpectFailure([&] { ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(invalid, upload, 8); });
+        ExpectFailure([&] { ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(infos, upload, 1); });
+        ExpectFailure([&] { ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(infos, upload, 200); });
+        CHECK_TRUE(std::ranges::equal(bytes, saved), "Rejected template packing must preserve all destination bytes!");
     }
 
     void TestTrianglePackingAndAtomicUpload()
@@ -929,7 +968,8 @@ void RunClasResourceTests()
     ClasBufferTestFixture::Run(TestCommandInputQueries);
     ClasBufferTestFixture::Run(TestExplicitOwnership);
     ClasBufferTestFixture::Run(TestClusterBlasOwners);
-    ClasBufferTestFixture::Run([] { ClasBufferTestFixture::WithInlineExecutor(TestTemplatePackingAndRollback); });
+    ClasBufferTestFixture::Run(TestTemplatePackingAndRollback);
+    ClasBufferTestFixture::Run(TestTemplatePackingAndAtomicUpload);
     ClasBufferTestFixture::Run(TestInstantiateUsesWholeCapacity);
     ClasBufferTestFixture::Run(TestInstantiatePackingAndAtomicUpload);
     ClasBufferTestFixture::Run(TestTriangleSnapshotsAndNativeSizes);

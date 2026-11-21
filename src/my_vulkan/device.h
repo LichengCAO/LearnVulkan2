@@ -8,8 +8,6 @@
 
 class MemoryAllocator;
 class DeviceContext;
-class ClusterLevelAccelStructTemplateBuildInfo;
-class ClusterLevelAccelStructTemplateBatch;
 class DescriptorSetLayoutAllocator;
 namespace VulkanDetail
 {
@@ -153,8 +151,6 @@ private:
 	void _ExecuteInlineAndWait(std::function<void(VkCommandBuffer)> inRecord);
 	void _DestroyInlineExecution() noexcept;
 	void _RequireClusterBuildQueue(QueueFamilyType inQueue) const;
-	void _CreateClusterLevelAccelStructTemplatesAndWait(DeviceContext* inContext, QueueFamilyType inQueue,
-		std::span<const ClusterLevelAccelStructTemplateBuildInfo> inInfos, ClusterLevelAccelStructTemplateBatch& outBatch);
 
 	std::vector<const char*> _GetInstanceRequiredExtensions() const;
 	QueueFamilyIndices		 _GetQueueFamilyIndices(VkPhysicalDevice physicalDevice) const;
@@ -294,12 +290,6 @@ public:
 	// No internal locking or GPU wait.
 	void CreateRayTracingShaderProgram(RayTracingShaderProgram& outProgram,
 		const RayTracingShaderProgramCreateInfo& inCreateInfo);
-
-	// Ready index data is borrowed through completion. Each output batch requires exclusive access.
-	void CreateClusterLevelAccelStructTemplatesAndWait(std::span<const ClusterLevelAccelStructTemplateBuildInfo> inInfos,
-		ClusterLevelAccelStructTemplateBatch& outBatch);
-	void CreateClusterLevelAccelStructTemplatesAndWait(DeviceContext& inContext, QueueFamilyType inQueue,
-		std::span<const ClusterLevelAccelStructTemplateBuildInfo> inInfos, ClusterLevelAccelStructTemplateBatch& outBatch);
 
 	// Caller excludes concurrent access to this device's sampler cache, including
 	// cache destruction. Borrowed Sampler value operations do not access it.

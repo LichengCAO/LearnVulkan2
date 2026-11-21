@@ -1,5 +1,9 @@
 # Default inline execution and implicit cluster templates
 
+> Historical plan: the template factory portion has been superseded. TemplateBatch
+> now uses Host-only capacity-based Create, explicit GPU template commands and
+> optional Buffer readback. See [current template interface](../../acceleration_structures.md#building-and-instantiating-templates).
+
 ## Authorized specification
 
 Implement the user's plan from this chat, in the existing working tree without losing pre-existing edits. Default synchronous helpers omit Context/Queue, work from arbitrary threads, and use the COMPUTE role (graphicsAndCompute family). Explicit DeviceContext/Queue overloads remain. Public DeviceContext stays thread-affine. No public BuildTarget or unified public build-type enum.

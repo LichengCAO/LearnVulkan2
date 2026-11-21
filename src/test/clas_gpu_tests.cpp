@@ -622,6 +622,7 @@ private:
         };
         for (auto& task : clusterDescriptions) task.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
         ClusterLevelAccelStructTemplateBatch templates;
+        std::array<VkDeviceAddress, 2> templateAddresses{};
         if (useTemplates)
         {
             constexpr std::array<uint16_t, 6> paddedIndices{ 0, 99, 2, 99, 1, 99 };
@@ -636,30 +637,47 @@ private:
             infos[0].SetIndexBuffer(indexAddress, 3);
             infos[1].SetIndexBuffer(otherIndices.GetDeviceAddress(), 3);
             infos[1].CustomizeIndexStride(4);
-            auto& device = MyDevice::GetInstance();
-            {
-                const ScopedValue wait(vkWaitForFences, FailFenceWait);
-                bool failed = false;
-                try { device.CreateClusterLevelAccelStructTemplatesAndWait(infos, templates); }
-                catch (const std::exception&) { failed = true; }
-                CHECK_TRUE(failed && !templates.GetReferenceBuffer() && templates.GetCount() == 0);
-            }
+            ClusterLevelAccelStructTemplateBatchCreateInfo createInfo;
+            createInfo.SetMaxTemplateCount(2);
+            createInfo.SetMaxTriangleCountPerTemplate(1);
+            createInfo.SetMaxVertexCountPerTemplate(3);
+            createInfo.SetMaxTotalTriangleCount(2);
+            createInfo.SetMaxTotalVertexCount(6);
             std::exception_ptr workerFailure;
             std::jthread worker([&] {
-                try { device.CreateClusterLevelAccelStructTemplatesAndWait(infos, templates); }
+                try { templates.Create(createInfo); }
                 catch (...) { workerFailure = std::current_exception(); }
             });
             worker.join();
             if (workerFailure) std::rethrow_exception(workerFailure);
-            CHECK_TRUE(templates.GetCount() == 2 && templates.GetReference(0) != templates.GetReference(1) &&
-                templates.GetTriangleCount(1) == 1 && templates.GetVertexCount(0) == 3 &&
+            CHECK_TRUE(templates.IsValid() && templates.GetCapacity() == 2 &&
                 templates.GetBuildLimits().maxTotalVertexCount == 6 && templates.GetBuildLimits().maxTotalTriangleCount == 2 &&
-                templates.GetVertexFormat() == VK_FORMAT_R32G32B32_SFLOAT && templates.GetIndexType() == VK_INDEX_TYPE_UINT16);
-            ClusterLevelAccelStructTemplateBatch explicitTemplates;
-            DeviceContext context(1);
-            device.CreateClusterLevelAccelStructTemplatesAndWait(context, QueueFamilyType::COMPUTE, infos, explicitTemplates);
-            CHECK_TRUE(explicitTemplates.GetCount() == 2 && explicitTemplates.GetReference(1) != 0);
-            std::cout << "Verified two implicit templates from distinct index buffers, worker retry and explicit creation.\n";
+                templates.GetVertexFormat() == VK_FORMAT_R32G32B32_SFLOAT);
+            auto tasks = MakeBuffer(templates.GetSizesInfo().buildInfoBufferSize, kBuildInputUsage, kHostMemory,
+                ClusterLevelAccelStructTemplateBuildInfo::GetBuildInfoLayout().addressAlignment);
+            ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(infos, tasks);
+            auto scratch = _MakeScratch(native, templates.GetSizesInfo());
+            auto readback = MakeBuffer(sizeof(templateAddresses), VK_BUFFER_USAGE_TRANSFER_DST_BIT, kHostMemory);
+            BuildImplicitClusterAccelStructCommandInput input;
+            input.SetClusterTemplateTarget(templates);
+            input.SetArgumentAddress(tasks.GetDeviceAddress());
+            if (scratch.IsValid()) input.SetScratchAddress(scratch.GetDeviceAddress());
+            constexpr auto stage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+            const auto barrier = native.deviceFunctions.vkCmdPipelineBarrier;
+            CommandBuffer build;
+            AppendBarrier(build, barrier, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_WRITE_BIT, stage,
+                VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT);
+            build.BuildAccelerationStructureIndirect(input);
+            AppendBarrier(build, barrier, stage, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                stage | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+            build.CopyBuffer(*templates.GetReferenceBuffer(), readback, 0, 0, sizeof(templateAddresses));
+            AppendBarrier(build, barrier, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
+            _Submit(native, build);
+            Buffer::DownloadFromDeviceInline(readback, 0, templateAddresses.data(), sizeof(templateAddresses));
+            CHECK_TRUE(templateAddresses[0] && templateAddresses[1] && templateAddresses[0] != templateAddresses[1]);
+            std::cout << "Verified Host template creation, explicit GPU build and optional address readback.\n";
         }
         ClusterLevelAccelStructBatch clusters;
         ClusterBottomLevelAccelStructBatch blases;
@@ -734,7 +752,7 @@ private:
             std::array<ClusterLevelAccelStructInstantiateBuildInfo, 2> instances;
             for (size_t i = 0; i < instances.size(); ++i)
             {
-                instances[i].SetTemplateReference(templates.GetReference(0));
+                instances[i].SetTemplateReference(templateAddresses[0]);
                 instances[i].SetVertexBuffer(clusterDescriptions[i].vertexAddress);
                 instances[i].CustomizeVertexStride(vertexStride);
                 instances[i].CustomizeClusterID(static_cast<uint32_t>(i + 1));

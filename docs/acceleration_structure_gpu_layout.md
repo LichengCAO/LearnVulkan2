@@ -10,6 +10,7 @@ The layout queries are static, `constexpr`, and perform no allocation or Device 
 
 ```cpp
 constexpr auto direct = ClusterLevelAccelStructDirectBuildInfo::GetBuildInfoLayout();
+constexpr auto topology = ClusterLevelAccelStructTemplateBuildInfo::GetBuildInfoLayout();
 constexpr auto instantiate = ClusterLevelAccelStructInstantiateBuildInfo::GetBuildInfoLayout();
 constexpr auto clusterBlas = ClusterBottomLevelAccelStructBuildInfo::GetBuildInfoLayout();
 constexpr auto tlas = TopLevelAccelStructBuildInfo::GetBuildInfoLayout();
@@ -18,6 +19,7 @@ constexpr auto tlas = TopLevelAccelStructBuildInfo::GetBuildInfoLayout();
 | Input record | `recordStride` | `addressAlignment` | Constant namespace |
 | --- | ---: | ---: | --- |
 | Direct CLAS task | 64 | 8 | `AccelStructGpuLayout::Direct` |
+| Template CLAS task | 72 | 8 | `AccelStructGpuLayout::Template` and shared `Direct` prefix |
 | Instantiate CLAS task | 32 | 8 | `AccelStructGpuLayout::Instantiate` |
 | Cluster BLAS task | 16 | 8 | `AccelStructGpuLayout::ClusterBlas` |
 | Packed TLAS instance | 64 | 16 | `AccelStructGpuLayout::Tlas` |
@@ -65,6 +67,19 @@ index/vertex stride selects packed values. Host defaults include GeometryIndex
 0, opaque geometry, no opacity micromaps and position truncation 0. Native
 definitions: [direct task](https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureBuildTriangleClusterInfoNV.html),
 [geometry word](https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureGeometryIndexAndGeometryFlagsNV.html).
+
+## CLAS templates
+
+A template record shares the Direct layout and bit encodings for bytes 0–63.
+Byte 64 holds the eight-byte `instantiationBoundingBoxLimit` address, exposed as
+`AccelStructGpuLayout::Template::InstantiationBoundingBoxLimitOffset`. The record
+stride is 72 and its input address alignment is 8 for both sizing and building.
+The optional CPU helper emits base ID zero, flags zero, opaque GeometryIndex zero,
+the supplied topology counts/index address/type/stride, and zero vertex, geometry,
+opacity and bounding-box addresses. A shader producer may write the native fields
+directly while satisfying the target limits and Vulkan requirements. Index type
+is per task and is independent of TemplateBatch creation.
+[Native template record](https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV.html).
 
 ## CLAS instantiation
 

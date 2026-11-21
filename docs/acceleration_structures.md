@@ -319,50 +319,80 @@ Buffer. Keep its allocation stable and retain the Batch through dependent GPU us
 ### Building and instantiating templates
 
 ```cpp
+ClusterLevelAccelStructTemplateBatchCreateInfo capacity;
+capacity.SetMaxTemplateCount(1);
+capacity.SetMaxTriangleCountPerTemplate(1);
+capacity.SetMaxVertexCountPerTemplate(3);
+capacity.SetMaxTotalTriangleCount(1);
+capacity.SetMaxTotalVertexCount(3);
+ClusterLevelAccelStructTemplateBatch templates;
+templates.Create(capacity); // Host size query and output allocation only.
+
+// Optional CPU initialization; a shader may produce these packed records instead.
 ClusterLevelAccelStructTemplateBuildInfo topology;
 topology.SetIndexBuffer(indexAddress, 3);
 topology.SetVertexCount(3);
 topology.CustomizeIndexType(VK_INDEX_TYPE_UINT16);
-ClusterLevelAccelStructTemplateBatch templates;
-device.CreateClusterLevelAccelStructTemplatesAndWait(std::span(&topology, 1), templates);
+ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(
+    std::span(&topology, 1), templateTaskBuffer);
 
-info.CustomizeTemplateUsage(true);
-info.CustomizeIndexType(templates.GetIndexType());
-info.CustomizeVertexFormat(templates.GetVertexFormat());
-ClusterLevelAccelStructBatch instances;
-instances.Create(info); // Uses the five capacity settings above.
+BuildImplicitClusterAccelStructCommandInput build;
+build.SetClusterTemplateTarget(templates);
+build.SetArgumentAddress(templateTaskBuffer.GetDeviceAddress());
+build.SetScratchAddress(templateScratchAddress);
+commands.BuildAccelerationStructureIndirect(build);
+// Explicitly synchronize template storage and the output address table before use.
+// A shader can read templates.GetReferenceBuffer() and generate instantiation tasks.
+```
+
+`Create()` requires all five positive capacities and optionally a vertex format.
+It allocates template storage and a packed address table, with no task upload,
+GPU build, submission, wait or readback. Index addresses, index types and strides
+belong to task records and can differ between templates. `GetCapacity()` and
+`GetSizesInfo()` return saved Host requirements; `IsValid()` means storage exists,
+without asserting GPU completion. The owner keeps no actual count, address or
+topology cache. Repeat each template's actual contribution when budgeting poses.
+
+The managed target snapshots the owner's requirements and output addresses.
+The raw overload `SetClusterTemplateTarget(limits, capacity)` instead requires
+`SetStorageAddress()` and `SetOutputReferencesArray()`. Template destinations
+currently support implicit builds. Without a GPU count the build processes the
+entire capacity; with `CustomizeBuildCountAddress()` the producer bounds the count
+and consumers use only the active prefix. Recording does not query, allocate,
+upload or submit independently.
+
+Synchronize task/count writes from their producer before building. For a shader
+that generates instantiation tasks, make template-build writes visible to its
+shader reads, then make the generated task/count writes visible to the subsequent
+indirect instantiation build. Also synchronize template storage writes with the
+instantiation build's acceleration-structure reads. Submission and completion
+remain explicit. The storage uses exclusive sharing, so use a compatible queue
+family for these dependent builds; the private storage handle is not exposed for
+ownership transfers. [Vulkan queue-family ownership](https://docs.vulkan.org/refpages/latest/refpages/source/VkSharingMode.html)
+
+CPU consumers may explicitly copy the address table to a readback Buffer, apply
+the transfer/Host dependency and wait for completion, then read into a local array:
+
+```cpp
+std::array<VkDeviceAddress, 1> addresses{};
+Buffer::DownloadFromDeviceInline(readback, 0, addresses.data(), sizeof(addresses));
 ClusterLevelAccelStructInstantiateBuildInfo pose;
-pose.SetTemplateReference(templates.GetReference(0));
+pose.SetTemplateReference(addresses[0]);
 pose.SetVertexBuffer(deformedVertexAddress);
 pose.CustomizeVertexFormat(templates.GetVertexFormat());
 pose.CustomizeClusterID(42);
 ClusterLevelAccelStructInstantiateBuildInfo::CommitToDeviceInline(
-    std::span(&pose, 1), taskBuffer);
+    std::span(&pose, 1), instanceTaskBuffer);
 ```
 
-The template factory accepts multiple index buffers, requires common vertex/index
-formats and derives per-cluster maxima and batch totals from the actual counts.
-Its default overload builds and waits on COMPUTE from any thread. The explicit
-overload takes `DeviceContext&` and a compute-capable queue as its first arguments
-and runs on the context's owning thread. Keep index buffers alive and ready for
-that queue until return. Successful creation publishes template storage, the
-packed address table and CPU copies of the addresses and topology counts.
-`GetTriangleCount(i)`, `GetVertexCount(i)` and `GetBuildLimits()` expose the
-metadata for budgeting subsequent instances. Repeat each template's contribution
-for every pose that uses it.
-
-The factory's private template storage uses exclusive sharing. On devices that
-require queue-family ownership transfers, select the instantiation queue family
-when building templates. The public reference Buffer exposes the address table,
-and the factory keeps the native storage handle private. [Vulkan queue-family ownership](https://docs.vulkan.org/refpages/latest/refpages/source/VkSharingMode.html)
-
-Templates contain indices with base Cluster ID zero. Every instance supplies
+The CPU template helper encodes base Cluster ID zero. Every instance supplies
 its own vertex positions. Its `CustomizeClusterID()` becomes the final ID via
 the native ID offset. When supplying raw template addresses, the caller guarantees
 that the template is built, has base ID zero, matches the batch formats and fits
-both per-cluster and aggregate budgets. Keep the template and vertex inputs
-alive through instantiation. In the example above the upload contains one pose,
-so supply GPU count 1 or initialize all remaining capacity before a full build.
+both per-cluster and aggregate budgets. Keep index inputs through the template
+build, vertex inputs through instantiation, and template storage through all
+dependent GPU uses. The CPU helper above emits one pose, so use capacity 1 or
+supply GPU count 1 when building a larger instantiation batch.
 
 ### Cluster BLAS and indirect commands
 
@@ -392,27 +422,28 @@ not inspect table contents or allocation capacity. Callers provide valid built
 CLAS references, keep the table alive through the BLAS build and keep referenced
 CLAS resources alive through dependent GPU uses.
 
-For either Batch, prepare and execute in this order:
+For CLAS, template and Cluster BLAS batches, prepare and execute in this order:
 
-1. Call `Create(info)` and read `GetSizesInfo()` and `GetScratchAlignment()`.
+1. Call `Create(info)` and read `GetSizesInfo()`; its `scratchAlignment` applies
+   to scratch addresses.
 2. Allocate a task Buffer of `buildInfoBufferSize` bytes. It needs
    `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | SHADER_DEVICE_ADDRESS_BIT`
    for the build. A staging Buffer can instead be written and copied explicitly.
 3. Use `ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(infos, taskBuffer)`
-   or the corresponding instantiate uploader. For Cluster BLAS call
+   or the corresponding template/instantiate uploader. For Cluster BLAS call
    `ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(infos, taskBuffer)`.
-   All three encoders require no target Batch and validate the entire task span
+   These four optional CPU encoders require no target Batch and validate the entire task span
    before one upload. They check native field representation, addresses, strides
    and the upload range; the caller ensures matching formats/templates and
    compliance with the eventual build's task, per-task and aggregate budgets.
    Instantiate encoding resolves a zero vertex stride from each task's format
    and queries the active physical device for template address alignment.
-   Cluster BLAS uploads use coherent Host memory. Direct and instantiate encoders
+   Cluster BLAS uploads use coherent Host memory. Direct, template and instantiate encoders
    also support a staged upload to task buffers with `TRANSFER_DST_BIT`.
 4. Provide scratch of `buildScratchBufferSize` bytes with
    `STORAGE_BUFFER_BIT | SHADER_DEVICE_ADDRESS_BIT` and the reported alignment.
    A zero scratch requirement uses address 0.
-5. Append the matching direct, instantiate or Cluster BLAS command. For example:
+5. Append the matching direct, template, instantiate or Cluster BLAS command. For example:
 
 ```cpp
 BuildImplicitClusterAccelStructCommandInput build;

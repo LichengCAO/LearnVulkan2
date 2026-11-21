@@ -15,7 +15,7 @@
 - Preserve the public interface names and signatures in e23edf9; add private storage/helpers and narrowly necessary additive address/offset accessors.
 - Prefix every private member function name with a single underscore.
 - Declare every function with a non-void return type using trailing return type syntax.
-- Host Create and query operations are synchronous and do not submit GPU builds (the existing TemplatesAndWait factory is the explicit exception).
+- Host Create and query operations are synchronous and do not submit GPU builds; TemplateBatch follows this contract and builds through explicit GPU commands.
 - Independent resource instances have no thread affinity; callers exclude conflicting access, preserve Device/allocator dependencies and complete GPU use before release.
 - Preserve RAII cleanup, failure rollback, retry and empty-target creation contracts. Do not add public Destroy or deferred cleanup.
 - Scratch and task-array sizes cover the maximum batch. Implicit accelerationStructureSize covers the whole contiguous output; explicit size bounds each destination. Return operation-specific output and scratch alignments.

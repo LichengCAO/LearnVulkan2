@@ -73,6 +73,34 @@ namespace
             "Public CLAS address offsets must locate each full 64-bit native address!");
     }
 
+    void TestTemplateTaskBinaryLayout()
+    {
+        namespace Direct = AccelStructGpuLayout::Direct;
+        namespace Template = AccelStructGpuLayout::Template;
+        constexpr auto layout = ClusterLevelAccelStructTemplateBuildInfo::GetBuildInfoLayout();
+        static_assert(layout.recordStride == 72 && layout.addressAlignment == 8);
+        VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV record{};
+        record.clusterID = 0x10203040;
+        record.triangleCount = 0x101;
+        record.vertexCount = 0x155;
+        record.positionTruncateBitCount = 0x12;
+        record.indexType = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_32BIT_NV;
+        record.opacityMicromapIndexType = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_16BIT_NV;
+        record.baseGeometryIndexAndGeometryFlags.geometryIndex = 0x123456;
+        record.baseGeometryIndexAndGeometryFlags.geometryFlags = 3;
+        record.indexBufferStride = 0x1122;
+        record.vertexBufferStride = 0x3344;
+        record.indexBuffer = 0x1122334455667788ULL;
+        record.instantiationBoundingBoxLimit = 0x8877665544332211ULL;
+        CHECK_TRUE(ReadWord(record, Direct::ClusterIdOffset) == 0x10203040 &&
+            ReadWord(record, Direct::CountsAndFormatsOffset) == 0x244AAB01 &&
+            ReadWord(record, Direct::GeometryIndexAndFlagsOffset) == 0x60123456 &&
+            ReadWord(record, Direct::IndexAndVertexStridesOffset) == 0x33441122 &&
+            ReadAddress(record, Direct::IndexBufferOffset) == 0x1122334455667788ULL &&
+            ReadAddress(record, Template::InstantiationBoundingBoxLimitOffset) == 0x8877665544332211ULL,
+            "Template tasks must share the direct packed prefix and append the bounding-box address at byte 64!");
+    }
+
     void TestInstantiateAndClusterBlasBinaryLayout()
     {
         namespace Instantiate = AccelStructGpuLayout::Instantiate;
@@ -129,6 +157,7 @@ namespace
 void RunAccelerationStructureGpuLayoutTests()
 {
     TestDirectTaskBinaryLayout();
+    TestTemplateTaskBinaryLayout();
     TestInstantiateAndClusterBlasBinaryLayout();
     TestTlasInstanceBinaryLayout();
 }
