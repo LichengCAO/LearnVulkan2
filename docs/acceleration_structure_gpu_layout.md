@@ -13,8 +13,23 @@ constexpr auto direct = ClusterLevelAccelStructDirectBuildInfo::GetBuildInfoLayo
 constexpr auto topology = ClusterLevelAccelStructTemplateBuildInfo::GetBuildInfoLayout();
 constexpr auto instantiate = ClusterLevelAccelStructInstantiateBuildInfo::GetBuildInfoLayout();
 constexpr auto clusterBlas = ClusterBottomLevelAccelStructBuildInfo::GetBuildInfoLayout();
+constexpr auto move = ClusterAccelStructMoveInfo::GetBuildInfoLayout();
+constexpr auto templateIndices = ClusterTemplateIndicesQueryInfo::GetBuildInfoLayout();
 constexpr auto tlas = TopLevelAccelStructBuildInfo::GetBuildInfoLayout();
 ```
+
+Use the selected layout for both task-buffer bytes and GPU address alignment:
+
+```cpp
+const auto layout = useTemplates ? ClusterLevelAccelStructInstantiateBuildInfo::GetBuildInfoLayout() :
+    ClusterLevelAccelStructDirectBuildInfo::GetBuildInfoLayout();
+const auto bytes = layout.GetBufferSize(maxCount);
+const auto alignment = layout.addressAlignment;
+```
+
+`GetBufferSize(uint32_t count)` requires a positive count and returns
+`VkDeviceSize{count} * recordStride`. It is `constexpr`, accesses no Device, and
+sizes the full capacity independently of any GPU actual count.
 
 | Input record | `recordStride` | `addressAlignment` | Constant namespace |
 | --- | ---: | ---: | --- |
@@ -22,6 +37,8 @@ constexpr auto tlas = TopLevelAccelStructBuildInfo::GetBuildInfoLayout();
 | Template CLAS task | 72 | 8 | `AccelStructGpuLayout::Template` and shared `Direct` prefix |
 | Instantiate CLAS task | 32 | 8 | `AccelStructGpuLayout::Instantiate` |
 | Cluster BLAS task | 16 | 8 | `AccelStructGpuLayout::ClusterBlas` |
+| MOVE task | 8 | 8 | `AccelStructGpuLayout::Move` |
+| Template-index query task | 8 | 8 | `AccelStructGpuLayout::TemplateIndicesQuery` |
 | Packed TLAS instance | 64 | 16 | `AccelStructGpuLayout::Tlas` |
 | PTLAS operation group | 24 | 8 | `AccelStructGpuLayout::Partitioned::Operation` |
 | PTLAS write instance | 104 | 8 | `AccelStructGpuLayout::Partitioned::WriteInstance` |
@@ -81,8 +98,8 @@ stride is 72 and its input address alignment is 8 for both sizing and building.
 The optional CPU helper emits base ID zero, flags zero, opaque GeometryIndex zero,
 the supplied topology counts/index address/type/stride, and zero vertex, geometry,
 opacity and bounding-box addresses. A shader producer may write the native fields
-directly while satisfying the target limits and Vulkan requirements. Index type
-is per task and is independent of TemplateBatch creation.
+directly while satisfying the target limits and Vulkan requirements. Each task
+encodes its own index type.
 [Native template record](https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV.html).
 
 ## CLAS instantiation
@@ -114,11 +131,29 @@ The Host encoder writes packed reference stride 8. Each task's references must
 be unique addresses of built CLAS objects, and the array must have enough entries.
 See the native [Cluster BLAS record](https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV.html).
 
+## Move and template-index query
+
+Both task types have eight-byte record stride and GPU address alignment. The
+entire record is one `VkDeviceAddress` at byte offset zero.
+
+| Operation | Address field | Published layout |
+| --- | --- | --- |
+| MOVE | `srcAccelerationStructure` | `AccelStructGpuLayout::Move` |
+| GET_CLUSTER_TEMPLATE_INDICES | `clusterTemplateAddress` | `AccelStructGpuLayout::TemplateIndicesQuery` |
+
+MOVE takes a built object matching the selected type. The template-index query
+takes a built triangle cluster template. GPU producers can bind a packed reference
+table directly as task records. The Host helpers encode the same records when
+starting from CPU addresses. The query's emitted index data is an opaque payload.
+[Vulkan MOVE record](https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureMoveObjectsInfoNV.html)
+[Vulkan template-index record](https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureGetTemplateIndicesInfoNV.html)
+
 ## CLAS command outputs
 
-A reference table contains one packed 8-byte `VkDeviceAddress` per slot.
-Explicit builds read that table. Implicit builds write references and may also
-write a separate size table. Compute sizes writes only the size table. Allocate
+A destination address table contains one packed 8-byte `VkDeviceAddress` per slot.
+Explicit operations read the address table and can read a size table. Implicit
+operations write addresses and can write a separate size table. Compute Sizes
+writes only the size table. Allocate
 four bytes per maximum target for packed `uint32_t` byte sizes, with a four-byte
 aligned base, storage-buffer usage and device address usage. Both output tables
 preserve entries beyond the GPU count. Synchronize their writes before dependent

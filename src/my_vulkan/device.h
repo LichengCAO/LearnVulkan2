@@ -132,6 +132,7 @@ private:
 	bool				m_needRecreate = false;
 	bool				m_initialized = false;
 	bool m_clusterAccelerationStructureEnabled = false;
+	uint32_t m_clusterAccelerationStructureRevision = 0;
 	bool m_partitionedAccelerationStructureEnabled = false;
 	UserInput			m_userInput{};
 	std::vector<std::unique_ptr<SwapchainImage>> m_uptrSwapchainImages;
@@ -168,7 +169,7 @@ private:
 	void _CreateInstance();
 	void _CreateSurface();
 	void _SelectPhysicalDevice();
-	auto _EnableClusterAccelerationStructureIfSupported() -> bool;
+	auto _EnableClusterAccelerationStructureIfSupported() -> uint32_t;
 	auto _EnablePartitionedAccelerationStructureIfSupported() -> bool;
 	void _CreateLogicalDevice();
 	void _CreateDescriptorSetLayoutAllocator();

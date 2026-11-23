@@ -6,8 +6,6 @@ namespace ClasBufferTestFixture
 {
 void Run(void (*inTest)());
 void WithInlineExecutor(void (*inTest)());
-void WithClusterQueries(void (*inTest)(), VkDeviceSize inScratchBytes = 512);
-void FailNextReferenceBufferCreation();
 void SetAllocationFailure(bool inFail);
 void SetBufferAddressOverride(VkDeviceAddress inAddress);
 auto Bytes(const Buffer& inBuffer) -> std::span<const uint8_t>;

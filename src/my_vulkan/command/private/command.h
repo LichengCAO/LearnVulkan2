@@ -268,6 +268,8 @@ public:
             VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV };
         VkClusterAccelerationStructureClustersBottomLevelInputNV clusters{
             VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV };
+        VkClusterAccelerationStructureMoveObjectsInputNV move{
+            VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_MOVE_OBJECTS_INPUT_NV };
     };
 private:
     Parameters m_parameters;

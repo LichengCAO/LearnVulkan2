@@ -8,7 +8,30 @@ struct AccelStructBuildInfoLayout
 {
     VkDeviceSize recordStride;
     VkDeviceSize addressAlignment;
+
+    // Full-capacity task bytes from the Host ABI; no Device access is required.
+    constexpr auto GetBufferSize(uint32_t inCount) const -> VkDeviceSize
+    {
+        CHECK_TRUE(inCount > 0, "Build info count must be positive!");
+        return VkDeviceSize{inCount} * recordStride;
+    }
 };
+
+namespace VulkanDetail
+{
+    // Revision 3 added this operation without changing the command or input union ABI.
+    inline constexpr uint32_t ClusterTemplateIndicesMinRevision = 3;
+#if VK_NV_CLUSTER_ACCELERATION_STRUCTURE_SPEC_VERSION >= 3
+    inline constexpr auto ClusterTemplateIndicesOperation = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_GET_CLUSTER_TEMPLATE_INDICES_NV;
+    using ClusterTemplateIndicesTask = VkClusterAccelerationStructureGetTemplateIndicesInfoNV;
+#else
+    inline constexpr auto ClusterTemplateIndicesOperation = static_cast<VkClusterAccelerationStructureOpTypeNV>(5);
+    struct ClusterTemplateIndicesTask
+    {
+        VkDeviceAddress clusterTemplateAddress;
+    };
+#endif
+}
 
 // Byte offsets and unshifted bit masks for the native Vulkan input records.
 // These constants describe serialization only; producers satisfy format, budget,
@@ -83,6 +106,18 @@ namespace AccelStructGpuLayout
         inline constexpr uint32_t ReferenceStrideOffset = 4;
         inline constexpr uint32_t ReferencesOffset = 8;
         inline constexpr uint32_t PackedReferenceStride = 8;
+    }
+
+    namespace Move
+    {
+        inline constexpr AccelStructBuildInfoLayout Layout{8, 8};
+        inline constexpr uint32_t SourceReferenceOffset = 0;
+    }
+
+    namespace TemplateIndicesQuery
+    {
+        inline constexpr AccelStructBuildInfoLayout Layout{8, 8};
+        inline constexpr uint32_t TemplateReferenceOffset = 0;
     }
 
     namespace Partitioned
@@ -200,6 +235,12 @@ namespace AccelStructGpuLayout
         offsetof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, clusterReferencesStride) == ClusterBlas::ReferenceStrideOffset &&
         offsetof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV, clusterReferences) == ClusterBlas::ReferencesOffset &&
         ClusterBlas::PackedReferenceStride == AddressSize);
+    static_assert(sizeof(VkClusterAccelerationStructureMoveObjectsInfoNV) == Move::Layout.recordStride &&
+        Move::Layout.addressAlignment == AddressSize &&
+        offsetof(VkClusterAccelerationStructureMoveObjectsInfoNV, srcAccelerationStructure) == Move::SourceReferenceOffset);
+    static_assert(sizeof(VulkanDetail::ClusterTemplateIndicesTask) == TemplateIndicesQuery::Layout.recordStride &&
+        TemplateIndicesQuery::Layout.addressAlignment == AddressSize &&
+        offsetof(VulkanDetail::ClusterTemplateIndicesTask, clusterTemplateAddress) == TemplateIndicesQuery::TemplateReferenceOffset);
 
     static_assert(sizeof(VkAccelerationStructureInstanceKHR) == Tlas::Layout.recordStride);
     static_assert(offsetof(VkAccelerationStructureInstanceKHR, transform) == Tlas::TransformOffset &&

@@ -108,9 +108,10 @@ NVAPI 是较早的 NVIDIA 专用 DX12 路线，入口为
 
 本仓库使用 Vulkan 原生任务结构。直接构建 CLAS、实例化模板和构建 Cluster BLAS 均支持显式与隐式目标。
 显式构建读取调用方提供的目标地址表，隐式构建将分配的地址写入结果表。模板本身通过隐式目标构建。
-本仓库的 GPU 大小查询支持直接构建、Template、实例化和 Cluster BLAS。上述命令都支持 GPU count
-选择有效前缀。大小查询必须绑定紧密排列的 `uint32_t` 大小输出，隐式构建可选绑定，显式构建省略该字段。
-Host 查询返回整批任务和 scratch 的需求，逐对象字节数由 GPU 写入大小表。[当前接口](acceleration_structures.md#clas-and-cluster-blas-batches)
+MOVE 和模板索引查询都支持三种目标模式。模板索引查询要求扩展版本至少为 3，结果是由 GPU 消费的不透明数据。
+各操作均可用 GPU count 选择有效前缀。Compute Sizes 写入必需的紧密排列 `uint32_t` 大小表，隐式模式可选写入大小表，
+显式模式可选读入大小表。Host 查询返回所选模式的 native 容量需求，逐对象字节数由 GPU 写入大小表。
+[当前接口](acceleration_structures.md#clas-and-cluster-blas-batches)
 工程推论：可以共享“Host 容量查询与分配、GPU 批构建、地址表、依赖同步”的上层设计，
 但 GPU task 编码、结果大小格式、能力检测与 shader 开关应由后端负责。
 API 功能对应不能证明两者的构建速度、占用或遍历性能相同；这些需要指定 GPU、驱动与场景实测。

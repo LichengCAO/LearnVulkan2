@@ -13,12 +13,10 @@ class Image;
 class ImageView;
 class BottomLevelAccelStruct;
 class TopLevelAccelStruct;
-class ClusterLevelAccelStructBatch;
-class ClusterBottomLevelAccelStructBatch;
 class BuildAccelStructCommandInput;
 class ComputeClusterAccelStructSizesCommandInput;
-class BuildExplicitClusterAccelStructCommandInput;
-class BuildImplicitClusterAccelStructCommandInput;
+class ExplicitClusterAccelStructCommandInput;
+class ImplicitClusterAccelStructCommandInput;
 class BuildPartitionedTopLevelAccelStructCommandInput;
 struct VkAccelStructBuildInfo;
 namespace VulkanDetail { class DynamicDescriptorPool; struct ClusterCommandState; }
@@ -181,8 +179,8 @@ public:
 	// These overloads snapshot capacity and an optional GPU count address. They borrow the
 	// GPU storage and input ranges and require a compute-capable queue outside a render pass.
     void ComputeClusterAccelStructSizes(const ComputeClusterAccelStructSizesCommandInput& inInput);
-    void BuildAccelerationStructureIndirect(const BuildExplicitClusterAccelStructCommandInput& inInput);
-    void BuildAccelerationStructureIndirect(const BuildImplicitClusterAccelStructCommandInput& inInput);
+    void ExecuteClusterAccelStructIndirect(const ExplicitClusterAccelStructCommandInput& inInput);
+    void ExecuteClusterAccelStructIndirect(const ImplicitClusterAccelStructCommandInput& inInput);
     // Snapshots the description; borrows source/target storage and GPU argument/count/scratch ranges.
     // Requires a compute-capable queue outside a render pass; no implicit barriers, submit or wait.
     void BuildPartitionedTopLevelAccelStruct(const BuildPartitionedTopLevelAccelStructCommandInput& inInput);

@@ -251,12 +251,12 @@ void MyDevice::_SelectPhysicalDevice()
 	m_cachedPhysicalDeviceProperties = properties.properties;
 }
 
-auto MyDevice::_EnableClusterAccelerationStructureIfSupported() -> bool
+auto MyDevice::_EnableClusterAccelerationStructureIfSupported() -> uint32_t
 {
 	constexpr uint32_t minimumExtensionRevision = 2;
 	const char* extensionName = VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME;
 	if (!m_physicalDevice.is_extension_present(extensionName))
-		return false;
+		return 0;
 
 	std::vector<VkExtensionProperties> extensions;
 	VkResult result;
@@ -264,24 +264,29 @@ auto MyDevice::_EnableClusterAccelerationStructureIfSupported() -> bool
 	{
 		uint32_t count = 0;
 		if (vkEnumerateDeviceExtensionProperties(vkPhysicalDevice, nullptr, &count, nullptr) != VK_SUCCESS || count == 0)
-			return false;
+			return 0;
 		extensions.resize(count);
 		result = vkEnumerateDeviceExtensionProperties(vkPhysicalDevice, nullptr, &count, extensions.data());
 		if (result == VK_SUCCESS)
 			extensions.resize(count);
 	} while (result == VK_INCOMPLETE);
 
-	if (result != VK_SUCCESS || std::none_of(extensions.begin(), extensions.end(), [&](const VkExtensionProperties& extension) -> bool
+	if (result != VK_SUCCESS)
+		return 0;
+	const auto extension = std::find_if(extensions.begin(), extensions.end(), [&](const VkExtensionProperties& candidate) -> bool
 		{
-			return std::string_view(extension.extensionName) == extensionName && extension.specVersion >= minimumExtensionRevision;
-		}))
-		return false;
+			return std::string_view(candidate.extensionName) == extensionName;
+		});
+	if (extension == extensions.end() || extension->specVersion < minimumExtensionRevision)
+		return 0;
 
 	VkPhysicalDeviceClusterAccelerationStructureFeaturesNV features{
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV};
 	features.clusterAccelerationStructure = VK_TRUE;
-	return m_physicalDevice.enable_extension_features_if_present(features) &&
-		m_physicalDevice.enable_extension_if_present(extensionName);
+	if (!m_physicalDevice.enable_extension_features_if_present(features) ||
+		!m_physicalDevice.enable_extension_if_present(extensionName))
+		return 0;
+	return extension->specVersion;
 }
 
 auto MyDevice::_EnablePartitionedAccelerationStructureIfSupported() -> bool
@@ -297,7 +302,7 @@ auto MyDevice::_EnablePartitionedAccelerationStructureIfSupported() -> bool
 
 void MyDevice::_CreateLogicalDevice()
 {
-	const bool enableClusterAccelerationStructure = _EnableClusterAccelerationStructureIfSupported();
+	const auto clusterAccelerationStructureRevision = _EnableClusterAccelerationStructureIfSupported();
 	const bool enablePartitionedAccelerationStructure = _EnablePartitionedAccelerationStructureIfSupported();
 	vkb::DeviceBuilder deviceBuilder{ m_physicalDevice };
 
@@ -346,7 +351,8 @@ void MyDevice::_CreateLogicalDevice()
 		queueFamilyIndex = GetQueueFamilyIndexOfType(QueueFamilyType::TRANSFER);
 		vkGetDeviceQueue(vkDevice, queueFamilyIndex, 0, &m_vkTransferQueue);
 	}
-	m_clusterAccelerationStructureEnabled = enableClusterAccelerationStructure;
+	m_clusterAccelerationStructureEnabled = clusterAccelerationStructureRevision != 0;
+	m_clusterAccelerationStructureRevision = clusterAccelerationStructureRevision;
 	m_partitionedAccelerationStructureEnabled = enablePartitionedAccelerationStructure;
 }
 
@@ -814,6 +820,7 @@ void MyDevice::_DestroySamplerAllocator()
 void MyDevice::Create()
 {
 	m_clusterAccelerationStructureEnabled = false;
+	m_clusterAccelerationStructureRevision = 0;
 	m_partitionedAccelerationStructureEnabled = false;
 	_InitVolk();
 	_InitGLFW();
@@ -845,6 +852,7 @@ void MyDevice::Destroy()
 	_DestroyMemoryAllocator();
 	vkb::destroy_device(m_device);
 	m_clusterAccelerationStructureEnabled = false;
+	m_clusterAccelerationStructureRevision = 0;
 	m_partitionedAccelerationStructureEnabled = false;
 	vkb::destroy_surface(m_instance, vkSurface);
 	vkb::destroy_instance(m_instance);

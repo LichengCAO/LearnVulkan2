@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <bit>
 #include <limits>
-#include <unordered_set>
 #include <vulkan/vulkan_format_traits.hpp>
 
 namespace
@@ -21,9 +20,6 @@ namespace
     constexpr uint32_t MaxTriangleTaskCount = AccelStructGpuLayout::Direct::CountMask;
     constexpr VkBufferUsageFlags StorageUsage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    constexpr VkBufferUsageFlags ReferenceUsage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     constexpr auto Explicit = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
     constexpr auto Implicit = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
     constexpr auto Direct = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV;
@@ -31,11 +27,39 @@ namespace
     constexpr auto ClusterBlas = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV;
     constexpr auto ComputeSizes = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV;
     constexpr auto Template = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_TEMPLATE_NV;
+    constexpr auto Move = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_MOVE_OBJECTS_NV;
+    constexpr auto QueryTemplateIndices = VulkanDetail::ClusterTemplateIndicesOperation;
+
+    auto MoveAlignmentProperty(VkClusterAccelerationStructureTypeNV type)
+        -> uint32_t VkPhysicalDeviceClusterAccelerationStructurePropertiesNV::*
+    {
+        using Properties = VkPhysicalDeviceClusterAccelerationStructurePropertiesNV;
+        switch (type)
+        {
+        case VK_CLUSTER_ACCELERATION_STRUCTURE_TYPE_TRIANGLE_CLUSTER_NV: return &Properties::clusterByteAlignment;
+        case VK_CLUSTER_ACCELERATION_STRUCTURE_TYPE_TRIANGLE_CLUSTER_TEMPLATE_NV: return &Properties::clusterTemplateByteAlignment;
+        case VK_CLUSTER_ACCELERATION_STRUCTURE_TYPE_CLUSTERS_BOTTOM_LEVEL_NV: return &Properties::clusterBottomLevelByteAlignment;
+        default: throw std::runtime_error("A valid cluster move object type is required!");
+        }
+    }
+
+    void CheckMoveLimits(const VkClusterAccelerationStructureMoveObjectsInputNV& limits)
+    {
+        MoveAlignmentProperty(limits.type);
+        CHECK_TRUE(limits.maxMovedBytes, "Cluster maximum moved bytes must be positive!");
+    }
 
     struct ClusterProperties
     {
         VkPhysicalDeviceClusterAccelerationStructurePropertiesNV cluster;
         VkDeviceSize maxBufferAllocation;
+
+        auto GetScratchAlignment() const -> VkDeviceSize
+        {
+            const auto alignment = cluster.clusterScratchByteAlignment;
+            CHECK_TRUE(std::has_single_bit(alignment), "Device returned an invalid cluster scratch alignment!");
+            return alignment;
+        }
     };
 
     auto QueryProperties(VkPhysicalDevice inDevice) -> ClusterProperties
@@ -140,22 +164,6 @@ namespace
         return task;
     }
 
-    auto EncodeTriangle(const ClusterLevelAccelStructDirectBuildInfo& inTriangle,
-        const VertexLayout& inVertex, const IndexLayout& inIndex) -> TriangleTask
-    {
-        CHECK_TRUE(inTriangle.clusterID != MaxCount, "Cluster ID is reserved!");
-        CHECK_TRUE(inTriangle.vertexStride <= (std::numeric_limits<uint16_t>::max)() &&
-            inTriangle.vertexStride % inVertex.size == 0, "Invalid cluster vertex stride!");
-        auto task = EncodeTopology<TriangleTask>(inTriangle.primitiveCount, inTriangle.vertexCount,
-            inTriangle.indexAddress, inTriangle.indexStride, inIndex);
-        const auto vertexStride = inTriangle.vertexStride == 0 ? inVertex.size : inTriangle.vertexStride;
-        const auto vertexSize = (inTriangle.vertexCount - 1) * vertexStride + inVertex.size;
-        task.clusterID = inTriangle.clusterID;
-        task.vertexBufferStride = static_cast<uint16_t>(inTriangle.vertexStride);
-        task.vertexBuffer = CheckAddress(inTriangle.vertexAddress, 0, vertexSize, inVertex.alignment);
-        return task;
-    }
-
     auto CheckClusterReferenceAddress(VkDeviceAddress inAddress, uint32_t inCount) -> VkDeviceAddress
     {
         constexpr auto maximum = (std::numeric_limits<VkDeviceAddress>::max)();
@@ -165,13 +173,39 @@ namespace
         return inAddress;
     }
 
+    auto QueryNativeSizes(const MyDevice& device, const VkClusterAccelerationStructureInputInfoNV& input)
+        -> VkAccelerationStructureBuildSizesInfoKHR
+    {
+        VkAccelerationStructureBuildSizesInfoKHR sizes{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
+        vkGetClusterAccelerationStructureBuildSizesNV(device.vkDevice, &input, &sizes);
+        sizes.pNext = nullptr;
+        return sizes;
+    }
+
+    void CheckTriangleLimits(const VkClusterAccelerationStructureTriangleClusterInputNV& limits)
+    {
+        CHECK_TRUE(limits.maxClusterTriangleCount && limits.maxClusterVertexCount &&
+            limits.maxTotalTriangleCount && limits.maxTotalVertexCount,
+            "All cluster batch capacities must be nonzero!");
+        CHECK_TRUE(limits.vertexFormat != VK_FORMAT_UNDEFINED && limits.vertexFormat != VK_FORMAT_MAX_ENUM,
+            "A cluster vertex format is required!");
+    }
+
+    void CheckTriangleDeviceLimits(const VkClusterAccelerationStructureTriangleClusterInputNV& limits,
+        const VkPhysicalDeviceClusterAccelerationStructurePropertiesNV& properties, VkPhysicalDevice device)
+    {
+        CHECK_TRUE(limits.maxClusterTriangleCount <= (std::min)(properties.maxTrianglesPerCluster, MaxTriangleTaskCount),
+            "Cluster batch triangle capacity exceeds the per-cluster limit!");
+        CHECK_TRUE(limits.maxClusterVertexCount <= (std::min)(properties.maxVerticesPerCluster, MaxTriangleTaskCount),
+            "Cluster batch vertex capacity exceeds the per-cluster limit!");
+        QueryVertexLayout(device, limits.vertexFormat);
+    }
+
     auto QuerySizes(const MyDevice& inDevice, const VkClusterAccelerationStructureInputInfoNV& inInput,
         VkDeviceSize inTaskStride, const ClusterProperties& inProperties) -> AccelStructMemoryRequirements
     {
-        CHECK_TRUE(std::has_single_bit(inProperties.cluster.clusterScratchByteAlignment),
-            "Device returned an invalid cluster scratch alignment!");
-        VkAccelerationStructureBuildSizesInfoKHR sizes{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
-        vkGetClusterAccelerationStructureBuildSizesNV(inDevice.vkDevice, &inInput, &sizes);
+        const auto scratchAlignment = inProperties.GetScratchAlignment();
+        const auto sizes = QueryNativeSizes(inDevice, inInput);
         const auto buildInfoSize = inInput.maxAccelerationStructureCount * inTaskStride;
         const bool sizing = inInput.opMode == ComputeSizes;
         const auto arraySize = inInput.maxAccelerationStructureCount * (sizing ? sizeof(uint32_t) : ReferenceStride);
@@ -180,34 +214,17 @@ namespace
             "Cluster batch exceeds device buffer limits; split the batch!");
         AccelStructMemoryRequirements requirements;
         requirements.buildScratchBufferSize = sizes.buildScratchSize;
-        requirements.scratchAlignment = inProperties.cluster.clusterScratchByteAlignment;
+        requirements.scratchAlignment = scratchAlignment;
         if (sizing) return requirements;
         CHECK_TRUE(sizes.accelerationStructureSize != 0 && sizes.accelerationStructureSize <= limit,
             "Device returned an invalid cluster destination size!");
         const auto& cluster = inProperties.cluster;
         const auto alignment = inInput.opType == ClusterBlas ? cluster.clusterBottomLevelByteAlignment :
-            inInput.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_TEMPLATE_NV ?
-            cluster.clusterTemplateByteAlignment : cluster.clusterByteAlignment;
+            inInput.opType == Template ? cluster.clusterTemplateByteAlignment : cluster.clusterByteAlignment;
         CHECK_TRUE(std::has_single_bit(alignment), "Invalid cluster output alignment!");
         requirements.accelerationStructureSize = sizes.accelerationStructureSize;
         requirements.accelerationStructureAlignment = alignment;
         return requirements;
-    }
-
-    auto CreateClusterBuffer(VkDeviceSize inSize, VkBufferUsageFlags inUsage, VkDeviceSize inAlignment,
-        VkMemoryPropertyFlags inMemory = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-        -> std::unique_ptr<Buffer>
-    {
-        CHECK_TRUE(std::has_single_bit(inAlignment), "Device returned an invalid cluster output alignment!");
-        const auto allocator = MyDevice::GetInstance().GetMemoryAllocator();
-        CHECK_TRUE(allocator && allocator->IsValid() && vkGetBufferDeviceAddress && vkCreateBuffer &&
-            vkDestroyBuffer && vkGetBufferMemoryRequirements, "Cluster allocation dependencies are unavailable!");
-        auto buffer = std::make_unique<Buffer>();
-        BufferCreateInfo info;
-        info.SetBufferSize(inSize).SetBufferUsage(inUsage).CustomizeAlignment(inAlignment).CustomizeMemoryProperty(inMemory);
-        buffer->Create(info);
-        CheckAddress(buffer->GetDeviceAddress(), 0, inSize, inAlignment);
-        return buffer;
     }
 
     void CheckUploadBuffer(const Buffer& inDst, VkDeviceSize inOffset, VkDeviceSize inBytes)
@@ -221,27 +238,34 @@ namespace
             "Cluster build info upload range exceeds host address space!");
     }
 
-    auto TableAddress(const Buffer* table, VkDeviceSize offset, uint32_t count) -> VkDeviceAddress
+    template<class NativeRecord, class Info, class GetReference>
+    void UploadReferenceTasks(std::span<const Info> infos, Buffer& destination,
+        VkDeviceSize offset, GetReference getReference)
     {
-        CHECK_TRUE(table && table->IsValid() && CONTAIN_BITS(table->GetBufferInformation().usage,
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT), "Invalid cluster address table usage!");
-        const auto bytes = count * ReferenceStride;
-        const auto size = table->GetBufferInformation().size;
-        CHECK_TRUE(offset % ReferenceStride == 0 && offset <= size && bytes <= size - offset, "Invalid packed address table range!");
-        return CheckAddress(table->GetDeviceAddress(), offset, bytes, ReferenceStride);
-    }
-
-    auto BuildInfoBufferSize(VkClusterAccelerationStructureOpTypeNV operation, uint32_t count) -> VkDeviceSize
-    {
-        CHECK_TRUE(count, "Cluster maximum task count must be positive!");
-        return VkDeviceSize{count} * VulkanDetail::ClusterTaskLayout(operation).recordStride;
+        if (infos.empty()) return;
+        constexpr auto layout = Info::GetBuildInfoLayout();
+        static_assert(sizeof(NativeRecord) == layout.recordStride);
+        CHECK_TRUE(infos.size() <= (std::numeric_limits<size_t>::max)() / layout.recordStride,
+            "Cluster reference task upload size overflows!");
+        const auto bytes = VkDeviceSize{infos.size()} * layout.recordStride;
+        CHECK_TRUE(offset % layout.addressAlignment == 0, "Cluster reference task offset is misaligned!");
+        CheckUploadBuffer(destination, offset, bytes);
+        std::vector<NativeRecord> tasks;
+        tasks.reserve(infos.size());
+        for (const auto& info : infos)
+        {
+            const auto reference = getReference(info);
+            CHECK_TRUE(reference, "Cluster reference task requires a nonzero reference!");
+            tasks.push_back({reference});
+        }
+        Buffer::UploadToDeviceInline(destination, offset, tasks.data(), static_cast<size_t>(bytes));
     }
 
     auto MakeTarget(uint32_t count, VkClusterAccelerationStructureOpModeNV mode,
         VkClusterAccelerationStructureOpTypeNV operation, VkDeviceAddress storage,
         VkDeviceAddress references, VkDeviceAddress outputSizes) -> VulkanDetail::ClusterBuildTarget
     {
-        BuildInfoBufferSize(operation, count);
+        VulkanDetail::ClusterTaskLayout(operation).GetBufferSize(count);
         CHECK_TRUE(mode == Implicit || mode == Explicit || mode == ComputeSizes, "Invalid cluster operation mode!");
         if (mode == Implicit) CheckAddress(storage, 0, 1, 1);
         else CHECK_TRUE(!storage, "Only implicit cluster targets have contiguous storage!");
@@ -252,7 +276,7 @@ namespace
         VulkanDetail::ClusterBuildTarget target;
         target.storage = storage;
         target.references = references;
-        target.outputSizes = outputSizes;
+        target.sizes = outputSizes;
         target.capacity = count;
         target.mode = mode;
         target.operation = operation;
@@ -268,13 +292,40 @@ auto VulkanDetail::ClusterTaskLayout(VkClusterAccelerationStructureOpTypeNV oper
     case Instantiate: return InstanceTaskLayout;
     case ClusterBlas: return ClusterBlasTaskLayout;
     case Template: return ClusterLevelAccelStructTemplateBuildInfo::GetBuildInfoLayout();
+    case Move: return ClusterAccelStructMoveInfo::GetBuildInfoLayout();
+    case QueryTemplateIndices: return ClusterTemplateIndicesQueryInfo::GetBuildInfoLayout();
     default: throw std::runtime_error("Unsupported cluster command operation!");
     }
 }
 
 auto VulkanDetail::CreateClusterDestination(const AccelStructMemoryRequirements& sizes) -> std::unique_ptr<Buffer>
 {
-    return CreateClusterBuffer(sizes.accelerationStructureSize, StorageUsage, sizes.accelerationStructureAlignment);
+    const auto alignment = sizes.accelerationStructureAlignment;
+    CHECK_TRUE(std::has_single_bit(alignment), "Device returned an invalid cluster output alignment!");
+    const auto allocator = MyDevice::GetInstance().GetMemoryAllocator();
+    CHECK_TRUE(allocator && allocator->IsValid() && vkGetBufferDeviceAddress && vkCreateBuffer &&
+        vkDestroyBuffer && vkGetBufferMemoryRequirements, "Cluster allocation dependencies are unavailable!");
+    BufferCreateInfo info;
+    info.SetBufferSize(sizes.accelerationStructureSize).SetBufferUsage(StorageUsage)
+        .CustomizeAlignment(alignment).CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    auto buffer = std::make_unique<Buffer>();
+    buffer->Create(info);
+    CheckAddress(buffer->GetDeviceAddress(), 0, sizes.accelerationStructureSize, alignment);
+    return buffer;
+}
+
+void ClusterAccelStructMoveInfo::CommitToDeviceInline(
+    std::span<const ClusterAccelStructMoveInfo> infos, Buffer& destination, VkDeviceSize offset)
+{
+    UploadReferenceTasks<VkClusterAccelerationStructureMoveObjectsInfoNV>(infos, destination, offset,
+        [](const ClusterAccelStructMoveInfo& info) -> VkDeviceAddress { return info.m_source; });
+}
+
+void ClusterTemplateIndicesQueryInfo::CommitToDeviceInline(
+    std::span<const ClusterTemplateIndicesQueryInfo> infos, Buffer& destination, VkDeviceSize offset)
+{
+    UploadReferenceTasks<VulkanDetail::ClusterTemplateIndicesTask>(infos, destination, offset,
+        [](const ClusterTemplateIndicesQueryInfo& info) -> VkDeviceAddress { return info.m_template; });
 }
 
 void ClusterLevelAccelStructTemplateBuildInfo::SetIndexBuffer(VkDeviceAddress inAddress, uint32_t inIndexCount)
@@ -283,37 +334,6 @@ void ClusterLevelAccelStructTemplateBuildInfo::SetIndexBuffer(VkDeviceAddress in
     m_indices = inAddress;
     m_triangles = inIndexCount / 3;
 }
-
-void ClusterLevelAccelStructTemplateBatch::Create(
-    const ClusterLevelAccelStructTemplateBatchCreateInfo& inCreateInfo)
-{
-    CHECK_TRUE(!m_storage && inCreateInfo.m_maxTemplateCount &&
-        inCreateInfo.m_maxTriangleCountPerTemplate && inCreateInfo.m_maxVertexCountPerTemplate &&
-        inCreateInfo.m_maxTotalTriangleCount && inCreateInfo.m_maxTotalVertexCount,
-        "Template batch requires positive capacities and an empty target!");
-    ClusterLevelAccelStructBuildLimits limits;
-    limits.SetMaxTriangleCount(inCreateInfo.m_maxTriangleCountPerTemplate,
-        inCreateInfo.m_maxTotalTriangleCount);
-    limits.SetMaxVertexCount(inCreateInfo.m_maxVertexCountPerTemplate,
-        inCreateInfo.m_maxTotalVertexCount);
-    limits.CustomizeVertexFormat(inCreateInfo.m_vertexFormat);
-    const auto sizes = VulkanDetail::ClusterSizeQuery::Get(limits, Template, Implicit,
-        inCreateInfo.m_maxTemplateCount);
-    auto storage = VulkanDetail::CreateClusterDestination(sizes);
-    auto references = CreateClusterBuffer(
-        VkDeviceSize(inCreateInfo.m_maxTemplateCount) * ReferenceStride,
-        ReferenceUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, ReferenceStride);
-    const auto storageAddress = storage->GetDeviceAddress();
-    const auto referenceAddress = references->GetDeviceAddress();
-    m_limits = limits.m_limits;
-    m_memoryRequirements = sizes;
-    m_capacity = inCreateInfo.m_maxTemplateCount;
-    m_storageAddress = storageAddress;
-    m_referenceAddress = referenceAddress;
-    m_storage = std::move(storage);
-    m_references = std::move(references);
-}
-
 
 void ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(
     std::span<const ClusterLevelAccelStructTemplateBuildInfo> infos, Buffer& destination, VkDeviceSize offset)
@@ -329,7 +349,6 @@ void ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(
     tasks.reserve(infos.size());
     for (const auto& info : infos)
     {
-        GetVertexLayout(info.m_vertexFormat);
         tasks.push_back(EncodeTopology<TemplateTask>(info.m_triangles, info.m_vertices, info.m_indices,
             info.m_indexStride, GetIndexLayout(info.m_indexType)));
     }
@@ -339,14 +358,14 @@ void ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(
 void ClusterLevelAccelStructDirectBuildInfo::SetIndexBuffer(VkDeviceAddress inAddress, uint32_t inIndexCount)
 {
     CHECK_TRUE(inIndexCount % 3 == 0, "Cluster index count must be a multiple of three!");
-    indexAddress = inAddress;
-    primitiveCount = inIndexCount / 3;
+    m_indexAddress = inAddress;
+    m_triangleCount = inIndexCount / 3;
 }
 
-void ClusterLevelAccelStructDirectBuildInfo::SetVertexBuffer(VkDeviceAddress inAddress, uint32_t inVertexCount)
+void ClusterLevelAccelStructDirectBuildInfo::SetVertexBuffer(VkDeviceAddress inAddress, uint32_t inUniqueVertexCount)
 {
-    vertexAddress = inAddress;
-    vertexCount = inVertexCount;
+    m_vertexAddress = inAddress;
+    m_uniqueVertexCount = inUniqueVertexCount;
 }
 
 void ClusterLevelAccelStructBuildLimits::SetMaxTriangleCount(uint32_t perCluster, uint32_t total)
@@ -367,25 +386,19 @@ void ClusterLevelAccelStructBuildLimits::CustomizeVertexFormat(VkFormat format)
 auto VulkanDetail::ClusterSizeQuery::Get(const ClusterLevelAccelStructBuildLimits& layout,
     VkClusterAccelerationStructureOpTypeNV operation, VkClusterAccelerationStructureOpModeNV mode, uint32_t count) -> AccelStructMemoryRequirements
 {
-    const auto& limits = layout.m_limits;
-    CHECK_TRUE(count && limits.maxClusterTriangleCount && limits.maxClusterVertexCount &&
-        limits.maxTotalTriangleCount && limits.maxTotalVertexCount,
-        "All cluster batch capacities must be nonzero!");
+    auto limits = layout.m_limits;
+    CHECK_TRUE(count, "Cluster maximum task count must be positive!");
+    CheckTriangleLimits(limits);
     auto& device = MyDevice::GetInstance();
     CheckQueryDependencies(device, device.m_clusterAccelerationStructureEnabled);
     const auto properties = QueryProperties(device.vkPhysicalDevice);
     CHECK_TRUE(properties.cluster.maxClusterGeometryIndex > 0, "Device must support cluster geometry index zero!");
-    CHECK_TRUE(limits.maxClusterTriangleCount <= (std::min)(properties.cluster.maxTrianglesPerCluster, MaxTriangleTaskCount),
-        "Cluster batch triangle capacity exceeds the per-cluster limit!");
-    CHECK_TRUE(limits.maxClusterVertexCount <= (std::min)(properties.cluster.maxVerticesPerCluster, MaxTriangleTaskCount),
-        "Cluster batch vertex capacity exceeds the per-cluster limit!");
-    QueryVertexLayout(device.vkPhysicalDevice, limits.vertexFormat);
+    CheckTriangleDeviceLimits(limits, properties.cluster, device.vkPhysicalDevice);
     VkClusterAccelerationStructureInputInfoNV input{ VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV };
     input.maxAccelerationStructureCount = count;
     input.opType = operation;
     input.opMode = mode;
-    auto nativeLimits = limits;
-    input.opInput.pTriangleClusters = &nativeLimits;
+    input.opInput.pTriangleClusters = &limits;
     if (operation == Instantiate)
         CHECK_TRUE(std::has_single_bit(properties.cluster.clusterTemplateByteAlignment), "Invalid template alignment!");
     return QuerySizes(device, input, ClusterTaskLayout(operation).recordStride, properties);
@@ -394,13 +407,11 @@ auto VulkanDetail::ClusterSizeQuery::Get(const ClusterLevelAccelStructBuildLimit
 void ClusterLevelAccelStructCreateInfo::SetMaxTriangleCount(uint32_t count) { m_triangles = count; }
 void ClusterLevelAccelStructCreateInfo::SetMaxVertexCount(uint32_t count) { m_vertices = count; }
 void ClusterLevelAccelStructCreateInfo::CustomizeVertexFormat(VkFormat format) { m_vertexFormat = format; }
-void ClusterLevelAccelStructCreateInfo::CustomizeIndexType(VkIndexType type) { m_indexType = type; }
 void ClusterLevelAccelStructCreateInfo::CustomizeTemplateUsage(bool enabled) { m_useTemplate = enabled; }
 
 void ClusterLevelAccelStruct::Create(const ClusterLevelAccelStructCreateInfo& info)
 {
     CHECK_TRUE(!m_storage, "Cluster Create requires an empty target!");
-    GetIndexLayout(info.m_indexType);
     ClusterLevelAccelStructBuildLimits layout;
     layout.SetMaxTriangleCount(info.m_triangles, info.m_triangles);
     layout.SetMaxVertexCount(info.m_vertices, info.m_vertices);
@@ -412,44 +423,23 @@ void ClusterLevelAccelStruct::Create(const ClusterLevelAccelStructCreateInfo& in
     m_storage = std::move(storage);
     m_reference = reference;
     m_memoryRequirements = sizes;
-    m_info = info;
 }
 
-void ClusterLevelAccelStructBatch::Create(const ClusterLevelAccelStructImplicitBatchCreateInfo& inCreateInfo)
+auto ClusterLevelAccelStructDirectBuildInfo::_Encode() const -> VkClusterAccelerationStructureBuildTriangleClusterInfoNV
 {
-    CHECK_TRUE(!m_count, "Cluster batch Create requires an empty target!");
-    const auto count = inCreateInfo.m_maxClusterCount;
-    GetIndexLayout(inCreateInfo.m_indexType);
-    ClusterLevelAccelStructBuildLimits layout;
-    layout.SetMaxTriangleCount(inCreateInfo.m_maxClusterTriangleCount, inCreateInfo.m_maxTotalTriangleCount);
-    layout.SetMaxVertexCount(inCreateInfo.m_maxClusterVertexCount, inCreateInfo.m_maxTotalVertexCount);
-    layout.CustomizeVertexFormat(inCreateInfo.m_vertexFormat);
-    const auto sizes = VulkanDetail::ClusterSizeQuery::Get(layout, inCreateInfo.m_useTemplate ? Instantiate : Direct, Implicit, count);
-    auto storage = VulkanDetail::CreateClusterDestination(sizes);
-    auto references = CreateClusterBuffer(count * ReferenceStride,
-        ReferenceUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, ReferenceStride);
-    const auto storageAddress = storage->GetDeviceAddress();
-    const auto referenceAddress = references->GetDeviceAddress();
-
-    m_triangleInput = layout.m_limits;
-    m_useTemplate = inCreateInfo.m_useTemplate;
-    m_indexType = inCreateInfo.m_indexType;
-    m_memoryRequirements = sizes;
-    m_storageAddress = storageAddress;
-    m_referenceAddress = referenceAddress;
-    m_storageBuffer = std::move(storage);
-    m_referenceBuffer = std::move(references);
-    m_count = count;
+    const auto vertex = GetVertexLayout(m_vertexFormat);
+    const auto index = GetIndexLayout(m_indexType);
+    CHECK_TRUE(m_clusterID != MaxCount, "Cluster ID is reserved!");
+    CHECK_TRUE(m_vertexStride <= (std::numeric_limits<uint16_t>::max)() &&
+        m_vertexStride % vertex.size == 0, "Invalid cluster vertex stride!");
+    auto task = EncodeTopology<TriangleTask>(m_triangleCount, m_uniqueVertexCount, m_indexAddress, m_indexStride, index);
+    const auto effectiveStride = m_vertexStride == 0 ? vertex.size : m_vertexStride;
+    const auto vertexBytes = (m_uniqueVertexCount - 1) * effectiveStride + vertex.size;
+    task.clusterID = m_clusterID;
+    task.vertexBufferStride = static_cast<uint16_t>(m_vertexStride);
+    task.vertexBuffer = CheckAddress(m_vertexAddress, 0, vertexBytes, vertex.alignment);
+    return task;
 }
-
-auto ClusterLevelAccelStructBatch::GetReferenceBuffer() const noexcept -> const Buffer*
-{ return m_referenceBuffer ? m_referenceBuffer.get() : m_explicitReferences.get(); }
-auto ClusterLevelAccelStructBatch::GetMemoryRequirements() const noexcept -> const AccelStructMemoryRequirements&
-{ return m_memoryRequirements; }
-auto ClusterLevelAccelStructBatch::GetCapacity() const noexcept -> uint32_t
-{ return m_count; }
-auto ClusterLevelAccelStructBatch::GetScratchAlignment() const noexcept -> VkDeviceSize
-{ return m_memoryRequirements.scratchAlignment; }
 
 void ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(std::span<const ClusterLevelAccelStructDirectBuildInfo> inBuildInfos,
     Buffer& inDstBuffer, VkDeviceSize inOffset)
@@ -463,11 +453,7 @@ void ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(std::span<cons
     std::vector<TriangleTask> tasks;
     tasks.reserve(inBuildInfos.size());
     for (const auto& triangle : inBuildInfos)
-    {
-        const auto vertex = GetVertexLayout(triangle.vertexFormat);
-        const auto index = GetIndexLayout(triangle.indexType);
-        tasks.push_back(EncodeTriangle(triangle, vertex, index));
-    }
+        tasks.push_back(triangle._Encode());
     Buffer::UploadToDeviceInline(inDstBuffer, inOffset, tasks.data(), static_cast<size_t>(bytes));
 }
 
@@ -530,172 +516,77 @@ auto VulkanDetail::ClusterSizeQuery::Get(const ClusterBottomLevelAccelStructBuil
     return QuerySizes(device, input, ClusterBlasTaskLayout.recordStride, properties);
 }
 
-void ClusterBottomLevelAccelStructBatch::Create(const ClusterBottomLevelAccelStructImplicitBatchCreateInfo& inCreateInfo)
-{
-    CHECK_TRUE(!m_count, "Cluster BLAS batch Create requires an empty target!");
-    const auto count = inCreateInfo.m_maxAccelStructCount;
-    ClusterBottomLevelAccelStructBuildLimits layout;
-    layout.SetMaxClusterCount(inCreateInfo.m_maxClusterCountPerAccelStruct, inCreateInfo.m_maxTotalClusterCount);
-    const auto sizes = VulkanDetail::ClusterSizeQuery::Get(layout, Implicit, count);
-    auto storage = VulkanDetail::CreateClusterDestination(sizes);
-    auto references = CreateClusterBuffer(count * ReferenceStride,
-        ReferenceUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, ReferenceStride);
-    const auto storageAddress = storage->GetDeviceAddress();
-    const auto referenceAddress = references->GetDeviceAddress();
-
-    m_clustersInput = layout.m_limits;
-    m_memoryRequirements = sizes;
-    m_storageAddress = storageAddress;
-    m_referenceAddress = referenceAddress;
-    m_storageBuffer = std::move(storage);
-    m_referenceBuffer = std::move(references);
-    m_count = count;
-}
-
-auto ClusterBottomLevelAccelStructBatch::GetReferenceBuffer() const noexcept -> const Buffer*
-{ return m_referenceBuffer ? m_referenceBuffer.get() : m_explicitReferences.get(); }
-auto ClusterBottomLevelAccelStructBatch::GetMemoryRequirements() const noexcept -> const AccelStructMemoryRequirements&
-{ return m_memoryRequirements; }
-auto ClusterBottomLevelAccelStructBatch::GetCapacity() const noexcept -> uint32_t
-{ return m_count; }
-auto ClusterBottomLevelAccelStructBatch::GetScratchAlignment() const noexcept -> VkDeviceSize
-{ return m_memoryRequirements.scratchAlignment; }
-
-void ClusterLevelAccelStructExplicitBatchCreateInfo::SetReferenceBuffer(Buffer& table, VkDeviceSize offset)
-{
-    m_references = &table;
-    m_offset = offset;
-}
-
-void ClusterBottomLevelAccelStructExplicitBatchCreateInfo::SetReferenceBuffer(Buffer& table, VkDeviceSize offset)
-{
-    m_references = &table;
-    m_offset = offset;
-}
-
-void ClusterLevelAccelStructExplicitBatchCreateInfo::SetDestinationAccelStructs(std::span<const ClusterLevelAccelStruct* const> destinations)
-{ m_destinations.assign(destinations.begin(), destinations.end()); }
-
-void ClusterBottomLevelAccelStructExplicitBatchCreateInfo::SetDestinationAccelStructs(std::span<const BottomLevelAccelStruct* const> destinations)
-{ m_destinations.assign(destinations.begin(), destinations.end()); }
-
-namespace
-{
-    template<class T>
-    auto RetainDestinations(const std::vector<const T*>& destinations) -> std::vector<IntrusivePtr<const T>>
-    {
-        CHECK_TRUE(!destinations.empty() && destinations.size() <= MaxCount, "Explicit batch requires a representable, nonempty owner list!");
-        std::unordered_set<const T*> unique;
-        std::vector<IntrusivePtr<const T>> owners;
-        owners.reserve(destinations.size());
-        for (const auto* destination : destinations)
-        {
-            CHECK_TRUE(destination && unique.insert(destination).second, "Explicit destinations require distinct, non-null owners!");
-            owners.emplace_back(destination);
-        }
-        return owners;
-    }
-
-    void AddBudget(uint32_t value, uint32_t& maximum, uint32_t& total)
-    {
-        CHECK_TRUE(value <= MaxCount - total, "Explicit batch aggregate capacity exceeds the native range!");
-        maximum = (std::max)(value, maximum);
-        total += value;
-    }
-}
-
-void ClusterLevelAccelStructBatch::Create(const ClusterLevelAccelStructExplicitBatchCreateInfo& info)
-{
-    CHECK_TRUE(!m_count, "Cluster batch Create requires an empty target!");
-    auto destinations = RetainDestinations(info.m_destinations);
-    const auto count = static_cast<uint32_t>(destinations.size());
-    const auto referenceAddress = TableAddress(info.m_references, info.m_offset, count);
-    const auto& first = destinations.front()->m_info;
-    ClusterLevelAccelStructBuildLimits layout;
-    layout.CustomizeVertexFormat(first.m_vertexFormat);
-    for (const auto& owner : destinations)
-    {
-        const auto& source = owner->m_info;
-        CHECK_TRUE(owner->IsValid() && source.m_vertexFormat == first.m_vertexFormat &&
-            source.m_indexType == first.m_indexType && source.m_useTemplate == first.m_useTemplate,
-            "Explicit CLAS owners must be created with matching vertex/index formats and build operation!");
-        AddBudget(source.m_triangles, layout.m_limits.maxClusterTriangleCount, layout.m_limits.maxTotalTriangleCount);
-        AddBudget(source.m_vertices, layout.m_limits.maxClusterVertexCount, layout.m_limits.maxTotalVertexCount);
-    }
-    const auto sizes = VulkanDetail::ClusterSizeQuery::Get(layout, first.m_useTemplate ? Instantiate : Direct, Explicit, count);
-    m_memoryRequirements = sizes;
-    m_triangleInput = layout.m_limits;
-    m_useTemplate = first.m_useTemplate;
-    m_indexType = first.m_indexType;
-    m_explicitReferences.reset(info.m_references);
-    m_referenceOffset = info.m_offset;
-    m_referenceAddress = referenceAddress;
-    m_destinations = std::move(destinations);
-    m_count = count;
-}
-
-void ClusterBottomLevelAccelStructBatch::Create(const ClusterBottomLevelAccelStructExplicitBatchCreateInfo& info)
-{
-    CHECK_TRUE(!m_count, "Cluster BLAS batch Create requires an empty target!");
-    auto destinations = RetainDestinations(info.m_destinations);
-    const auto count = static_cast<uint32_t>(destinations.size());
-    const auto referenceAddress = TableAddress(info.m_references, info.m_offset, count);
-    ClusterBottomLevelAccelStructBuildLimits layout;
-    for (const auto& source : destinations)
-    {
-        CHECK_TRUE(source->m_clusterCount && source->GetDeviceAddress(), "Explicit Cluster BLAS requires cluster-backed owners!");
-        AddBudget(source->m_clusterCount, layout.m_limits.maxClusterCountPerAccelerationStructure, layout.m_limits.maxTotalClusterCount);
-    }
-    const auto sizes = VulkanDetail::ClusterSizeQuery::Get(layout, Explicit, count);
-    m_memoryRequirements = sizes;
-    m_clustersInput = layout.m_limits;
-    m_explicitReferences.reset(info.m_references);
-    m_referenceOffset = info.m_offset;
-    m_referenceAddress = referenceAddress;
-    m_destinations = std::move(destinations);
-    m_count = count;
-}
-
-void VulkanDetail::ClusterCommandState::Select(const ClusterLevelAccelStructBatch& batch,
-    VkClusterAccelerationStructureOpModeNV mode, VkClusterAccelerationStructureOpTypeNV operation)
-{
-    CHECK_TRUE(operation == (batch.m_useTemplate ? Instantiate : Direct), "Cluster Batch operation does not match the command!");
-    CHECK_TRUE((mode == Implicit) == bool(batch.m_storageBuffer), "Batch destination mode does not match the command!");
-    auto next = MakeTarget(batch.m_count, mode, operation, batch.m_storageAddress, batch.m_referenceAddress, 0);
-    next.triangles = batch.m_triangleInput;
-    target = std::move(next);
-}
-
-void VulkanDetail::ClusterCommandState::Select(const ClusterBottomLevelAccelStructBatch& batch, VkClusterAccelerationStructureOpModeNV mode)
-{
-    CHECK_TRUE((mode == Implicit) == bool(batch.m_storageBuffer), "Batch destination mode does not match the command!");
-    auto next = MakeTarget(batch.m_count, mode, ClusterBlas, batch.m_storageAddress, batch.m_referenceAddress, 0);
-    next.clusters = batch.m_clustersInput;
-    target = std::move(next);
-}
-
-void VulkanDetail::ClusterCommandState::Select(
-    const ClusterLevelAccelStructTemplateBatch& batch, VkClusterAccelerationStructureOpModeNV mode)
-{
-    CHECK_TRUE(mode == Implicit && batch.IsValid() && batch.GetCapacity() != 0,
-        "Template batch destination mode is invalid!");
-    auto next = MakeTarget(batch.m_capacity, mode, Template, batch.m_storageAddress, batch.m_referenceAddress, 0);
-    next.triangles = batch.m_limits;
-    target = std::move(next);
-}
-
 void VulkanDetail::ClusterCommandState::Select(const ClusterLevelAccelStructBuildLimits& layout, uint32_t capacity,
     VkClusterAccelerationStructureOpModeNV mode, VkClusterAccelerationStructureOpTypeNV operation,
     VkDeviceAddress storage, VkDeviceAddress references, VkDeviceAddress outputSizes)
 {
-    CHECK_TRUE(layout.m_limits.maxClusterTriangleCount && layout.m_limits.maxClusterVertexCount &&
-        layout.m_limits.maxTotalTriangleCount && layout.m_limits.maxTotalVertexCount,
-        "All cluster batch capacities must be nonzero!");
-    CHECK_TRUE(layout.m_limits.vertexFormat != VK_FORMAT_UNDEFINED && layout.m_limits.vertexFormat != VK_FORMAT_MAX_ENUM,
-        "A cluster vertex format is required!");
+    CheckTriangleLimits(layout.m_limits);
     auto next = MakeTarget(capacity, mode, operation, storage, references, outputSizes);
     next.triangles = layout.m_limits;
     target = std::move(next);
+}
+
+void VulkanDetail::ClusterCommandState::Select(const ClusterAccelStructMoveLimits& layout, uint32_t capacity,
+    VkClusterAccelerationStructureOpModeNV mode, VkDeviceAddress storage,
+    VkDeviceAddress references, VkDeviceAddress outputSizes)
+{
+    CheckMoveLimits(layout.m_limits);
+    auto next = MakeTarget(capacity, mode, Move, storage, references, outputSizes);
+    next.move = layout.m_limits;
+    target = std::move(next);
+}
+
+auto VulkanDetail::ClusterSizeQuery::GetMoveScratchRequirements(const ClusterAccelStructMoveLimits& layout,
+    VkClusterAccelerationStructureOpModeNV mode, uint32_t count) -> ClusterScratchRequirements
+{
+    auto limits = layout.m_limits;
+    CHECK_TRUE(count, "Cluster maximum task count must be positive!");
+    CheckMoveLimits(limits);
+    const auto& device = MyDevice::GetInstance();
+    CheckQueryDependencies(device, device.m_clusterAccelerationStructureEnabled);
+    VkClusterAccelerationStructureInputInfoNV input{ VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV };
+    input.maxAccelerationStructureCount = count;
+    input.opType = Move;
+    input.opMode = mode;
+    input.opInput.pMoveObjects = &limits;
+    const auto sizes = QueryNativeSizes(device, input);
+    // Drivers may report MOVE scratch in updateScratchSize even for a no-overlap copy.
+    const auto scratchSize = (std::max)(sizes.buildScratchSize, sizes.updateScratchSize);
+    const auto properties = QueryProperties(device.vkPhysicalDevice);
+    CHECK_TRUE(scratchSize <= properties.maxBufferAllocation,
+        "Cluster MOVE scratch exceeds Device allocation limits!");
+    return { scratchSize, properties.GetScratchAlignment() };
+}
+
+auto VulkanDetail::ClusterSizeQuery::GetTemplateIndicesSizes(const ClusterLevelAccelStructBuildLimits& layout,
+    VkClusterAccelerationStructureOpModeNV mode, uint32_t count) -> VkAccelerationStructureBuildSizesInfoKHR
+{
+    auto limits = layout.m_limits;
+    CHECK_TRUE(count, "Cluster maximum task count must be positive!");
+    CheckTriangleLimits(limits);
+    const auto& device = MyDevice::GetInstance();
+    CheckQueryDependencies(device, device.m_clusterAccelerationStructureEnabled);
+    CHECK_TRUE(device.m_clusterAccelerationStructureRevision >= ClusterTemplateIndicesMinRevision,
+        "Cluster template index queries require NV cluster acceleration structure revision 3 or newer!");
+    const auto properties = QueryProperties(device.vkPhysicalDevice);
+    CheckTriangleDeviceLimits(limits, properties.cluster, device.vkPhysicalDevice);
+    VkClusterAccelerationStructureInputInfoNV input{ VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV };
+    input.maxAccelerationStructureCount = count;
+    input.opType = QueryTemplateIndices;
+    input.opMode = mode;
+    input.opInput.pTriangleClusters = &limits;
+    return QueryNativeSizes(device, input);
+}
+
+auto VulkanDetail::ClusterSizeQuery::GetMoveDestinationAlignment(VkClusterAccelerationStructureTypeNV type) -> VkDeviceSize
+{
+    const auto property = MoveAlignmentProperty(type);
+    const auto& device = MyDevice::GetInstance();
+    CheckQueryDependencies(device, device.m_clusterAccelerationStructureEnabled);
+    const auto properties = QueryProperties(device.vkPhysicalDevice);
+    const auto alignment = properties.cluster.*property;
+    CHECK_TRUE(std::has_single_bit(alignment), "Device returned an invalid cluster move destination alignment!");
+    return alignment;
 }
 
 void VulkanDetail::ClusterCommandState::Select(const ClusterBottomLevelAccelStructBuildLimits& layout, uint32_t capacity,
@@ -713,9 +604,7 @@ auto VulkanDetail::ClusterSizeQuery::GetScratchAlignment() -> VkDeviceSize
 {
     const auto& device = MyDevice::GetInstance();
     CheckQueryDependencies(device, device.m_clusterAccelerationStructureEnabled);
-    const auto alignment = QueryProperties(device.vkPhysicalDevice).cluster.clusterScratchByteAlignment;
-    CHECK_TRUE(std::has_single_bit(alignment), "Device returned an invalid cluster scratch alignment!");
-    return alignment;
+    return QueryProperties(device.vkPhysicalDevice).GetScratchAlignment();
 }
 
 void ComputeClusterAccelStructSizesCommandInput::SetBottomLevelAccelStructTarget(
@@ -742,214 +631,213 @@ void ComputeClusterAccelStructSizesCommandInput::SetClusterTemplateTarget(
     m_state.Select(layout, capacity, ComputeSizes, Template, 0, 0, outputSizes);
 }
 
-void BuildExplicitClusterAccelStructCommandInput::SetBottomLevelAccelStructTarget(
+void ExplicitClusterAccelStructCommandInput::SetBottomLevelAccelStructTarget(
     const ClusterBottomLevelAccelStructBuildLimits& layout, uint32_t capacity, VkDeviceAddress references)
 {
     m_state.Select(layout, capacity, Explicit, 0, references, 0);
 }
 
-void BuildExplicitClusterAccelStructCommandInput::SetBottomLevelAccelStructTarget(
-    const ClusterBottomLevelAccelStructBatch& batch)
-{
-    m_state.Select(batch, Explicit);
-}
-
-void BuildExplicitClusterAccelStructCommandInput::SetClusterTarget(
+void ExplicitClusterAccelStructCommandInput::SetClusterTarget(
     const ClusterLevelAccelStructBuildLimits& layout, uint32_t capacity, VkDeviceAddress references)
 {
     m_state.Select(layout, capacity, Explicit, Direct, 0, references, 0);
 }
 
-void BuildExplicitClusterAccelStructCommandInput::SetClusterTarget(
-    const ClusterLevelAccelStructBatch& batch)
-{
-    m_state.Select(batch, Explicit, Direct);
-}
-
-void BuildExplicitClusterAccelStructCommandInput::SetInstantiateClusterTarget(
+void ExplicitClusterAccelStructCommandInput::SetInstantiateClusterTarget(
     const ClusterLevelAccelStructBuildLimits& layout, uint32_t capacity, VkDeviceAddress references)
 {
     m_state.Select(layout, capacity, Explicit, Instantiate, 0, references, 0);
 }
 
-void BuildExplicitClusterAccelStructCommandInput::SetInstantiateClusterTarget(
-    const ClusterLevelAccelStructBatch& batch)
-{
-    m_state.Select(batch, Explicit, Instantiate);
-}
-
-void BuildImplicitClusterAccelStructCommandInput::SetBottomLevelAccelStructTarget(
+void ImplicitClusterAccelStructCommandInput::SetBottomLevelAccelStructTarget(
     const ClusterBottomLevelAccelStructBuildLimits& layout, uint32_t capacity, VkDeviceAddress storage, VkDeviceAddress references)
 {
     m_state.Select(layout, capacity, Implicit, storage, references, 0);
 }
 
-void BuildImplicitClusterAccelStructCommandInput::SetBottomLevelAccelStructTarget(
-    const ClusterBottomLevelAccelStructBatch& batch)
-{
-    m_state.Select(batch, Implicit);
-}
-
-void BuildImplicitClusterAccelStructCommandInput::SetClusterTarget(
+void ImplicitClusterAccelStructCommandInput::SetClusterTarget(
     const ClusterLevelAccelStructBuildLimits& layout, uint32_t capacity, VkDeviceAddress storage, VkDeviceAddress references)
 {
     m_state.Select(layout, capacity, Implicit, Direct, storage, references, 0);
 }
 
-void BuildImplicitClusterAccelStructCommandInput::SetClusterTarget(
-    const ClusterLevelAccelStructBatch& batch)
-{
-    m_state.Select(batch, Implicit, Direct);
-}
-
-void BuildImplicitClusterAccelStructCommandInput::SetInstantiateClusterTarget(
+void ImplicitClusterAccelStructCommandInput::SetInstantiateClusterTarget(
     const ClusterLevelAccelStructBuildLimits& layout, uint32_t capacity, VkDeviceAddress storage, VkDeviceAddress references)
 {
     m_state.Select(layout, capacity, Implicit, Instantiate, storage, references, 0);
 }
 
-void BuildImplicitClusterAccelStructCommandInput::SetInstantiateClusterTarget(
-    const ClusterLevelAccelStructBatch& batch)
-{
-    m_state.Select(batch, Implicit, Instantiate);
-}
-
-void BuildImplicitClusterAccelStructCommandInput::SetClusterTemplateTarget(
-    const ClusterLevelAccelStructTemplateBatch& batch)
-{
-    m_state.Select(batch, Implicit);
-}
-
-void BuildImplicitClusterAccelStructCommandInput::SetClusterTemplateTarget(
+void ImplicitClusterAccelStructCommandInput::SetClusterTemplateTarget(
     const ClusterLevelAccelStructBuildLimits& limits, uint32_t capacity, VkDeviceAddress storage, VkDeviceAddress references)
 {
     m_state.Select(limits, capacity, Implicit, Template, storage, references, 0);
 }
 
-auto ComputeClusterAccelStructSizesCommandInput::GetBottomLevelAccelStructBuildScratchBufferSize(
-    const ClusterBottomLevelAccelStructBuildLimits& limits, uint32_t capacity) -> VkDeviceSize
+auto ComputeClusterAccelStructSizesCommandInput::GetBottomLevelAccelStructBuildScratchRequirements(
+    const ClusterBottomLevelAccelStructBuildLimits& limits, uint32_t capacity) -> ClusterScratchRequirements
 {
-    return VulkanDetail::ClusterSizeQuery::Get(limits, ComputeSizes, capacity).buildScratchBufferSize;
+    const auto requirements = VulkanDetail::ClusterSizeQuery::Get(limits, ComputeSizes, capacity);
+    return { requirements.buildScratchBufferSize, requirements.scratchAlignment };
 }
 
-auto ComputeClusterAccelStructSizesCommandInput::GetBottomLevelAccelStructBuildInfoBufferSize(uint32_t capacity) -> VkDeviceSize
+auto ComputeClusterAccelStructSizesCommandInput::GetClusterBuildScratchRequirements(
+    const ClusterLevelAccelStructBuildLimits& limits, uint32_t capacity) -> ClusterScratchRequirements
 {
-    return BuildInfoBufferSize(ClusterBlas, capacity);
+    const auto requirements = VulkanDetail::ClusterSizeQuery::Get(limits, Direct, ComputeSizes, capacity);
+    return { requirements.buildScratchBufferSize, requirements.scratchAlignment };
 }
 
-auto ComputeClusterAccelStructSizesCommandInput::GetClusterBuildScratchBufferSize(
-    const ClusterLevelAccelStructBuildLimits& limits, uint32_t capacity) -> VkDeviceSize
+auto ComputeClusterAccelStructSizesCommandInput::GetInstantiateClusterBuildScratchRequirements(
+    const ClusterLevelAccelStructBuildLimits& limits, uint32_t capacity) -> ClusterScratchRequirements
 {
-    return VulkanDetail::ClusterSizeQuery::Get(limits, Direct, ComputeSizes, capacity).buildScratchBufferSize;
+    const auto requirements = VulkanDetail::ClusterSizeQuery::Get(limits, Instantiate, ComputeSizes, capacity);
+    return { requirements.buildScratchBufferSize, requirements.scratchAlignment };
 }
 
-auto ComputeClusterAccelStructSizesCommandInput::GetClusterBuildInfoBufferSize(uint32_t capacity) -> VkDeviceSize
+auto ComputeClusterAccelStructSizesCommandInput::GetClusterTemplateBuildScratchRequirements(
+    const ClusterLevelAccelStructBuildLimits& limits, uint32_t capacity) -> ClusterScratchRequirements
 {
-    return BuildInfoBufferSize(Direct, capacity);
+    const auto requirements = VulkanDetail::ClusterSizeQuery::Get(limits, Template, ComputeSizes, capacity);
+    return { requirements.buildScratchBufferSize, requirements.scratchAlignment };
 }
 
-auto ComputeClusterAccelStructSizesCommandInput::GetInstantiateClusterBuildScratchBufferSize(
-    const ClusterLevelAccelStructBuildLimits& limits, uint32_t capacity) -> VkDeviceSize
-{
-    return VulkanDetail::ClusterSizeQuery::Get(limits, Instantiate, ComputeSizes, capacity).buildScratchBufferSize;
-}
-
-auto ComputeClusterAccelStructSizesCommandInput::GetInstantiateClusterBuildInfoBufferSize(uint32_t capacity) -> VkDeviceSize
-{
-    return BuildInfoBufferSize(Instantiate, capacity);
-}
-
-auto ComputeClusterAccelStructSizesCommandInput::GetClusterTemplateBuildScratchBufferSize(
-    const ClusterLevelAccelStructBuildLimits& limits, uint32_t capacity) -> VkDeviceSize
-{
-    return VulkanDetail::ClusterSizeQuery::Get(limits, Template, ComputeSizes, capacity).buildScratchBufferSize;
-}
-
-auto ComputeClusterAccelStructSizesCommandInput::GetClusterTemplateBuildInfoBufferSize(uint32_t capacity) -> VkDeviceSize
-{
-    return BuildInfoBufferSize(Template, capacity);
-}
-
-auto BuildExplicitClusterAccelStructCommandInput::GetBottomLevelAccelStructMemoryRequirements(
+auto ExplicitClusterAccelStructCommandInput::GetBottomLevelAccelStructMemoryRequirements(
     const ClusterBottomLevelAccelStructBuildLimits& limits, uint32_t capacity) -> AccelStructMemoryRequirements
 {
     return VulkanDetail::ClusterSizeQuery::Get(limits, Explicit, capacity);
 }
 
-auto BuildExplicitClusterAccelStructCommandInput::GetBottomLevelAccelStructBuildInfoBufferSize(uint32_t capacity) -> VkDeviceSize
-{
-    return BuildInfoBufferSize(ClusterBlas, capacity);
-}
-
-auto BuildExplicitClusterAccelStructCommandInput::GetClusterMemoryRequirements(
+auto ExplicitClusterAccelStructCommandInput::GetClusterMemoryRequirements(
     const ClusterLevelAccelStructBuildLimits& limits, uint32_t capacity) -> AccelStructMemoryRequirements
 {
     return VulkanDetail::ClusterSizeQuery::Get(limits, Direct, Explicit, capacity);
 }
 
-auto BuildExplicitClusterAccelStructCommandInput::GetClusterBuildInfoBufferSize(uint32_t capacity) -> VkDeviceSize
-{
-    return BuildInfoBufferSize(Direct, capacity);
-}
-
-auto BuildExplicitClusterAccelStructCommandInput::GetInstantiateClusterMemoryRequirements(
+auto ExplicitClusterAccelStructCommandInput::GetInstantiateClusterMemoryRequirements(
     const ClusterLevelAccelStructBuildLimits& limits, uint32_t capacity) -> AccelStructMemoryRequirements
 {
     return VulkanDetail::ClusterSizeQuery::Get(limits, Instantiate, Explicit, capacity);
 }
 
-auto BuildExplicitClusterAccelStructCommandInput::GetInstantiateClusterBuildInfoBufferSize(uint32_t capacity) -> VkDeviceSize
-{
-    return BuildInfoBufferSize(Instantiate, capacity);
-}
-
-auto BuildImplicitClusterAccelStructCommandInput::GetBottomLevelAccelStructMemoryRequirements(
+auto ImplicitClusterAccelStructCommandInput::GetBottomLevelAccelStructMemoryRequirements(
     const ClusterBottomLevelAccelStructBuildLimits& limits, uint32_t capacity) -> AccelStructMemoryRequirements
 {
     return VulkanDetail::ClusterSizeQuery::Get(limits, Implicit, capacity);
 }
 
-auto BuildImplicitClusterAccelStructCommandInput::GetBottomLevelAccelStructBuildInfoBufferSize(uint32_t capacity) -> VkDeviceSize
-{
-    return BuildInfoBufferSize(ClusterBlas, capacity);
-}
-
-auto BuildImplicitClusterAccelStructCommandInput::GetClusterMemoryRequirements(
+auto ImplicitClusterAccelStructCommandInput::GetClusterMemoryRequirements(
     const ClusterLevelAccelStructBuildLimits& limits, uint32_t capacity) -> AccelStructMemoryRequirements
 {
     return VulkanDetail::ClusterSizeQuery::Get(limits, Direct, Implicit, capacity);
 }
 
-auto BuildImplicitClusterAccelStructCommandInput::GetClusterBuildInfoBufferSize(uint32_t capacity) -> VkDeviceSize
-{
-    return BuildInfoBufferSize(Direct, capacity);
-}
-
-auto BuildImplicitClusterAccelStructCommandInput::GetInstantiateClusterMemoryRequirements(
+auto ImplicitClusterAccelStructCommandInput::GetInstantiateClusterMemoryRequirements(
     const ClusterLevelAccelStructBuildLimits& limits, uint32_t capacity) -> AccelStructMemoryRequirements
 {
     return VulkanDetail::ClusterSizeQuery::Get(limits, Instantiate, Implicit, capacity);
 }
 
-auto BuildImplicitClusterAccelStructCommandInput::GetInstantiateClusterBuildInfoBufferSize(uint32_t capacity) -> VkDeviceSize
-{
-    return BuildInfoBufferSize(Instantiate, capacity);
-}
-
-auto BuildImplicitClusterAccelStructCommandInput::GetClusterTemplateMemoryRequirements(
+auto ImplicitClusterAccelStructCommandInput::GetClusterTemplateMemoryRequirements(
     const ClusterLevelAccelStructBuildLimits& limits, uint32_t capacity) -> AccelStructMemoryRequirements
 {
     return VulkanDetail::ClusterSizeQuery::Get(limits, Template, Implicit, capacity);
 }
 
-auto BuildImplicitClusterAccelStructCommandInput::GetClusterTemplateBuildInfoBufferSize(uint32_t capacity) -> VkDeviceSize
-{
-    return BuildInfoBufferSize(Template, capacity);
-}
-
 auto ComputeClusterAccelStructSizesCommandInput::GetScratchAlignment() -> VkDeviceSize
 {
     return VulkanDetail::ClusterSizeQuery::GetScratchAlignment();
+}
+
+void ComputeClusterAccelStructSizesCommandInput::SetMoveObjectsTarget(
+    const ClusterAccelStructMoveLimits& limits, uint32_t count, VkDeviceAddress outputSizes)
+{
+    m_state.Select(limits, count, ComputeSizes, 0, 0, outputSizes);
+}
+
+void ComputeClusterAccelStructSizesCommandInput::SetQueryTemplateIndicesTarget(
+    const ClusterLevelAccelStructBuildLimits& limits, uint32_t count, VkDeviceAddress outputSizes)
+{
+    m_state.Select(limits, count, ComputeSizes, QueryTemplateIndices, 0, 0, outputSizes);
+}
+
+auto ComputeClusterAccelStructSizesCommandInput::GetMoveObjectsScratchRequirements(
+    const ClusterAccelStructMoveLimits& limits, uint32_t count) -> ClusterScratchRequirements
+{
+    return VulkanDetail::ClusterSizeQuery::GetMoveScratchRequirements(limits, ComputeSizes, count);
+}
+
+auto ComputeClusterAccelStructSizesCommandInput::GetQueryTemplateIndicesBuildSizes(
+    const ClusterLevelAccelStructBuildLimits& limits, uint32_t count) -> VkAccelerationStructureBuildSizesInfoKHR
+{
+    return VulkanDetail::ClusterSizeQuery::GetTemplateIndicesSizes(limits, ComputeSizes, count);
+}
+
+void ExplicitClusterAccelStructCommandInput::SetMoveObjectsTarget(
+    const ClusterAccelStructMoveLimits& limits, uint32_t count, VkDeviceAddress destinationReferences)
+{
+    m_state.Select(limits, count, Explicit, 0, destinationReferences, 0);
+}
+
+void ExplicitClusterAccelStructCommandInput::SetQueryTemplateIndicesTarget(
+    const ClusterLevelAccelStructBuildLimits& limits, uint32_t count, VkDeviceAddress destinationDataAddresses)
+{
+    m_state.Select(limits, count, Explicit, QueryTemplateIndices, 0, destinationDataAddresses, 0);
+}
+
+auto ExplicitClusterAccelStructCommandInput::GetMoveObjectsScratchRequirements(
+    const ClusterAccelStructMoveLimits& limits, uint32_t count) -> ClusterScratchRequirements
+{
+    return VulkanDetail::ClusterSizeQuery::GetMoveScratchRequirements(limits, Explicit, count);
+}
+
+auto ExplicitClusterAccelStructCommandInput::GetQueryTemplateIndicesBuildSizes(
+    const ClusterLevelAccelStructBuildLimits& limits, uint32_t count) -> VkAccelerationStructureBuildSizesInfoKHR
+{
+    return VulkanDetail::ClusterSizeQuery::GetTemplateIndicesSizes(limits, Explicit, count);
+}
+
+auto ExplicitClusterAccelStructCommandInput::GetScratchAlignment() -> VkDeviceSize
+{
+    return VulkanDetail::ClusterSizeQuery::GetScratchAlignment();
+}
+
+auto ExplicitClusterAccelStructCommandInput::GetMoveObjectsDestinationAlignment(VkClusterAccelerationStructureTypeNV type) -> VkDeviceSize
+{
+    return VulkanDetail::ClusterSizeQuery::GetMoveDestinationAlignment(type);
+}
+
+void ImplicitClusterAccelStructCommandInput::SetMoveObjectsTarget(
+    const ClusterAccelStructMoveLimits& limits, uint32_t count, VkDeviceAddress storage, VkDeviceAddress outputReferences)
+{
+    m_state.Select(limits, count, Implicit, storage, outputReferences, 0);
+}
+
+void ImplicitClusterAccelStructCommandInput::SetQueryTemplateIndicesTarget(
+    const ClusterLevelAccelStructBuildLimits& limits, uint32_t count, VkDeviceAddress outputData, VkDeviceAddress outputDataAddresses)
+{
+    m_state.Select(limits, count, Implicit, QueryTemplateIndices, outputData, outputDataAddresses, 0);
+}
+
+auto ImplicitClusterAccelStructCommandInput::GetMoveObjectsScratchRequirements(
+    const ClusterAccelStructMoveLimits& limits, uint32_t count) -> ClusterScratchRequirements
+{
+    return VulkanDetail::ClusterSizeQuery::GetMoveScratchRequirements(limits, Implicit, count);
+}
+
+auto ImplicitClusterAccelStructCommandInput::GetQueryTemplateIndicesBuildSizes(
+    const ClusterLevelAccelStructBuildLimits& limits, uint32_t count) -> VkAccelerationStructureBuildSizesInfoKHR
+{
+    return VulkanDetail::ClusterSizeQuery::GetTemplateIndicesSizes(limits, Implicit, count);
+}
+
+auto ImplicitClusterAccelStructCommandInput::GetScratchAlignment() -> VkDeviceSize
+{
+    return VulkanDetail::ClusterSizeQuery::GetScratchAlignment();
+}
+
+auto ImplicitClusterAccelStructCommandInput::GetMoveObjectsDestinationAlignment(VkClusterAccelerationStructureTypeNV type) -> VkDeviceSize
+{
+    return VulkanDetail::ClusterSizeQuery::GetMoveDestinationAlignment(type);
 }
 
 void ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(std::span<const ClusterBottomLevelAccelStructBuildInfo> inHostInfo,

@@ -1,5 +1,6 @@
 #include "command.h"
 #include "device.h"
+#include "resource/acceleration_structure_gpu_layout.h"
 
 void ExternalCommand::Record(VkCommandBuffer inVkCommandBuffer) const
 {
@@ -176,7 +177,8 @@ void BuildClusterAccelerationStructuresNVCommand::SetParameters(const Parameters
 {
     const auto& info = inParameters.info;
     CHECK_TRUE(info.pNext == nullptr && info.input.pNext == nullptr &&
-        inParameters.triangles.pNext == nullptr && inParameters.clusters.pNext == nullptr,
+        inParameters.triangles.pNext == nullptr && inParameters.clusters.pNext == nullptr &&
+        inParameters.move.pNext == nullptr,
         "Unsupported cluster build pNext!");
     CHECK_TRUE((info.input.opMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV ||
                 info.input.opMode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV ||
@@ -186,24 +188,32 @@ void BuildClusterAccelerationStructuresNVCommand::SetParameters(const Parameters
          (info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_TEMPLATE_NV &&
           info.input.opMode != VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV) ||
          info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_INSTANTIATE_TRIANGLE_CLUSTER_NV ||
-         info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV),
+         info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV ||
+         info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_MOVE_OBJECTS_NV ||
+         info.input.opType == VulkanDetail::ClusterTemplateIndicesOperation),
         "Unsupported cluster build operation!");
     m_parameters = inParameters;
     // All Host pointer targets are owned values; reconstruct the active union at Record.
-    m_parameters.info.input.opInput.pTriangleClusters = nullptr;
+    m_parameters.info.input.opInput = {};
 }
 
 void BuildClusterAccelerationStructuresNVCommand::Record(VkCommandBuffer inVkCommandBuffer) const
 {
     CHECK_TRUE(inVkCommandBuffer != VK_NULL_HANDLE && vkCmdBuildClusterAccelerationStructureIndirectNV != nullptr,
         "Cluster acceleration structure commands are unavailable!");
-    auto info = m_parameters.info;
-    auto triangles = m_parameters.triangles;
-    auto clusters = m_parameters.clusters;
-    if (info.input.opType == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV)
+    auto [info, triangles, clusters, move] = m_parameters;
+    switch (info.input.opType)
+    {
+    case VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_MOVE_OBJECTS_NV:
+        info.input.opInput.pMoveObjects = &move;
+        break;
+    case VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV:
         info.input.opInput.pClustersBottomLevel = &clusters;
-    else
+        break;
+    default:
         info.input.opInput.pTriangleClusters = &triangles;
+        break;
+    }
     vkCmdBuildClusterAccelerationStructureIndirectNV(inVkCommandBuffer, &info);
 }
 

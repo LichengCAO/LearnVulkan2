@@ -17,7 +17,7 @@
 - [操作模式](https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureOpModeNV.html)。
   使用范围：区分 COMPUTE_SIZES、IMPLICIT_DESTINATIONS 与 EXPLICIT_DESTINATIONS。
 - [本仓库的资源生命周期](docs/resource_lifetimes.md#cluster-acceleration-structure-batches)。
-  使用范围：Host Create 与 GPU Build 的边界、容量预算、借用地址、有效输出前缀与 CLAS 生命周期。
+  使用范围：容量与对齐查询、调用方存储、借用地址、GPU 有效前缀以及模板、地址表和 CLAS 的生命周期。
 
 - [Microsoft：CLAS / PTLAS preview](https://devblogs.microsoft.com/directx/clas-ptlas-preview/)。
   PTLAS 的应用动机、与 CLAS 的独立性及 DXR preview 状态；核对日期：2026-11-19。
@@ -52,5 +52,4 @@
 
 ## Gaps
 
-- 本次检查的 LearnVulkan2 工作树尚无 Template 构建或实例化接口。讲义中的新增接口名称属于设计建议。
 - 未进行本机 GPU 性能测量；收益需要以自己的变形内容、build 与 trace 总时间验证。

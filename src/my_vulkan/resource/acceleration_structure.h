@@ -123,7 +123,6 @@ public:
 class BottomLevelAccelStruct final : public RefCounted
 {
     friend class BuildAccelStructCommandInput;
-    friend class ClusterBottomLevelAccelStructBatch;
     friend class CommandBuffer;
     friend struct CommandBufferTestProbe;
 private:

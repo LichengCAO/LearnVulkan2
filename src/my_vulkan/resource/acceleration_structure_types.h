@@ -15,8 +15,8 @@ struct AccelStructMemoryRequirements
 {
     // Output capacity bound, not the actual GPU-built size. For CLAS and Cluster BLAS:
     // implicit destinations require this many bytes for the whole contiguous batch;
-    // an explicit object using the layout maxima fits this many bytes. In a managed
-    // heterogeneous batch, task i must fit owner i's separately queried capacities.
+    // an explicit object using the layout maxima fits this many bytes. If explicit
+    // destinations have different capacities, each task must fit its chosen destination.
     VkDeviceSize accelerationStructureSize = 0;
     // Required alignment of the implicit storage base or each explicit destination address.
     // For fixed explicit slots, align the slot stride up from accelerationStructureSize.
@@ -29,4 +29,10 @@ struct AccelStructMemoryRequirements
     std::optional<VkDeviceSize> updateScratchBufferSize;
     // BUILD and KHR UPDATE share this address alignment.
     VkDeviceSize scratchAlignment = 0;
+};
+
+struct ClusterScratchRequirements
+{
+    VkDeviceSize size = 0; // Zero bytes require a zero scratch address.
+    VkDeviceSize alignment = 0;
 };

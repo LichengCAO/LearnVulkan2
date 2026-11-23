@@ -488,8 +488,12 @@ void CommandBuffer::_AppendClusterCommand(const VulkanDetail::ClusterCommandStat
     CHECK_TRUE(inCountAddress == 0 ||
         (inCountAddress % AccelStructGpuLayout::CountSize == 0 && AccelStructGpuLayout::CountSize <= maximum - inCountAddress),
         "Cluster GPU count address range overflows or is misaligned!");
-    CHECK_TRUE(MyDevice::GetInstance().m_clusterAccelerationStructureEnabled && vkCmdBuildClusterAccelerationStructureIndirectNV != nullptr,
+    const auto& device = MyDevice::GetInstance();
+    CHECK_TRUE(device.m_clusterAccelerationStructureEnabled && vkCmdBuildClusterAccelerationStructureIndirectNV != nullptr,
         "Cluster acceleration structure commands are unavailable!");
+    CHECK_TRUE(target.operation != VulkanDetail::ClusterTemplateIndicesOperation ||
+        device.m_clusterAccelerationStructureRevision >= VulkanDetail::ClusterTemplateIndicesMinRevision,
+        "Cluster template index queries require NV cluster acceleration structure revision 3 or newer!");
     const auto inCapacity = target.capacity;
     CHECK_TRUE(inCapacity != 0, "Cluster build target is not created!");
     const auto inTaskLayout = VulkanDetail::ClusterTaskLayout(target.operation);
@@ -501,12 +505,12 @@ void CommandBuffer::_AppendClusterCommand(const VulkanDetail::ClusterCommandStat
     const auto references = target.references;
     const bool sizing = target.mode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV;
     const auto referenceSize = sizing ? 0 : VkDeviceSize{ inCapacity } * sizeof(VkDeviceAddress);
-    const auto sizesAddress = target.outputSizes;
+    const auto sizesAddress = target.sizes;
     const auto sizesBytes = sizesAddress ? VkDeviceSize{ inCapacity } * sizeof(uint32_t) : 0;
     CHECK_TRUE(sizing || references != 0, "A cluster reference array is required!");
     CHECK_TRUE(!sizing || sizesAddress != 0, "Computing cluster sizes requires a size output array!");
     CHECK_TRUE(sizesAddress % sizeof(uint32_t) == 0 && sizesBytes <= maximum - sizesAddress,
-        "Cluster size output array overflows or is misaligned!");
+        "Cluster size array overflows or is misaligned!");
     const auto disjoint = [](VkDeviceAddress a, VkDeviceSize aSize, VkDeviceAddress b, VkDeviceSize bSize)
     {
         return !aSize || !bSize || a + aSize <= b || b + bSize <= a;
@@ -517,12 +521,15 @@ void CommandBuffer::_AppendClusterCommand(const VulkanDetail::ClusterCommandStat
         CHECK_TRUE(disjoint(base, size, inTasks, taskSize) && disjoint(base, size, inCountAddress, countSize),
             "Cluster output overlaps build inputs!");
     };
-    checkWrite(sizesAddress, sizesBytes);
-    CHECK_TRUE(disjoint(sizesAddress, sizesBytes, references, referenceSize), "Cluster size output overlaps its address table!");
-    if (target.mode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV)
+    // Explicit destinations and their optional sizes are both read by the GPU.
+    if (sizing)
+        checkWrite(sizesAddress, sizesBytes);
+    else if (target.mode == VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV)
     {
         CHECK_TRUE(storage, "Implicit storage is missing!");
+        checkWrite(sizesAddress, sizesBytes);
         checkWrite(references, referenceSize);
+        CHECK_TRUE(disjoint(sizesAddress, sizesBytes, references, referenceSize), "Cluster size output overlaps its address table!");
     }
     BuildClusterAccelerationStructuresNVCommand::Parameters parameters;
     auto& info = parameters.info;
@@ -538,6 +545,7 @@ void CommandBuffer::_AppendClusterCommand(const VulkanDetail::ClusterCommandStat
     info.srcInfosCount = inCountAddress;
     parameters.triangles = target.triangles;
     parameters.clusters = target.clusters;
+    parameters.move = target.move;
     auto command = std::make_unique<BuildClusterAccelerationStructuresNVCommand>();
     command->SetParameters(parameters);
     _AppendOwnedCommand(std::move(command));
@@ -548,12 +556,12 @@ void CommandBuffer::ComputeClusterAccelStructSizes(const ComputeClusterAccelStru
     _AppendClusterCommand(inInput.m_state);
 }
 
-void CommandBuffer::BuildAccelerationStructureIndirect(const BuildExplicitClusterAccelStructCommandInput& inInput)
+void CommandBuffer::ExecuteClusterAccelStructIndirect(const ExplicitClusterAccelStructCommandInput& inInput)
 {
     _AppendClusterCommand(inInput.m_state);
 }
 
-void CommandBuffer::BuildAccelerationStructureIndirect(const BuildImplicitClusterAccelStructCommandInput& inInput)
+void CommandBuffer::ExecuteClusterAccelStructIndirect(const ImplicitClusterAccelStructCommandInput& inInput)
 {
     _AppendClusterCommand(inInput.m_state);
 }

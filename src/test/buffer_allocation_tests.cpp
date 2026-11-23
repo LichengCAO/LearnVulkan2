@@ -102,7 +102,6 @@ struct NativeState final
     uint32_t creates = 0, destroys = 0, maps = 0, unmaps = 0, waits = 0;
     uint32_t viewCreates = 0, viewDestroys = 0;
     bool failCreate = false, failAllocate = false, failBind = false, failMap = false, failView = false;
-    bool failNextReferenceBufferCreation = false;
     bool failViewPublication = false;
     bool badOrder = false;
     bool requireAllocationOnDestroy = false, requireUnmappedOnDestroy = false;
@@ -116,13 +115,6 @@ auto VKAPI_PTR CreateBuffer(VkDevice device, const VkBufferCreateInfo* info,
     std::lock_guard lock(active->mutex);
     CHECK_TRUE(device == active->expectedDevice, "Buffer must use its creating Device!");
     ++active->creates;
-    if (active->failNextReferenceBufferCreation &&
-        CONTAIN_BITS(info->usage, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT))
-    {
-        active->failNextReferenceBufferCreation = false;
-        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-    }
     if (active->failCreate) { *out = Handle<VkBuffer>(99999); return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
     *out = Handle<VkBuffer>(active->next++);
     active->buffers.emplace(*out, info->size);
@@ -818,11 +810,6 @@ void ClasBufferTestFixture::Run(void (*inTest)())
     inTest();
     CHECK_TRUE(hooks.state.asCreates == 0 && hooks.state.asSizes == 0,
         "Cluster batches must use buffer storage without creating KHR acceleration structures!");
-}
-
-void ClasBufferTestFixture::FailNextReferenceBufferCreation()
-{
-    active->failNextReferenceBufferCreation = true;
 }
 
 void ClasBufferTestFixture::SetAllocationFailure(bool inFail)

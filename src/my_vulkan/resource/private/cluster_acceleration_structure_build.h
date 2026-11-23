@@ -4,9 +4,7 @@
 class Buffer;
 class ClusterLevelAccelStructBuildLimits;
 class ClusterBottomLevelAccelStructBuildLimits;
-class ClusterLevelAccelStructBatch;
-class ClusterBottomLevelAccelStructBatch;
-class ClusterLevelAccelStructTemplateBatch;
+class ClusterAccelStructMoveLimits;
 
 namespace VulkanDetail
 {
@@ -16,6 +14,11 @@ namespace VulkanDetail
             VkClusterAccelerationStructureOpModeNV, uint32_t inCapacity) -> AccelStructMemoryRequirements;
         static auto Get(const ClusterBottomLevelAccelStructBuildLimits&, VkClusterAccelerationStructureOpModeNV,
             uint32_t inCapacity) -> AccelStructMemoryRequirements;
+        static auto GetMoveScratchRequirements(const ClusterAccelStructMoveLimits&, VkClusterAccelerationStructureOpModeNV,
+            uint32_t inCapacity) -> ClusterScratchRequirements;
+        static auto GetTemplateIndicesSizes(const ClusterLevelAccelStructBuildLimits&, VkClusterAccelerationStructureOpModeNV,
+            uint32_t inCapacity) -> VkAccelerationStructureBuildSizesInfoKHR;
+        static auto GetMoveDestinationAlignment(VkClusterAccelerationStructureTypeNV inType) -> VkDeviceSize;
         static auto GetScratchAlignment() -> VkDeviceSize;
     };
 
@@ -25,7 +28,8 @@ namespace VulkanDetail
     {
         VkClusterAccelerationStructureTriangleClusterInputNV triangles{};
         VkClusterAccelerationStructureClustersBottomLevelInputNV clusters{};
-        VkDeviceAddress outputSizes = 0;
+        VkClusterAccelerationStructureMoveObjectsInputNV move{};
+        VkDeviceAddress sizes = 0;
         VkDeviceAddress storage = 0;
         VkDeviceAddress references = 0;
         uint32_t capacity = 0;
@@ -49,7 +53,8 @@ namespace VulkanDetail
         {
             std::swap(triangles, other.triangles);
             std::swap(clusters, other.clusters);
-            std::swap(outputSizes, other.outputSizes);
+            std::swap(move, other.move);
+            std::swap(sizes, other.sizes);
             std::swap(storage, other.storage);
             std::swap(references, other.references);
             std::swap(capacity, other.capacity);
@@ -69,10 +74,8 @@ namespace VulkanDetail
             VkDeviceAddress inStorage, VkDeviceAddress inReferences, VkDeviceAddress inOutputSizes);
         void Select(const ClusterBottomLevelAccelStructBuildLimits&, uint32_t inCapacity, VkClusterAccelerationStructureOpModeNV,
             VkDeviceAddress inStorage, VkDeviceAddress inReferences, VkDeviceAddress inOutputSizes);
-        void Select(const ClusterLevelAccelStructBatch&, VkClusterAccelerationStructureOpModeNV,
-            VkClusterAccelerationStructureOpTypeNV);
-        void Select(const ClusterLevelAccelStructTemplateBatch&, VkClusterAccelerationStructureOpModeNV);
-        void Select(const ClusterBottomLevelAccelStructBatch&, VkClusterAccelerationStructureOpModeNV);
+        void Select(const ClusterAccelStructMoveLimits&, uint32_t inCapacity, VkClusterAccelerationStructureOpModeNV,
+            VkDeviceAddress inStorage, VkDeviceAddress inReferences, VkDeviceAddress inOutputSizes);
     };
     auto CreateClusterDestination(const AccelStructMemoryRequirements& inSizes) -> std::unique_ptr<Buffer>;
 }
