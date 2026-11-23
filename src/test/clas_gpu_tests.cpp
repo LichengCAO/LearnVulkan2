@@ -395,8 +395,8 @@ public:
         geometry.SetMaxTriangleCount(1); geometry.SetMaxVertexCount(3);
         BottomLevelAccelStructCreateInfo blasInfo; blasInfo.SetTriangles(std::span(&geometry, 1));
         BottomLevelAccelStruct blas; blas.Create(blasInfo);
-        auto blasScratch = MakeBuffer(blas.GetSizesInfo().buildScratchBufferSize, kScratchUsage,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, blas.GetSizesInfo().scratchAlignment);
+        auto blasScratch = MakeBuffer(blas.GetMemoryRequirements().buildScratchBufferSize, kScratchUsage,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, blas.GetMemoryRequirements().scratchAlignment);
         AccelStructTriangleBuildInfo triangleBuild;
         triangleBuild.SetVertexBuffer(vertices.GetDeviceAddress(), 3); triangleBuild.SetTriangleCount(1);
         BuildAccelStructCommandInput blasBuild; blasBuild.SetTrianglesTarget(blas, std::span(&triangleBuild, 1));
@@ -407,7 +407,7 @@ public:
         info.CustomizeMaxInstanceCountInGlobalPartition(2); info.CustomizePartitionTranslation(true);
         info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
         PartitionedTopLevelAccelStruct a, b; a.Create(info); b.Create(info);
-        const auto& sizes = a.GetSizesInfo();
+        const auto& sizes = a.GetMemoryRequirements();
         auto scratch = sizes.buildScratchBufferSize ? MakeBuffer(sizes.buildScratchBufferSize, kScratchUsage,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, sizes.scratchAlignment) : Buffer{};
         auto writes = MakeBuffer(208, kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
@@ -588,12 +588,12 @@ private:
         submission.SubmitAndWait(cmd);
     }
 
-    static auto _MakeScratch(const HeadlessDevice& native, const AccelStructSizesInfo& sizes) -> Buffer
+    static auto _MakeScratch(const HeadlessDevice& native, VkDeviceSize bytes, VkDeviceSize requiredAlignment) -> Buffer
     {
-        if (!sizes.buildScratchBufferSize) return {};
-        const auto alignment = (std::max)(sizes.scratchAlignment,
+        if (!bytes) return {};
+        const auto alignment = (std::max)(requiredAlignment,
             VkDeviceSize{native.accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment});
-        return MakeBuffer(sizes.buildScratchBufferSize, kScratchUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, alignment);
+        return MakeBuffer(bytes, kScratchUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, alignment);
     }
 
     using SizeValues = std::array<uint32_t, 2>;
@@ -610,18 +610,19 @@ private:
         return values;
     }
 
-    static auto _ComputeSizes(const HeadlessDevice& native, ComputeClusterAccelStructSizesCommandInput input,
-        const Buffer& tasks, std::string_view operation) -> SizeValues
+    template<typename BindTarget>
+    static auto _ComputeSizes(const HeadlessDevice& native, const Buffer& tasks, VkDeviceSize taskBytes,
+        VkDeviceSize scratchBytes, BindTarget&& bindTarget, std::string_view operation) -> SizeValues
     {
-        const auto requirements = input.QueryCurrentTargetSizesInfo();
-        CHECK_TRUE(!requirements.accelerationStructureSize && !requirements.accelerationStructureAlignment &&
-            requirements.buildInfoBufferSize == tasks.GetBufferInformation().size);
-        auto scratch = _MakeScratch(native, requirements);
+        CHECK_TRUE(taskBytes == tasks.GetBufferInformation().size);
+        const auto scratchAlignment = ComputeClusterAccelStructSizesCommandInput::GetScratchAlignment();
+        auto scratch = _MakeScratch(native, scratchBytes, scratchAlignment);
         auto sizes = MakeBuffer(sizeof(SizeValues), kScratchUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, kHostMemory);
         auto gpuCount = MakeBuffer(sizeof(uint32_t), kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        ComputeClusterAccelStructSizesCommandInput input;
+        bindTarget(input, sizes.GetDeviceAddress());
         input.SetArgumentAddress(tasks.GetDeviceAddress());
-        input.SetOutputSizesArray(sizes.GetDeviceAddress());
-        if (scratch.IsValid()) input.SetScratchAddress(scratch.GetDeviceAddress());
+        input.SetScratchAddress(scratch.IsValid() ? scratch.GetDeviceAddress() : 0);
         input.CustomizeBuildCountAddress(gpuCount.GetDeviceAddress());
         constexpr auto stage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
         const auto barrier = native.deviceFunctions.vkCmdPipelineBarrier;
@@ -653,10 +654,10 @@ private:
         Buffer references;
     };
 
-    static auto _BuildSizedDestinations(const HeadlessDevice& native, BuildExplicitClusterAccelStructCommandInput input,
-        const Buffer& tasks, const SizeValues& sizes) -> SizedDestinations
+    template<typename BindTarget>
+    static auto _BuildSizedDestinations(const HeadlessDevice& native, const AccelStructMemoryRequirements& requirements,
+        const Buffer& tasks, const SizeValues& sizes, BindTarget&& bindTarget) -> SizedDestinations
     {
-        const auto requirements = input.QueryCurrentTargetSizesInfo();
         const auto allocate = [&](uint32_t bytes) -> Buffer
         {
             return MakeBuffer(bytes, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
@@ -671,10 +672,11 @@ private:
             CHECK_TRUE(addresses[i] && addresses[i] % requirements.accelerationStructureAlignment == 0);
         }
         Buffer::UploadToDeviceInline(destinations.references, 0, addresses.data(), sizeof(addresses));
-        auto scratch = _MakeScratch(native, requirements);
+        auto scratch = _MakeScratch(native, requirements.buildScratchBufferSize, requirements.scratchAlignment);
+        BuildExplicitClusterAccelStructCommandInput input;
+        bindTarget(input, destinations.references.GetDeviceAddress());
         input.SetArgumentAddress(tasks.GetDeviceAddress());
-        if (scratch.IsValid()) input.SetScratchAddress(scratch.GetDeviceAddress());
-        input.SetReferencesArray(destinations.references.GetDeviceAddress());
+        input.SetScratchAddress(scratch.IsValid() ? scratch.GetDeviceAddress() : 0);
         CommandBuffer build;
         constexpr auto stage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
         const auto barrier = native.deviceFunctions.vkCmdPipelineBarrier;
@@ -691,18 +693,16 @@ private:
     static void _CheckComputedDestinations(const HeadlessDevice& native, bool instantiate,
         const Buffer& clusterTasks, VkDeviceAddress indices)
     {
+        using Sizing = ComputeClusterAccelStructSizesCommandInput;
+        using Build = BuildExplicitClusterAccelStructCommandInput;
+        constexpr uint32_t capacity = 2;
         ClusterLevelAccelStructBuildLimits layout;
         layout.SetMaxTriangleCount(1, 2);
         layout.SetMaxVertexCount(3, 6);
-        ComputeClusterAccelStructSizesCommandInput sizing;
-        BuildExplicitClusterAccelStructCommandInput build;
-        if (instantiate)
+        if (!instantiate)
         {
-            sizing.SetInstantiateClusterTarget(layout, 2);
-            build.SetInstantiateClusterTarget(layout, 2);
-        }
-        else
-        {
+            const auto taskBytes = Sizing::GetClusterTemplateBuildInfoBufferSize(capacity);
+            const auto scratchBytes = Sizing::GetClusterTemplateBuildScratchBufferSize(layout, capacity);
             using Task = VkClusterAccelerationStructureBuildTriangleClusterTemplateInfoNV;
             std::array<Task, 2> topology{};
             for (auto& task : topology)
@@ -714,26 +714,45 @@ private:
                 task.baseGeometryIndexAndGeometryFlags.geometryFlags = VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;
                 task.indexBuffer = indices;
             }
-            auto templateTasks = MakeBuffer(sizeof(topology), kBuildInputUsage, kHostMemory, alignof(Task));
+            CHECK_TRUE(taskBytes == sizeof(topology));
+            auto templateTasks = MakeBuffer(taskBytes, kBuildInputUsage, kHostMemory, alignof(Task));
             Buffer::UploadToDeviceInline(templateTasks, 0, topology.data(), sizeof(topology));
-            sizing.SetClusterTemplateTarget(layout, 2);
-            _ComputeSizes(native, sizing, templateTasks, "Template");
-            sizing.SetClusterTarget(layout, 2);
-            build.SetClusterTarget(layout, 2);
+            _ComputeSizes(native, templateTasks, taskBytes, scratchBytes,
+                [&](auto& input, VkDeviceAddress output) { input.SetClusterTemplateTarget(layout, capacity, output); }, "Template");
         }
-        const auto sizes = _ComputeSizes(native, sizing, clusterTasks, instantiate ? "instantiate CLAS" : "direct CLAS");
-        auto clusters = _BuildSizedDestinations(native, build, clusterTasks, sizes);
+        const auto clusterTaskBytes = instantiate ? Sizing::GetInstantiateClusterBuildInfoBufferSize(capacity) :
+            Sizing::GetClusterBuildInfoBufferSize(capacity);
+        const auto clusterScratchBytes = instantiate ? Sizing::GetInstantiateClusterBuildScratchBufferSize(layout, capacity) :
+            Sizing::GetClusterBuildScratchBufferSize(layout, capacity);
+        const auto clusterMemory = instantiate ? Build::GetInstantiateClusterMemoryRequirements(layout, capacity) :
+            Build::GetClusterMemoryRequirements(layout, capacity);
+        const auto sizes = _ComputeSizes(native, clusterTasks, clusterTaskBytes, clusterScratchBytes,
+            [&](auto& input, VkDeviceAddress output)
+            {
+                if (instantiate) input.SetInstantiateClusterTarget(layout, capacity, output);
+                else input.SetClusterTarget(layout, capacity, output);
+            }, instantiate ? "instantiate CLAS" : "direct CLAS");
+        auto clusters = _BuildSizedDestinations(native, clusterMemory, clusterTasks, sizes,
+            [&](auto& input, VkDeviceAddress references)
+            {
+                if (instantiate) input.SetInstantiateClusterTarget(layout, capacity, references);
+                else input.SetClusterTarget(layout, capacity, references);
+            });
         ClusterBottomLevelAccelStructBuildLimits blasLayout;
         blasLayout.SetMaxClusterCount(2, 3);
-        sizing.SetBottomLevelAccelStructTarget(blasLayout, 2);
-        build.SetBottomLevelAccelStructTarget(blasLayout, 2);
+        const auto blasTaskBytes = Sizing::GetBottomLevelAccelStructBuildInfoBufferSize(capacity);
+        const auto blasScratchBytes = Sizing::GetBottomLevelAccelStructBuildScratchBufferSize(blasLayout, capacity);
+        const auto blasMemory = Build::GetBottomLevelAccelStructMemoryRequirements(blasLayout, capacity);
         std::array<ClusterBottomLevelAccelStructBuildInfo, 2> descriptions{};
         descriptions[0].SetClusterReferences(clusters.references.GetDeviceAddress(), 2);
         descriptions[1].SetClusterReferences(clusters.references.GetDeviceAddress() + sizeof(VkDeviceAddress), 1);
-        auto blasTasks = MakeBuffer(sizing.QueryCurrentTargetSizesInfo().buildInfoBufferSize, kBuildInputUsage, kHostMemory);
+        auto blasTasks = MakeBuffer(blasTaskBytes, kBuildInputUsage, kHostMemory);
         ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(descriptions, blasTasks);
-        const auto blasSizes = _ComputeSizes(native, sizing, blasTasks, "dependent Cluster BLAS");
-        _BuildSizedDestinations(native, build, blasTasks, blasSizes);
+        const auto blasSizes = _ComputeSizes(native, blasTasks, blasTaskBytes, blasScratchBytes,
+            [&](auto& input, VkDeviceAddress output) { input.SetBottomLevelAccelStructTarget(blasLayout, capacity, output); },
+            "dependent Cluster BLAS");
+        _BuildSizedDestinations(native, blasMemory, blasTasks, blasSizes,
+            [&](auto& input, VkDeviceAddress references) { input.SetBottomLevelAccelStructTarget(blasLayout, capacity, references); });
         std::cout << "Built explicit CLAS and dependent explicit Cluster BLAS in GPU-sized allocations.\n";
     }
 
@@ -788,15 +807,17 @@ private:
             CHECK_TRUE(templates.IsValid() && templates.GetCapacity() == 2 &&
                 templates.GetBuildLimits().maxTotalVertexCount == 6 && templates.GetBuildLimits().maxTotalTriangleCount == 2 &&
                 templates.GetVertexFormat() == VK_FORMAT_R32G32B32_SFLOAT);
-            auto tasks = MakeBuffer(templates.GetSizesInfo().buildInfoBufferSize, kBuildInputUsage, kHostMemory,
+            auto tasks = MakeBuffer(BuildImplicitClusterAccelStructCommandInput::GetClusterTemplateBuildInfoBufferSize(templates.GetCapacity()),
+                kBuildInputUsage, kHostMemory,
                 ClusterLevelAccelStructTemplateBuildInfo::GetBuildInfoLayout().addressAlignment);
             ClusterLevelAccelStructTemplateBuildInfo::CommitToDeviceInline(infos, tasks);
-            auto scratch = _MakeScratch(native, templates.GetSizesInfo());
+            const auto& memory = templates.GetMemoryRequirements();
+            auto scratch = _MakeScratch(native, memory.buildScratchBufferSize, memory.scratchAlignment);
             auto readback = MakeBuffer(sizeof(templateAddresses), VK_BUFFER_USAGE_TRANSFER_DST_BIT, kHostMemory);
             BuildImplicitClusterAccelStructCommandInput input;
             input.SetClusterTemplateTarget(templates);
             input.SetArgumentAddress(tasks.GetDeviceAddress());
-            if (scratch.IsValid()) input.SetScratchAddress(scratch.GetDeviceAddress());
+            input.SetScratchAddress(scratch.IsValid() ? scratch.GetDeviceAddress() : 0);
             constexpr auto stage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
             const auto barrier = native.deviceFunctions.vkCmdPipelineBarrier;
             CommandBuffer build;
@@ -878,9 +899,16 @@ private:
         CHECK_TRUE(clusters.GetCapacity() == clusterDescriptions.size() && blases.GetCapacity() == blasDescriptions.size(),
             "CLAS GPU smoke found unexpected output counts.");
 
-        auto clusterTasks = MakeBuffer(clusters.GetSizesInfo().buildInfoBufferSize, kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            useTemplates ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : kHostMemory, alignof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV));
-        auto blasTasks = MakeBuffer(blases.GetSizesInfo().buildInfoBufferSize, kBuildInputUsage,
+        const auto taskLayout = useTemplates ? ClusterLevelAccelStructInstantiateBuildInfo::GetBuildInfoLayout() :
+            ClusterLevelAccelStructDirectBuildInfo::GetBuildInfoLayout();
+        const auto clusterTaskBytes = useTemplates ?
+            BuildImplicitClusterAccelStructCommandInput::GetInstantiateClusterBuildInfoBufferSize(clusters.GetCapacity()) :
+            BuildImplicitClusterAccelStructCommandInput::GetClusterBuildInfoBufferSize(clusters.GetCapacity());
+        const auto blasTaskBytes = BuildImplicitClusterAccelStructCommandInput::GetBottomLevelAccelStructBuildInfoBufferSize(blases.GetCapacity());
+        auto clusterTasks = MakeBuffer(clusterTaskBytes,
+            kBuildInputUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            useTemplates ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : kHostMemory, taskLayout.addressAlignment);
+        auto blasTasks = MakeBuffer(blasTaskBytes, kBuildInputUsage,
             kHostMemory, alignof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV));
         if (useTemplates)
         {
@@ -899,8 +927,10 @@ private:
         ClusterBottomLevelAccelStructBuildInfo::CommitToDeviceInline(blasDescriptions, blasTasks);
 
         const VkDeviceSize scratchAlignment = native.clusterProperties.clusterScratchByteAlignment;
-        auto clusterScratch = _MakeScratch(native, clusters.GetSizesInfo());
-        auto blasScratch = _MakeScratch(native, blases.GetSizesInfo());
+        const auto& clusterMemory = clusters.GetMemoryRequirements();
+        const auto& blasMemory = blases.GetMemoryRequirements();
+        auto clusterScratch = _MakeScratch(native, clusterMemory.buildScratchBufferSize, clusterMemory.scratchAlignment);
+        auto blasScratch = _MakeScratch(native, blasMemory.buildScratchBufferSize, blasMemory.scratchAlignment);
         const auto scratchAddress = [scratchAlignment](const Buffer& scratch) -> VkDeviceAddress
         {
             if (!scratch.IsValid())

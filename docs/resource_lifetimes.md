@@ -215,7 +215,10 @@ be inferred from creation Limits. Typed Copy remains borrowed as well.
 
 Vertex/index/transform buffers, scratch buffers and TLAS references to BLAS remain
 borrowed; callers preserve resource lifetimes through recording and GPU completion.
-`GetSizesInfo()` exposes saved creation requirements without querying the Device.
+`GetMemoryRequirements()` exposes saved storage/scratch requirements without querying
+the Device. KHR UPDATE scratch is present only for ordinary AS created with
+`ALLOW_UPDATE`; a present zero is distinct from an absent UPDATE requirement.
+Input array capacity and GPU record layouts are described separately.
 
 ## TLAS ownership
 
@@ -288,7 +291,8 @@ owner. Recording only constructs stack-local native parameters and issues one
 native build. It performs no size query, upload, allocation, submit or wait.
 
 All PTLAS builds, including source builds, use buildScratchBufferSize; KHR UPDATE
-scratch is not used. Outer input storage always provides 72 accessible bytes,
+scratch is absent. Outer input storage uses the independent
+`AccelStructGpuLayout::Partitioned::OperationBufferSize` budget of 72 accessible bytes,
 with an independent required GPU uint32_t count bounded by three. Host append
 checks range alignment, overflow and known overlaps; an identical source and
 destination address allows in-place modification. A distinct source remains
@@ -332,7 +336,7 @@ of separately retaining its destination objects and reference Buffer. Commands s
 borrow native addresses, and Batch destruction does not wait for GPU completion.
 
 Each explicitly created CLAS or Cluster BLAS owns one aligned output Buffer.
-Single CLAS owners expose `IsValid()`, `GetDeviceAddress()` and `GetSizesInfo()`.
+Single CLAS owners expose `IsValid()`, `GetDeviceAddress()` and `GetMemoryRequirements()`.
 These read saved Host state: validity means allocated storage, not GPU completion,
 and sizes are creation requirements. Failed creation leaves the owner empty and
 retryable; duplicate Create preserves its address and requirements.
@@ -341,7 +345,12 @@ keep the table Buffer's native storage stable, and bound each GPU task to the
 corresponding owner's capacities. CLAS owners share format, index type and
 direct/instantiation operation. The Batch preserves the supplied byte offset
 in `GetReferenceBufferOffset()`. Host Create checks table usage, range and address
-alignment. It neither reads back entries nor uploads addresses.
+alignment. It caches the table Buffer's device address including that offset as
+private Host metadata, while implicit Batch creation caches its storage and
+reference Buffer addresses. Target selection copies these cached values without
+querying Buffer device addresses. These caches describe underlying Buffers rather
+than GPU-produced table contents. Creation neither reads back entries nor uploads
+addresses.
 
 Implicit creation of both Batch types snapshots explicit capacity budgets. CLAS
 also snapshots
@@ -370,10 +379,11 @@ budgets and an optional vertex format. Independent batches may create/release
 concurrently with stable Device/allocator dependencies and caller exclusion of
 same-instance conflicts. Creation performs no upload, build, submission, wait or
 readback. Validity and getters describe saved Host allocation state; the owner
-keeps no actual count, CPU address/topology cache or GPU-ready flag.
+keeps no actual count, CPU mirror of GPU-produced address tables/topology or GPU-ready flag.
 `BuildImplicitClusterAccelStructCommandInput::SetClusterTemplateTarget()` borrows
-the batch and snapshots requirements and addresses. Its raw limits/capacity
-overload instead borrows caller-supplied storage and address-table ranges.
+the batch and snapshots limits, capacity and cached addresses. Its raw overload
+`SetClusterTemplateTarget(limits, maxCount, storageAddress, outputReferencesAddress)`
+binds caller-supplied storage and address-table addresses together.
 Task records and an optional GPU count may be shader-produced; the CPU template
 upload helper is optional. The producer bounds counts and consumers use only the
 active prefix. Callers synchronize task/count writes, template/table writes and
@@ -392,24 +402,49 @@ CLAS references, synchronize GPU-produced table contents and retain the table
 through the BLAS build. Referenced CLAS storage remains alive through the last
 dependent GPU use.
 
-Each CLAS CommandInput snapshots limits and capacity at operation selection.
-Selecting build limits queries the Device synchronously. A matching explicit or
-implicit Batch supplies its creation results and borrowed output addresses.
-The const `QueryCurrentTargetSizesInfo()` reads the selected requirements.
-Changing targets preserves arguments, scratch and GPU count and replaces all
-destination bindings. Copies own independent Host snapshots and moving transfers
-the target binding. Commands borrow GPU arguments, scratch, count, reference
-tables, size tables and AS storage. Compute sizes writes packed `uint32_t` values,
-and implicit builds may write the same output alongside packed references.
-Each appended command freezes these values. With no count address it uses the full
-capacity and requires valid tasks for that whole range. Otherwise the GPU count supplies the actual
-number and its producer must ensure it does not exceed capacity. The RHI neither
-reads back nor clamps that value. A zero read from a supplied count Buffer builds
-no structures but still executes a native command with the existing queue requirements.
-Only the active prefix of output references and sizes is valid. Inactive entries
-retain their previous contents. Uploading a shorter BuildInfo span does not change the command count.
-Both implicit address tables support explicit
-transfer initialization, but the Batch does not initialize them automatically.
+Cluster allocation queries are static and independent of CommandInput bindings.
+Implicit and explicit inputs expose `GetClusterMemoryRequirements(limits, maxCount)`,
+`GetInstantiateClusterMemoryRequirements(limits, maxCount)` and
+`GetBottomLevelAccelStructMemoryRequirements(limits, maxCount)`; the implicit input
+also exposes `GetClusterTemplateMemoryRequirements(limits, maxCount)`. They query
+the Device synchronously. Compute Sizes instead exposes operation-specific static
+`GetXxxBuildScratchBufferSize(limits, maxCount)` and static `GetScratchAlignment()`.
+All three inputs expose operation-specific static `GetXxxBuildInfoBufferSize(maxCount)`
+for full-capacity task bytes; Template queries belong to implicit and Compute Sizes
+inputs. Task-byte calculations require a positive count and use only Host ABI data.
+Owners continue to expose saved requirements through `GetMemoryRequirements()`;
+KHR UPDATE scratch is absent for Cluster operations.
+
+Each CLAS CommandInput snapshots operation, limits, maximum count and borrowed
+addresses. Raw implicit setters take `(limits, maxCount, storage, outputReferences)`,
+raw explicit setters take `(limits, maxCount, destinationReferences)`, and Compute
+Sizes setters take `(limits, maxCount, outputSizes)`. Matching Batch setters copy
+its limits, capacity and cached addresses. Selection is atomic: failure preserves
+the previous target. Successful reselection replaces target bindings and clears
+optional implicit size output while preserving arguments, scratch and GPU count.
+Copies and moves contain independent Host snapshots without resource ownership;
+the moved-from target becomes invalid. CommandInputs store no memory requirements
+or per-destination allocation ranges. `SetScratchAddress` preserves the literal
+address, so the caller supplies zero for a zero scratch requirement.
+
+Target selection, command append and recording query no native sizes/properties
+or Buffer device addresses. Callers guarantee AS/scratch capacities, device-specific
+alignment and nonconflicting allocation ranges. Host checks retain description completeness,
+positive capacities, required addresses, fixed ABI alignment, overflow and known
+task/count/output-array overlaps, as well as feature/entrypoint, compute-queue and
+outside-rendering requirements. Commands borrow GPU arguments, scratch, count,
+reference tables, size tables and AS storage. Compute sizes writes packed `uint32_t`
+values, and implicit builds may write the same output alongside packed references.
+Each appended command freezes its Host snapshot. With no count address it uses the
+full capacity and requires valid tasks for that whole range. Otherwise the GPU
+count supplies the actual number and its producer must ensure it does not exceed
+capacity. The RHI neither reads back nor clamps that value. A zero read from a
+supplied count Buffer builds no structures but still executes a native command
+with the existing queue requirements. Only the active prefix of output references
+and sizes is valid. Inactive entries retain their previous contents. Uploading a
+shorter BuildInfo span does not change the command count. Both implicit address
+tables support explicit transfer initialization, but the Batch does not initialize
+them automatically.
 
 Independent batches may create and release concurrently after Device setup under
 the existing Buffer/VMA synchronization contract. Exclude conflicting access to

@@ -91,6 +91,7 @@ struct NativeState final
     std::unordered_map<VkImageView, VkImage> imageViews;
     std::unordered_map<VkAccelerationStructureKHR, VkBuffer> accelerationStructures;
     uint32_t asProperties = 0, asFormats = 0, asSizes = 0, asCreates = 0, asAddresses = 0, asDestroys = 0;
+    VkDeviceSize asUpdateScratchSize = 128;
     bool failAsCreate = false, zeroAsAddress = false, zeroAsSize = false, badAsFormat = false, badAsLimits = false;
     bool checkAsSnapshot = false, checkTlasSnapshot = false, nullAsCreate = false, badTlasLimits = false, zeroAsAlignment = false;
     uint32_t bufferAddresses = 0;
@@ -326,7 +327,9 @@ void VKAPI_PTR AsSizes(VkDevice, VkAccelerationStructureBuildTypeKHR,
             info->pGeometries[0].geometry.instances.arrayOfPointers == VK_FALSE &&
             info->pGeometries[0].geometry.instances.data.deviceAddress == 0 && active->bufferAddresses == 0 &&
             active->asAddresses == 0 && active->maps == 0, "TLAS must snapshot host layout without resolving or uploading inputs!");
-    out->accelerationStructureSize = active->zeroAsSize ? 0 : 512; out->buildScratchSize = 256; out->updateScratchSize = 128;
+    out->accelerationStructureSize = active->zeroAsSize ? 0 : 512;
+    out->buildScratchSize = 256;
+    out->updateScratchSize = active->asUpdateScratchSize;
 }
 auto VKAPI_PTR AsCreate(VkDevice device, const VkAccelerationStructureCreateInfoKHR* info,
     const VkAllocationCallbacks*, VkAccelerationStructureKHR* out) -> VkResult
@@ -855,21 +858,51 @@ void RunBufferAllocationTests()
         !std::is_copy_constructible_v<TopLevelAccelStruct> && std::is_nothrow_destructible_v<TopLevelAccelStruct>);
     static_assert(!std::is_move_constructible_v<ShaderBindingTable> &&
         !std::is_copy_constructible_v<ShaderBindingTable> && std::is_nothrow_destructible_v<ShaderBindingTable>);
+    for (const bool allowUpdate : { false, true })
+        for (const auto updateBytes : { VkDeviceSize{0}, VkDeviceSize{128} })
+        {
+            Hooks hooks;
+            hooks.state.asUpdateScratchSize = updateBytes;
+            const auto flags = allowUpdate ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR : 0;
+            AccelStructTriangleGeometryLimits geometry;
+            geometry.SetMaxTriangleCount(1);
+            geometry.SetMaxVertexCount(3);
+            BottomLevelAccelStructCreateInfo blasInfo;
+            blasInfo.SetTriangles(std::span(&geometry, 1));
+            blasInfo.CustomizeBuildFlags(flags);
+            TopLevelAccelStructCreateInfo tlasInfo;
+            tlasInfo.SetMaxInstanceCount(1);
+            tlasInfo.CustomizeBuildFlags(flags);
+            BottomLevelAccelStruct blas;
+            TopLevelAccelStruct tlas;
+            blas.Create(blasInfo);
+            tlas.Create(tlasInfo);
+            const auto check = [&](const auto& memory)
+            {
+                CHECK_TRUE(memory.buildScratchBufferSize == 256 &&
+                    memory.updateScratchBufferSize.has_value() == allowUpdate &&
+                    (!allowUpdate || *memory.updateScratchBufferSize == updateBytes),
+                    "AS memory requirements must advertise UPDATE scratch only for ALLOW_UPDATE creation!");
+            };
+            check(blas.GetMemoryRequirements());
+            check(tlas.GetMemoryRequirements());
+        }
     {
         Hooks hooks; TopLevelAccelStructCreateInfo info; info.SetMaxInstanceCount(1);
         info.SetMaxInstanceCount(2);
         info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
         hooks.state.checkTlasSnapshot = true;
         TopLevelAccelStruct tlas; tlas.Create(info);
-        CHECK_TRUE(tlas.GetSizesInfo().accelerationStructureSize == 512 && tlas.GetScratchAlignment() == 256 &&
-            tlas.GetCapacity() == 2 && tlas.GetSizesInfo().buildInfoBufferSize == 128);
+        CHECK_TRUE(tlas.GetMemoryRequirements().accelerationStructureSize == 512 && tlas.GetScratchAlignment() == 256 &&
+            tlas.GetCapacity() == 2 &&
+            VkDeviceSize{tlas.GetCapacity()} * TopLevelAccelStructBuildInfo::GetBuildInfoLayout().recordStride == 128);
     }
     {
         Hooks hooks; TopLevelAccelStruct tlas; TopLevelAccelStructCreateInfo info; info.SetMaxInstanceCount(1);
         const auto empty = [&]
         {
             CHECK_TRUE(!tlas.IsValid() && tlas.GetVkBuildAccelerationStructureFlags() == 0 &&
-                tlas.GetSizesInfo().accelerationStructureSize == 0 && tlas.GetScratchAlignment() == 1 &&
+                tlas.GetMemoryRequirements().accelerationStructureSize == 0 && tlas.GetScratchAlignment() == 1 &&
                 hooks.state.accelerationStructures.empty() && hooks.state.buffers.empty() &&
                 BufferAllocationTestProbe::AllocationCount() == 0, "Failed TLAS creation must stay empty and retryable!");
         };
@@ -904,7 +937,7 @@ void RunBufferAllocationTests()
                 catch (const std::bad_alloc&)
                 {
                     failPublication = false; ++observedFailures;
-                    CHECK_TRUE(!candidate.IsValid() && candidate.GetSizesInfo().accelerationStructureSize == 0 &&
+                    CHECK_TRUE(!candidate.IsValid() && candidate.GetMemoryRequirements().accelerationStructureSize == 0 &&
                         candidate.GetScratchAlignment() == 1 && hooks.state.buffers.empty() &&
                         BufferAllocationTestProbe::AllocationCount() == 0);
                 }
@@ -1082,8 +1115,8 @@ void RunBufferAllocationTests()
         try { tlas.Create(info); } catch (const std::exception&) { rejected = true; }
         CHECK_TRUE(rejected && calls == hooks.state.asCreates && queries == hooks.state.asProperties &&
             sizes == hooks.state.asSizes && buffers == hooks.state.creates && handle == tlas.GetVkAccelerationStructure() &&
-            tlas.GetSizesInfo().accelerationStructureSize == 512 && tlas.GetSizesInfo().buildScratchBufferSize == 256 &&
-            tlas.GetSizesInfo().updateScratchBufferSize == 128 && tlas.GetScratchAlignment() == 256 &&
+            tlas.GetMemoryRequirements().accelerationStructureSize == 512 && tlas.GetMemoryRequirements().buildScratchBufferSize == 256 &&
+            !tlas.GetMemoryRequirements().updateScratchBufferSize && tlas.GetScratchAlignment() == 256 &&
             tlas.GetVkBuildAccelerationStructureFlags() == 0 && handle != VK_NULL_HANDLE,
             "TLAS must reject duplicate creation before native work!");
     }
@@ -1107,7 +1140,7 @@ void RunBufferAllocationTests()
         const auto empty = [&]
         {
             CHECK_TRUE(!blas.IsValid() && blas.GetVkAccelerationStructure() == VK_NULL_HANDLE && blas.GetDeviceAddress() == 0 &&
-                blas.GetVkBuildAccelerationStructureFlags() == 0 && blas.GetSizesInfo().accelerationStructureSize == 0 &&
+                blas.GetVkBuildAccelerationStructureFlags() == 0 && blas.GetMemoryRequirements().accelerationStructureSize == 0 &&
                 blas.GetScratchAlignment() == 1 && hooks.state.accelerationStructures.empty() && hooks.state.buffers.empty() &&
                 BufferAllocationTestProbe::AllocationCount() == 0, "Failed BLAS creation must retain default state and release all allocations!");
         };
@@ -1153,8 +1186,8 @@ void RunBufferAllocationTests()
                 ++observedFailures;
                 CHECK_TRUE(!candidate.IsValid() && candidate.GetVkAccelerationStructure() == VK_NULL_HANDLE &&
                     candidate.GetDeviceAddress() == 0 && candidate.GetVkBuildAccelerationStructureFlags() == 0 &&
-                    candidate.GetSizesInfo().accelerationStructureSize == 0 && candidate.GetSizesInfo().buildScratchBufferSize == 0 &&
-                    candidate.GetSizesInfo().updateScratchBufferSize == 0 && candidate.GetScratchAlignment() == 1 &&
+                    candidate.GetMemoryRequirements().accelerationStructureSize == 0 && candidate.GetMemoryRequirements().buildScratchBufferSize == 0 &&
+                    candidate.GetMemoryRequirements().updateScratchBufferSize == std::nullopt && candidate.GetScratchAlignment() == 1 &&
                     hooks.state.accelerationStructures.empty() && hooks.state.buffers.empty() &&
                     BufferAllocationTestProbe::AllocationCount() == 0,
                     "Host allocation failure must leave the failed BLAS empty before its destructor runs!");
@@ -1165,7 +1198,7 @@ void RunBufferAllocationTests()
         empty();
 #endif
         blas.Create(info);
-        CHECK_TRUE(blas.IsValid() && blas.GetDeviceAddress() == 0x800000 && blas.GetSizesInfo().accelerationStructureSize == 512,
+        CHECK_TRUE(blas.IsValid() && blas.GetDeviceAddress() == 0x800000 && blas.GetMemoryRequirements().accelerationStructureSize == 512,
             "BLAS must support retry after all native and host failures!");
     }
     // Catch incorrect saved-device release and premature release while strong owners remain.
@@ -1215,7 +1248,7 @@ void RunBufferAllocationTests()
         const auto formats = hooks.state.asFormats, sizes = hooks.state.asSizes, creates = hooks.state.asCreates,
             addresses = hooks.state.asAddresses, buffers = hooks.state.creates;
         const auto address = blas.GetDeviceAddress();
-        const auto originalSizes = blas.GetSizesInfo();
+        const auto originalSizes = blas.GetMemoryRequirements();
         const auto alignment = blas.GetScratchAlignment();
         const auto flags = blas.GetVkBuildAccelerationStructureFlags();
         info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR);
@@ -1224,9 +1257,9 @@ void RunBufferAllocationTests()
             hooks.state.asFormats == formats && hooks.state.asSizes == sizes && hooks.state.asCreates == creates &&
             hooks.state.asAddresses == addresses && hooks.state.creates == buffers && blas.GetDeviceAddress() == address &&
             blas.GetVkBuildAccelerationStructureFlags() == flags && blas.GetScratchAlignment() == alignment &&
-            blas.GetSizesInfo().accelerationStructureSize == originalSizes.accelerationStructureSize &&
-            blas.GetSizesInfo().buildScratchBufferSize == originalSizes.buildScratchBufferSize &&
-            blas.GetSizesInfo().updateScratchBufferSize == originalSizes.updateScratchBufferSize,
+            blas.GetMemoryRequirements().accelerationStructureSize == originalSizes.accelerationStructureSize &&
+            blas.GetMemoryRequirements().buildScratchBufferSize == originalSizes.buildScratchBufferSize &&
+            blas.GetMemoryRequirements().updateScratchBufferSize == originalSizes.updateScratchBufferSize,
             "Duplicate BLAS Create must reject before native queries and preserve its original owner!");
     }
     TestImageValidationAndRollback();

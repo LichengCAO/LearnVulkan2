@@ -131,7 +131,7 @@ private:
     VkBuildAccelerationStructureFlagsKHR m_flags = 0;
     VkDeviceAddress m_accelStructReference = 0;
     uint32_t m_clusterCount = 0;
-    AccelStructSizesInfo m_sizesInfo{ 0, 0, 1 };
+    AccelStructMemoryRequirements m_memoryRequirements{ .scratchAlignment = 1 };
     VkDeviceAddress m_storageAddress = 0;
     VkAccelStructBuildInfo m_layout;
 
@@ -152,8 +152,8 @@ public:
     auto GetDeviceAddress() const noexcept -> VkDeviceAddress { return m_accelStructReference; }
     auto GetVkAccelerationStructure() const noexcept -> VkAccelerationStructureKHR;
     auto GetVkBuildAccelerationStructureFlags() const noexcept -> VkBuildAccelerationStructureFlagsKHR { return m_flags; }
-    auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo& { return m_sizesInfo; }
-    auto GetScratchAlignment() const noexcept -> VkDeviceSize { return m_sizesInfo.scratchAlignment; }
+    auto GetMemoryRequirements() const noexcept -> const AccelStructMemoryRequirements& { return m_memoryRequirements; }
+    auto GetScratchAlignment() const noexcept -> VkDeviceSize { return m_memoryRequirements.scratchAlignment; }
 };
 
 class TopLevelAccelStruct final : public RefCounted
@@ -164,7 +164,7 @@ class TopLevelAccelStruct final : public RefCounted
 private:
     std::unique_ptr<VulkanDetail::AccelerationStructureStorage> m_storage;
     VkBuildAccelerationStructureFlagsKHR m_flags = 0;
-    AccelStructSizesInfo m_sizesInfo{ 0, 0, 1 };
+    AccelStructMemoryRequirements m_memoryRequirements{ .scratchAlignment = 1 };
     VkDeviceAddress m_storageAddress = 0;
     VkAccelStructBuildInfo m_layout;
 
@@ -183,8 +183,8 @@ public:
     auto IsValid() const noexcept -> bool;
     auto GetVkAccelerationStructure() const noexcept -> VkAccelerationStructureKHR;
     auto GetVkBuildAccelerationStructureFlags() const noexcept -> VkBuildAccelerationStructureFlagsKHR { return m_flags; }
-    auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo& { return m_sizesInfo; }
-    auto GetScratchAlignment() const noexcept -> VkDeviceSize { return m_sizesInfo.scratchAlignment; }
+    auto GetMemoryRequirements() const noexcept -> const AccelStructMemoryRequirements& { return m_memoryRequirements; }
+    auto GetScratchAlignment() const noexcept -> VkDeviceSize { return m_memoryRequirements.scratchAlignment; }
     auto GetCapacity() const noexcept -> uint32_t
     { return IsValid() ? m_layout.buildRangesInfos[0].primitiveCount : 0; }
 };
@@ -198,12 +198,13 @@ class BuildAccelStructCommandInput final
 {
     friend class CommandBuffer;
     VkAccelStructBuildInfo m_build;
-    AccelStructSizesInfo m_sizes{};
+    AccelStructMemoryRequirements m_memoryRequirements{};
     VkDeviceAddress m_scratch = 0;
     std::pair<VkDeviceAddress, VkDeviceSize> m_targetRange{}, m_sourceRange{};
 
     void _SetSource(const VkAccelStructBuildInfo& inLimits, VkAccelerationStructureKHR inHandle,
         VkDeviceAddress inStorageAddress, VkDeviceSize inStorageSize);
+    auto _GetScratchBufferSize() const -> VkDeviceSize;
     auto _GetBuild() const -> VkAccelStructBuildInfo;
 public:
     void SetTrianglesTarget(const BottomLevelAccelStruct& inTarget,
@@ -218,5 +219,5 @@ public:
     // unchanged counts/topology/maxVertex/active state/transform presence remain caller contracts.
     void CustomizeSourceAccelStruct(const BottomLevelAccelStruct& inSource);
     void CustomizeSourceAccelStruct(const TopLevelAccelStruct& inSource);
-    auto QueryCurrentTargetSizesInfo() const -> AccelStructSizesInfo;
+    auto GetMemoryRequirements() const -> AccelStructMemoryRequirements;
 };

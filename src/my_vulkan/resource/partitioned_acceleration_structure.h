@@ -31,7 +31,7 @@ class PartitionedTopLevelAccelStruct final : public RefCounted
 	friend class BuildPartitionedTopLevelAccelStructCommandInput;
 	std::unique_ptr<Buffer> m_storage;
 	VulkanDetail::PartitionedBuildConfiguration m_configuration;
-	AccelStructSizesInfo m_sizes;
+	AccelStructMemoryRequirements m_memoryRequirements;
 	VkDeviceAddress m_address = 0;
 public:
 	PartitionedTopLevelAccelStruct();
@@ -50,10 +50,10 @@ public:
 	auto IsValid() const noexcept -> bool { return m_address != 0; }
 	auto GetDeviceAddress() const noexcept -> VkDeviceAddress { return m_address; }
 	auto GetVkBuildAccelerationStructureFlags() const noexcept -> VkBuildAccelerationStructureFlagsKHR { return m_configuration.flags; }
-	// Includes AS/scratch requirements. buildInfoBufferSize is a fixed 72-byte allocation
-	// budget for three outer operation groups, independent of the native size query.
-	// Callers size each inner record array using its record type's GetBuildInfoLayout().
-	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo& { return m_sizes; }
+	// Saved AS/scratch requirements. The outer operation table uses the separate
+	// AccelStructGpuLayout::Partitioned::OperationBufferSize allocation budget;
+	// inner record arrays use their record type's GetBuildInfoLayout().
+	auto GetMemoryRequirements() const noexcept -> const AccelStructMemoryRequirements& { return m_memoryRequirements; }
 };
 
 // One operation group selects one operation type and its inner GPU record array.
@@ -146,7 +146,7 @@ public:
 	void SetTarget(const PartitionedTopLevelAccelStruct& inTarget,
 		VkDeviceAddress inOperationGroupsAddress, VkDeviceAddress inOperationGroupCountAddress);
 	void SetScratchAddress(VkDeviceAddress inAddress) noexcept { m_snapshot.scratch = inAddress; }
-	auto QueryCurrentTargetSizesInfo() const -> AccelStructSizesInfo;
+	auto GetMemoryRequirements() const -> AccelStructMemoryRequirements;
 
 	// Defaults to no source (address zero): build from empty contents.
 	// A supplied source must already be GPU-built with compatible capacities/flags,

@@ -26,7 +26,7 @@ struct PartitionedBuildConfiguration
 struct PartitionedBuildSnapshot
 {
     PartitionedBuildConfiguration configuration;
-    AccelStructSizesInfo sizes;
+    AccelStructMemoryRequirements sizes;
     VkDeviceAddress target = 0;
     VkDeviceAddress source = 0;
     VkDeviceAddress arguments = 0;

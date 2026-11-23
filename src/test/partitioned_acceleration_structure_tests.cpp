@@ -188,16 +188,16 @@ namespace
         ExpectFailure([&] { owner.Create(info); }); ClasBufferTestFixture::SetAllocationFailure(false);
         ClasBufferTestFixture::SetBufferAddressOverride(0x100001);
         ExpectFailure([&] { owner.Create(info); }); ClasBufferTestFixture::SetBufferAddressOverride(0);
-        CHECK_TRUE(!owner.IsValid() && owner.GetSizesInfo().accelerationStructureSize == 0 && ClasBufferTestFixture::LiveBufferCount() == 0);
+        CHECK_TRUE(!owner.IsValid() && owner.GetMemoryRequirements().accelerationStructureSize == 0 && ClasBufferTestFixture::LiveBufferCount() == 0);
         owner.Create(info);
         CHECK_TRUE(owner.IsValid() && state.translation && state.queried.instanceCount == 8 &&
             state.queried.partitionCount == 2 && state.queried.maxInstancePerPartitionCount == 4 &&
             state.queried.maxInstanceInGlobalPartitionCount == 3 && state.builds == 0 &&
             state.queried.flags == VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
-        const auto& sizes = owner.GetSizesInfo();
+        const auto& sizes = owner.GetMemoryRequirements();
         CHECK_TRUE(sizes.accelerationStructureSize == 1024 && sizes.accelerationStructureAlignment == 256 &&
             sizes.buildScratchBufferSize == 512 && sizes.scratchAlignment == 256 &&
-            sizes.updateScratchBufferSize == 0 && sizes.buildInfoBufferSize == 72);
+            sizes.updateScratchBufferSize == std::nullopt);
         const auto queries = state.queries; const auto address = owner.GetDeviceAddress();
         ExpectFailure([&] { owner.Create(info); });
         CHECK_TRUE(state.queries == queries && owner.GetDeviceAddress() == address && ClasBufferTestFixture::LiveBufferCount() == 1);
@@ -295,7 +295,7 @@ namespace
         a.Create(Configuration(true)); b.Create(Configuration(true)); incompatible.Create(Configuration());
         BuildPartitionedTopLevelAccelStructCommandInput input;
         ExpectFailure([&] { input.CustomizeSourceAccelStruct(a); });
-        ExpectFailure([&] { input.QueryCurrentTargetSizesInfo(); });
+        ExpectFailure([&] { input.GetMemoryRequirements(); });
         input.SetScratchAddress(0x400000);
         input.SetTarget(a, 0x500000, 0x600000); input.CustomizeSourceAccelStruct(a);
         PartitionedTopLevelAccelStruct empty;

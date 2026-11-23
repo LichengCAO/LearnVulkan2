@@ -6,7 +6,7 @@ Public headers live in `src/my_vulkan/resource/`:
 
 | Header | Types and purpose |
 | --- | --- |
-| `acceleration_structure_types.h` | `VkAccelStructBuildInfo` for the public low-level KHR batch command and `AccelStructSizesInfo` for caller-owned batch task/scratch allocation. |
+| `acceleration_structure_types.h` | `VkAccelStructBuildInfo` for the public low-level KHR batch command and `AccelStructMemoryRequirements` for AS storage and scratch allocation. |
 | `acceleration_structure_gpu_layout.h` | GPU record strides, address alignments, field offsets and bit packing for CLAS, TLAS and PTLAS inputs. |
 | `acceleration_structure.h` | Ordinary BLAS/TLAS owners, geometry and instance descriptions, and their CreateInfo types. |
 | `cluster_acceleration_structure.h` | CLAS templates, CLAS/Cluster BLAS batch owners and CreateInfo types, CPU task descriptions, and public indirect-build arguments. |
@@ -24,8 +24,8 @@ from its inner `WriteInstanceRecord`, `UpdateInstanceRecord` and
 capacity. The outer operation array supports at most three groups, one each for
 WRITE_INSTANCE, UPDATE_INSTANCE and WRITE_PARTITION_TRANSLATION. It has no
 configurable capacity in CreateInfo or CommandInput.
-PTLAS `GetSizesInfo().buildInfoBufferSize` is a fixed 72-byte allocation
-budget for three 24-byte native operation records; it is independent of
+`AccelStructGpuLayout::Partitioned::OperationBufferSize` is a fixed 72-byte allocation
+budget for three 24-byte native PTLAS operation records; it is independent of
 the native AS/scratch size query. Callers allocate inner record arrays separately
 using their record types' `GetBuildInfoLayout()`.
 The GPU count specifies the actual number of outer groups. Its producer keeps
@@ -104,16 +104,22 @@ blasInfo.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KH
 BottomLevelAccelStruct blas;
 blas.Create(blasInfo);
 
-const auto sizes = blas.GetSizesInfo();
+const auto sizes = blas.GetMemoryRequirements();
 const auto scratchBytes =
-    std::max(sizes.buildScratchBufferSize, sizes.updateScratchBufferSize);
+    std::max(sizes.buildScratchBufferSize, sizes.updateScratchBufferSize.value_or(0));
 // Allocate scratchBytes with STORAGE_BUFFER | SHADER_DEVICE_ADDRESS usage,
 // aligning its device address to sizes.scratchAlignment.
 ```
 
-`GetSizesInfo()` is shared by ordinary AS and cluster interfaces. For ordinary
-BLAS, `buildInfoBufferSize` is zero; TLAS reports its capacity times the packed
-instance stride. Scratch requirements cover the creation maxima, so they remain
+`GetMemoryRequirements()` is shared by ordinary AS, cluster and PTLAS owners. It
+reports only AS storage size/alignment, build scratch size, optional KHR UPDATE
+scratch size and the shared scratch alignment. UPDATE scratch is present only
+for ordinary BLAS/TLAS created with `ALLOW_UPDATE`; a present zero still permits
+UPDATE without a scratch allocation. It is absent for CLAS and PTLAS. These are
+saved Host requirements, not GPU build history or readiness.
+Input capacity and record layout are separate: TLAS instance bytes are
+`VkDeviceSize{tlas.GetCapacity()} * TopLevelAccelStructBuildInfo::GetBuildInfoLayout().recordStride`.
+Scratch requirements cover the creation maxima, so they remain
 safe for smaller actual builds. Zero required scratch bytes accept address zero.
 Input buffers require `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 SHADER_DEVICE_ADDRESS_BIT`; scratch needs `STORAGE_BUFFER_BIT |
@@ -178,7 +184,8 @@ tlas.Create(tlasInfo);
 TopLevelAccelStructBuildInfo instance;
 instance.accelStructReference = blas.GetDeviceAddress();
 // Defaults: identity transform, mask 0xFF, zero custom index/SBT offset/flags.
-// Allocate instanceBuffer using tlas.GetSizesInfo().buildInfoBufferSize,
+// Allocate instanceBuffer using VkDeviceSize{tlas.GetCapacity()} *
+// TopLevelAccelStructBuildInfo::GetBuildInfoLayout().recordStride,
 // input usage, and TopLevelAccelStructBuildInfo::GetBuildInfoLayout() alignment.
 TopLevelAccelStructBuildInfo::CommitToDeviceInline(
     std::span(&instance, 1), instanceBuffer);
@@ -245,21 +252,41 @@ allocation limit reject; callers split large workloads into multiple batches.
 Failure leaves an empty target that can be retried. Release never waits for GPU work.
 
 Both BuildLimits types describe positive per-object and aggregate budgets and the CLAS
-vertex format. Select build limits and a maximum target count on a CommandInput to
-validate them and synchronously query the Device. Its const
-`QueryCurrentTargetSizesInfo()` returns the saved requirements without GPU bindings.
-Task bytes, build scratch bytes and scratch alignment cover the full batch.
-For explicit builds the AS byte count bounds one object at the configured maxima.
-For implicit builds it bounds the contiguous batch. Align each destination base
-to the reported AS alignment. Round the stride of uniform explicit slots up to
-that alignment.
+vertex format. Query allocation requirements before binding a CommandInput.
+`BuildImplicitClusterAccelStructCommandInput` and
+`BuildExplicitClusterAccelStructCommandInput` expose static
+`GetClusterMemoryRequirements(limits, maxCount)`,
+`GetInstantiateClusterMemoryRequirements(limits, maxCount)` and
+`GetBottomLevelAccelStructMemoryRequirements(limits, maxCount)` queries.
+The implicit input also exposes `GetClusterTemplateMemoryRequirements(limits, maxCount)`.
+These calls validate positive capacities and synchronously query the Device.
+Owner `GetMemoryRequirements()` queries continue to return saved Host requirements.
+For explicit builds the AS byte count bounds one object at the configured maxima;
+for implicit builds it bounds the contiguous batch. Scratch requirements cover
+the full batch. The caller supplies sufficient storage and scratch, aligns their
+device addresses to the queried requirements, and keeps allocation ranges disjoint
+where required. Round uniform explicit-slot strides up to the AS alignment.
+
+All three Cluster inputs expose static `GetClusterBuildInfoBufferSize(maxCount)`,
+`GetInstantiateClusterBuildInfoBufferSize(maxCount)` and
+`GetBottomLevelAccelStructBuildInfoBufferSize(maxCount)`. The implicit and Compute
+Sizes inputs also expose `GetClusterTemplateBuildInfoBufferSize(maxCount)`.
+These pure Host calculations require a positive maximum count and return the
+operation's record stride times that count, without accessing an owner or Device.
+They ignore the optional GPU actual count.
 
 `ComputeClusterAccelStructSizesCommandInput` supports direct CLAS, Template,
-instantiate and Cluster BLAS tasks. Its Host AS size, AS alignment and update
-scratch are zero. Bind the operation's argument records, any required scratch
-and a packed `uint32_t` size output with `SetOutputSizesArray`, then append
-`commands.ComputeClusterAccelStructSizes(input)`. The GPU writes one byte
-size per active task. To use those values for explicit builds, synchronize the
+instantiate and Cluster BLAS tasks. Its static
+`GetClusterBuildScratchBufferSize(limits, maxCount)`,
+`GetClusterTemplateBuildScratchBufferSize(limits, maxCount)`,
+`GetInstantiateClusterBuildScratchBufferSize(limits, maxCount)` and
+`GetBottomLevelAccelStructBuildScratchBufferSize(limits, maxCount)` query the Device
+for scratch bytes; static `GetScratchAlignment()` queries the scratch alignment.
+Computing sizes has no AS storage allocation or KHR UPDATE requirement. Select the
+operation with limits, maximum count and a packed `uint32_t` output-size address,
+bind its argument records and scratch, then append
+`commands.ComputeClusterAccelStructSizes(input)`. The GPU writes one size in bytes
+per active task. To use those values for explicit builds, synchronize the
 size outputs with the allocator or readback, allocate each destination at the
 matching build alignment, and populate a packed destination-address table.
 
@@ -309,7 +336,7 @@ Create each fixed CLAS using `ClusterLevelAccelStructCreateInfo`. Set its maximu
 triangle and vertex counts, then choose a common index type, vertex format and
 template usage. `ClusterLevelAccelStruct::GetDeviceAddress()` returns its aligned
 device address after creation. `IsValid()` reports allocated storage, not GPU build
-completion. `GetSizesInfo()` reads the saved creation requirements without queries,
+completion. `GetMemoryRequirements()` reads the saved creation requirements without queries,
 uploads or GPU work. Failed creation leaves these values empty; repeated Create
 preserves the existing owner. For a fixed Cluster BLAS, use
 `BottomLevelAccelStructCreateInfo::SetClusters(maxClusterCount)` and
@@ -337,9 +364,12 @@ const auto tableAddress = batch.GetReferenceBuffer()->GetDeviceAddress() + batch
 with Cluster BLAS owners. The caller fills the table so entry `i` points to owner
 `i`. Each task must fit that owner's individual capacities. The native batch
 query uses the largest per-owner capacities and the sums of individual budgets,
-so a smaller owner can have less storage than the maximum in `GetSizesInfo()`.
+so a smaller owner can have less storage than the maximum in `GetMemoryRequirements()`.
 Batch creation copies no GPU data. It retains each distinct destination owner and the supplied
-Buffer. Keep its allocation stable and retain the Batch through dependent GPU uses.
+Buffer, and caches the Buffer's device address including the table offset as private
+Host metadata. Implicit creation similarly caches its storage and reference Buffer
+addresses. These cached addresses never mirror GPU-produced table contents. Keep
+the allocations stable and retain the Batch through dependent GPU uses.
 
 ### Building and instantiating templates
 
@@ -374,17 +404,19 @@ commands.BuildAccelerationStructureIndirect(build);
 It allocates template storage and a packed address table, with no task upload,
 GPU build, submission, wait or readback. Index addresses, index types and strides
 belong to task records and can differ between templates. `GetCapacity()` and
-`GetSizesInfo()` return saved Host requirements; `IsValid()` means storage exists,
-without asserting GPU completion. The owner keeps no actual count, address or
-topology cache. Repeat each template's actual contribution when budgeting poses.
+`GetMemoryRequirements()` return saved Host requirements; `IsValid()` means storage exists,
+without asserting GPU completion. The owner keeps no actual count or CPU mirror
+of GPU-produced address tables or topology. Repeat each template's actual
+contribution when budgeting poses.
 
-The managed target snapshots the owner's requirements and output addresses.
-The raw overload `SetClusterTemplateTarget(limits, capacity)` instead requires
-`SetStorageAddress()` and `SetOutputReferencesArray()`. Template destinations
-currently support implicit builds. Without a GPU count the build processes the
-entire capacity; with `CustomizeBuildCountAddress()` the producer bounds the count
-and consumers use only the active prefix. Recording does not query, allocate,
-upload or submit independently.
+The Batch overload snapshots its limits, capacity and cached output addresses.
+The raw overload binds the complete target with
+`SetClusterTemplateTarget(limits, maxCount, storageAddress, outputReferencesAddress)`.
+Template destinations currently support implicit builds. Without a GPU count the
+build processes the entire capacity; with `CustomizeBuildCountAddress()` the producer
+bounds the count and consumers use only the active prefix. Target selection,
+appending and recording perform no size, property or device-address queries.
+Recording does not allocate, upload or submit independently.
 
 Synchronize task/count writes from their producer before building. For a shader
 that generates instantiation tasks, make template-build writes visible to its
@@ -449,9 +481,12 @@ CLAS resources alive through dependent GPU uses.
 
 For CLAS, template and Cluster BLAS batches, prepare and execute in this order:
 
-1. Call `Create(info)` and read `GetSizesInfo()`; its `scratchAlignment` applies
+1. Call `Create(info)` and read `GetMemoryRequirements()`; its `scratchAlignment` applies
    to scratch addresses.
-2. Allocate a task Buffer of `buildInfoBufferSize` bytes. It needs
+2. Allocate a task Buffer using the operation-specific static
+   `GetXxxBuildInfoBufferSize(batch.GetCapacity())` query described above, or the
+   Batch capacity times the selected record type's `GetBuildInfoLayout().recordStride`.
+   It needs
    `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | SHADER_DEVICE_ADDRESS_BIT`
    for the build. A staging Buffer can instead be written and copied explicitly.
 3. Use `ClusterLevelAccelStructDirectBuildInfo::CommitToDeviceInline(infos, taskBuffer)`
@@ -467,7 +502,8 @@ For CLAS, template and Cluster BLAS batches, prepare and execute in this order:
    also support a staged upload to task buffers with `TRANSFER_DST_BIT`.
 4. Provide scratch of `buildScratchBufferSize` bytes with
    `STORAGE_BUFFER_BIT | SHADER_DEVICE_ADDRESS_BIT` and the reported alignment.
-   A zero scratch requirement uses address 0.
+   `SetScratchAddress` stores the literal supplied address; use address 0 for a
+   zero scratch requirement.
 5. Append the matching direct, template, instantiate or Cluster BLAS command. For example:
 
 ```cpp
@@ -482,20 +518,29 @@ commands.BuildAccelerationStructureIndirect(build);
 Choose `BuildExplicitClusterAccelStructCommandInput` or
 `BuildImplicitClusterAccelStructCommandInput`, then select `SetClusterTarget`,
 `SetInstantiateClusterTarget` or `SetBottomLevelAccelStructTarget`. The Batch
-overload checks destination mode and operation, copies limits and sizes, and
-binds the Batch table (including its byte offset), storage and known destination
-ranges. A setter for a managed address accepts only that same address.
+overload checks destination mode and operation, copies limits and capacity, and
+binds the Batch's cached table address (including its byte offset) and implicit
+storage address. It performs no Buffer device-address query.
 
-For caller-managed storage, pass build limits and capacity to the target setter.
-Use `SetReferencesArray` for the packed explicit destination addresses, or
-`SetStorageAddress` and `SetOutputReferencesArray` for implicit output.
+For caller-managed storage, each raw setter binds the entire target atomically:
+
+```cpp
+implicit.SetClusterTarget(limits, maxCount, storageAddress, outputReferencesAddress);
+explicitBuild.SetClusterTarget(limits, maxCount, destinationReferencesAddress);
+computeSizes.SetClusterTarget(limits, maxCount, outputSizesAddress);
+```
+
+The same argument pattern applies to `SetInstantiateClusterTarget` and
+`SetBottomLevelAccelStructTarget`; implicit and Compute Sizes inputs also have
+`SetClusterTemplateTarget`. Static queries remain independent of target selection;
+CommandInputs store no memory requirements or per-destination allocation ranges.
 Implicit builds optionally write packed per-object byte sizes through
 `CustomizeOutputSizesArray`. Explicit builds leave the native sizes array absent.
-Every successful target change clears previous target addresses and size output,
-then installs any new Batch bindings. Argument, scratch and GPU count addresses
-survive reselection. Rejected selection preserves the previous input. Moving an
-input transfers the binding and known destination ranges. Select another target
-before querying or recording the moved-from input.
+Successful reselection replaces target bindings and clears optional output sizes,
+while preserving argument, scratch and GPU count addresses. A rejected setter
+preserves the previous input. Copies and moves contain borrowed Host snapshots,
+retain no resource ownership, and leave a moved-from target invalid. Select another
+target before appending or recording the moved-from input.
 
 The native `maxAccelerationStructureCount` comes from the selected maximum
 count or Batch capacity. If `buildCountAddress` is 0, the command processes the full
@@ -515,15 +560,19 @@ requiring a normal native command and compute-capable queue. Partial builds
 use a count Buffer, which may also be written by the CPU with the required
 visibility and synchronization. Uploading fewer BuildInfo records does not
 change the count: supply a compatible count Buffer when only a prefix is valid.
-Output, scratch, task and address-table regions retain their creation-sized
-capacity. `buildInfoBufferSize` remains the maximum task storage required by it.
+Output, scratch, task and address-table regions retain their maximum-count
+capacity. Static task-byte queries always describe that full capacity.
 
-The command snapshots the Batch's queried Host limits and the supplied addresses.
+The command snapshots Host limits, maximum count and the supplied addresses.
 It never copies task contents or retains borrowed inputs. GPU-generated tasks
 must remain within those frozen limits, including count, format and aggregate
 geometry counts. With raw device addresses, callers guarantee underlying Buffer
-usage, capacity, index contents and lifetime. Known scratch/output overlap and
-invalid addresses/alignment reject before appending.
+usage, AS/scratch capacity, device-specific alignment, nonconflicting allocation ranges, index
+contents and lifetime. Host validation checks description completeness, positive
+capacities, required addresses, fixed ABI address alignment, overflow and known
+task/count/output-array overlaps. Target selection, appending and recording query
+neither native sizes/properties nor Buffer device addresses. Feature/entrypoint,
+queue and rendering-scope checks remain required.
 
 `GetReferenceBuffer()` becomes non-null after Host creation, but only the actual
 GPU-built prefix is valid after the build and its required synchronization.
@@ -589,15 +638,15 @@ info.CustomizePartitionTranslation(true);      // Optional, default false.
 info.CustomizeBuildFlags(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR);
 PartitionedTopLevelAccelStruct ptlas;
 ptlas.Create(info);
-const auto sizes = ptlas.GetSizesInfo();
+const auto sizes = ptlas.GetMemoryRequirements();
 ```
 
 The number of ordinary partitions plus global instance capacity must fit the
 Device's `maxPartitionCount`. AS and scratch sizes must fit both maximum Buffer
 and allocation sizes. `sizes.buildScratchBufferSize` is used for **every** PTLAS
-build, including builds with a source. `updateScratchBufferSize` is zero because
+build, including builds with a source. `updateScratchBufferSize` is `std::nullopt` because
 PTLAS does not use the KHR UPDATE scratch requirement. AS/scratch alignment is
-256. `buildInfoBufferSize` is always 72 for the outer table; this value is
+256. `AccelStructGpuLayout::Partitioned::OperationBufferSize` is always 72 for the outer table; this value is
 independent of the native size query and does not cover inner records or count.
 
 Allocate a 72-byte outer operation Buffer, a separate four-byte GPU `uint32_t`

@@ -56,9 +56,11 @@ class ClusterLevelAccelStructTemplateBatch final : public RefCounted
 	friend struct VulkanDetail::ClusterCommandState;
 	std::unique_ptr<Buffer> m_storage;
 	std::unique_ptr<Buffer> m_references;
+	VkDeviceAddress m_storageAddress = 0;
+	VkDeviceAddress m_referenceAddress = 0;
 	VkClusterAccelerationStructureTriangleClusterInputNV m_limits{
 		VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV };
-	AccelStructSizesInfo m_sizesInfo{};
+	AccelStructMemoryRequirements m_memoryRequirements{};
 	uint32_t m_capacity = 0;
 public:
 	// Host-only creation: queries and allocates template storage and its address table.
@@ -69,7 +71,7 @@ public:
 	// Saved Host allocation state; validity does not mean the GPU build has completed.
 	auto IsValid() const noexcept -> bool { return m_storage != nullptr; }
 	auto GetCapacity() const noexcept -> uint32_t { return m_capacity; }
-	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo& { return m_sizesInfo; }
+	auto GetMemoryRequirements() const noexcept -> const AccelStructMemoryRequirements& { return m_memoryRequirements; }
 	// Borrowed packed GPU address table. Only the built active prefix is valid.
 	auto GetReferenceBuffer() const noexcept -> const Buffer* { return m_references.get(); }
 	auto GetVertexFormat() const noexcept -> VkFormat { return m_limits.vertexFormat; }
@@ -100,7 +102,7 @@ class ClusterLevelAccelStruct final : public RefCounted
 	std::unique_ptr<Buffer> m_storage;
 	ClusterLevelAccelStructCreateInfo m_info;
 	VkDeviceAddress m_reference = 0;
-	AccelStructSizesInfo m_sizesInfo{};
+	AccelStructMemoryRequirements m_memoryRequirements{};
 public:
 	// Synchronous Host creation for an empty target; no upload, GPU build or wait.
 	// Independent owners may create/release concurrently with stable Device dependencies.
@@ -109,7 +111,7 @@ public:
 	// Validity means allocated storage, not GPU build completion. Queries read saved Host data.
 	auto IsValid() const noexcept -> bool { return m_reference != 0; }
 	auto GetDeviceAddress() const noexcept -> VkDeviceAddress { return m_reference; }
-	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo& { return m_sizesInfo; }
+	auto GetMemoryRequirements() const noexcept -> const AccelStructMemoryRequirements& { return m_memoryRequirements; }
 };
 
 class ClusterLevelAccelStructImplicitBatchCreateInfo final
@@ -163,10 +165,12 @@ class ClusterLevelAccelStructBatch final : public RefCounted
 private:
 	std::unique_ptr<Buffer> m_storageBuffer;
 	std::unique_ptr<Buffer> m_referenceBuffer;
+	VkDeviceAddress m_storageAddress = 0;
+	VkDeviceAddress m_referenceAddress = 0;
 	IntrusivePtr<Buffer> m_explicitReferences;
 	std::vector<IntrusivePtr<const ClusterLevelAccelStruct>> m_destinations;
 	VkDeviceSize m_referenceOffset = 0;
-	AccelStructSizesInfo m_sizesInfo{};
+	AccelStructMemoryRequirements m_memoryRequirements{};
 	uint32_t m_count = 0;
 	VkClusterAccelerationStructureTriangleClusterInputNV m_triangleInput{
 		VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV };
@@ -184,7 +188,7 @@ public:
 	// Borrowed address table retained by this batch. Only the GPU-built prefix is valid.
 	auto GetReferenceBuffer() const noexcept->const Buffer*;
 	auto GetReferenceBufferOffset() const noexcept -> VkDeviceSize { return m_referenceOffset; }
-	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo&;
+	auto GetMemoryRequirements() const noexcept -> const AccelStructMemoryRequirements&;
 	auto GetCapacity() const noexcept -> uint32_t;
 	auto GetScratchAlignment() const noexcept -> VkDeviceSize;
 	auto GetVertexFormat() const noexcept -> VkFormat { return m_triangleInput.vertexFormat; }
@@ -233,7 +237,9 @@ class ClusterBottomLevelAccelStructBatch final : public RefCounted
 private:
 	std::unique_ptr<Buffer> m_storageBuffer;
 	std::unique_ptr<Buffer> m_referenceBuffer;
-	AccelStructSizesInfo m_sizesInfo{};
+	VkDeviceAddress m_storageAddress = 0;
+	VkDeviceAddress m_referenceAddress = 0;
+	AccelStructMemoryRequirements m_memoryRequirements{};
 	IntrusivePtr<Buffer> m_explicitReferences;
 	std::vector<IntrusivePtr<const BottomLevelAccelStruct>> m_destinations;
 	VkDeviceSize m_referenceOffset = 0;
@@ -250,7 +256,7 @@ public:
 	// Borrowed address table retained by this batch. Only the GPU-built prefix is valid.
 	auto GetReferenceBuffer() const noexcept -> const Buffer*;
 	auto GetReferenceBufferOffset() const noexcept -> VkDeviceSize { return m_referenceOffset; }
-	auto GetSizesInfo() const noexcept -> const AccelStructSizesInfo&;
+	auto GetMemoryRequirements() const noexcept -> const AccelStructMemoryRequirements&;
 	auto GetCapacity() const noexcept -> uint32_t;
 	auto GetScratchAlignment() const noexcept -> VkDeviceSize;
 	auto GetBuildLimits() const noexcept -> VkClusterAccelerationStructureClustersBottomLevelInputNV { return m_clustersInput; }
@@ -362,23 +368,33 @@ public:
 	void SetMaxClusterCount(uint32_t inMaxPerAccelStruct, uint32_t inMaxInTotal);
 };
 
-// Selecting build limits queries and snapshots full-capacity Host requirements. A Batch supplies
-// its creation snapshot. Reselection clears target outputs and preserves arguments, scratch
-// and GPU count. All GPU addresses are borrowed until their last dependent use.
+// Static memory/scratch queries access the Device; static task sizes use the GPU ABI only.
+// Target selection snapshots limits, capacity and all required output addresses without queries.
+// Reselection clears optional outputs and preserves arguments, scratch and GPU count.
+// Callers guarantee borrowed AS/scratch capacity, Device-specific alignment and allocation disjointness.
+// All GPU addresses remain borrowed through their last dependent use; scratch is passed unchanged.
 class ComputeClusterAccelStructSizesCommandInput final
 {
 	friend class CommandBuffer;
 	VulkanDetail::ClusterCommandState m_state;
 public:
-	void SetBottomLevelAccelStructTarget(const ClusterBottomLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
-	void SetClusterTemplateTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
-	void SetClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
-	void SetInstantiateClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
-	auto QueryCurrentTargetSizesInfo() const -> AccelStructSizesInfo { return m_state.GetSizes(); }
+	static auto GetBottomLevelAccelStructBuildScratchBufferSize(const ClusterBottomLevelAccelStructBuildLimits&, uint32_t inMaxTargetCount) -> VkDeviceSize;
+	static auto GetClusterTemplateBuildScratchBufferSize(const ClusterLevelAccelStructBuildLimits&, uint32_t inMaxTargetCount) -> VkDeviceSize;
+	static auto GetClusterBuildScratchBufferSize(const ClusterLevelAccelStructBuildLimits&, uint32_t inMaxTargetCount) -> VkDeviceSize;
+	static auto GetInstantiateClusterBuildScratchBufferSize(const ClusterLevelAccelStructBuildLimits&, uint32_t inMaxTargetCount) -> VkDeviceSize;
+	static auto GetScratchAlignment() -> VkDeviceSize;
+	static auto GetBottomLevelAccelStructBuildInfoBufferSize(uint32_t inMaxTargetCount) -> VkDeviceSize;
+	static auto GetClusterTemplateBuildInfoBufferSize(uint32_t inMaxTargetCount) -> VkDeviceSize;
+	static auto GetClusterBuildInfoBufferSize(uint32_t inMaxTargetCount) -> VkDeviceSize;
+	static auto GetInstantiateClusterBuildInfoBufferSize(uint32_t inMaxTargetCount) -> VkDeviceSize;
+
+	void SetBottomLevelAccelStructTarget(const ClusterBottomLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount, VkDeviceAddress inOutputSizes);
+	void SetClusterTemplateTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount, VkDeviceAddress inOutputSizes);
+	void SetClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount, VkDeviceAddress inOutputSizes);
+	void SetInstantiateClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount, VkDeviceAddress inOutputSizes);
 
 	void SetArgumentAddress(VkDeviceAddress inAddress) { m_state.arguments = inAddress; }
 	void SetScratchAddress(VkDeviceAddress inAddress) { m_state.scratch = inAddress; }
-	void SetOutputSizesArray(VkDeviceAddress inOutputAddress) { m_state.target.outputSizes = inOutputAddress; }
 
 	// Optional GPU actual count; defaults to the target's maximum capacity.
 	void CustomizeBuildCountAddress(VkDeviceAddress inAddress) { m_state.count = inAddress; }
@@ -390,16 +406,20 @@ class BuildExplicitClusterAccelStructCommandInput final
 	VulkanDetail::ClusterCommandState m_state;
 public:
 	void SetBottomLevelAccelStructTarget(const ClusterBottomLevelAccelStructBatch& inBatch);
-	void SetBottomLevelAccelStructTarget(const ClusterBottomLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
+	void SetBottomLevelAccelStructTarget(const ClusterBottomLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount, VkDeviceAddress inDestinationReferences);
 	void SetClusterTarget(const ClusterLevelAccelStructBatch& inBatch);
-	void SetClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
+	void SetClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount, VkDeviceAddress inDestinationReferences);
 	void SetInstantiateClusterTarget(const ClusterLevelAccelStructBatch& inBatch);
-	void SetInstantiateClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
-	auto QueryCurrentTargetSizesInfo() const -> AccelStructSizesInfo { return m_state.GetSizes(); }
+	void SetInstantiateClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount, VkDeviceAddress inDestinationReferences);
+	static auto GetBottomLevelAccelStructMemoryRequirements(const ClusterBottomLevelAccelStructBuildLimits&, uint32_t inMaxTargetCount) -> AccelStructMemoryRequirements;
+	static auto GetClusterMemoryRequirements(const ClusterLevelAccelStructBuildLimits&, uint32_t inMaxTargetCount) -> AccelStructMemoryRequirements;
+	static auto GetInstantiateClusterMemoryRequirements(const ClusterLevelAccelStructBuildLimits&, uint32_t inMaxTargetCount) -> AccelStructMemoryRequirements;
+	static auto GetBottomLevelAccelStructBuildInfoBufferSize(uint32_t inMaxTargetCount) -> VkDeviceSize;
+	static auto GetClusterBuildInfoBufferSize(uint32_t inMaxTargetCount) -> VkDeviceSize;
+	static auto GetInstantiateClusterBuildInfoBufferSize(uint32_t inMaxTargetCount) -> VkDeviceSize;
 
 	void SetArgumentAddress(VkDeviceAddress inAddress) { m_state.arguments = inAddress; }
 	void SetScratchAddress(VkDeviceAddress inAddress) { m_state.scratch = inAddress; }
-	void SetReferencesArray(VkDeviceAddress inAddress) { m_state.SetReferences(inAddress); }
 
 	// Optional GPU actual count; defaults to the target's maximum capacity.
 	void CustomizeBuildCountAddress(VkDeviceAddress inAddress) { m_state.count = inAddress; }
@@ -411,19 +431,24 @@ class BuildImplicitClusterAccelStructCommandInput final
 	VulkanDetail::ClusterCommandState m_state;
 public:
 	void SetBottomLevelAccelStructTarget(const ClusterBottomLevelAccelStructBatch& inBatch);
-	void SetBottomLevelAccelStructTarget(const ClusterBottomLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
+	void SetBottomLevelAccelStructTarget(const ClusterBottomLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount, VkDeviceAddress inStorage, VkDeviceAddress inOutputReferences);
 	void SetClusterTarget(const ClusterLevelAccelStructBatch& inBatch);
-	void SetClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
+	void SetClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount, VkDeviceAddress inStorage, VkDeviceAddress inOutputReferences);
 	void SetInstantiateClusterTarget(const ClusterLevelAccelStructBatch& inBatch);
 	void SetClusterTemplateTarget(const ClusterLevelAccelStructTemplateBatch& inBatch);
-	void SetClusterTemplateTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
-	void SetInstantiateClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount);
-	auto QueryCurrentTargetSizesInfo() const -> AccelStructSizesInfo { return m_state.GetSizes(); }
+	void SetClusterTemplateTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount, VkDeviceAddress inStorage, VkDeviceAddress inOutputReferences);
+	void SetInstantiateClusterTarget(const ClusterLevelAccelStructBuildLimits& inLimits, uint32_t inMaxTargetCount, VkDeviceAddress inStorage, VkDeviceAddress inOutputReferences);
+	static auto GetBottomLevelAccelStructMemoryRequirements(const ClusterBottomLevelAccelStructBuildLimits&, uint32_t inMaxTargetCount) -> AccelStructMemoryRequirements;
+	static auto GetClusterTemplateMemoryRequirements(const ClusterLevelAccelStructBuildLimits&, uint32_t inMaxTargetCount) -> AccelStructMemoryRequirements;
+	static auto GetClusterMemoryRequirements(const ClusterLevelAccelStructBuildLimits&, uint32_t inMaxTargetCount) -> AccelStructMemoryRequirements;
+	static auto GetInstantiateClusterMemoryRequirements(const ClusterLevelAccelStructBuildLimits&, uint32_t inMaxTargetCount) -> AccelStructMemoryRequirements;
+	static auto GetBottomLevelAccelStructBuildInfoBufferSize(uint32_t inMaxTargetCount) -> VkDeviceSize;
+	static auto GetClusterTemplateBuildInfoBufferSize(uint32_t inMaxTargetCount) -> VkDeviceSize;
+	static auto GetClusterBuildInfoBufferSize(uint32_t inMaxTargetCount) -> VkDeviceSize;
+	static auto GetInstantiateClusterBuildInfoBufferSize(uint32_t inMaxTargetCount) -> VkDeviceSize;
 
 	void SetArgumentAddress(VkDeviceAddress inAddress) { m_state.arguments = inAddress; }
 	void SetScratchAddress(VkDeviceAddress inAddress) { m_state.scratch = inAddress; }
-	void SetStorageAddress(VkDeviceAddress inAddress) { m_state.SetStorage(inAddress); }
-	void SetOutputReferencesArray(VkDeviceAddress inOutputAddress) { m_state.SetReferences(inOutputAddress); }
 
 	// Optional GPU actual count; defaults to the target's maximum capacity.
 	void CustomizeBuildCountAddress(VkDeviceAddress inAddress) { m_state.count = inAddress; }

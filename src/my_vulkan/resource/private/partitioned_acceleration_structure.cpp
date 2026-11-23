@@ -93,8 +93,11 @@ void PartitionedTopLevelAccelStruct::Create(const PartitionedTopLevelAccelStruct
     CHECK_TRUE(native.accelerationStructureSize && native.accelerationStructureSize <= limit &&
         native.buildScratchSize <= limit && Layout::OperationBufferSize <= limit,
         "PTLAS size query returned invalid sizes or exceeded Device buffer/allocation limits!");
-    const AccelStructSizesInfo sizes{0, native.buildScratchSize, Layout::StorageAlignment,
-        Layout::OperationBufferSize, native.accelerationStructureSize, Layout::StorageAlignment};
+    AccelStructMemoryRequirements sizes;
+    sizes.accelerationStructureSize = native.accelerationStructureSize;
+    sizes.accelerationStructureAlignment = Layout::StorageAlignment;
+    sizes.buildScratchBufferSize = native.buildScratchSize;
+    sizes.scratchAlignment = Layout::StorageAlignment;
     auto storage = std::make_unique<Buffer>();
     BufferCreateInfo bufferInfo;
     bufferInfo.SetBufferSize(sizes.accelerationStructureSize).SetBufferUsage(
@@ -105,7 +108,7 @@ void PartitionedTopLevelAccelStruct::Create(const PartitionedTopLevelAccelStruct
     CheckRange(address, sizes.accelerationStructureSize, Layout::StorageAlignment);
     m_storage = std::move(storage);
     m_configuration = config;
-    m_sizes = sizes;
+    m_memoryRequirements = sizes;
     m_address = address;
 }
 
@@ -233,7 +236,7 @@ void BuildPartitionedTopLevelAccelStructCommandInput::SetTarget(const Partitione
     CheckRange(count, sizeof(uint32_t), alignof(uint32_t));
     auto snapshot = m_snapshot;
     snapshot.configuration = target.m_configuration;
-    snapshot.sizes = target.m_sizes;
+    snapshot.sizes = target.m_memoryRequirements;
     snapshot.target = target.m_address;
     snapshot.source = 0;
     snapshot.arguments = arguments;
@@ -241,7 +244,7 @@ void BuildPartitionedTopLevelAccelStructCommandInput::SetTarget(const Partitione
     m_snapshot = snapshot;
 }
 
-auto BuildPartitionedTopLevelAccelStructCommandInput::QueryCurrentTargetSizesInfo() const -> AccelStructSizesInfo
+auto BuildPartitionedTopLevelAccelStructCommandInput::GetMemoryRequirements() const -> AccelStructMemoryRequirements
 {
     CHECK_TRUE(m_snapshot.target, "Select a PTLAS target first!");
     return m_snapshot.sizes;
@@ -250,10 +253,10 @@ auto BuildPartitionedTopLevelAccelStructCommandInput::QueryCurrentTargetSizesInf
 void BuildPartitionedTopLevelAccelStructCommandInput::CustomizeSourceAccelStruct(const PartitionedTopLevelAccelStruct& source)
 {
     CHECK_TRUE(m_snapshot.target && source.IsValid() && source.m_configuration == m_snapshot.configuration &&
-        source.m_sizes.accelerationStructureSize == m_snapshot.sizes.accelerationStructureSize,
+        source.m_memoryRequirements.accelerationStructureSize == m_snapshot.sizes.accelerationStructureSize,
         "PTLAS source requires a selected target with identical capacities, flags and translation setting!");
     if (source.m_address != m_snapshot.target)
-        CHECK_TRUE(Disjoint(source.m_address, source.m_sizes.accelerationStructureSize,
+        CHECK_TRUE(Disjoint(source.m_address, source.m_memoryRequirements.accelerationStructureSize,
             m_snapshot.target, m_snapshot.sizes.accelerationStructureSize), "PTLAS source overlaps target!");
     m_snapshot.source = source.m_address;
 }

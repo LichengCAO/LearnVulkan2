@@ -13,27 +13,24 @@ namespace VulkanDetail
     struct ClusterSizeQuery
     {
         static auto Get(const ClusterLevelAccelStructBuildLimits&, VkClusterAccelerationStructureOpTypeNV,
-            VkClusterAccelerationStructureOpModeNV, uint32_t inCapacity) -> AccelStructSizesInfo;
+            VkClusterAccelerationStructureOpModeNV, uint32_t inCapacity) -> AccelStructMemoryRequirements;
         static auto Get(const ClusterBottomLevelAccelStructBuildLimits&, VkClusterAccelerationStructureOpModeNV,
-            uint32_t inCapacity) -> AccelStructSizesInfo;
+            uint32_t inCapacity) -> AccelStructMemoryRequirements;
+        static auto GetScratchAlignment() -> VkDeviceSize;
     };
 
     auto ClusterTaskLayout(VkClusterAccelerationStructureOpTypeNV inOperation) -> AccelStructBuildInfoLayout;
 
     struct ClusterBuildTarget
     {
-        AccelStructSizesInfo sizes{};
         VkClusterAccelerationStructureTriangleClusterInputNV triangles{};
         VkClusterAccelerationStructureClustersBottomLevelInputNV clusters{};
         VkDeviceAddress outputSizes = 0;
-        bool managed = false;
         VkDeviceAddress storage = 0;
         VkDeviceAddress references = 0;
         uint32_t capacity = 0;
         VkClusterAccelerationStructureOpModeNV mode{};
         VkClusterAccelerationStructureOpTypeNV operation{};
-        // Borrowed destination ranges known from an explicit Batch, without owning its Buffers.
-        std::vector<std::pair<VkDeviceAddress, VkDeviceSize>> destinations;
 
         ClusterBuildTarget() = default;
         ClusterBuildTarget(const ClusterBuildTarget&) = default;
@@ -46,21 +43,18 @@ namespace VulkanDetail
         }
 
     private:
-        // Transfer the bound target and its overlap checks together. Move construction
+        // Transfer the bound target together. Move construction
         // exchanges the source with an empty target, which also covers move assignment.
         void _Swap(ClusterBuildTarget& other) noexcept
         {
-            std::swap(sizes, other.sizes);
             std::swap(triangles, other.triangles);
             std::swap(clusters, other.clusters);
             std::swap(outputSizes, other.outputSizes);
-            std::swap(managed, other.managed);
             std::swap(storage, other.storage);
             std::swap(references, other.references);
             std::swap(capacity, other.capacity);
             std::swap(mode, other.mode);
             std::swap(operation, other.operation);
-            destinations.swap(other.destinations);
         }
     };
     struct ClusterCommandState
@@ -71,15 +65,14 @@ namespace VulkanDetail
         VkDeviceAddress count = 0;
 
         void Select(const ClusterLevelAccelStructBuildLimits&, uint32_t inCapacity,
-            VkClusterAccelerationStructureOpModeNV, VkClusterAccelerationStructureOpTypeNV);
-        void Select(const ClusterBottomLevelAccelStructBuildLimits&, uint32_t inCapacity, VkClusterAccelerationStructureOpModeNV);
+            VkClusterAccelerationStructureOpModeNV, VkClusterAccelerationStructureOpTypeNV,
+            VkDeviceAddress inStorage, VkDeviceAddress inReferences, VkDeviceAddress inOutputSizes);
+        void Select(const ClusterBottomLevelAccelStructBuildLimits&, uint32_t inCapacity, VkClusterAccelerationStructureOpModeNV,
+            VkDeviceAddress inStorage, VkDeviceAddress inReferences, VkDeviceAddress inOutputSizes);
         void Select(const ClusterLevelAccelStructBatch&, VkClusterAccelerationStructureOpModeNV,
             VkClusterAccelerationStructureOpTypeNV);
         void Select(const ClusterLevelAccelStructTemplateBatch&, VkClusterAccelerationStructureOpModeNV);
         void Select(const ClusterBottomLevelAccelStructBatch&, VkClusterAccelerationStructureOpModeNV);
-        auto GetSizes() const -> AccelStructSizesInfo;
-        void SetReferences(VkDeviceAddress inAddress);
-        void SetStorage(VkDeviceAddress inAddress);
     };
-    auto CreateClusterDestination(const AccelStructSizesInfo& inSizes) -> std::unique_ptr<Buffer>;
+    auto CreateClusterDestination(const AccelStructMemoryRequirements& inSizes) -> std::unique_ptr<Buffer>;
 }

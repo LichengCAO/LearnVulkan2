@@ -153,6 +153,20 @@ namespace
         return buffer;
     }
 
+    auto MakeMemoryRequirements(const VkAccelerationStructureBuildSizesInfoKHR& inSizes,
+        VkBuildAccelerationStructureFlagsKHR inFlags, VkDeviceSize inScratchAlignment)
+        -> AccelStructMemoryRequirements
+    {
+        AccelStructMemoryRequirements requirements;
+        requirements.accelerationStructureSize = inSizes.accelerationStructureSize;
+        requirements.accelerationStructureAlignment = 256;
+        requirements.buildScratchBufferSize = inSizes.buildScratchSize;
+        if (CONTAIN_BITS(inFlags, VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR))
+            requirements.updateScratchBufferSize = inSizes.updateScratchSize;
+        requirements.scratchAlignment = inScratchAlignment;
+        return requirements;
+    }
+
 }
 
 void BottomLevelAccelStructCreateInfo::SetTriangles(std::span<const AccelStructTriangleGeometryLimits> inGeometries)
@@ -270,7 +284,7 @@ void BottomLevelAccelStruct::Create(const BottomLevelAccelStructCreateInfo& inCr
         m_storage = std::move(storage);
         m_accelStructReference = reference;
         m_clusterCount = inCreateInfo.m_clusterCount;
-        m_sizesInfo = sizes;
+        m_memoryRequirements = sizes;
         m_storageAddress = reference;
         return;
     }
@@ -307,10 +321,8 @@ void BottomLevelAccelStruct::Create(const BottomLevelAccelStructCreateInfo& inCr
     m_storage = std::move(storage);
     m_accelStructReference = address;
     m_flags = inCreateInfo.m_flags;
-    m_sizesInfo = { sizes.updateScratchSize, sizes.buildScratchSize,
-        properties.minAccelerationStructureScratchOffsetAlignment,
-        0,
-        sizes.accelerationStructureSize, 256 };
+    m_memoryRequirements = MakeMemoryRequirements(sizes, inCreateInfo.m_flags,
+        properties.minAccelerationStructureScratchOffsetAlignment);
     m_layout = std::move(layout);
 }
 
@@ -343,10 +355,8 @@ void TopLevelAccelStruct::Create(const TopLevelAccelStructCreateInfo& inCreateIn
     m_storageAddress = storageAddress;
     m_storage = std::move(storage);
     m_flags = inCreateInfo.m_flags;
-    m_sizesInfo = { sizes.updateScratchSize, sizes.buildScratchSize,
-        properties.minAccelerationStructureScratchOffsetAlignment,
-        VkDeviceSize(layout.buildRangesInfos[0].primitiveCount) * TopLevelAccelStructBuildInfo::GetBuildInfoLayout().recordStride,
-        sizes.accelerationStructureSize, 256 };
+    m_memoryRequirements = MakeMemoryRequirements(sizes, inCreateInfo.m_flags,
+        properties.minAccelerationStructureScratchOffsetAlignment);
     m_layout = std::move(layout);
 }
 
@@ -436,8 +446,8 @@ void BuildAccelStructCommandInput::SetTrianglesTarget(const BottomLevelAccelStru
         triangle.transformData.deviceAddress = input.m_transform;
         next.m_build.buildRangesInfos[i] = {input.m_triangleCount, 0, 0, 0};
     }
-    next.m_sizes = target.m_sizesInfo;
-    next.m_targetRange = {target.m_storageAddress, target.m_sizesInfo.accelerationStructureSize};
+    next.m_memoryRequirements = target.m_memoryRequirements;
+    next.m_targetRange = {target.m_storageAddress, target.m_memoryRequirements.accelerationStructureSize};
     next.m_scratch = m_scratch;
     *this = std::move(next);
 }
@@ -466,8 +476,8 @@ void BuildAccelStructCommandInput::SetAabbsTarget(const BottomLevelAccelStruct& 
         geometry.geometry.aabbs.data.deviceAddress = input.m_address;
         next.m_build.buildRangesInfos[i] = {input.m_count, 0, 0, 0};
     }
-    next.m_sizes = target.m_sizesInfo;
-    next.m_targetRange = {target.m_storageAddress, target.m_sizesInfo.accelerationStructureSize};
+    next.m_memoryRequirements = target.m_memoryRequirements;
+    next.m_targetRange = {target.m_storageAddress, target.m_memoryRequirements.accelerationStructureSize};
     next.m_scratch = m_scratch;
     *this = std::move(next);
 }
@@ -483,8 +493,8 @@ void BuildAccelStructCommandInput::SetInstancesTarget(const TopLevelAccelStruct&
     next.m_build.buildGeometryInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     next.m_build.geometries[0].geometry.instances.data.deviceAddress = address;
     next.m_build.buildRangesInfos[0] = {count, 0, 0, 0};
-    next.m_sizes = target.m_sizesInfo;
-    next.m_targetRange = {target.m_storageAddress, target.m_sizesInfo.accelerationStructureSize};
+    next.m_memoryRequirements = target.m_memoryRequirements;
+    next.m_targetRange = {target.m_storageAddress, target.m_memoryRequirements.accelerationStructureSize};
     next.m_scratch = m_scratch;
     *this = std::move(next);
 }
@@ -504,29 +514,38 @@ void BuildAccelStructCommandInput::_SetSource(const VkAccelStructBuildInfo& limi
 void BuildAccelStructCommandInput::CustomizeSourceAccelStruct(const BottomLevelAccelStruct& source)
 {
     _SetSource(source.m_layout, source.GetVkAccelerationStructure(),
-        source.m_storageAddress, source.m_sizesInfo.accelerationStructureSize);
+        source.m_storageAddress, source.m_memoryRequirements.accelerationStructureSize);
 }
 
 void BuildAccelStructCommandInput::CustomizeSourceAccelStruct(const TopLevelAccelStruct& source)
 {
     _SetSource(source.m_layout, source.GetVkAccelerationStructure(),
-        source.m_storageAddress, source.m_sizesInfo.accelerationStructureSize);
+        source.m_storageAddress, source.m_memoryRequirements.accelerationStructureSize);
 }
 
-auto BuildAccelStructCommandInput::QueryCurrentTargetSizesInfo() const -> AccelStructSizesInfo
+auto BuildAccelStructCommandInput::GetMemoryRequirements() const -> AccelStructMemoryRequirements
 {
     CHECK_TRUE(m_build.buildGeometryInfo.dstAccelerationStructure && !m_build.geometries.empty(),
         "No AS target selected or moved-from input!");
-    return m_sizes;
+    return m_memoryRequirements;
+}
+
+auto BuildAccelStructCommandInput::_GetScratchBufferSize() const -> VkDeviceSize
+{
+    if (m_build.buildGeometryInfo.mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR)
+    {
+        CHECK_TRUE(m_memoryRequirements.updateScratchBufferSize.has_value(), "Selected target does not support KHR UPDATE scratch!");
+        return *m_memoryRequirements.updateScratchBufferSize;
+    }
+    return m_memoryRequirements.buildScratchBufferSize;
 }
 
 auto BuildAccelStructCommandInput::_GetBuild() const -> VkAccelStructBuildInfo
 {
     CHECK_TRUE(m_build.buildGeometryInfo.dstAccelerationStructure && !m_build.geometries.empty() &&
         m_build.geometries.size() == m_build.buildRangesInfos.size(), "No AS target selected or moved-from input!");
-    const auto bytes = m_build.buildGeometryInfo.mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
-        ? m_sizes.updateScratchBufferSize : m_sizes.buildScratchBufferSize;
-    CheckAddress(m_scratch, bytes, m_sizes.scratchAlignment);
+    const auto bytes = _GetScratchBufferSize();
+    CheckAddress(m_scratch, bytes, m_memoryRequirements.scratchAlignment);
     auto result = m_build;
     result.buildGeometryInfo.scratchData.deviceAddress = bytes ? m_scratch : 0;
     return result;
