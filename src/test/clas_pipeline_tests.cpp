@@ -224,35 +224,35 @@ void TestRayTracingAllocatorKeysClusterPermission()
     allocator.Create(FakeHandle<VkDevice>(1));
 
     VkRayTracingPipelineCreateInfoKHR info{VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
-    const auto regular = allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    const auto regular = allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE);
     VkRayTracingPipelineClusterAccelerationStructureCreateInfoNV cluster{
         VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CLUSTER_ACCELERATION_STRUCTURE_CREATE_INFO_NV};
     cluster.allowClusterAccelerationStructure = VK_TRUE;
     info.pNext = &cluster;
-    const auto enabled = allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    const auto enabled = allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE);
     CHECK_TRUE(enabled != regular, "CLAS and ordinary pipeline requests must use different cache entries!");
 
     auto clusterCopy = cluster;
     info.pNext = &clusterCopy;
-    CHECK_TRUE(allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE, VK_NULL_HANDLE) == enabled,
+    CHECK_TRUE(allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE) == enabled,
         "Equal CLAS permission must reuse the pipeline across different extension-node addresses!");
     clusterCopy.allowClusterAccelerationStructure = VK_FALSE;
-    const auto disabled = allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    const auto disabled = allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE);
     CHECK_TRUE(disabled != regular && disabled != enabled,
         "A CLAS node with VK_FALSE must have a distinct cache entry from absent or VK_TRUE nodes!");
     auto disabledCopy = clusterCopy;
     info.pNext = &disabledCopy;
-    CHECK_TRUE(allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE, VK_NULL_HANDLE) == disabled,
+    CHECK_TRUE(allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE) == disabled,
         "An explicit VK_FALSE node must reuse its cache entry across different node addresses!");
 
     VkBaseInStructure unsupported{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     info.pNext = &unsupported;
-    ExpectRejected([&] { allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE, VK_NULL_HANDLE); });
+    ExpectRejected([&] { allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE); });
     info.pNext = &cluster;
     cluster.pNext = &clusterCopy;
-    ExpectRejected([&] { allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE, VK_NULL_HANDLE); });
+    ExpectRejected([&] { allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE); });
     cluster.pNext = &unsupported;
-    ExpectRejected([&] { allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE, VK_NULL_HANDLE); });
+    ExpectRejected([&] { allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE); });
 
     cluster.pNext = nullptr;
     info.pNext = nullptr;
@@ -260,7 +260,7 @@ void TestRayTracingAllocatorKeysClusterPermission()
     stage.pNext = &cluster;
     info.stageCount = 1;
     info.pStages = &stage;
-    ExpectRejected([&] { allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE, VK_NULL_HANDLE); });
+    ExpectRejected([&] { allocator.AllocateRayTracingPipeline(info, VK_NULL_HANDLE); });
     const std::vector<std::optional<VkBool32>> expected{std::nullopt, VK_TRUE, VK_FALSE};
     CHECK_TRUE(nativeClusterModes == expected, "Only valid cache misses may reach Vulkan!");
 }
@@ -334,6 +334,12 @@ void TestRayTracingProgramUsesFinalizedClusterOptIn()
     ScopedVulkanFunction getGroups(vkGetRayTracingShaderGroupHandlesKHR, &GetShaderGroupHandles);
     ClasPipelineTestProbe::DeviceScope deviceScope;
     auto& device = MyDevice::GetInstance();
+    const VkRayTracingPipelineCreateInfoKHR rawInfo{VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
+    const auto deferred = FakeHandle<VkDeferredOperationKHR>(1);
+    VkAllocationCallbacks callbacks{};
+    ExpectRejected([&] { device.CreateRayTracingPipeline(rawInfo, VK_NULL_HANDLE, deferred); });
+    ExpectRejected([&] { device.CreateRayTracingPipeline(rawInfo, VK_NULL_HANDLE, deferred, &callbacks); });
+    CHECK_TRUE(nativeClusterModes.empty(), "Synchronous creation must reject deferral before calling Vulkan!");
     RayTracingShaderProgram clusterProgram;
     ExpectRejected([&] { device.CreateRayTracingShaderProgram(clusterProgram, enabledInfo); });
     CHECK_TRUE(clusterProgram.GetVkPipeline() == VK_NULL_HANDLE && nativeShaderModuleCreates == 0 && nativeClusterModes.empty(),

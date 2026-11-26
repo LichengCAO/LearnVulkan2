@@ -67,12 +67,10 @@ public:
 	auto IsCreated() const noexcept -> bool { return m_vkDevice != VK_NULL_HANDLE; }
 	auto AllocateRayTracingPipelineWithResult(
 		const VkRayTracingPipelineCreateInfoKHR& inCreateInfo,
-		VkPipelineCache inCache,
-		VkDeferredOperationKHR inDeferredOperation) -> std::pair<VkPipeline, VkResult>;
+		VkPipelineCache inCache) -> std::pair<VkPipeline, VkResult>;
 	auto AllocateRayTracingPipeline(
 		const VkRayTracingPipelineCreateInfoKHR& inCreateInfo,
-		VkPipelineCache inCache,
-		VkDeferredOperationKHR inDeferredOperation) -> VkPipeline;
+		VkPipelineCache inCache) -> VkPipeline;
 	bool FreeRayTracingPipeline(VkPipeline& inoutPipeline);
 	bool HasRayTracingPipeline(VkPipeline inPipeline) const;
 	void Destroy();

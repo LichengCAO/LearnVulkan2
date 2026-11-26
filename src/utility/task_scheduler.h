@@ -71,7 +71,6 @@ public:
 class MyTaskScheduler final : public ITaskScheduler
 {
 private:
-	static std::unique_ptr<MyTaskScheduler> g_uptrInstance;
 	std::unique_ptr<ITaskScheduler> m_uptrImpl;
 	MyTaskScheduler();
 
@@ -79,8 +78,11 @@ public:
 	static constexpr uint32_t THREAD_COUNT = 4;
 
 	static auto GetInstance() -> MyTaskScheduler&;
+	// Create and Destroy require exclusive access. Create registers its caller as thread 0.
 	void Create();
+	// An initialized scheduler accepts pinned tasks from any thread.
 	virtual void AddSingleThreadTask(ISingleThreadTask& inSingleThreadTask) override;
+	// Task sets and waits for pending work require thread 0 or a scheduler worker.
 	virtual void AddMutiThreadTask(IMultiThreadTask& inMultiThreadTask) override;
 	// _Wait till the task is no longer pending/executing on the system
 	virtual void WaitForTask(const IWaitable& inToWait) override;

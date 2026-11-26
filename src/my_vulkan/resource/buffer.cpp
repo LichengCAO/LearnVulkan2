@@ -234,6 +234,7 @@ auto Buffer::GetVkBuffer() const -> VkBuffer
 }
 
 auto Buffer::IsValid() const noexcept -> bool { return m_storage && m_storage->buffer != VK_NULL_HANDLE; }
+auto Buffer::GetResourceId() const noexcept -> uint64_t { return m_storage ? m_storage->resourceId : 0; }
 
 auto BufferCreateInfo::Reset() -> BufferCreateInfo&
 {
@@ -389,8 +390,10 @@ void BufferView::_Create(const Buffer& inBuffer, const BufferViewInfo& inCreateI
 	createInfo.range = m_viewInformation.range;
 
 	VkBufferView native = VK_NULL_HANDLE;
+	const auto id = VulkanDetail::_AllocateResourceId();
 	VK_CHECK(vkCreateBufferView(m_device, &createInfo, nullptr, &native), "Failed to create buffer view!");
 	m_vkBufferView = native;
+	m_resourceId = id;
 }
 
 void BufferView::_Destroy() noexcept
@@ -401,6 +404,7 @@ void BufferView::_Destroy() noexcept
 		m_vkBufferView = VK_NULL_HANDLE;
 	}
 	m_viewInformation = BufferView::Information{};
+	m_resourceId = 0;
 }
 
 auto BufferView::GetBufferViewInformation() const->const Information&

@@ -102,7 +102,7 @@ private:
 	FenceAllocator m_fenceAllocator;
 	SemaphoreAllocator m_semaphoreAllocator;
 	size_t m_queueStateCount = 0;
-	SubmissionFrontier m_completedFrontier;
+	std::shared_ptr<SubmissionFrontier> m_completedFrontier = std::make_shared<SubmissionFrontier>();
 	DependencySemaphoreMap m_dependencySemaphores;
 	bool m_created = false;
 
@@ -125,7 +125,7 @@ private:
 		HostFence* inCompletionFence,
 		VkFence inCompletionVkFence) noexcept;
 	auto _AdvanceCompletion(
-		const SubmissionFrontier& inSubmissionFrontier)->std::vector<HostFence::Callback>;
+		const SubmissionFrontier& inSubmissionFrontier, size_t inCompletedQueue)->std::vector<HostFence::Callback>;
 	auto _FindHostFenceVkFence(const HostFence& inFence)->VkFence;
 	static void _RunCallbacks(std::vector<HostFence::Callback> inCallbacks);
 	auto _ConsumeHostFence(HostFence& inFence, uint64_t inTimeout)->bool;

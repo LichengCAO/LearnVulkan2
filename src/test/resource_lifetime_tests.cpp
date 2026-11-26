@@ -753,6 +753,8 @@ void TestSwapchainViewsRetainTheirOriginalGeneration()
         [&oldDestroyed](VkSwapchainKHR) { ++oldDestroyed; });
     auto image = std::make_unique<Image>();
     ResourceLifetimeTestProbe::ImportSwapchain(*image, 52, oldGeneration);
+    CHECK_TRUE(image->GetImageInformation().tiling == VK_IMAGE_TILING_OPTIMAL,
+        "Imported swapchain images must report optimal tiling!");
     auto oldView = image->View();
     const auto viewCreates = environment.state.viewCreates;
     ExpectFailure([&] { ResourceLifetimeTestProbe::ImportSwapchain(*image, 53, oldGeneration); });

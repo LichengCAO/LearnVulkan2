@@ -3,6 +3,7 @@
 #include "my_vulkan/allocator/private/descriptor_set_layout_allocator.h"
 #include "my_vulkan/resource/descriptor.h"
 #include "my_vulkan/resource/private/dynamic_descriptor_pool.h"
+#include "clas_buffer_test_fixture.h"
 #include <atomic>
 #include <barrier>
 #include <mutex>
@@ -23,6 +24,12 @@ auto RunDescriptorPoolFatalCase(std::string_view argument) -> int;
 
 struct DescriptorPoolTestProbe
 {
+    static auto SamplerForTest(VkSampler handle) -> Sampler
+    {
+        Sampler sampler;
+        sampler.m_vkSampler = handle;
+        return sampler;
+    }
     static auto ImageViewForTest(std::function<void(VkImageView)> destroy) -> ImageView
     {
         ImageView view;
@@ -65,6 +72,8 @@ struct NativeState
     std::unordered_map<VkDescriptorSet, VkDescriptorPool> sets;
     uint32_t maxStorage = 0;
     VkImageLayout expectedLayouts[2] = { VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkBuffer expectedBuffer = VK_NULL_HANDLE;
+    VkSampler expectedSampler = VK_NULL_HANDLE;
 };
 NativeState* state = nullptr;
 struct NativeCall
@@ -162,6 +171,18 @@ void VKAPI_PTR Update(VkDevice, uint32_t count, const VkWriteDescriptorSet* writ
         CHECK_TRUE(state->sets.contains(write.dstSet), "Writes must target a successfully allocated set!");
         CHECK_TRUE(write.sType == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET && write.descriptorCount == 1,
             "Each description item must produce one initialized write!");
+        if (write.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+        {
+            CHECK_TRUE(write.pBufferInfo && write.pBufferInfo->buffer == state->expectedBuffer,
+                "Storage descriptors must write the current native buffer!");
+            continue;
+        }
+        if (write.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER || write.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+        {
+            CHECK_TRUE(write.pImageInfo && write.pImageInfo->sampler == state->expectedSampler,
+                "Sampler descriptors must write the current native sampler!");
+            continue;
+        }
         CHECK_TRUE(write.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE && write.dstBinding < 2 && write.dstArrayElement == 0,
             "Sampled-image bindings must preserve their destination and type!");
         CHECK_TRUE(write.pImageInfo != nullptr && write.pBufferInfo == nullptr && write.pTexelBufferView == nullptr,
@@ -575,6 +596,80 @@ void TestDynamicAndRollback()
     CHECK_TRUE(destroyedViews == 1, "Freeing the last set must release its retained image view!");
     retaining.reset();
 }
+void TestDynamicBufferRebinding()
+{
+    ClasBufferTestFixture::Run([]
+    {
+        Environment environment;
+        DescriptorSetLayoutCreateInfo layoutInfo;
+        layoutInfo.SetBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+        DescriptorSetLayout layout;
+        MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layout, layoutInfo);
+        BufferCreateInfo info;
+        info.SetBufferUsage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT).SetBufferSize(128);
+        Buffer buffer;
+        buffer.Create(info);
+        std::optional<Buffer> previous;
+        VulkanDetail::DynamicDescriptorPool pool;
+        pool.Create();
+
+        DescriptorSetDesc description;
+        description.SetBuffer(0, buffer);
+        const auto firstHandle = buffer.GetVkBuffer();
+        state->expectedBuffer = firstHandle;
+        const auto firstSet = pool.GetOrAllocateTransient(layout, description);
+        previous.emplace(std::move(buffer));
+        buffer.Create(info);
+        state->expectedBuffer = buffer.GetVkBuffer();
+        CHECK_TRUE(pool.GetOrAllocateTransient(layout, description) != firstSet,
+            "Rebinding a facade to another live buffer must create a distinct descriptor set!");
+        description.SetBuffer(0, *previous);
+        CHECK_TRUE(pool.GetOrAllocateTransient(layout, description) == firstSet,
+            "Moving the original buffer must preserve its cached bindings!");
+
+        previous.reset();
+        ClasBufferTestFixture::SetNextBufferHandle(firstHandle);
+        previous.emplace().Create(info);
+        state->expectedBuffer = firstHandle;
+        description.SetBuffer(0, *previous);
+        CHECK_TRUE(previous->GetVkBuffer() == firstHandle && pool.GetOrAllocateTransient(layout, description) != firstSet,
+            "Recreating a buffer with a recycled native handle must write a fresh descriptor set!");
+    });
+}
+
+void TestDynamicSamplerRebinding()
+{
+    Environment environment;
+    auto view = DescriptorPoolTestProbe::ImageViewForTest([](VkImageView) {});
+    VulkanDetail::DynamicDescriptorPool pool;
+    pool.Create();
+    for (const auto type : {VK_DESCRIPTOR_TYPE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER})
+    {
+        DescriptorSetLayoutCreateInfo info;
+        info.SetBinding(0, type, VK_SHADER_STAGE_FRAGMENT_BIT);
+        DescriptorSetLayout layout;
+        MyDevice::GetInstance().GetOrCreateDescriptorSetLayout(layout, info);
+        Sampler sampler = DescriptorPoolTestProbe::SamplerForTest(Handle<VkSampler>(45));
+        const Sampler original = sampler;
+        DescriptorSetDesc description;
+        const auto bind = [&](const Sampler& value)
+        {
+            if (type == VK_DESCRIPTOR_TYPE_SAMPLER) description.SetSampler(0, value);
+            else description.SetCombinedImageSampler(0, view, value);
+        };
+        bind(sampler);
+        state->expectedSampler = sampler.GetVkSampler();
+        const auto first = pool.GetOrAllocateTransient(layout, description);
+        sampler = DescriptorPoolTestProbe::SamplerForTest(Handle<VkSampler>(46));
+        state->expectedSampler = sampler.GetVkSampler();
+        CHECK_TRUE(pool.GetOrAllocateTransient(layout, description) != first,
+            "Assigning a different sampler to the same wrapper must update the native binding!");
+        bind(original);
+        CHECK_TRUE(pool.GetOrAllocateTransient(layout, description) == first,
+            "A different sampler wrapper with the same handle must reuse its native binding!");
+    }
+}
+
 void TestExternallySynchronizedPoolAccess()
 {
     Environment environment;
@@ -759,6 +854,8 @@ void RunDescriptorPoolTests()
     TestExplicitFree();
     TestGrowthAndFailures();
     TestDynamicAndRollback();
+    TestDynamicBufferRebinding();
+    TestDynamicSamplerRebinding();
     TestExternallySynchronizedPoolAccess();
     TestIndependentPoolsOnDifferentThreads();
     TestPoolOwnershipHandoff();

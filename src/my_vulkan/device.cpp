@@ -53,22 +53,17 @@ MyDevice::~MyDevice()
 	if (m_initialized) Destroy();
 }
 
-std::vector<const char*> MyDevice::_GetInstanceRequiredExtensions() const
+auto MyDevice::_GetInstanceRequiredExtensions() const -> std::vector<const char*>
 {
 	uint32_t glfwExtensionsCount = 0;
 	const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionsCount);
-	std::vector<const char*> requiredExtensions;
-
-	for (uint32_t i = 0; i < glfwExtensionsCount; ++i) {
-		requiredExtensions.emplace_back(glfwExtensions[i]);
-	}
-	requiredExtensions.emplace_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
-	requiredExtensions.emplace_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
-	/*if (enableValidationLayer)*/ requiredExtensions.emplace_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-	return requiredExtensions;
+	CHECK_TRUE(glfwExtensions && glfwExtensionsCount, "GLFW Vulkan surface extensions are unavailable!");
+	std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionsCount);
+	extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	return extensions;
 }
 
-MyDevice::QueueFamilyIndices MyDevice::_GetQueueFamilyIndices(VkPhysicalDevice physicalDevice) const
+auto MyDevice::_GetQueueFamilyIndices(VkPhysicalDevice physicalDevice) const -> QueueFamilyIndices
 {
 	QueueFamilyIndices indices;
 	uint32_t queueFamilyCount = 0;
@@ -84,7 +79,8 @@ MyDevice::QueueFamilyIndices MyDevice::_GetQueueFamilyIndices(VkPhysicalDevice p
 			indices.graphicsAndComputeFamily = i;
 		}
 		VkBool32 supportPresent = false;
-		vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, vkSurface, &supportPresent);
+		VK_CHECK(vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, vkSurface, &supportPresent),
+			"Failed to query queue presentation support!");
 		if (supportPresent) {
 			indices.presentFamily = i;
 		}
@@ -96,71 +92,9 @@ MyDevice::QueueFamilyIndices MyDevice::_GetQueueFamilyIndices(VkPhysicalDevice p
 		if (indices.isComplete())break;
 		++i;
 	}
+	if (!indices.transferFamily)
+		indices.transferFamily = indices.graphicsAndComputeFamily;
 	return indices;
-}
-
-MyDevice::SwapChainSupportDetails MyDevice::_QuerySwapchainSupport(VkPhysicalDevice phyiscalDevice, VkSurfaceKHR surface) const
-{
-	SwapChainSupportDetails res;
-
-	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phyiscalDevice, surface, &res.capabilities);
-
-	uint32_t formatCnt = 0;
-	vkGetPhysicalDeviceSurfaceFormatsKHR(phyiscalDevice, surface, &formatCnt, nullptr);
-	if (formatCnt != 0) {
-		res.formats.resize(formatCnt);
-		vkGetPhysicalDeviceSurfaceFormatsKHR(phyiscalDevice, surface, &formatCnt, res.formats.data());
-	}
-
-	uint32_t modeCnt = 0;
-	vkGetPhysicalDeviceSurfacePresentModesKHR(phyiscalDevice, surface, &modeCnt, nullptr);
-	if (modeCnt != 0) {
-		res.presentModes.resize(modeCnt);
-		vkGetPhysicalDeviceSurfacePresentModesKHR(phyiscalDevice, surface, &modeCnt, res.presentModes.data());
-	}
-	return res;
-}
-
-VkSurfaceFormatKHR MyDevice::_ChooseSwapchainFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) const
-{
-	for (const auto& availableFormat : availableFormats) 
-	{
-		if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB && availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) 
-		{
-			return availableFormat;
-		}
-	}
-	return availableFormats[0];
-}
-
-VkPresentModeKHR MyDevice::_ChooseSwapchainPresentMode(const std::vector<VkPresentModeKHR>& availableModes) const
-{
-	for (const auto& availableMode : availableModes) 
-	{
-		if (availableMode == VK_PRESENT_MODE_MAILBOX_KHR) 
-		{
-			return availableMode;
-		}
-	}
-	return VK_PRESENT_MODE_FIFO_KHR;
-}
-
-VkExtent2D MyDevice::_ChooseSwapchainExtent(const VkSurfaceCapabilitiesKHR& capabilities) const
-{
-	if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) 
-	{
-		return capabilities.currentExtent;
-	}
-	int width, height;
-	glfwGetFramebufferSize(pWindow, &width, &height);
-	VkExtent2D res{
-		static_cast<uint32_t>(width),
-		static_cast<uint32_t>(height)
-	};
-
-	res.width = std::clamp(res.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
-	res.height = std::clamp(res.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
-	return res;
 }
 
 void MyDevice::_InitVolk()
@@ -170,10 +104,15 @@ void MyDevice::_InitVolk()
 
 void MyDevice::_InitGLFW()
 {
-	glfwInit();
+	CHECK_TRUE(glfwInit() == GLFW_TRUE, "Failed to initialize GLFW!");
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 	pWindow = glfwCreateWindow(800, 600, "My Vulkan", nullptr, nullptr);
+	if (!pWindow)
+	{
+		glfwTerminate();
+		throw std::runtime_error("Failed to create the GLFW window!");
+	}
 	glfwSetWindowUserPointer(pWindow, this);
 	glfwSetFramebufferSizeCallback(pWindow, OnFramebufferResized);
 	glfwSetCursorPosCallback(pWindow, CursorPosCallBack);
@@ -334,7 +273,6 @@ void MyDevice::_CreateLogicalDevice()
 	
 	m_device = deviceBuilderReturn.value();
 	vkDevice = m_device.device;
-	m_dispatchTable = m_device.make_table();
 	volkLoadDevice(vkDevice);
 
 	// store vkQueues
@@ -358,18 +296,14 @@ void MyDevice::_CreateLogicalDevice()
 
 void MyDevice::_CreateSwapchain(VkSwapchainKHR inOldSwapchain)
 {
-	SwapChainSupportDetails swapChainSupport = _QuerySwapchainSupport(vkPhysicalDevice, vkSurface);
-	uint32_t imageCnt = swapChainSupport.capabilities.minImageCount + 1;
-	VkSurfaceFormatKHR surfaceFormat = _ChooseSwapchainFormat(swapChainSupport.formats);
-	VkPresentModeKHR presentMode = _ChooseSwapchainPresentMode(swapChainSupport.presentModes);
-	VkExtent2D extent = _ChooseSwapchainExtent(swapChainSupport.capabilities);
-	vkb::SwapchainBuilder swapchainBuilder{ m_device };
+	int width, height;
+	glfwGetFramebufferSize(pWindow, &width, &height);
+	vkb::SwapchainBuilder swapchainBuilder{vkPhysicalDevice, vkDevice, vkSurface,
+		queueFamilyIndices.graphicsFamily.value(), queueFamilyIndices.presentFamily.value()};
 	swapchainBuilder.set_old_swapchain(inOldSwapchain);
-	swapchainBuilder.set_desired_format(surfaceFormat);
-	swapchainBuilder.set_desired_present_mode(presentMode);
+	swapchainBuilder.set_desired_format({VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR});
 	swapchainBuilder.set_composite_alpha_flags(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
-	swapchainBuilder.set_desired_min_image_count(imageCnt);
-	swapchainBuilder.set_desired_extent(extent.width, extent.height);
+	swapchainBuilder.set_desired_extent(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
 	swapchainBuilder.set_image_array_layer_count(1);
 	auto swapchainBuilderReturn = swapchainBuilder.build();
 	if (!swapchainBuilderReturn)
@@ -386,11 +320,20 @@ void MyDevice::_CreateSwapchain(VkSwapchainKHR inOldSwapchain)
 	catch (...)
 	{
 		vkb::destroy_swapchain(m_swapchain);
+		m_swapchain = {};
 		vkSwapchain = VK_NULL_HANDLE;
 		throw;
 	}
+	try
+	{
+		_UpdateSwapchainImages();
+	}
+	catch (...)
+	{
+		_DestroySwapchain();
+		throw;
+	}
 	m_needRecreate = false;
-	_UpdateSwapchainImages();
 }
 
 void MyDevice::RecreateSwapchain()
@@ -398,12 +341,14 @@ void MyDevice::RecreateSwapchain()
 	int width = 0;
 	int height = 0;
 	glfwGetFramebufferSize(pWindow, &width, &height);
-	while (width == 0 || height == 0) 
+	while (width == 0 || height == 0)
 	{
-		glfwGetFramebufferSize(pWindow, &width, &height);
+		if (glfwWindowShouldClose(pWindow)) return;
 		glfwWaitEvents();
+		glfwGetFramebufferSize(pWindow, &width, &height);
 	}
 	WaitIdle();
+	m_needRecreate = true;
 	const auto oldSwapchain = m_swapchainResource;
 	_DestroySwapchain();
 	_CreateSwapchain(oldSwapchain ? oldSwapchain->GetHandle() : VK_NULL_HANDLE);
@@ -485,13 +430,6 @@ void MyDevice::StartFrame() const
 
 void MyDevice::_DestroySwapchain()
 {
-	for (auto& uptrImage : m_uptrSwapchainImages)
-	{
-		if (uptrImage.get() != nullptr)
-		{
-			uptrImage.reset();
-		}
-	}
 	m_uptrSwapchainImages.clear();
 	m_swapchainResource.reset();
 	vkSwapchain = VK_NULL_HANDLE;
@@ -530,7 +468,6 @@ void MyDevice::_DestroyMemoryAllocator()
 void MyDevice::_AddBaseExtensionsAndFeatures(vkb::PhysicalDeviceSelector& _selector) const
 {
 	VkPhysicalDeviceFeatures requiredFeatures{};
-	VkPhysicalDeviceDescriptorIndexingFeaturesEXT physicalDeviceDescriptorIndexingFeatures{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT };
 	VkPhysicalDeviceSynchronization2FeaturesKHR sync2Feature{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR };
 	
 	requiredFeatures.geometryShader = VK_TRUE;
@@ -539,9 +476,6 @@ void MyDevice::_AddBaseExtensionsAndFeatures(vkb::PhysicalDeviceSelector& _selec
 	requiredFeatures.fragmentStoresAndAtomics = VK_TRUE;
 	requiredFeatures.shaderInt64 = VK_TRUE;
 	requiredFeatures.shaderFloat64 = VK_TRUE;
-	physicalDeviceDescriptorIndexingFeatures.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-	physicalDeviceDescriptorIndexingFeatures.runtimeDescriptorArray = VK_TRUE;
-	physicalDeviceDescriptorIndexingFeatures.descriptorBindingVariableDescriptorCount = VK_TRUE;
 	sync2Feature.synchronization2 = VK_TRUE;
 	
 	_selector.add_required_extensions(
@@ -554,7 +488,6 @@ void MyDevice::_AddBaseExtensionsAndFeatures(vkb::PhysicalDeviceSelector& _selec
 		});
 	_selector.set_required_features(requiredFeatures);
 	_selector.add_required_extension_features(sync2Feature);
-	//_selector.add_required_extension_features(physicalDeviceDescriptorIndexingFeatures);
 }
 
 void MyDevice::_AddRayTracingExtensionsAndFeatures(vkb::PhysicalDeviceSelector& _selector) const
@@ -562,12 +495,10 @@ void MyDevice::_AddRayTracingExtensionsAndFeatures(vkb::PhysicalDeviceSelector& 
 	// Ray tracing
 	VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR };
 	VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR };
-	VkPhysicalDeviceHostQueryResetFeatures hostQueryResetFeatures{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES };
 	VkPhysicalDeviceVulkan12Features vulkan12Featrues{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
 
 	accelerationStructureFeatures.accelerationStructure = VK_TRUE;
 	rayTracingPipelineFeatures.rayTracingPipeline = VK_TRUE;
-	hostQueryResetFeatures.hostQueryReset = VK_TRUE;
 	vulkan12Featrues.bufferDeviceAddress = VK_TRUE;
 	vulkan12Featrues.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 	vulkan12Featrues.runtimeDescriptorArray = VK_TRUE;
@@ -582,7 +513,6 @@ void MyDevice::_AddRayTracingExtensionsAndFeatures(vkb::PhysicalDeviceSelector& 
 		});
 	_selector.add_required_extension_features(accelerationStructureFeatures);
 	_selector.add_required_extension_features(rayTracingPipelineFeatures);
-	//_selector.add_required_extension_features(hostQueryResetFeatures);
 	_selector.add_required_extension_features(vulkan12Featrues);
 }
 
@@ -628,26 +558,11 @@ void MyDevice::_AddBindlessExtensionsAndFeatures(vkb::PhysicalDeviceSelector& _s
 	_selector.add_required_extension_features(vulkan12Featrues);
 }
 
-void MyDevice::_GetVkSwapchainImages(std::vector<VkImage>& _vkImages) const
-{
-	uint32_t uImageCount = 0;
-	_vkImages.clear();
-	vkGetSwapchainImagesKHR(vkDevice, vkSwapchain, &uImageCount, nullptr);
-	_vkImages.resize(static_cast<size_t>(uImageCount));
-	vkGetSwapchainImagesKHR(vkDevice, vkSwapchain, &uImageCount, _vkImages.data());
-}
-
 void MyDevice::_UpdateSwapchainImages()
 {
-	std::vector<VkImage> vkImages;
-	for (std::unique_ptr<SwapchainImage>& uptrImage : m_uptrSwapchainImages)
-	{
-		if (uptrImage.get() != nullptr)
-		{
-			uptrImage.reset();
-		}
-	}
-	_GetVkSwapchainImages(vkImages);
+	auto images = m_swapchain.get_images();
+	CHECK_TRUE(images.has_value(), "Failed to enumerate swapchain images!");
+	const auto& vkImages = images.value();
 
 	m_uptrSwapchainImages.resize(vkImages.size());
 	for (size_t i = 0; i < vkImages.size(); ++i)
@@ -819,24 +734,30 @@ void MyDevice::_DestroySamplerAllocator()
 
 void MyDevice::Create()
 {
-	m_clusterAccelerationStructureEnabled = false;
-	m_clusterAccelerationStructureRevision = 0;
-	m_partitionedAccelerationStructureEnabled = false;
+	CHECK_TRUE(!m_initialized, "Device is already initialized!");
 	_InitVolk();
 	_InitGLFW();
-	_CreateInstance();
-	_CreateSurface();
-	_SelectPhysicalDevice();
-	_CreateLogicalDevice();
-	_CreateMemoryAllocator();
-	_CreateSamplerAllocator();
-	_CreateRenderTargetCache();
-	_CreatePipelineLayoutAllocator();
-	_CreatePipelineAllocators();
-    _CreateShaderModuleAllocator();
-	_CreateSwapchain();
-	_CreateDescriptorSetLayoutAllocator();
-	m_initialized = true;
+	try
+	{
+		_CreateInstance();
+		_CreateSurface();
+		_SelectPhysicalDevice();
+		_CreateLogicalDevice();
+		_CreateMemoryAllocator();
+		_CreateSamplerAllocator();
+		_CreateRenderTargetCache();
+		_CreatePipelineLayoutAllocator();
+		_CreatePipelineAllocators();
+		_CreateShaderModuleAllocator();
+		_CreateSwapchain();
+		_CreateDescriptorSetLayoutAllocator();
+		m_initialized = true;
+	}
+	catch (...)
+	{
+		Destroy();
+		throw;
+	}
 }
 
 void MyDevice::Destroy()
@@ -851,13 +772,30 @@ void MyDevice::Destroy()
 	_DestroySamplerAllocator();
 	_DestroyMemoryAllocator();
 	vkb::destroy_device(m_device);
+	m_device = {};
+	m_physicalDevice = {};
+	vkDevice = VK_NULL_HANDLE;
+	vkPhysicalDevice = VK_NULL_HANDLE;
+	m_vkGraphicsQueue = m_vkComputeQueue = m_vkTransferQueue = m_vkPresentQueue = VK_NULL_HANDLE;
+	queueFamilyIndices = {};
+	m_cachedPhysicalDeviceProperties = {};
+	m_cachedRayTracingProperties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
 	m_clusterAccelerationStructureEnabled = false;
 	m_clusterAccelerationStructureRevision = 0;
 	m_partitionedAccelerationStructureEnabled = false;
 	vkb::destroy_surface(m_instance, vkSurface);
+	vkSurface = VK_NULL_HANDLE;
 	vkb::destroy_instance(m_instance);
-	glfwDestroyWindow(pWindow);
-	glfwTerminate();
+	m_instance = {};
+	vkInstance = VK_NULL_HANDLE;
+	if (pWindow)
+	{
+		glfwDestroyWindow(pWindow);
+		pWindow = nullptr;
+		glfwTerminate();
+	}
+	m_needRecreate = false;
+	m_userInput = {};
 	m_initialized = false;
 }
 
@@ -1564,19 +1502,20 @@ VkPipeline MyDevice::CreateComputePipeline(const VkComputePipelineCreateInfo& in
 	return result;
 }
 
-VkPipeline MyDevice::CreateRayTracingPipeline(const VkRayTracingPipelineCreateInfoKHR& inCreateInfo, VkPipelineCache inCache, VkDeferredOperationKHR inDeferredOperation, const VkAllocationCallbacks* pAllocator)
+auto MyDevice::CreateRayTracingPipeline(const VkRayTracingPipelineCreateInfoKHR& inCreateInfo, VkPipelineCache inCache, VkDeferredOperationKHR inDeferredOperation, const VkAllocationCallbacks* pAllocator) -> VkPipeline
 {
+	CHECK_TRUE(inDeferredOperation == VK_NULL_HANDLE, "Synchronous ray tracing pipeline creation requires a null deferred operation!");
 	VkPipeline result = VK_NULL_HANDLE;
 
 	if (pAllocator == nullptr)
 	{
 		CHECK_TRUE(m_uptrRayTracingPipelineAllocator != nullptr, "Ray tracing pipeline allocator is not created!");
-		result = m_uptrRayTracingPipelineAllocator->AllocateRayTracingPipeline(inCreateInfo, inCache, inDeferredOperation);
+		result = m_uptrRayTracingPipelineAllocator->AllocateRayTracingPipeline(inCreateInfo, inCache);
 	}
 	else
 	{
 		VK_CHECK(
-			vkCreateRayTracingPipelinesKHR(vkDevice, inDeferredOperation, inCache, 1, &inCreateInfo, pAllocator, &result),
+			vkCreateRayTracingPipelinesKHR(vkDevice, VK_NULL_HANDLE, inCache, 1, &inCreateInfo, pAllocator, &result),
 			"Failed to create ray tracing pipeline!");
 	}
 

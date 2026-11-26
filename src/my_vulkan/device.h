@@ -85,6 +85,7 @@ class MyDevice final
     friend void ShaderDetail::CreateStages(const ShaderDetail::FinalizedShaders&,
         std::vector<std::unique_ptr<ShaderModule>>&, std::vector<VkPipelineShaderStageCreateInfo>&);
 	friend class BeginRenderPassCommand;
+	friend class MyGUI;
 private:
 	struct QueueFamilyIndices
 	{
@@ -102,13 +103,6 @@ private:
 		}
 	};
 
-	struct SwapChainSupportDetails
-	{
-		VkSurfaceCapabilitiesKHR capabilities;
-		std::vector<VkSurfaceFormatKHR> formats;
-		std::vector<VkPresentModeKHR> presentModes;
-	};
-
 private:
 	static std::unique_ptr<MyDevice> s_uptrInstance;
 
@@ -118,7 +112,6 @@ private:
 	VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_cachedRayTracingProperties{
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR };
 	vkb::Device			m_device;
-	vkb::DispatchTable	m_dispatchTable;
 	vkb::Swapchain		m_swapchain;
 	IntrusivePtr<VulkanDetail::SwapchainResource> m_swapchainResource;
 	VkQueue				m_vkPresentQueue = VK_NULL_HANDLE;
@@ -157,12 +150,8 @@ private:
 	void _DestroyInlineExecution() noexcept;
 	void _RequireComputeBuildQueue(QueueFamilyType inQueue) const;
 
-	std::vector<const char*> _GetInstanceRequiredExtensions() const;
-	QueueFamilyIndices		 _GetQueueFamilyIndices(VkPhysicalDevice physicalDevice) const;
-	SwapChainSupportDetails  _QuerySwapchainSupport(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) const;
-	VkSurfaceFormatKHR		 _ChooseSwapchainFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) const;
-	VkPresentModeKHR		 _ChooseSwapchainPresentMode(const std::vector<VkPresentModeKHR>& availableModes) const;
-	VkExtent2D				 _ChooseSwapchainExtent(const VkSurfaceCapabilitiesKHR& capabilities) const;
+	auto _GetInstanceRequiredExtensions() const -> std::vector<const char*>;
+	auto _GetQueueFamilyIndices(VkPhysicalDevice physicalDevice) const -> QueueFamilyIndices;
 
 	void _InitVolk();
 	void _InitGLFW();
@@ -201,9 +190,6 @@ private:
 	void _AddMeshShaderExtensionsAndFeatures(vkb::PhysicalDeviceSelector& _selector) const;
 	void _AddRayQueryExtensionsAndFeatures(vkb::PhysicalDeviceSelector& _selector) const;
 	void _AddBindlessExtensionsAndFeatures(vkb::PhysicalDeviceSelector& _selector) const;
-
-	// get VkImages in current swapchain
-	void _GetVkSwapchainImages(std::vector<VkImage>& _vkImages) const;
 
 	// update m_uptrSwapchainImages
 	void _UpdateSwapchainImages();
@@ -416,11 +402,12 @@ public:
 		VkPipelineCache inCache = VK_NULL_HANDLE,
 		const VkAllocationCallbacks* pAllocator = nullptr);
 
-	VkPipeline CreateRayTracingPipeline(
+	// Completes synchronously. Pass VK_NULL_HANDLE for inDeferredOperation.
+	auto CreateRayTracingPipeline(
 		const VkRayTracingPipelineCreateInfoKHR& inCreateInfo,
 		VkPipelineCache inCache = VK_NULL_HANDLE,
 		VkDeferredOperationKHR inDeferredOperation = VK_NULL_HANDLE,
-		const VkAllocationCallbacks* pAllocator = nullptr);
+		const VkAllocationCallbacks* pAllocator = nullptr) -> VkPipeline;
 
 	void DestroyPipeline(
 		VkPipeline inPipeline,

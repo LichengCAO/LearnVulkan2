@@ -180,6 +180,7 @@ public:
     // and finish GPU use before release; instance/BLAS/build inputs remain borrowed.
     void Create(const TopLevelAccelStructCreateInfo& inCreateInfo);
     auto IsValid() const noexcept -> bool;
+    auto GetResourceId() const noexcept -> uint64_t;
     auto GetVkAccelerationStructure() const noexcept -> VkAccelerationStructureKHR;
     auto GetVkBuildAccelerationStructureFlags() const noexcept -> VkBuildAccelerationStructureFlagsKHR { return m_flags; }
     auto GetMemoryRequirements() const noexcept -> const AccelStructMemoryRequirements& { return m_memoryRequirements; }

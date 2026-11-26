@@ -701,6 +701,7 @@ namespace
             CommandBufferTestProbe::Resources resources;
             buffer.BeginRenderPass(resources.pass, resources.framebuffer, 3, 4, 100, 200);
             ExpectRejected(buffer, [&] { buffer.BeginRenderPass(resources.pass, resources.framebuffer, 0, 0, 1, 1); });
+            ExpectRejected(buffer, [&] { buffer.EndRenderPass(); });
             buffer.NextSubpass();
             ExpectRejected(buffer, [&] { buffer.NextSubpass(); });
             buffer.EndRenderPass();
@@ -709,6 +710,7 @@ namespace
             buffer.BeginRenderPass(resources.pass, resources.framebuffer, 8, 9, 20, 30, overrides);
             overrides[0].depthStencil = {};
             resources.framebuffer.Reset();
+            buffer.NextSubpass();
             buffer.EndRenderPass();
         }
         CHECK_TRUE(native.renderPassCreates == 0 && native.framebufferCreates == 0 && capture.order.empty(),
@@ -733,7 +735,7 @@ namespace
         CHECK_TRUE(capture.beginValues[0][0].color.float32[0] == 0.25f &&
             capture.beginValues[1][0].depthStencil.depth == 0.125f &&
             capture.beginValues[1][0].depthStencil.stencil == 23, "RenderPass clear defaults/overrides must be copied!");
-        CHECK_TRUE(capture.order == std::vector<std::string>({ "begin", "next", "end", "begin", "end" }),
+        CHECK_TRUE(capture.order == std::vector<std::string>({ "begin", "next", "end", "begin", "next", "end" }),
             "RenderPass command ordering changed!");
         CHECK_TRUE(native.renderPassCreates == 1 && native.framebufferCreates == 1,
             "Recording prepared rendering commands must perform no native creation!");
@@ -1038,6 +1040,7 @@ namespace
             "A present zero-byte UPDATE requirement must permit recording without a scratch buffer!");
         commands.BeginRenderPass(resources.pass, resources.framebuffer, 0, 0, 8, 8);
         ExpectRejected(commands, [&] { commands.BuildAccelerationStructuresKHR(std::span(&input, 1)); });
+        commands.NextSubpass();
         commands.EndRenderPass();
     }
 
@@ -1401,6 +1404,7 @@ namespace
         open.BeginRenderPass(resources.pass, resources.framebuffer, 0, 0, 64, 64);
         ExpectRejected(buffers[2], [&] { CommandBufferTestProbe::Append(buffers[2], std::move(open)); });
         CHECK_TRUE(CommandBufferTestProbe::Count(open) == 1, "Rejected append must preserve its source!");
+        open.NextSubpass();
         open.EndRenderPass();
     }
 
@@ -1693,6 +1697,7 @@ namespace
         CommandBuffer pending;
         pending.ExecuteClusterAccelStructIndirect(clasInfo);
         ExpectRejected(inside, [&] { CommandBufferTestProbe::Append(inside, std::move(pending)); });
+        inside.NextSubpass();
         inside.EndRenderPass();
     }
 

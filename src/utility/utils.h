@@ -39,7 +39,7 @@ namespace common_utils
 	void ReadFile(const std::string& _filePath, std::vector<uint8_t>& _output);
 
 	// Get extension name from file path
-	std::string GetFileExtension(const std::string& _filePath);
+	auto GetFileExtension(const std::string& _filePath) -> std::string;
 
 	// Used for unordered_... when std::pair as key
 	// e.g. unordered_map<pair<T1, T2>, int, common_utils::PairHash>

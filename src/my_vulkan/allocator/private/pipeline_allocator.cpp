@@ -5,6 +5,20 @@
 
 namespace
 {
+	void CacheCreatedPipeline(std::unordered_map<uint64_t, VkPipeline>& cache, uint64_t hash,
+		VkDevice device, VkPipeline pipeline)
+	{
+		try
+		{
+			CHECK_TRUE(cache.emplace(hash, pipeline).second, "Pipeline was already cached!");
+		}
+		catch (...)
+		{
+			vkDestroyPipeline(device, pipeline, nullptr);
+			throw;
+		}
+	}
+
 	template <class Enum>
 	void HashEnum(size_t& seed, Enum value)
 	{
@@ -447,7 +461,7 @@ auto GraphicsPipelineAllocator::AllocateGraphicsPipelineWithResult(
 		return { VK_NULL_HANDLE, result };
 	}
 
-	m_mapHashToVkPipeline.emplace(hash, pipeline);
+	CacheCreatedPipeline(m_mapHashToVkPipeline, hash, m_vkDevice, pipeline);
 	return { pipeline, VK_SUCCESS };
 }
 
@@ -539,7 +553,7 @@ auto ComputePipelineAllocator::AllocateComputePipelineWithResult(
 		return { VK_NULL_HANDLE, result };
 	}
 
-	m_mapHashToVkPipeline.emplace(hash, pipeline);
+	CacheCreatedPipeline(m_mapHashToVkPipeline, hash, m_vkDevice, pipeline);
 	return { pipeline, VK_SUCCESS };
 }
 
@@ -614,8 +628,7 @@ void RayTracingPipelineAllocator::Create(VkDevice inDevice)
 
 auto RayTracingPipelineAllocator::AllocateRayTracingPipelineWithResult(
 	const VkRayTracingPipelineCreateInfoKHR& inCreateInfo,
-	VkPipelineCache inCache,
-	VkDeferredOperationKHR inDeferredOperation) -> std::pair<VkPipeline, VkResult>
+	VkPipelineCache inCache) -> std::pair<VkPipeline, VkResult>
 {
 	CHECK_TRUE(m_vkDevice != VK_NULL_HANDLE, "Ray tracing pipeline allocator is not created!");
 	const uint64_t hash = HashRayTracingPipelineCreateInfo(inCreateInfo);
@@ -626,22 +639,21 @@ auto RayTracingPipelineAllocator::AllocateRayTracingPipelineWithResult(
 	}
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
-	const VkResult result = vkCreateRayTracingPipelinesKHR(m_vkDevice, inDeferredOperation, inCache, 1, &inCreateInfo, nullptr, &pipeline);
+	const VkResult result = vkCreateRayTracingPipelinesKHR(m_vkDevice, VK_NULL_HANDLE, inCache, 1, &inCreateInfo, nullptr, &pipeline);
 	if (result != VK_SUCCESS)
 	{
 		return { VK_NULL_HANDLE, result };
 	}
 
-	m_mapHashToVkPipeline.emplace(hash, pipeline);
+	CacheCreatedPipeline(m_mapHashToVkPipeline, hash, m_vkDevice, pipeline);
 	return { pipeline, VK_SUCCESS };
 }
 
 auto RayTracingPipelineAllocator::AllocateRayTracingPipeline(
 	const VkRayTracingPipelineCreateInfoKHR& inCreateInfo,
-	VkPipelineCache inCache,
-	VkDeferredOperationKHR inDeferredOperation) -> VkPipeline
+	VkPipelineCache inCache) -> VkPipeline
 {
-	auto [pipeline, result] = AllocateRayTracingPipelineWithResult(inCreateInfo, inCache, inDeferredOperation);
+	auto [pipeline, result] = AllocateRayTracingPipelineWithResult(inCreateInfo, inCache);
 	VK_CHECK(result, "Failed to allocate ray tracing pipeline!");
 
 	return pipeline;

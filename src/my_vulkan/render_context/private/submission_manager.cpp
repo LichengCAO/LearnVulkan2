@@ -4,12 +4,17 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
+#include <exception>
 #include <utility>
 
 QueueDependency::~QueueDependency() noexcept
 {
-	CHECK_TRUE(!m_hasPendingSignal,
-		"Queue dependency must be consumed before destruction!");
+	if (m_hasPendingSignal)
+	{
+		std::fputs("Queue dependency must be consumed before destruction!\n", stderr);
+		std::terminate();
+	}
 }
 
 auto QueueDependency::_GetPendingFrontier() const->const SubmissionFrontier&
@@ -34,7 +39,7 @@ auto HostFence::AddCallback(Callback inCallback)->HostFence&
 {
 	CHECK_TRUE(static_cast<bool>(inCallback), "Completion callback is empty!");
 	CHECK_TRUE(
-		!m_isInFlight,
+		!m_ownerCompletion,
 		"Cannot add a callback while the previous submission is unconsumed!");
 	m_callbacks.push_back(std::move(inCallback));
 	return *this;
@@ -43,24 +48,25 @@ auto HostFence::AddCallback(Callback inCallback)->HostFence&
 void HostFence::_PrepareForSubmit()
 {
 	CHECK_TRUE(
-		!m_isInFlight,
+		!m_ownerCompletion,
 		"Host fence is still bound to an unconsumed submission!");
 }
 
 auto HostFence::_CommitSubmit(
+	const std::shared_ptr<SubmissionFrontier>& inOwnerCompletion,
 	size_t inQueueStateIndex,
 	const SubmissionFrontier& inSubmissionFrontier) noexcept->std::vector<Callback>
 {
 	m_queueStateIndex = inQueueStateIndex;
 	m_submissionFrontier = inSubmissionFrontier;
-	m_isInFlight = true;
+	m_ownerCompletion = inOwnerCompletion;
 	return std::exchange(m_callbacks, {});
 }
 
 void HostFence::_Complete()
 {
-	CHECK_TRUE(m_isInFlight, "Host fence has no in-flight submission!");
-	m_isInFlight = false;
+	CHECK_TRUE(m_ownerCompletion, "Host fence has no in-flight submission!");
+	m_ownerCompletion.reset();
 	m_queueStateIndex = SubmissionFrontier::MAX_QUEUE_COUNT;
 	m_submissionFrontier = {};
 }
@@ -458,18 +464,20 @@ void SubmissionManager::_CommitPreparedSubmission(
 			{} });
 		HostFenceRecord& record = inoutState.pendingHostFences.back();
 		record.callbacks = inCompletionFence->_CommitSubmit(
+			m_completedFrontier,
 			inQueueStateIndex,
 			inSubmissionFrontier);
 	}
 }
 
 auto SubmissionManager::_AdvanceCompletion(
-	const SubmissionFrontier& inSubmissionFrontier)->std::vector<HostFence::Callback>
+	const SubmissionFrontier& inSubmissionFrontier, size_t inCompletedQueue)->std::vector<HostFence::Callback>
 {
-	SubmissionFrontier completedFrontier = m_completedFrontier;
+	SubmissionFrontier completedFrontier = *m_completedFrontier;
 	completedFrontier.Merge(inSubmissionFrontier);
 
-	size_t completedFenceCount = 0;
+	std::vector<VkFence> completedVkFences;
+	std::array<size_t, SubmissionFrontier::MAX_QUEUE_COUNT> completedCounts{};
 	size_t completedCallbackCount = 0;
 	for (size_t queueIndex = 0; queueIndex < m_queueStateCount; ++queueIndex)
 	{
@@ -480,50 +488,49 @@ auto SubmissionManager::_AdvanceCompletion(
 			{
 				break;
 			}
-			++completedFenceCount;
+			// A downstream semaphore wait covers the producer's commands, but the
+			// producer fence may still be pending after its semaphore signaled.
+			if (inCompletedQueue != SubmissionFrontier::MAX_QUEUE_COUNT &&
+				(queueIndex != inCompletedQueue || !inSubmissionFrontier.Covers(record.submissionFrontier)))
+			{
+				const auto status = vkGetFenceStatus(MyDevice::GetInstance().GetVkDevice(), record.vkFence);
+				if (status == VK_NOT_READY) break;
+				VK_CHECK(status, "Failed to query a covered submission fence!");
+			}
+			++completedCounts[queueIndex];
+			completedVkFences.push_back(record.vkFence);
 			completedCallbackCount += record.callbacks.size();
 		}
 	}
 
-	std::vector<VkFence> completedVkFences;
 	std::vector<HostFence::Callback> completedCallbacks;
-	completedVkFences.reserve(completedFenceCount);
 	completedCallbacks.reserve(completedCallbackCount);
+	if (!completedVkFences.empty())
+		m_fenceAllocator.FreeVkFence(completedVkFences.data(), completedVkFences.size());
 	for (size_t queueIndex = 0; queueIndex < m_queueStateCount; ++queueIndex)
 	{
 		QueueState& state = m_queueStates[queueIndex];
-		size_t completedRecordCount = 0;
-		while (
-			completedRecordCount < state.pendingHostFences.size() &&
-			completedFrontier.Covers(
-				state.pendingHostFences[completedRecordCount].submissionFrontier))
+		for (size_t index = 0; index < completedCounts[queueIndex]; ++index)
 		{
-			HostFenceRecord& record = state.pendingHostFences[completedRecordCount];
-			completedVkFences.push_back(record.vkFence);
+			HostFenceRecord& record = state.pendingHostFences[index];
 			for (HostFence::Callback& callback : record.callbacks)
 			{
 				completedCallbacks.push_back(std::move(callback));
 			}
-			++completedRecordCount;
 		}
 		state.pendingHostFences.erase(
 			state.pendingHostFences.begin(),
-			state.pendingHostFences.begin() + static_cast<std::ptrdiff_t>(completedRecordCount));
+			state.pendingHostFences.begin() + static_cast<std::ptrdiff_t>(completedCounts[queueIndex]));
 	}
 
-	if (!completedVkFences.empty())
-	{
-		m_fenceAllocator.FreeVkFence(completedVkFences.data(), completedVkFences.size());
-	}
-
-	m_completedFrontier = completedFrontier;
+	*m_completedFrontier = completedFrontier;
 	_CollectRetiredSemaphores(completedFrontier);
 	return completedCallbacks;
 }
 
 auto SubmissionManager::_FindHostFenceVkFence(const HostFence& inFence)->VkFence
 {
-	CHECK_TRUE(inFence.m_isInFlight, "Host fence has no in-flight submission!");
+	CHECK_TRUE(inFence.m_ownerCompletion == m_completedFrontier, "Host fence belongs to another submission manager!");
 	CHECK_TRUE(
 		inFence.m_queueStateIndex < m_queueStateCount,
 		"Host fence queue state is not available in this manager!");
@@ -538,7 +545,8 @@ auto SubmissionManager::_FindHostFenceVkFence(const HostFence& inFence)->VkFence
 		}
 	}
 
-	CHECK_TRUE(false, "Host fence completion record is not available in this manager!");
+	CHECK_TRUE(m_completedFrontier->Covers(inFence.m_submissionFrontier),
+		"Host fence completion record is not available in this manager!");
 	return VK_NULL_HANDLE;
 }
 
@@ -554,15 +562,16 @@ auto SubmissionManager::_ConsumeHostFence(
 	HostFence& inFence,
 	uint64_t inTimeout)->bool
 {
-	if (!inFence.m_isInFlight)
+	if (!inFence.m_ownerCompletion)
 	{
 		return true;
 	}
 
 	std::vector<HostFence::Callback> completedCallbacks;
-	if (!m_completedFrontier.Covers(inFence.m_submissionFrontier))
+	CHECK_TRUE(inFence.m_ownerCompletion == m_completedFrontier, "Host fence belongs to another submission manager!");
+	const VkFence vkFence = _FindHostFenceVkFence(inFence);
+	if (vkFence != VK_NULL_HANDLE)
 	{
-		const VkFence vkFence = _FindHostFenceVkFence(inFence);
 		const VkDevice device = MyDevice::GetInstance().GetVkDevice();
 		const VkResult result = inTimeout == UINT64_MAX
 			? MyDevice::_WaitForFenceCompletion(device, vkFence)
@@ -572,7 +581,7 @@ auto SubmissionManager::_ConsumeHostFence(
 			return false;
 		}
 		VK_CHECK(result, "Failed to consume host fence!");
-		completedCallbacks = _AdvanceCompletion(inFence.m_submissionFrontier);
+		completedCallbacks = _AdvanceCompletion(inFence.m_submissionFrontier, inFence.m_queueStateIndex);
 	}
 	inFence._Complete();
 
@@ -631,7 +640,7 @@ SubmissionManager::~SubmissionManager()
 		idleFrontier.Merge(m_queueStates[queueIndex].tailFrontier);
 	}
 	std::vector<HostFence::Callback> completedCallbacks;
-	completedCallbacks = _AdvanceCompletion(idleFrontier);
+	completedCallbacks = _AdvanceCompletion(idleFrontier, SubmissionFrontier::MAX_QUEUE_COUNT);
 	_RunCallbacks(std::move(completedCallbacks));
 	m_dependencySemaphores.clear();
 	m_semaphoreAllocator.Destroy();

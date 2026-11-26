@@ -1,23 +1,27 @@
 option(LEARN_VULKAN_BUILD_DEVICE "Build the Vulkan runtime and device regression tests" ON)
 
 find_path(SHADERC_INCLUDE_DIR NAMES shaderc/shaderc.hpp
-    HINTS "$ENV{VK_SDK_PATH}/Include" "$ENV{VULKAN_SDK}/Include")
-find_library(SHADERC_SHARED_LIBRARY NAMES shaderc_shared
-    HINTS "$ENV{VK_SDK_PATH}/Lib" "$ENV{VULKAN_SDK}/Lib")
-find_library(SHADERC_COMBINED_LIBRARY NAMES shaderc_combined
-    HINTS "$ENV{VK_SDK_PATH}/Lib" "$ENV{VULKAN_SDK}/Lib")
-if(SHADERC_SHARED_LIBRARY)
-    set(SHADERC_LIBRARY "${SHADERC_SHARED_LIBRARY}")
+    HINTS ENV VK_SDK_PATH ENV VULKAN_SDK PATH_SUFFIXES include)
+if(NOT SHADERC_LIBRARY)
+    find_library(SHADERC_SHARED_LIBRARY NAMES shaderc_shared
+        HINTS ENV VK_SDK_PATH ENV VULKAN_SDK PATH_SUFFIXES lib)
+    if(SHADERC_SHARED_LIBRARY)
+        set(SHADERC_LIBRARY "${SHADERC_SHARED_LIBRARY}")
+    else()
+        find_library(SHADERC_COMBINED_LIBRARY NAMES shaderc_combined
+            HINTS ENV VK_SDK_PATH ENV VULKAN_SDK PATH_SUFFIXES lib)
+        set(SHADERC_LIBRARY "${SHADERC_COMBINED_LIBRARY}")
+    endif()
+endif()
+if(WIN32 AND SHADERC_LIBRARY MATCHES "shaderc_shared(d)?\\.lib$")
     find_file(SHADERC_RUNTIME_LIBRARY NAMES shaderc_shared.dll shaderc_sharedd.dll
-        HINTS "$ENV{VK_SDK_PATH}/Bin" "$ENV{VULKAN_SDK}/Bin")
-elseif(SHADERC_COMBINED_LIBRARY)
-    set(SHADERC_LIBRARY "${SHADERC_COMBINED_LIBRARY}")
+        HINTS ENV VK_SDK_PATH ENV VULKAN_SDK PATH_SUFFIXES bin)
 endif()
 if(NOT SHADERC_INCLUDE_DIR OR NOT SHADERC_LIBRARY)
     message(FATAL_ERROR "shaderc was not found. Set SHADERC_INCLUDE_DIR and SHADERC_LIBRARY.")
 endif()
 find_path(LEARN_VULKAN_INCLUDE_DIR NAMES vulkan/vk_platform.h
-    HINTS "${SHADERC_INCLUDE_DIR}" "$ENV{VULKAN_SDK}/Include" "$ENV{VK_SDK_PATH}/Include")
+    HINTS "${SHADERC_INCLUDE_DIR}" ENV VULKAN_SDK ENV VK_SDK_PATH PATH_SUFFIXES include)
 if(LEARN_VULKAN_INCLUDE_DIR AND NOT TARGET Vulkan::Headers)
     add_library(Vulkan::Headers INTERFACE IMPORTED)
     set_target_properties(Vulkan::Headers PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${LEARN_VULKAN_INCLUDE_DIR}")
@@ -48,7 +52,6 @@ target_link_libraries(rhi_host PUBLIC Vulkan::Headers PRIVATE spirv-reflect-stat
 if(MSVC)
     target_compile_options(rhi_host PRIVATE /EHsc /utf-8)
 endif()
-enable_testing()
 add_executable(rhi_host_tests src/test/create_info_finalize_host_tests.cpp src/test/render_pass_finalize_tests.cpp)
 target_compile_definitions(rhi_host_tests PRIVATE RHI_HOST_TEST_MAIN)
 target_link_libraries(rhi_host_tests PRIVATE rhi_host)

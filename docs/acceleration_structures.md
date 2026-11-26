@@ -800,5 +800,5 @@ checks completion only, not traversal results. Unsupported devices explicitly
 print `SKIPPED`.
 
 ```powershell
-cmake -E env LEARN_VULKAN_PTLAS_GPU_TESTS=1 ./bin/learn_vulkan.exe
+cmake -E env LEARN_VULKAN_PTLAS_GPU_TESTS=1 ctest --test-dir build -C Debug -R '^learn_vulkan_tests$' -V
 ```

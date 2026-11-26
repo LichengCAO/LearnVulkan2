@@ -5,6 +5,7 @@
 #include "command/command_pool.h"
 #include "utility/task_scheduler.h"
 #include "resource/private/vulkan_handle_resource.h"
+#include <exception>
 
 class CommandBuffer;
 class DeviceContext;
@@ -50,6 +51,7 @@ private:
     {
         std::vector<const Command*> commands;
         VkCommandBuffer vkCommandBuffer = VK_NULL_HANDLE;
+        std::exception_ptr recordingError;
     };
     static auto _BuildRecordingBatches(const std::vector<CommandBuffer>& inBuffers) -> std::vector<RecordBatch>;
 
@@ -60,6 +62,7 @@ private:
 
     std::array<std::unique_ptr<HostFence>, SubmissionFrontier::MAX_QUEUE_COUNT> m_completionFences;
     std::vector<HostFence::Callback> m_completionCallbacks;
+    std::vector<VulkanDetail::ResourceReference> m_submittedResources;
     std::array<ThreadCommandPools, SubmissionFrontier::MAX_QUEUE_COUNT> m_commandPools;
     std::unordered_map<uint64_t, std::unique_ptr<RecordingTask>> m_recordTasks;
     uint64_t m_nextRecordingSerial = 1;

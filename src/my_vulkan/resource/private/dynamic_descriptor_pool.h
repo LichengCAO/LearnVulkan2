@@ -15,7 +15,6 @@ class DynamicDescriptorPool final
 private:
 	struct Impl;
 	std::unique_ptr<Impl> m_impl;
-	auto _HashDescriptorSetDesc(const DescriptorSetDesc& inDesc) const -> size_t;
 
 public:
 	DynamicDescriptorPool() noexcept;

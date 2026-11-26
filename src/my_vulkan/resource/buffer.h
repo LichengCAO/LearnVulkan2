@@ -42,6 +42,7 @@ public:
 private:
 	Information m_viewInformation{};
 	VkBufferView m_vkBufferView = VK_NULL_HANDLE;
+	uint64_t m_resourceId = 0;
 	VkDevice m_device = VK_NULL_HANDLE;
 
 private:
@@ -58,6 +59,7 @@ public:
 
 	auto GetBufferViewInformation() const->const Information&;
 	auto GetVkBufferView() const->VkBufferView;
+	auto GetResourceId() const noexcept -> uint64_t { return m_resourceId; }
 
 	friend class Buffer;
 };
@@ -86,7 +88,7 @@ public:
 	// Optional, default: VK_SHARING_MODE_EXCLUSIVE
 	auto CustomizeSharingMode(VkSharingMode inSharingMode) -> BufferCreateInfo&;
 
-	// Optional, default: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+	// Device-local placement is preferred by default. Other requested memory property bits are required.
 	auto CustomizeMemoryProperty(VkMemoryPropertyFlags inMemoryProperties) -> BufferCreateInfo&;
 
 	// Optional, for buffers that have alignment requirement
@@ -143,6 +145,7 @@ public:
 	void Create(const BufferCreateInfo& inCreateInfo);
 	
 	auto IsValid() const noexcept -> bool;
+	auto GetResourceId() const noexcept -> uint64_t;
 
 	// Coherent host-visible buffers map directly. Other buffers use a staging
 	// copy and wait on the compute queue or on the supplied context and queue.

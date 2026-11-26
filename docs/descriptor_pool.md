@@ -120,6 +120,13 @@ Dynamic-pool `GetOrAllocateTransient()` may reuse a cached allocation and return
 a handle valid until whole-pool recycling. `Transient` follows the pool's
 lifecycle; it does not prescribe a one-frame lifetime.
 
+The dynamic cache records each binding and array element together with its
+resource identity, buffer offset and range, image layout, and sampler handle as
+applicable. Moving a Buffer preserves its identity. A newly created resource
+gets a new identity even when the driver reuses a native handle. Each cached
+set retains its image views. Callers keep buffers, buffer views and acceleration
+structures alive through their GPU uses.
+
 Both types grow across multiple native pools, preserve the previous default
 budgets, and enlarge a new pool to accommodate an oversized layout. User pools
 enable `VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT`; dynamic pools do not.

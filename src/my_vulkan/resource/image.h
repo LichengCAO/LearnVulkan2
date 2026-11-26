@@ -57,7 +57,7 @@ public:
 	// Optional, default: VK_IMAGE_TILING_OPTIMAL
 	void CustomizeImageTiling(VkImageTiling tiling);
 
-	// Optional, default: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+	// Device-local placement is preferred by default. Other requested memory property bits are required.
 	void CustomizeMemoryProperty(VkMemoryPropertyFlags memoryProperty);
 
 	// Optional, default: VK_SAMPLE_COUNT_1_BIT

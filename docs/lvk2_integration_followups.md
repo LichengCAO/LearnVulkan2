@@ -21,10 +21,10 @@
 
 相关位置：
 
-- [Framebuffer 与 FramebufferCreateInfo](../src/my_vulkan/pipeline/render_pass.h)
-- [Framebuffer::Create / Destroy](../src/my_vulkan/pipeline/private/render_pass.cpp)
-- [FramebufferAllocator::FreeFramebuffer / Destroy](../src/my_vulkan/allocator/framebuffer_allocator.cpp)
-- [MyDevice::DestroyImageView / _ResetFramebufferAllocator](../src/my_vulkan/device.cpp)
+- [Framebuffer 与 FramebufferCreateInfo](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/pipeline/render_pass.h)
+- [Framebuffer::Create / Destroy](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/pipeline/private/render_pass.cpp)
+- [FramebufferAllocator::FreeFramebuffer / Destroy](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/allocator/framebuffer_allocator.cpp)
+- [MyDevice::DestroyImageView / _ResetFramebufferAllocator](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/device.cpp)
 
 实际调用链：
 
@@ -60,7 +60,7 @@ ImageView::_Destroy()
 
 状态：**已确认，真实链接失败。**
 
-相关位置：[command.h](../src/my_vulkan/command/command.h)、[command.cpp](../src/my_vulkan/command/command.cpp)。
+相关位置：[command.h](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/command/command.h)、[command.cpp](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/command/command.cpp)。
 
 `ExternalCommand` 提供回调参数、`SetParameters()` 和虚函数 `Record()` 声明，但未找到其定义。三角形最初实例化它时产生 `LNK2001`，未解析符号为 `ExternalCommand::Record(VkCommandBuffer) const`。
 
@@ -74,7 +74,7 @@ ImageView::_Destroy()
 
 状态：**待定位。**
 
-相关位置：[MyDevice::_InitVolk / _CreateInstance / _SelectPhysicalDevice / _CreateLogicalDevice](../src/my_vulkan/device.cpp)。
+相关位置：[MyDevice::_InitVolk / _CreateInstance / _SelectPhysicalDevice / _CreateLogicalDevice](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/device.cpp)。
 
 在 VirtualGeometry 根目录复现：
 
@@ -100,7 +100,7 @@ ImageView::_Destroy()
 
 状态：**已确认的配置行为。**
 
-相关位置：[MyDevice::_SelectPhysicalDevice 和 _Add*ExtensionsAndFeatures](../src/my_vulkan/device.cpp)。
+相关位置：[MyDevice::_SelectPhysicalDevice 和 _Add*ExtensionsAndFeatures](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/device.cpp)。
 
 当前初始化无条件请求 mesh/task shader、ray tracing pipeline、acceleration structure、ray query、bindless，以及 geometry shader、shaderFloat64 等基础配置中的特性。仅画传统三角形也必须满足这些条件。`bufferDeviceAddress` 的请求位于 RT 配置路径，未来拆分能力时尤其容易遗漏。
 
@@ -114,7 +114,7 @@ ImageView::_Destroy()
 
 状态：**已确认的构建限制。**
 
-相关位置：[根 CMakeLists.txt](../CMakeLists.txt)、[第三方构建入口](../external/CMakeLists.txt)、[资源构建](../res/CMakeLists.txt)。
+相关位置：[根 CMakeLists.txt](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/CMakeLists.txt)、[第三方构建入口](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/external/CMakeLists.txt)、[资源构建](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/res/CMakeLists.txt)。
 
 LVK2 顶层只创建可执行程序，将运行时与测试入口混合收集。外部项目无法直接链接一个稳定的 LVK2 target，当前三角形只能自行列出运行时源码和多个 include 路径，并直接引入 LVK2 的 third-party CMake。这使消费端依赖内部目录结构。
 
@@ -134,7 +134,7 @@ LVK2 顶层只创建可执行程序，将运行时与测试入口混合收集。
 
 状态：**设计改进，部分失败清理路径尚未验证。**
 
-相关位置：[MyDevice::Create / Destroy / _InitGLFW / _CreateInstance](../src/my_vulkan/device.cpp)、[task_scheduler.h](../src/utility/task_scheduler.h)、[DeviceContext](../src/my_vulkan/render_context/device_context.h)。
+相关位置：[MyDevice::Create / Destroy / _InitGLFW / _CreateInstance](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/device.cpp)、[task_scheduler.h](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/utility/task_scheduler.h)、[DeviceContext](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/render_context/device_context.h)。
 
 当前窗口尺寸 800×600、标题 My Vulkan、应用名 Hello Triangle 和 validation 请求写在设备内部。消费项目另行改窗口标题，并额外创建 debug messenger 计数。任务系统也必须由应用显式初始化，生命周期顺序需自行掌握。
 
@@ -148,7 +148,7 @@ LVK2 顶层只创建可执行程序，将运行时与测试入口混合收集。
 
 状态：**已确认的接口差异。**
 
-相关位置：[render_pass.cpp](../src/my_vulkan/pipeline/private/render_pass.cpp)、[shader.cpp](../src/my_vulkan/pipeline/private/shader.cpp)、[image.cpp](../src/my_vulkan/resource/image.cpp)、[graphics_shader_program.cpp](../src/my_vulkan/pipeline/private/graphics_shader_program.cpp)。
+相关位置：[render_pass.cpp](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/pipeline/private/render_pass.cpp)、[shader.cpp](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/pipeline/private/shader.cpp)、[image.cpp](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/resource/image.cpp)、[graphics_shader_program.cpp](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/pipeline/private/graphics_shader_program.cpp)。
 
 Framebuffer、ShaderModule 等对象析构时检查句柄已为空，需要调用者显式 Destroy；Image 等类型则在析构时调用 Destroy。这两种模式各自可以成立，但混用且缺少统一说明，会使消费端的异常清理和容器所有权处理容易出错。
 
@@ -160,7 +160,7 @@ Framebuffer、ShaderModule 等对象析构时检查句柄已为空，需要调�
 
 状态：**已确认。**
 
-相关位置：[.gitignore](../.gitignore)、[CMakeLists.txt](../CMakeLists.txt)、[common.h](../src/common.h)。
+相关位置：[.gitignore](../.gitignore)、[CMakeLists.txt](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/CMakeLists.txt)、[common.h](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/common.h)。
 
 - `src/shader_binding_tests.cpp` 被忽略且未跟踪。此前 CPU/GPU smoke 依赖这个本地文件，干净克隆不会自动取得它。
 - `MY_VULKAN_ENABLE_RENDER_GRAPH` 默认是 0；RenderGraph 源码和相应测试受此宏保护，常规测试通过不证明 RenderGraph 可构建或可执行。
@@ -174,7 +174,7 @@ Framebuffer、ShaderModule 等对象析构时检查句柄已为空，需要调�
 
 状态：**代码复核确认，三角形未使用此路径。**
 
-相关位置：[render_graph_instance.cpp 的 _ToStageFlags](../src/utility/render_graph/render_graph_instance.cpp)、[render_graph.cpp 的 stage 排序](../src/utility/render_graph/render_graph.cpp)。
+相关位置：[render_graph_instance.cpp 的 _ToStageFlags](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/utility/render_graph/render_graph_instance.cpp)、[render_graph.cpp 的 stage 排序](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/utility/render_graph/render_graph.cpp)。
 
 代码使用 `#ifdef VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT` 和 mesh 对应标识符。当前 Vulkan SDK 中它们是 `static const VkPipelineStageFlagBits2`，不是预处理宏，因此对应分支会被排除。只传 task/mesh stage 时可能转换成 0；混合 stage 时可能遗漏必要阶段。RT/AS 的同类 guard 也需要一并审计。
 
@@ -186,7 +186,7 @@ Framebuffer、ShaderModule 等对象析构时检查句柄已为空，需要调�
 
 状态：**已确认的接口限制；不是本次传统三角形的阻塞项。**
 
-相关位置：[RenderGraph::PassInfo](../src/utility/render_graph/render_graph.h)、[资源访问声明实现](../src/utility/render_graph/render_graph.cpp)、[ShaderProgramReflection](../src/my_vulkan/pipeline/private/shader_program_reflection.cpp)。
+相关位置：[RenderGraph::PassInfo](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/utility/render_graph/render_graph.h)、[资源访问声明实现](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/utility/render_graph/render_graph.cpp)、[ShaderProgramReflection](https://github.com/LichengCAO/LearnVulkan2/blob/76dff077114552d864d01101afb23c2889760b63/src/my_vulkan/pipeline/private/shader_program_reflection.cpp)。
 
 - Graph 目前提供 uniform read 和 storage read/write 声明，storage buffer 统一标记成读写；缺少只读 SSBO、indirect read、transfer 等明确表达。
 - compute 写 indirect 参数后的消费者应是 DRAW_INDIRECT + INDIRECT_COMMAND_READ，不能用 storage read/write 代替。BDA 访问的数据也要显式纳入依赖图。

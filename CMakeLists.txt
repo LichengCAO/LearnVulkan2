@@ -1,156 +1,61 @@
-cmake_minimum_required(VERSION 3.10)
-set(CMAKE_MOUDULE_PATH ${CMAKE_MOUDULE_PATH} "${CMAKE_SOURCE_DIR}/cmake")
-
-project(learn_vulkan)
-
-#find_package(Vulkan REQUIRED)
+cmake_minimum_required(VERSION 3.22)
+project(learn_vulkan LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin")
+if(NOT DEFINED CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
+endif()
+if(NOT DEFINED CMAKE_LIBRARY_OUTPUT_DIRECTORY)
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
+endif()
 
-##set output directory for realse and debug for visual studio
-foreach(OUTPUTCONFIG ${CMAKE_CONFIGURATION_TYPES})
-    string( TOUPPER ${OUTPUTCONFIG} OUTPUTCONFIG )
-    set( CMAKE_RUNTIME_OUTPUT_DIRECTORY_${OUTPUTCONFIG} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY} )
-    set( CMAKE_LIBRARY_OUTPUT_DIRECTORY_${OUTPUTCONFIG} ${CMAKE_LIBRARY_OUTPUT_DIRECTORY} )
-    set( CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${OUTPUTCONFIG} ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY} )
-endforeach()
-
-# Source - https://stackoverflow.com/q
-# Posted by Jepessen
-# Retrieved 2025-12-19, License - CC BY-SA 4.0
-# set up visual studio
 if(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zc:__cplusplus /Zc:preprocessor")
 endif()
-
-#show folder in IDE
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+enable_testing()
 
 include(cmake/rhi_host.cmake)
 if(NOT LEARN_VULKAN_BUILD_DEVICE)
     return()
 endif()
 
-#add_subdirectory(src)
-configure_file (
-    "${PROJECT_SOURCE_DIR}/src/config.h.in"
-    "${PROJECT_SOURCE_DIR}/src/config.h"
-)
-
-#ref: https://blog.csdn.net/vv1025/article/details/131117925
-macro(source_group_by_dir source_files)
-    if(MSVC)
-        set(sgbd_cur_dir ${CMAKE_CURRENT_SOURCE_DIR})
-        foreach(sgbd_file ${${source_files}})
-            string(REGEX REPLACE ${sgbd_cur_dir}/\(.*\) \\1 sgbd_fpath ${sgbd_file})
-            string(REGEX REPLACE "\(.*\)/.*" \\1 sgbd_group_name ${sgbd_fpath})
-            string(COMPARE EQUAL ${sgbd_fpath} ${sgbd_group_name} sgbd_nogroup)
-            string(REPLACE "/" "\\" sgbd_group_name ${sgbd_group_name})
-            if(sgbd_nogroup)
-                set(sgbd_group_name "\\")
-            endif(sgbd_nogroup)
-            source_group(${sgbd_group_name} FILES ${sgbd_file})
-        endforeach(sgbd_file)
-    endif(MSVC)
-endmacro(source_group_by_dir)
-
-file(GLOB_RECURSE SOURCES "src/*.cpp")
+configure_file(src/config.h.in "${PROJECT_BINARY_DIR}/generated/config.h")
+file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS
+    "src/my_vulkan/*.cpp" "src/utility/*.cpp" "src/test/*.cpp")
+file(GLOB_RECURSE HEADERS CONFIGURE_DEPENDS
+    "src/my_vulkan/*.h" "src/utility/*.h" "src/test/*.h")
 list(REMOVE_ITEM SOURCES ${RHI_HOST_SOURCES})
-file(GLOB_RECURSE HEADERS "src/*.h" "src/*.hpp")
-list(FILTER SOURCES EXCLUDE REGEX "/build[^/]*/")
-list(FILTER HEADERS EXCLUDE REGEX "/build[^/]*/")
+add_executable(learn_vulkan ${SOURCES} ${HEADERS} src/common.h)
+source_group(TREE "${PROJECT_SOURCE_DIR}/src" FILES ${SOURCES} ${HEADERS})
+set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT learn_vulkan)
 
-set(ALL_FILES ${HEADERS} ${SOURCES})
-
-source_group_by_dir(ALL_FILES)
-
-add_executable(${CMAKE_PROJECT_NAME} ${ALL_FILES})
-set(LEARN_VULKAN_HAS_SHADER_BINDING_TESTS OFF)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/test/shader_binding_tests.cpp")
-    set(LEARN_VULKAN_HAS_SHADER_BINDING_TESTS ON)
-    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE LEARN_VULKAN_HAS_SHADER_BINDING_TESTS=1)
-endif()
 if(MSVC)
     target_compile_options(learn_vulkan PRIVATE /EHsc /utf-8)
 endif()
-enable_testing()
-add_test(NAME learn_vulkan_tests COMMAND $<TARGET_FILE:learn_vulkan>)
+add_test(NAME learn_vulkan_tests COMMAND learn_vulkan)
 option(LEARN_VULKAN_GPU_TESTS "Enable headless Vulkan 1.3 shader binding smoke tests" OFF)
-if(LEARN_VULKAN_GPU_TESTS AND LEARN_VULKAN_HAS_SHADER_BINDING_TESTS)
-    add_test(NAME learn_vulkan_gpu_tests
-        COMMAND ${CMAKE_COMMAND} -E env LEARN_VULKAN_GPU_TESTS=1 $<TARGET_FILE:learn_vulkan>)
-    set_tests_properties(learn_vulkan_gpu_tests PROPERTIES RUN_SERIAL TRUE)
-endif()
-
-find_path(SHADERC_INCLUDE_DIR
-    NAMES shaderc/shaderc.hpp
-    HINTS "$ENV{VK_SDK_PATH}/Include" "$ENV{VULKAN_SDK}/include")
-find_library(SHADERC_SHARED_LIBRARY
-    NAMES shaderc_shared
-    HINTS "$ENV{VK_SDK_PATH}/Lib" "$ENV{VULKAN_SDK}/lib")
-find_library(SHADERC_COMBINED_LIBRARY
-    NAMES shaderc_combined
-    HINTS "$ENV{VK_SDK_PATH}/Lib" "$ENV{VULKAN_SDK}/lib")
-if(SHADERC_SHARED_LIBRARY)
-    set(SHADERC_LIBRARY "${SHADERC_SHARED_LIBRARY}")
-    find_file(SHADERC_RUNTIME_LIBRARY
-        NAMES shaderc_shared.dll shaderc_sharedd.dll
-        HINTS "$ENV{VK_SDK_PATH}/Bin" "$ENV{VULKAN_SDK}/bin")
-elseif(SHADERC_COMBINED_LIBRARY)
-    set(SHADERC_LIBRARY "${SHADERC_COMBINED_LIBRARY}")
-endif()
-if(NOT SHADERC_INCLUDE_DIR OR NOT SHADERC_LIBRARY)
-    message(FATAL_ERROR "shaderc was not found. Set SHADERC_INCLUDE_DIR and SHADERC_LIBRARY or configure VK_SDK_PATH.")
-endif()
-
-# Set the startup project for Visual Studio
-set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${CMAKE_PROJECT_NAME})
-
-# Prefer local SDK headers; keep the existing FetchContent fallback when unavailable.
-find_path(LEARN_VULKAN_INCLUDE_DIR NAMES vulkan/vk_platform.h
-    HINTS "${SHADERC_INCLUDE_DIR}" "$ENV{VULKAN_SDK}/Include" "$ENV{VK_SDK_PATH}/Include")
-if(LEARN_VULKAN_INCLUDE_DIR AND NOT TARGET Vulkan::Headers)
-    add_library(Vulkan::Headers INTERFACE IMPORTED)
-    set_target_properties(Vulkan::Headers PROPERTIES
-        INTERFACE_INCLUDE_DIRECTORIES "${LEARN_VULKAN_INCLUDE_DIR}")
-    get_filename_component(VULKAN_HEADERS_INSTALL_DIR "${LEARN_VULKAN_INCLUDE_DIR}" DIRECTORY)
+if(EXISTS "${PROJECT_SOURCE_DIR}/src/test/shader_binding_tests.cpp")
+    target_compile_definitions(learn_vulkan PRIVATE LEARN_VULKAN_HAS_SHADER_BINDING_TESTS=1)
+    if(LEARN_VULKAN_GPU_TESTS)
+        add_test(NAME learn_vulkan_gpu_tests COMMAND learn_vulkan)
+        set_tests_properties(learn_vulkan_gpu_tests PROPERTIES
+            ENVIRONMENT "LEARN_VULKAN_GPU_TESTS=1" RUN_SERIAL TRUE)
+    endif()
+elseif(LEARN_VULKAN_GPU_TESTS)
+    message(FATAL_ERROR "LEARN_VULKAN_GPU_TESTS requires src/test/shader_binding_tests.cpp")
 endif()
 
 add_subdirectory(external)
 add_subdirectory(res)
 set_target_properties(ExternalLibs PROPERTIES FOLDER "ThirdParty")
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "./src/")
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${SHADERC_INCLUDE_DIR}")
-target_link_libraries(${CMAKE_PROJECT_NAME} PUBLIC ExternalLibs)
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE rhi_host)
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE "${SHADERC_LIBRARY}")
+target_include_directories(learn_vulkan PRIVATE
+    "${PROJECT_BINARY_DIR}/generated" src src/my_vulkan src/my_vulkan/command
+    src/my_vulkan/pipeline src/my_vulkan/resource src/utility "${SHADERC_INCLUDE_DIR}")
+target_link_libraries(learn_vulkan PRIVATE ExternalLibs rhi_host "${SHADERC_LIBRARY}")
 if(SHADERC_RUNTIME_LIBRARY)
-    add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    add_custom_command(TARGET learn_vulkan POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${SHADERC_RUNTIME_LIBRARY}"
-            "$<TARGET_FILE_DIR:${CMAKE_PROJECT_NAME}>")
+            "${SHADERC_RUNTIME_LIBRARY}" "$<TARGET_FILE_DIR:learn_vulkan>" VERBATIM)
 endif()
-macro(include_directories_by_dir source_files)
-    if(MSVC)
-        set(sgbd_cur_dir ${CMAKE_CURRENT_SOURCE_DIR})
-        foreach(sgbd_file ${${source_files}})
-            # Internal headers use explicit paths instead of global include directories.
-            if(sgbd_file MATCHES "/my_vulkan/[^/]+/private/")
-                continue()
-            endif()
-            string(REGEX REPLACE ${sgbd_cur_dir}/\(.*\) \\1 sgbd_fpath ${sgbd_file})
-            string(REGEX REPLACE "\(.*\)/.*" \\1 sgbd_group_name ${sgbd_fpath})
-            string(COMPARE EQUAL ${sgbd_fpath} ${sgbd_group_name} sgbd_nogroup)
-            string(REPLACE "/" "\\" sgbd_group_name ${sgbd_group_name})
-            if(sgbd_nogroup)
-                set(sgbd_group_name "\\")
-            endif(sgbd_nogroup)
-            target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${sgbd_group_name})
-        endforeach(sgbd_file)
-    endif(MSVC)
-endmacro(include_directories_by_dir)
-include_directories_by_dir(ALL_FILES)
-

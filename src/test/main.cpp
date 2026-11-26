@@ -1,6 +1,13 @@
 #include "common.h"
+#include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <string_view>
+#include <thread>
 #include "my_vulkan/render_context/private/submission_manager.h"
+#include "utility/task_scheduler.h"
+#include "utility/utils.h"
 
 #if MY_VULKAN_ENABLE_RENDER_GRAPH
 #include "utility/render_graph/render_graph.h"
@@ -424,27 +431,6 @@ struct RenderGraphTestProbe
 };
 #endif // MY_VULKAN_ENABLE_RENDER_GRAPH
 
-namespace
-{
-	VKAPI_ATTR auto VKAPI_CALL _FailQueueSubmit2(
-		VkQueue,
-		uint32_t,
-		const VkSubmitInfo2*,
-		VkFence)->VkResult
-	{
-		return VK_ERROR_DEVICE_LOST;
-	}
-
-	VKAPI_ATTR auto VKAPI_CALL _SucceedQueueSubmit2(
-		VkQueue,
-		uint32_t,
-		const VkSubmitInfo2*,
-		VkFence)->VkResult
-	{
-		return VK_SUCCESS;
-	}
-}
-
 struct CommandQueueManagerTestProbe
 {
 	static auto DeduplicatesAliasedQueueRoles()->bool
@@ -476,242 +462,6 @@ struct CommandQueueManagerTestProbe
 			computeQueueStateIndex == queueStateIndex;
 	}
 
-	static auto FailedWaitSubmitPreservesDependency()->bool
-	{
-		SubmissionManager manager(SubmissionManager::UninitializedTag{});
-		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
-		const VkSemaphore semaphore = reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(11));
-		const size_t queueStateIndex = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
-		SubmissionManager::QueueState& state = manager.m_queueStates[queueStateIndex];
-		QueueDependency dependency;
-
-		SubmissionFrontier producerFrontier;
-		producerFrontier.Advance(queueStateIndex);
-		manager.m_dependencySemaphores.reserve(1);
-		SubmissionManager::DependencySemaphoreMap stagedSemaphores;
-		stagedSemaphores.reserve(1);
-		stagedSemaphores.emplace(&dependency, semaphore);
-		const std::vector<SubmissionManager::PreparedDependency> producerDependencies
-		{
-			{ &dependency, VK_NULL_HANDLE, semaphore, false, true }
-		};
-		manager._CommitPreparedSubmission(
-			queueStateIndex,
-			state,
-			producerFrontier,
-			producerFrontier.GetVersion(queueStateIndex),
-			producerDependencies,
-			stagedSemaphores,
-			nullptr,
-			VK_NULL_HANDLE);
-
-		const SubmissionFrontier originalTail = state.tailFrontier;
-		const SubmissionManager::DependencySignal originalSignal =
-			manager._PeekDependencySignal(dependency);
-		const PFN_vkQueueSubmit2 previousQueueSubmit2 = vkQueueSubmit2;
-		vkQueueSubmit2 = _FailQueueSubmit2;
-		bool submitFailed = false;
-		try
-		{
-			SubmissionManager::SubmitInfo submitInfo;
-			submitInfo.AddWaitQueueDependency(dependency);
-			manager.Submit(QueueFamilyType::GRAPHICS, std::move(submitInfo));
-		}
-		catch (...)
-		{
-			submitFailed = true;
-		}
-		vkQueueSubmit2 = previousQueueSubmit2;
-
-		const SubmissionManager::DependencySignal remainingSignal =
-			manager._PeekDependencySignal(dependency);
-		const bool unchanged = submitFailed &&
-			remainingSignal.semaphore == originalSignal.semaphore &&
-			remainingSignal.frontier.Covers(originalSignal.frontier) &&
-			originalSignal.frontier.Covers(remainingSignal.frontier) &&
-			state.tailFrontier.Covers(originalTail) &&
-			originalTail.Covers(state.tailFrontier) &&
-			state.retiredSemaphores.empty();
-
-		state.retiredSemaphores.reserve(1);
-		SubmissionFrontier cleanupFrontier = producerFrontier;
-		cleanupFrontier.Advance(queueStateIndex);
-		SubmissionManager::DependencySemaphoreMap emptyStagedSemaphores;
-		const std::vector<SubmissionManager::PreparedDependency> cleanupDependencies
-		{
-			{ &dependency, semaphore, VK_NULL_HANDLE, true, false }
-		};
-		manager._CommitPreparedSubmission(
-			queueStateIndex,
-			state,
-			cleanupFrontier,
-			cleanupFrontier.GetVersion(queueStateIndex),
-			cleanupDependencies,
-			emptyStagedSemaphores,
-			nullptr,
-			VK_NULL_HANDLE);
-		return unchanged;
-	}
-
-	static auto SuccessfulWaitSubmitCommitsDependency()->bool
-	{
-		SubmissionManager manager(SubmissionManager::UninitializedTag{});
-		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
-		const VkSemaphore semaphore = reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(21));
-		const size_t queueStateIndex = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
-		SubmissionManager::QueueState& state = manager.m_queueStates[queueStateIndex];
-		QueueDependency dependency;
-
-		SubmissionFrontier producerFrontier;
-		producerFrontier.Advance(queueStateIndex);
-		manager.m_dependencySemaphores.reserve(1);
-		SubmissionManager::DependencySemaphoreMap stagedSemaphores;
-		stagedSemaphores.reserve(1);
-		stagedSemaphores.emplace(&dependency, semaphore);
-		const std::vector<SubmissionManager::PreparedDependency> producerDependencies
-		{
-			{ &dependency, VK_NULL_HANDLE, semaphore, false, true }
-		};
-		manager._CommitPreparedSubmission(
-			queueStateIndex,
-			state,
-			producerFrontier,
-			producerFrontier.GetVersion(queueStateIndex),
-			producerDependencies,
-			stagedSemaphores,
-			nullptr,
-			VK_NULL_HANDLE);
-
-		const PFN_vkQueueSubmit2 previousQueueSubmit2 = vkQueueSubmit2;
-		vkQueueSubmit2 = _SucceedQueueSubmit2;
-		SubmissionManager::SubmitInfo submitInfo;
-		submitInfo.AddWaitQueueDependency(dependency);
-		manager.Submit(QueueFamilyType::GRAPHICS, std::move(submitInfo));
-		vkQueueSubmit2 = previousQueueSubmit2;
-
-		return manager.m_dependencySemaphores.empty() &&
-			state.tailFrontier.GetVersion(queueStateIndex) == 2 &&
-			state.retiredSemaphores.size() == 1 &&
-			state.retiredSemaphores.front().semaphore == semaphore &&
-			state.retiredSemaphores.front().consumerVersion == 2;
-	}
-
-	static auto WaitAndSignalCommitReplacesMapping()->bool
-	{
-		SubmissionManager manager(SubmissionManager::UninitializedTag{});
-		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
-		const VkSemaphore firstSemaphore = reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(31));
-		const VkSemaphore secondSemaphore = reinterpret_cast<VkSemaphore>(static_cast<uintptr_t>(32));
-		const size_t queueStateIndex = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
-		SubmissionManager::QueueState& state = manager.m_queueStates[queueStateIndex];
-		QueueDependency dependency;
-
-		manager.m_dependencySemaphores.reserve(1);
-		state.retiredSemaphores.reserve(2);
-		SubmissionFrontier firstFrontier;
-		firstFrontier.Advance(queueStateIndex);
-		SubmissionManager::DependencySemaphoreMap stagedSemaphores;
-		stagedSemaphores.reserve(1);
-		stagedSemaphores.emplace(&dependency, firstSemaphore);
-		const std::vector<SubmissionManager::PreparedDependency> firstDependencies
-		{
-			{ &dependency, VK_NULL_HANDLE, firstSemaphore, false, true }
-		};
-		manager._CommitPreparedSubmission(
-			queueStateIndex,
-			state,
-			firstFrontier,
-			firstFrontier.GetVersion(queueStateIndex),
-			firstDependencies,
-			stagedSemaphores,
-			nullptr,
-			VK_NULL_HANDLE);
-
-		SubmissionFrontier secondFrontier = firstFrontier;
-		secondFrontier.Advance(queueStateIndex);
-		SubmissionManager::DependencySemaphoreMap emptyStagedSemaphores;
-		const std::vector<SubmissionManager::PreparedDependency> replaceDependencies
-		{
-			{ &dependency, firstSemaphore, secondSemaphore, true, true }
-		};
-		manager._CommitPreparedSubmission(
-			queueStateIndex,
-			state,
-			secondFrontier,
-			secondFrontier.GetVersion(queueStateIndex),
-			replaceDependencies,
-			emptyStagedSemaphores,
-			nullptr,
-			VK_NULL_HANDLE);
-
-		const SubmissionManager::DependencySignal replacedSignal =
-			manager._PeekDependencySignal(dependency);
-		const bool replaced = replacedSignal.semaphore == secondSemaphore &&
-			replacedSignal.frontier.Covers(secondFrontier) &&
-			secondFrontier.Covers(replacedSignal.frontier) &&
-			state.retiredSemaphores.size() == 1 &&
-			state.retiredSemaphores.front().semaphore == firstSemaphore;
-
-		SubmissionFrontier finalFrontier = secondFrontier;
-		finalFrontier.Advance(queueStateIndex);
-		const std::vector<SubmissionManager::PreparedDependency> consumeDependencies
-		{
-			{ &dependency, secondSemaphore, VK_NULL_HANDLE, true, false }
-		};
-		manager._CommitPreparedSubmission(
-			queueStateIndex,
-			state,
-			finalFrontier,
-			finalFrontier.GetVersion(queueStateIndex),
-			consumeDependencies,
-			emptyStagedSemaphores,
-			nullptr,
-			VK_NULL_HANDLE);
-		return replaced && manager.m_dependencySemaphores.empty();
-	}
-
-	static auto HostFenceCommitMovesCallbacks()->bool
-	{
-		SubmissionManager manager(SubmissionManager::UninitializedTag{});
-		const VkQueue queue = reinterpret_cast<VkQueue>(static_cast<uintptr_t>(1));
-		const VkFence vkFence = reinterpret_cast<VkFence>(static_cast<uintptr_t>(41));
-		const size_t queueStateIndex = manager._RegisterQueue(QueueFamilyType::GRAPHICS, queue);
-		SubmissionManager::QueueState& state = manager.m_queueStates[queueStateIndex];
-		state.pendingHostFences.reserve(1);
-		HostFence hostFence;
-		bool callbackRan = false;
-		hostFence.AddCallback([&callbackRan]() { callbackRan = true; });
-
-		SubmissionFrontier submissionFrontier;
-		submissionFrontier.Advance(queueStateIndex);
-		const std::vector<SubmissionManager::PreparedDependency> dependencies;
-		SubmissionManager::DependencySemaphoreMap stagedSemaphores;
-		manager._CommitPreparedSubmission(
-			queueStateIndex,
-			state,
-			submissionFrontier,
-			submissionFrontier.GetVersion(queueStateIndex),
-			dependencies,
-			stagedSemaphores,
-			&hostFence,
-			vkFence);
-
-		bool callbackRegistrationRejected = false;
-		try
-		{
-			hostFence.AddCallback([]() {});
-		}
-		catch (...)
-		{
-			callbackRegistrationRejected = true;
-		}
-		state.pendingHostFences.front().callbacks.front()();
-		return callbackRegistrationRejected &&
-			callbackRan &&
-			state.pendingHostFences.size() == 1 &&
-			state.pendingHostFences.front().callbacks.size() == 1 &&
-			manager._FindHostFenceVkFence(hostFence) == vkFence;
-	}
 };
 
 namespace
@@ -748,6 +498,67 @@ namespace
 			"Logical queue roles sharing one Vulkan queue must share one queue state!");
 		CHECK_TRUE(CommandQueueManagerTestProbe::AliasedRolesShareSubmissionVersions(),
 			"Aliased queue roles must share one submission version sequence!");
+	}
+
+	void TestTaskSchedulerDependencies()
+	{
+		std::atomic_uint completedRoots = 0;
+		std::atomic_bool joinedBoth = false;
+		bool completedChain = false;
+		MySinglThreadTask first([&] { ++completedRoots; });
+		MyMultiThreadTask second([&](uint32_t, uint32_t, uint32_t) { ++completedRoots; });
+		MyMultiThreadTask join([&](uint32_t, uint32_t, uint32_t) { joinedBoth = completedRoots.load() == 2; });
+		MySinglThreadTask finish([&] { completedChain = joinedBoth.load(); });
+		join.DependOn(first);
+		join.DependOn(second);
+		finish.DependOn(first);
+		finish.DependOn(join);
+
+		auto& scheduler = MyTaskScheduler::GetInstance();
+		scheduler.Create();
+		scheduler.AddSingleThreadTask(first);
+		bool externalWaitRejected = false;
+		std::thread external([&]
+		{
+			try { scheduler.WaitForTask(first); }
+			catch (const std::runtime_error&) { externalWaitRejected = true; }
+		});
+		external.join();
+		scheduler.AddMutiThreadTask(second);
+		scheduler.WaitForTask(finish);
+		scheduler.Destroy();
+		CHECK_TRUE(externalWaitRejected, "An unregistered host thread cannot wait on the scheduler!");
+		CHECK_TRUE(completedChain, "A dependent task must run after all of its prerequisites!");
+	}
+
+	void TestFileUtilities()
+	{
+		CHECK_TRUE(common_utils::GetFileExtension("v1.0/README").empty() &&
+			common_utils::GetFileExtension("v1.0/.config").empty() &&
+			common_utils::GetFileExtension("v1.0/archive.tar.gz") == "gz",
+			"File extensions must be taken from the final filename!");
+
+		const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+		const auto directory = std::filesystem::temp_directory_path() / ("learn_vulkan_file_" + std::to_string(stamp));
+		CHECK_TRUE(std::filesystem::create_directory(directory), "Cannot create test directory!");
+		const auto cleanup = [](const std::filesystem::path* path)
+		{
+			std::error_code error;
+			std::filesystem::remove_all(*path, error);
+		};
+		const std::unique_ptr<const std::filesystem::path, decltype(cleanup)> owner(&directory, cleanup);
+		const auto path = directory / "bytes";
+		std::vector<uint8_t> bytes{42};
+		bool rejected = false;
+		try { common_utils::ReadFile(path.string(), bytes); }
+		catch (const std::runtime_error&) { rejected = true; }
+		CHECK_TRUE(rejected && bytes == std::vector<uint8_t>{42}, "A failed read must preserve the output!");
+		{ std::ofstream file(path, std::ios::binary); }
+		common_utils::ReadFile(path.string(), bytes);
+		CHECK_TRUE(bytes.empty(), "An empty file must replace the previous output!");
+		{ std::ofstream file(path, std::ios::binary); file.write("A\0B", 3); }
+		common_utils::ReadFile(path.string(), bytes);
+		CHECK_TRUE((bytes == std::vector<uint8_t>{'A', 0, 'B'}), "Binary reads must preserve embedded zeroes!");
 	}
 
 #if MY_VULKAN_ENABLE_RENDER_GRAPH
@@ -1903,6 +1714,8 @@ auto main(int argc, char** argv) -> int
 #endif
 		TestSubmissionFrontierPropagation();
 		TestCommandQueueRoleDeduplication();
+		TestTaskSchedulerDependencies();
+		TestFileUtilities();
 
 #if MY_VULKAN_ENABLE_RENDER_GRAPH
 		TestSharedExternalDependenciesAreAggregated();

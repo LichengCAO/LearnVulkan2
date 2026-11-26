@@ -24,8 +24,9 @@ auto SubmissionSyncInfo::WaitSwapchainImage(const SwapchainImage& inImage)->Subm
 {
 	CHECK_TRUE(std::find(m_acquireWaitImages.begin(), m_acquireWaitImages.end(), &inImage) ==
 		m_acquireWaitImages.end(), "Swapchain image has a duplicate acquire wait!");
-	m_submitInfo.AddExternalBinaryWait(
-		inImage.GetAcquireSemaphore(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+	// Validate the acquisition now. The actual semaphore is selected at submission
+	// because a later acquisition of this image can use a different frame slot.
+	inImage.GetAcquireSemaphore();
 	m_acquireWaitImages.push_back(&inImage);
 	return *this;
 }
@@ -69,12 +70,9 @@ DeviceContext::DeviceContext(size_t inFrameCount)
 
 DeviceContext::~DeviceContext() noexcept
 {
-	for (const QueueRecordingState& recordingState : m_queueRecordingStates)
-	{
-		CHECK_TRUE(
-			recordingState.pendingTickets.empty(),
-			"Cannot destroy a device context with pending recording tickets!");
-	}
+	// Unsubmitted work can be abandoned, including during unwinding after a failed submit.
+	for (const auto& frameContext : m_frameContexts)
+		frameContext->_WaitForRecordingTasks();
 	MyDevice::GetInstance().WaitIdle();
 	for (const std::unique_ptr<FrameSlot>& frameContext : m_frameContexts)
 	{
@@ -123,7 +121,7 @@ void DeviceContext::StartFrame()
 	for (QueueRecordingState& recordingState : m_queueRecordingStates)
 	{
 		CHECK_TRUE(
-			recordingState.pendingTickets.empty(),
+			recordingState.pendingRecordings.empty(),
 			"Previous frame still has pending recording tickets!");
 	}
 
@@ -177,7 +175,7 @@ void DeviceContext::PresentSwapchainImage(
 	CHECK_TRUE(imageIter != m_acquiredImages.end(),
 		"Presented image was not acquired in the current frame!");
 	CHECK_TRUE(inImage.m_acquireWaitSubmitted, "Swapchain acquire wait was not submitted!");
-	CHECK_TRUE(m_queueRecordingStates[_GetQueueIndex(QueueFamilyType::GRAPHICS)].pendingTickets.empty(),
+	CHECK_TRUE(m_queueRecordingStates[_GetQueueIndex(QueueFamilyType::GRAPHICS)].pendingRecordings.empty(),
 		"Cannot present while graphics recording tickets remain pending!");
 	SubmissionManager::SubmitInfo bridge;
 	for (QueueDependency* dependency : inWaits)
@@ -197,9 +195,17 @@ void DeviceContext::CommitCommandsToQueue(
 {
 	const size_t queueIndex = _GetQueueIndex(inQueue);
 	FrameSlot& frameContext = _GetCurrentFrameContext();
-	FrameSlot::RecordingTicket ticket =
-		frameContext.DispatchRecording(inQueue, std::move(inBuffers));
-	m_queueRecordingStates[queueIndex].pendingTickets.push_back(ticket);
+	auto& pending = m_queueRecordingStates[queueIndex].pendingRecordings;
+	pending.emplace_back(FrameSlot::RecordingTicket{});
+	try
+	{
+		pending.back() = frameContext.DispatchRecording(inQueue, std::move(inBuffers));
+	}
+	catch (...)
+	{
+		pending.pop_back();
+		throw;
+	}
 }
 
 void DeviceContext::EndFrame()
@@ -209,15 +215,19 @@ void DeviceContext::EndFrame()
 	for (const QueueRecordingState& recordingState : m_queueRecordingStates)
 	{
 		CHECK_TRUE(
-			recordingState.pendingTickets.empty(),
+			recordingState.pendingRecordings.empty(),
 			"Cannot end frame while recording tickets remain pending!");
 	}
 	CHECK_TRUE(m_uptrCommandQueueManager != nullptr, "Command queue manager is not available!");
 	const auto submitCompletionMarker =
 		[this, &frameContext](QueueFamilyType inQueue)
 		{
+			HostFence& fence = frameContext.GetCompletionFence(inQueue);
+			// An earlier EndFrame attempt may have submitted this queue's marker
+			// before a later queue failed. Include work submitted since that attempt.
+			Wait(fence);
 			SubmissionManager::SubmitInfo submitInfo;
-			submitInfo.SetFence(frameContext.GetCompletionFence(inQueue));
+			submitInfo.SetFence(fence);
 			m_uptrCommandQueueManager->Submit(inQueue, std::move(submitInfo));
 		};
 
@@ -236,41 +246,51 @@ void DeviceContext::SubmitQueue(
 	FrameSlot& frameContext = _GetCurrentFrameContext();
 	CHECK_TRUE(inQueue == QueueFamilyType::GRAPHICS || inSubmitInfo.m_acquireWaitImages.empty(),
 		"Swapchain acquire waits must be submitted to the graphics queue!");
+	SubmissionManager::SubmitInfo submitInfo = inSubmitInfo.m_submitInfo;
 	for (const SwapchainImage* image : inSubmitInfo.m_acquireWaitImages)
 	{
 		CHECK_TRUE(std::find(m_acquiredImages.begin(), m_acquiredImages.end(), image) !=
 			m_acquiredImages.end(), "Swapchain wait image was not acquired in this frame!");
 		CHECK_TRUE(!image->m_acquireWaitSubmitted, "Swapchain acquire wait was already submitted!");
+		submitInfo.AddExternalBinaryWait(image->GetAcquireSemaphore(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 	}
-	QueueRecordingState& recordingState = m_queueRecordingStates[queueIndex];
+	auto& pending = m_queueRecordingStates[queueIndex].pendingRecordings;
 	std::vector<VkCommandBuffer> commandBuffers;
-	std::vector<VulkanDetail::ResourceReference> resourceReferences;
-
-	while (!recordingState.pendingTickets.empty())
+	size_t referenceCount = frameContext.m_submittedResources.size();
+	for (auto iter = pending.begin(); iter != pending.end(); ++iter)
 	{
-		const FrameSlot::RecordingTicket ticket = recordingState.pendingTickets.front();
-		FrameSlot::RecordingResult payload = frameContext.TakeRecordingResult(ticket);
+		if (const auto* ticket = std::get_if<FrameSlot::RecordingTicket>(&*iter))
+		{
+			try
+			{
+				*iter = frameContext.TakeRecordingResult(*ticket);
+			}
+			catch (...)
+			{
+				pending.erase(iter);
+				throw;
+			}
+		}
+		const auto& payload = std::get<FrameSlot::RecordingResult>(*iter);
 		CHECK_TRUE(payload.queue == inQueue, "Recorded payload belongs to another queue!");
 		commandBuffers.insert(
 			commandBuffers.end(),
 			payload.vkCommandBuffers.begin(),
 			payload.vkCommandBuffers.end());
-		for (auto& reference : payload.resourceReferences)
-		{
-			resourceReferences.push_back(std::move(reference));
-		}
-		recordingState.pendingTickets.erase(recordingState.pendingTickets.begin());
+		referenceCount += payload.resourceReferences.size();
 	}
 
 	CHECK_TRUE(m_uptrCommandQueueManager != nullptr, "Command queue manager is not available!");
-	SubmissionManager::SubmitInfo submitInfo = inSubmitInfo.m_submitInfo;
 	submitInfo.SetCommandBuffers(std::move(commandBuffers));
-	if (!resourceReferences.empty())
-	{
-		frameContext.AddCompletionCallback(
-			[references = std::move(resourceReferences)]() {});
-	}
+	frameContext.m_submittedResources.reserve(referenceCount);
 	m_uptrCommandQueueManager->Submit(inQueue, std::move(submitInfo));
+	for (auto& recording : pending)
+	{
+		auto& references = std::get<FrameSlot::RecordingResult>(recording).resourceReferences;
+		for (auto& reference : references)
+			frameContext.m_submittedResources.push_back(std::move(reference));
+	}
+	pending.clear();
 	for (const SwapchainImage* image : inSubmitInfo.m_acquireWaitImages)
 	{
 		const_cast<SwapchainImage*>(image)->_CommitAcquireWait();

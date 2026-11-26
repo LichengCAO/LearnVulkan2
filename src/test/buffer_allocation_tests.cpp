@@ -96,6 +96,7 @@ struct NativeState final
     bool checkAsSnapshot = false, checkTlasSnapshot = false, nullAsCreate = false, badTlasLimits = false, zeroAsAlignment = false;
     uint32_t bufferAddresses = 0;
     VkDeviceAddress bufferAddressOverride = 0;
+    VkBuffer nextBufferHandle = VK_NULL_HANDLE;
     uint32_t imageCreates = 0, imageDestroys = 0, imageViewCreates = 0, imageViewDestroys = 0;
     bool failImage = false, failImageView = false, failImagePublication = false;
     bool failImageCachePublication = false;
@@ -116,7 +117,7 @@ auto VKAPI_PTR CreateBuffer(VkDevice device, const VkBufferCreateInfo* info,
     CHECK_TRUE(device == active->expectedDevice, "Buffer must use its creating Device!");
     ++active->creates;
     if (active->failCreate) { *out = Handle<VkBuffer>(99999); return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
-    *out = Handle<VkBuffer>(active->next++);
+    *out = active->nextBufferHandle ? std::exchange(active->nextBufferHandle, VK_NULL_HANDLE) : Handle<VkBuffer>(active->next++);
     active->buffers.emplace(*out, info->size);
     return VK_SUCCESS;
 }
@@ -430,6 +431,21 @@ void TestCombinedMemoryRequestUsesCoherentHostAllocation()
     Buffer::DownloadFromDeviceInline(buffer, offset, &output, sizeof(output));
     CHECK_TRUE(output == value && hooks.state.maps == 1 && hooks.state.creates == 1,
         "Transfers without transfer usage must share the mapping and avoid staging!");
+
+    info.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    Buffer cached;
+    ExpectFailure([&] { cached.Create(info); });
+    CHECK_TRUE(!cached.IsValid(), "Missing requested Host caching must leave an empty Buffer!");
+
+    ImageCreateInfo imageInfo;
+    imageInfo.SetUsage(VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    imageInfo.CustomizeSize2D(8, 8);
+    imageInfo.CustomizeImageTiling(VK_IMAGE_TILING_LINEAR);
+    imageInfo.CustomizeMemoryProperty(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    Image image;
+    // This fixture's image memory requirements allow only the device-local, non-Host-visible type.
+    ExpectFailure([&] { image.Create(imageInfo); });
+    CHECK_TRUE(!image.IsValid(), "Missing requested Host visibility must leave an empty Image!");
 }
 
 void TestInlineTransferValidation()
@@ -820,6 +836,11 @@ void ClasBufferTestFixture::SetAllocationFailure(bool inFail)
 void ClasBufferTestFixture::SetBufferAddressOverride(VkDeviceAddress inAddress)
 {
     active->bufferAddressOverride = inAddress;
+}
+
+void ClasBufferTestFixture::SetNextBufferHandle(VkBuffer inHandle)
+{
+    active->nextBufferHandle = inHandle;
 }
 
 auto ClasBufferTestFixture::Bytes(const Buffer& inBuffer) -> std::span<const uint8_t>

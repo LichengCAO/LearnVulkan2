@@ -44,6 +44,7 @@ public:
 class Sampler final
 {
 	friend class MyDevice;
+	friend struct DescriptorPoolTestProbe;
 private:
 	VkSampler m_vkSampler = VK_NULL_HANDLE;
 

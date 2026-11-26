@@ -169,9 +169,10 @@ void CommandBuffer::_BeginRenderPass(const BeginRenderPassCommand::Parameters& i
 
 void CommandBuffer::EndRenderPass()
 {
-	CHECK_TRUE(
-		std::holds_alternative<LegacyRenderPassState>(m_renderingScopeState),
-		"EndRenderPass requires an active render pass!");
+	const auto* state = std::get_if<LegacyRenderPassState>(&m_renderingScopeState);
+	CHECK_TRUE(state != nullptr, "EndRenderPass requires an active render pass!");
+	CHECK_TRUE(state->currentSubpass == state->subpassCount - 1,
+		"EndRenderPass requires the final subpass!");
 
 	_AppendOwnedCommand(std::make_unique<EndRenderPassCommand>());
 	m_renderingScopeState = std::monostate{};

@@ -65,10 +65,8 @@ namespace
 
 struct ShaderReflector::Impl
 {
-	SpvReflectShaderModule module{};
 	std::vector<uint32_t> code;
 	std::unordered_map<VkShaderStageFlagBits, ShaderEntryReflection> entries;
-	~Impl() { spvReflectDestroyShaderModule(&module); }
 };
 
 ShaderReflector::ShaderReflector() = default;
@@ -86,16 +84,19 @@ void ShaderReflector::Create(std::string_view inSpirv)
 	impl->code.resize(static_cast<size_t>(size) / 4);
 	file.seekg(0);
 	CHECK_TRUE(static_cast<bool>(file.read(reinterpret_cast<char*>(impl->code.data()), size)), "Cannot read SPIR-V: " + name);
-	CheckReflect(spvReflectCreateShaderModule(static_cast<size_t>(size), impl->code.data(), &impl->module), name);
-	CHECK_TRUE(impl->module.entry_point_count > 0, "SPIR-V module has no entry points: " + name);
-	for (uint32_t i = 0; i < impl->module.entry_point_count; ++i)
+	// The reflection data below is copied into the snapshot while the parser borrows its bytecode.
+	const spv_reflect::ShaderModule parser(static_cast<size_t>(size), impl->code.data(), SPV_REFLECT_MODULE_FLAG_NO_COPY);
+	CheckReflect(parser.GetResult(), name);
+	const auto& module = parser.GetShaderModule();
+	CHECK_TRUE(module.entry_point_count > 0, "SPIR-V module has no entry points: " + name);
+	for (uint32_t i = 0; i < module.entry_point_count; ++i)
 	{
-		const auto& entry = impl->module.entry_points[i];
+		const auto& entry = module.entry_points[i];
 		const auto stage = static_cast<VkShaderStageFlagBits>(entry.shader_stage);
 		const auto [it, inserted] = impl->entries.try_emplace(stage);
 		CHECK_TRUE(inserted,
 		    "SPIR-V module has multiple entries for stage " + std::to_string(stage) + ": " + name);
-		it->second = ReflectShaderEntry(impl->module, entry);
+		it->second = ReflectShaderEntry(module, entry);
 	}
 	m_impl.swap(impl);
 }
@@ -103,7 +104,7 @@ void ShaderReflector::Create(std::string_view inSpirv)
 auto ShaderReflector::GetCode() const -> std::span<const uint32_t>
 {
 	CHECK_TRUE(m_impl != nullptr, "Shader reflection module is not created!");
-	return {spvReflectGetCode(&m_impl->module), spvReflectGetCodeSize(&m_impl->module) / sizeof(uint32_t)};
+	return m_impl->code;
 }
 
 auto ShaderReflector::ReflectEntry(VkShaderStageFlagBits stage) const -> const ShaderEntryReflection&

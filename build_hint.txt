@@ -1,8 +1,18 @@
-1. install vcpkg: https://github.com/microsoft/vcpkg?tab=readme-ov-file
+Build from the repository root with CMake 3.22 or newer, a C++20 compiler,
+and the Vulkan SDK (headers and shaderc). Initialize the pinned dependencies:
 
-2. follow openvdb's instruction to install openvdb's dependency with vcpkg in cmd:
-vcpkg install zlib:x64-windows
-vcpkg install blosc:x64-windows
-vcpkg install tbb:x64-windows
-vcpkg install boost-iostreams:x64-windows
-vcpkg install boost-interprocess:x64-windows
+    git submodule update --init
+
+For Visual Studio 2022 with VCPKG_ROOT configured, run run_cmake.bat.
+With another C++20 toolchain, configure directly:
+
+    cmake -S . -B build
+
+Use an empty build directory when changing generator or compiler. Build and test:
+
+    cmake --build build --config Debug
+    ctest --test-dir build -C Debug --output-on-failure
+
+Single-config generators accept -DCMAKE_BUILD_TYPE=Debug at configure time.
+Executables are under build/bin (build/bin/Debug for Visual Studio Debug).
+For Host-only tests, configure with -DLEARN_VULKAN_BUILD_DEVICE=OFF.

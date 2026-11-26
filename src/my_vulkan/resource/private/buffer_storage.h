@@ -1,5 +1,6 @@
 #pragma once
 #include "allocator/private/memory_allocator.h"
+#include "vulkan_handle_resource.h"
 
 namespace VulkanDetail
 {
@@ -11,6 +12,7 @@ struct BufferStorage final
     BufferStorage(BufferStorage&&) = delete;
     auto operator=(BufferStorage&&) -> BufferStorage& = delete;
     VkDevice device = VK_NULL_HANDLE;
+    const uint64_t resourceId = _AllocateResourceId();
     VkBuffer buffer = VK_NULL_HANDLE;
     MemoryAllocation allocation;
     ~BufferStorage() noexcept

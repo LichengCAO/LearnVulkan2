@@ -17,6 +17,7 @@ public:
 	// every other ui function call should be inside this render pass
 	inline void SetUpRenderPass(VkRenderPass _renderpass) { m_vkRenderPass = _renderpass; };
 	
+	// Recreate with the swapchain if its image count or render-pass compatibility changes.
 	void Create();
 
 	// start to draw a window, render pass should be started and frame buffers should be bound before it
@@ -53,7 +54,7 @@ public:
 	// end current window
 	void EndWindow();
 
-	// record draw command into command buffer
+	// Record once per acquired frame, into a command buffer for the graphics queue.
 	void Apply(VkCommandBuffer _cmd);
 
 	void Destroy();

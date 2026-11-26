@@ -788,7 +788,7 @@ uses, including GPU execution, before cache destruction. Wrappers do not retain
 the Device; surviving wrappers may safely be cleared or destroyed, but their
 old handles are invalid and have no validity tracking.
 
-## ShaderModule ownership
+## Shader module ownership
 
 Internal `ShaderModule` wrappers borrow VkShaderModule from the Device's private
 `VulkanDetail::ShaderModuleAllocator` and retain their own immutable

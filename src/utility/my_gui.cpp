@@ -3,6 +3,7 @@
 #include "imgui.h"
 #include "imgui_impl_vulkan.h"
 #include "imgui_impl_glfw.h"
+#include <algorithm>
 
 void MyGUI::_StartNewFrame()
 {
@@ -14,6 +15,8 @@ void MyGUI::_StartNewFrame()
 void MyGUI::Create()
 {
 	const auto& myDevice = MyDevice::GetInstance();
+	const uint32_t imageCount = static_cast<uint32_t>(myDevice.m_uptrSwapchainImages.size());
+	CHECK_TRUE(imageCount != 0, "GUI creation requires an initialized swapchain!");
 
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
@@ -31,14 +34,14 @@ void MyGUI::Create()
 	init_info.Instance = myDevice.vkInstance;
 	init_info.PhysicalDevice = myDevice.vkPhysicalDevice;
 	init_info.Device = myDevice.vkDevice;
-	init_info.QueueFamily = myDevice.queueFamilyIndices.graphicsAndComputeFamily.value();
-	init_info.Queue = myDevice.GetQueueByQueueFamilyIndex(myDevice.queueFamilyIndices.graphicsAndComputeFamily.value());
+	init_info.QueueFamily = myDevice.GetQueueFamilyIndexOfType(QueueFamilyType::GRAPHICS);
+	init_info.Queue = myDevice.GetQueueOfType(QueueFamilyType::GRAPHICS);
 	init_info.DescriptorPoolSize = 1000;
 	init_info.PipelineInfoMain.RenderPass = m_vkRenderPass;
 	init_info.PipelineInfoMain.Subpass = 0;
 	init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 	init_info.MinImageCount = 2;
-	init_info.ImageCount = 3;
+	init_info.ImageCount = std::max(init_info.MinImageCount, imageCount);
 	init_info.Allocator = nullptr;
 	ImGui_ImplVulkan_Init(&init_info);
 }
@@ -71,7 +74,7 @@ void MyGUI::StartWindow(
 
 void MyGUI::Text(const std::string& _text)
 {
-	ImGui::Text(_text.c_str());
+	ImGui::TextUnformatted(_text.data(), _text.data() + _text.size());
 }
 
 void MyGUI::FrameRateText()
@@ -107,10 +110,24 @@ void MyGUI::EndWindow()
 
 void MyGUI::Apply(VkCommandBuffer _cmd)
 {
-	ImDrawData* pDrawData = nullptr;
+	if (!m_bFrameStarted)
+		return;
 
 	ImGui::Render();
-	pDrawData = ImGui::GetDrawData();
+	ImDrawData* pDrawData = ImGui::GetDrawData();
+	if (pDrawData->Textures != nullptr)
+	{
+		for (ImTextureData* texture : *pDrawData->Textures)
+		{
+			if (texture->Status == ImTextureStatus_WantCreate || texture->Status == ImTextureStatus_WantUpdates)
+			{
+				// The backend submits uploads and waits on the graphics queue. Draw callbacks run after the lock is released.
+				const auto& device = MyDevice::GetInstance();
+				auto queueLock = device._AcquireQueueHostLock(device.GetQueueOfType(QueueFamilyType::GRAPHICS));
+				ImGui_ImplVulkan_UpdateTexture(texture);
+			}
+		}
+	}
 	ImGui_ImplVulkan_RenderDrawData(pDrawData, _cmd);
 	m_bFrameStarted = false;
 }
@@ -121,4 +138,5 @@ void MyGUI::Destroy()
 	ImGui_ImplVulkan_Shutdown();
 	ImGui_ImplGlfw_Shutdown();
 	ImGui::DestroyContext();
+	m_bFrameStarted = false;
 }

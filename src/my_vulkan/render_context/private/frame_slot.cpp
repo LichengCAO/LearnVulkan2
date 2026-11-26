@@ -55,7 +55,15 @@ struct FrameSlot::RecordingTask final
         task = std::make_unique<MyMultiThreadTask>(
             [this](uint32_t inStart, uint32_t inEnd, uint32_t inThreadIndex)
             {
-                _RecordRange(inStart, inEnd, inThreadIndex);
+                try
+                {
+                    _RecordRange(inStart, inEnd, inThreadIndex);
+                }
+                catch (...)
+                {
+                    // The scheduler assigns non-overlapping ranges and joins them before inspection.
+                    batches[inStart].recordingError = std::current_exception();
+                }
             },
             static_cast<uint32_t>(batches.size()));
         MyTaskScheduler::GetInstance().AddMutiThreadTask(*task);
@@ -71,6 +79,7 @@ struct FrameSlot::RecordingTask final
         payload.vkCommandBuffers.reserve(batches.size());
         for (const RecordBatch& batch : batches)
         {
+            if (batch.recordingError) std::rethrow_exception(batch.recordingError);
             CHECK_TRUE(batch.vkCommandBuffer != VK_NULL_HANDLE, "Recording task produced an invalid command buffer!");
             payload.vkCommandBuffers.push_back(batch.vkCommandBuffer);
         }
@@ -254,6 +263,7 @@ void FrameSlot::_Wait(DeviceContext& inDeviceContext)
     }
 
     _RunCompletionCallbacks();
+    m_submittedResources.clear();
 }
 
 auto FrameSlot::_BuildRecordingBatches(const std::vector<CommandBuffer>& inBuffers) -> std::vector<RecordBatch>
@@ -334,7 +344,15 @@ auto FrameSlot::DispatchRecording(
     RecordingTask* recordContextPtr = recordContext.get();
     const bool inserted = m_recordTasks.emplace(serial, std::move(recordContext)).second;
     CHECK_TRUE(inserted, "Recording ticket already exists!");
-    recordContextPtr->Dispatch();
+    try
+    {
+        recordContextPtr->Dispatch();
+    }
+    catch (...)
+    {
+        m_recordTasks.erase(serial);
+        throw;
+    }
 
     RecordingTicket ticket;
     ticket.m_serial = serial;

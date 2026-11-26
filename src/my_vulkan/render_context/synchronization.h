@@ -40,7 +40,7 @@ private:
 
 // A reusable GPU-to-host completion object.
 //
-// DeviceContext::Wait() or Poll() must consume the previous submission before
+// Wait() or Poll() on the submitting DeviceContext must consume the previous submission before
 // this object is reused. Destroying an in-flight object is allowed because the
 // manager owns its submitted callbacks and synchronization resources. Callbacks
 // are one-shot and belong to a submission, not permanently to the fence.
@@ -52,7 +52,7 @@ public:
 	using Callback = std::function<void()>;
 
 private:
-	bool m_isInFlight = false;
+	std::shared_ptr<const SubmissionFrontier> m_ownerCompletion;
 	size_t m_queueStateIndex = SubmissionFrontier::MAX_QUEUE_COUNT;
 	SubmissionFrontier m_submissionFrontier;
 	std::vector<Callback> m_callbacks;
@@ -72,6 +72,7 @@ public:
 private:
 	void _PrepareForSubmit();
 	auto _CommitSubmit(
+		const std::shared_ptr<SubmissionFrontier>& inOwnerCompletion,
 		size_t inQueueStateIndex,
 		const SubmissionFrontier& inSubmissionFrontier) noexcept->std::vector<Callback>;
 	void _Complete();

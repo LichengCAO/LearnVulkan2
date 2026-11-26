@@ -43,7 +43,7 @@ private:
 	VkDevice m_device = VK_NULL_HANDLE;
 
 private:
-	static auto _ToVmaMemoryUsage(VkMemoryPropertyFlags _propertyFlags) -> VmaMemoryUsage;
+	static auto _GetAllocationCreateInfo(VkMemoryPropertyFlags flags) -> VmaAllocationCreateInfo;
 
 	MemoryAllocator(); // I only want allocator to be created by MyDevice for now
 

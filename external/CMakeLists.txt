@@ -1,4 +1,5 @@
 add_library(ExternalLibs INTERFACE)
+option(ENKITS_BUILD_EXAMPLES "Build enkiTS example applications" OFF)
 
 #set builld option for 3rd party
 set(SPIRV_REFLECT_STATIC_LIB ON)
@@ -118,9 +119,12 @@ target_compile_features(imgui PUBLIC cxx_std_11)
 #==================================
 
 #add directories by their names on current computer
-add_subdirectory(GLFW)
+add_subdirectory(glfw)
 add_subdirectory(glm)
 add_subdirectory(vk-bootstrap)
+if(MSVC)
+    target_compile_options(vk-bootstrap PRIVATE /utf-8)
+endif()
 add_subdirectory(volk)
 add_subdirectory(vma)
 add_subdirectory(spirv_reflect)

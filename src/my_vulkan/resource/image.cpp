@@ -86,7 +86,7 @@ void Image::_ImportSwapchain(VkImage inImage, VkImageUsageFlags inUsage, VkForma
 	infoToFill.memoryProperty = 0; // TODO
 	infoToFill.mipLevels = 1;
 	infoToFill.samples = VK_SAMPLE_COUNT_1_BIT;
-	infoToFill.tiling = VK_IMAGE_TILING_LINEAR;
+	infoToFill.tiling = VK_IMAGE_TILING_OPTIMAL;
 	infoToFill.usage = inUsage;
 	infoToFill.width = inExtent.width;
 

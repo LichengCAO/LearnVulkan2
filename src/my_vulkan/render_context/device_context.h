@@ -34,7 +34,7 @@ class DeviceContext
 private:
 	struct QueueRecordingState final
 	{
-		std::vector<FrameSlot::RecordingTicket> pendingTickets;
+		std::vector<std::variant<FrameSlot::RecordingTicket, FrameSlot::RecordingResult>> pendingRecordings;
 	};
 
 	static auto _GetQueueIndex(QueueFamilyType inQueue) -> size_t;
@@ -63,8 +63,8 @@ public:
 	// Dispatches recording and returns immediately. Requests stay ordered per queue.
 	void CommitCommandsToQueue(QueueFamilyType inQueue, std::vector<CommandBuffer> inBuffers);
 
-	// Waits for and consumes every recording request issued to this queue since
-	// its previous submit, then submits their command buffers in commit order.
+	// Joins recordings and submits them in commit order. A failed recording is discarded.
+	// Other recordings stay queued for retry if recording or submission fails.
 	void SubmitQueue(QueueFamilyType inQueue, const SubmissionSyncInfo& inSubmitInfo);
 
 	// Records, submits, and waits until the specified queue completes the commands.

@@ -17,6 +17,7 @@
 #include <limits>
 #include <utility>
 #include <type_traits>
+#include <tuple>
 
 namespace
 {
@@ -202,10 +203,6 @@ namespace
 		}
 	}
 
-	void _HashPointer(size_t& ioSeed, const void* inPointer)
-	{
-		hash_combine(ioSeed, reinterpret_cast<std::uintptr_t>(inPointer));
-	}
 }
 
 
@@ -318,39 +315,90 @@ namespace
 		std::terminate();
 	}
 
-	auto HashDescriptorBinding(const DescriptorSetDesc::DescriptorBindingInfo& info) -> size_t
+	struct DescriptorBindingKey
 	{
-		size_t result = 0;
-		std::visit([&](const auto& resource)
+		uint32_t binding;
+		uint32_t arrayElement;
+		size_t resourceType;
+		uint64_t resourceId = 0;
+		VkDeviceSize offset = 0;
+		VkDeviceSize range = 0;
+		VkSampler sampler = VK_NULL_HANDLE;
+		VkImageLayout imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		auto operator==(const DescriptorBindingKey&) const -> bool = default;
+	};
+
+	using DescriptorKey = std::vector<DescriptorBindingKey>;
+	struct DescriptorKeyHash
+	{
+		auto operator()(const DescriptorKey& key) const -> size_t
 		{
-			if constexpr (requires { resource.buffer; })
+			size_t result = key.size();
+			for (const auto& item : key)
 			{
-				_HashPointer(result, resource.buffer);
-				hash_combine(result, resource.offset);
-				hash_combine(result, resource.range);
+				hash_combine(result, item.binding);
+				hash_combine(result, item.arrayElement);
+				hash_combine(result, item.resourceType);
+				hash_combine(result, item.resourceId);
+				hash_combine(result, item.offset);
+				hash_combine(result, item.range);
+				hash_combine(result, item.sampler);
+				hash_combine(result, item.imageLayout);
 			}
-			else if constexpr (requires { resource.imageView; })
+			return result;
+		}
+	};
+
+	template<class Items>
+	auto MakeDescriptorKey(const Items& items) -> DescriptorKey
+	{
+		DescriptorKey key;
+		key.reserve(items.size());
+		for (const auto& item : items)
+		{
+			_CheckResource(item.resource);
+			DescriptorBindingKey binding{item.binding, item.arrayElement, item.resource.index()};
+			std::visit([&](const auto& resource)
 			{
-				hash_combine(result, resource.imageView.GetVkImageView());
-				_HashPointer(result, resource.sampler);
-				hash_combine(result, static_cast<std::underlying_type_t<VkImageLayout>>(resource.imageLayout));
-			}
-			else _HashPointer(result, resource);
-		}, info);
-		return result;
+				if constexpr (requires { resource.buffer; })
+				{
+					binding.resourceId = resource.buffer->GetResourceId();
+					binding.offset = resource.offset;
+					binding.range = resource.range;
+				}
+				else if constexpr (requires { resource.imageView; })
+				{
+					binding.resourceId = resource.imageView.GetResourceId();
+					binding.imageLayout = resource.imageLayout;
+					if (resource.sampler)
+					{
+						binding.sampler = resource.sampler->GetVkSampler();
+						CHECK_TRUE(binding.sampler != VK_NULL_HANDLE, "Descriptor sampler is empty!");
+					}
+				}
+				else if constexpr (std::is_same_v<std::decay_t<decltype(resource)>, const Sampler*>)
+					binding.sampler = resource->GetVkSampler();
+				else
+					binding.resourceId = resource->GetResourceId();
+			}, item.resource);
+			CHECK_TRUE(binding.resourceId || binding.sampler, "Descriptor binding requires a created resource!");
+			key.push_back(binding);
+		}
+		std::sort(key.begin(), key.end(), [](const auto& lhs, const auto& rhs) -> bool
+		{
+			return std::tie(lhs.binding, lhs.arrayElement) < std::tie(rhs.binding, rhs.arrayElement);
+		});
+		return key;
 	}
 
 	template<class Items>
-	auto EqualDescriptorItems(const Items& lhs, const Items& rhs) -> bool
+	auto RetainDescriptorImages(const Items& items) -> std::vector<ImageView>
 	{
-		return lhs.size() == rhs.size() && std::all_of(lhs.begin(), lhs.end(), [&](const auto& item) -> bool
-		{
-			return std::any_of(rhs.begin(), rhs.end(), [&](const auto& other) -> bool
-			{
-				return item.binding == other.binding && item.arrayElement == other.arrayElement &&
-					item.resource == other.resource;
-			});
-		});
+		std::vector<ImageView> views;
+		views.reserve(items.size());
+		for (const auto& item : items)
+			if (const auto* image = std::get_if<1>(&item.resource)) views.push_back(image->imageView);
+		return views;
 	}
 }
 
@@ -390,11 +438,7 @@ auto DescriptorPool::Allocate(const DescriptorSetLayout& inLayout, const Descrip
 	const auto requirements = DescriptorRequirements(inLayout.m_descriptorBindings);
 	DescriptorWriteBundle bundle;
 	_ValidateAndBuildWrites(VK_NULL_HANDLE, inLayout.m_descriptorBindings, inDesc.m_items, bundle);
-	std::vector<ImageView> imageViews;
-	imageViews.reserve(inDesc.m_items.size());
-	for (const auto& item : inDesc.m_items)
-		if (const auto* image = std::get_if<DescriptorSetDesc::ImageBinding>(&item.resource))
-			imageViews.push_back(image->imageView);
+	auto imageViews = RetainDescriptorImages(inDesc.m_items);
 
 	const auto allocation = m_impl->pages.Allocate(inLayout.m_vkDescriptorSetLayout, requirements);
 	try
@@ -430,11 +474,11 @@ struct DynamicDescriptorPool::Impl
 {
 	struct Entry
 	{
-		DescriptorSetDesc description;
+		std::vector<ImageView> imageViews;
 		VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 	};
 	DescriptorPoolPages pages;
-	std::unordered_map<VkDescriptorSetLayout, std::unordered_map<size_t, std::vector<Entry>>> cache;
+	std::unordered_map<VkDescriptorSetLayout, std::unordered_map<DescriptorKey, Entry, DescriptorKeyHash>> cache;
 };
 
 DynamicDescriptorPool::DynamicDescriptorPool() noexcept = default;
@@ -464,48 +508,25 @@ void DynamicDescriptorPool::Destroy()
 	m_impl.reset();
 }
 
-auto DynamicDescriptorPool::_HashDescriptorSetDesc(const DescriptorSetDesc& inDesc) const -> size_t
-{
-	std::vector<const DescriptorSetDesc::Item*> sorted;
-	sorted.reserve(inDesc.m_items.size());
-	for (const auto& item : inDesc.m_items) sorted.push_back(&item);
-	std::sort(sorted.begin(), sorted.end(), [](const auto* lhs, const auto* rhs) -> bool
-	{
-		return lhs->binding != rhs->binding ? lhs->binding < rhs->binding : lhs->arrayElement < rhs->arrayElement;
-	});
-	size_t hash = 0;
-	hash_combine(hash, sorted.size());
-	for (const auto* item : sorted)
-	{
-		hash_combine(hash, item->binding);
-		hash_combine(hash, item->arrayElement);
-		hash_combine(hash, item->resource.index());
-		hash_combine(hash, HashDescriptorBinding(item->resource));
-	}
-	return hash;
-}
-
 auto DynamicDescriptorPool::GetOrAllocateTransient(const DescriptorSetLayout& inLayout,
 	const DescriptorSetDesc& inDesc) -> VkDescriptorSet
 {
 	CHECK_TRUE(m_impl, "Dynamic descriptor pool must be created before allocation!");
 	CHECK_TRUE(inLayout.m_vkDescriptorSetLayout != VK_NULL_HANDLE, "Dynamic descriptor allocation requires a created layout!");
-	const size_t hash = _HashDescriptorSetDesc(inDesc);
+	auto key = MakeDescriptorKey(inDesc.m_items);
 	const auto layout = inLayout.m_vkDescriptorSetLayout;
-	if (const auto layouts = m_impl->cache.find(layout); layouts != m_impl->cache.end())
-		if (const auto bucket = layouts->second.find(hash); bucket != layouts->second.end())
-			for (const auto& entry : bucket->second)
-				if (EqualDescriptorItems(entry.description.m_items, inDesc.m_items)) return entry.descriptorSet;
+	auto& entries = m_impl->cache[layout];
+	if (const auto found = entries.find(key); found != entries.end()) return found->second.descriptorSet;
 
 	const auto requirements = DescriptorRequirements(inLayout.m_descriptorBindings);
 	DescriptorWriteBundle bundle;
 	_ValidateAndBuildWrites(VK_NULL_HANDLE, inLayout.m_descriptorBindings, inDesc.m_items, bundle);
-	DescriptorSetDesc retainedDescription = inDesc;
+	auto imageViews = RetainDescriptorImages(inDesc.m_items);
 	const auto allocation = m_impl->pages.Allocate(layout, requirements);
 	WriteDescriptors(allocation.descriptorSet, bundle);
 	// Once allocated, unpublished sets also belong to the pages until Reset.
 	// No failure path here may individually free a dynamic descriptor set.
-	m_impl->cache[layout][hash].push_back({ std::move(retainedDescription), allocation.descriptorSet });
+	entries.emplace(std::move(key), Impl::Entry{ std::move(imageViews), allocation.descriptorSet });
 	return allocation.descriptorSet;
 }
 }

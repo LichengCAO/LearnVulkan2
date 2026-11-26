@@ -401,6 +401,8 @@ auto TopLevelAccelStruct::IsValid() const noexcept -> bool
 { return GetVkAccelerationStructure() != VK_NULL_HANDLE; }
 auto TopLevelAccelStruct::GetVkAccelerationStructure() const noexcept -> VkAccelerationStructureKHR
 { return m_storage ? m_storage->handle : VK_NULL_HANDLE; }
+auto TopLevelAccelStruct::GetResourceId() const noexcept -> uint64_t
+{ return m_storage ? m_storage->resourceId : 0; }
 
 void BuildAccelStructCommandInput::SetTrianglesTarget(const BottomLevelAccelStruct& target,
     std::span<const AccelStructTriangleBuildInfo> infos)

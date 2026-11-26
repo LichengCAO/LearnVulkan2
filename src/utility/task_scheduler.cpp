@@ -1,6 +1,6 @@
 #include "task_scheduler.h"
-#include "device.h"
 #include <TaskScheduler.h>
+#include <deque>
 
 namespace
 {
@@ -37,13 +37,11 @@ namespace
 	}
 }
 
-std::unique_ptr<MyTaskScheduler> MyTaskScheduler::g_uptrInstance;
-
 class MySinglThreadTaskImpl final : public ISingleThreadTask, public enki::IPinnedTask
 {
 private:
 	std::function<void()> m_function;
-	std::vector<enki::Dependency> m_dependencies;
+	std::deque<enki::Dependency> m_dependencies;
 
 public:
 	MySinglThreadTaskImpl(std::function<void()> inFunction, uint32_t inThreadId = 0) 
@@ -56,7 +54,7 @@ class MyMultiThreadTaskImpl final : public IMultiThreadTask, public enki::ITaskS
 {
 private:
 	std::function<void(uint32_t, uint32_t, uint32_t)> m_function;
-	std::vector<enki::Dependency> m_dependencies;
+	std::deque<enki::Dependency> m_dependencies;
 
 public:
 	MyMultiThreadTaskImpl(std::function<void(uint32_t, uint32_t, uint32_t)> inFunction, uint32_t inSubTaskCount = 1) 
@@ -68,6 +66,13 @@ public:
 
 class MyTaskSchedulerImpl final : public ITaskScheduler, public enki::TaskScheduler
 {
+private:
+	void _RequireTaskThread() const
+	{
+		CHECK_TRUE(GetThreadNum() < GetNumTaskThreads(),
+			"Task sets and waits require an initialized scheduler and its owning thread or a worker!");
+	}
+
 public:
 	virtual void AddSingleThreadTask(ISingleThreadTask& inSingleThreadTask) override;
 	virtual void AddMutiThreadTask(IMultiThreadTask& inMultiThreadTask) override;
@@ -79,8 +84,7 @@ void MySinglThreadTaskImpl::DependOn(IWaitable& inPrecondition)
 {
 	enki::ICompletable* pCompletable = dynamic_cast<enki::ICompletable*>(&inPrecondition);
 	CHECK_TRUE(pCompletable != nullptr);
-	m_dependencies.push_back({});
-	this->SetDependency(m_dependencies.back(), pCompletable);
+	this->SetDependency(m_dependencies.emplace_back(), pCompletable);
 }
 
 void MySinglThreadTaskImpl::Execute()
@@ -90,12 +94,9 @@ void MySinglThreadTaskImpl::Execute()
 
 void MyMultiThreadTaskImpl::DependOn(IWaitable& inPrecondition)
 {
-	IImplement* pImpl = dynamic_cast<IImplement*>(&inPrecondition);
-	CHECK_TRUE(pImpl != nullptr);
-	enki::ICompletable* pCompletable = static_cast<enki::ICompletable*>(pImpl->GetRealImplement());
+	auto* pCompletable = dynamic_cast<enki::ICompletable*>(&inPrecondition);
 	CHECK_TRUE(pCompletable != nullptr);
-	m_dependencies.push_back({});
-	this->SetDependency(m_dependencies.back(), pCompletable);
+	this->SetDependency(m_dependencies.emplace_back(), pCompletable);
 }
 
 void MyMultiThreadTaskImpl::ExecuteSubTask(uint32_t SubStart, uint32_t SubEnd, uint32_t inThreadIndex)
@@ -112,11 +113,13 @@ void MyTaskSchedulerImpl::AddSingleThreadTask(ISingleThreadTask& inSingleThreadT
 {
 	enki::IPinnedTask* piPinned = dynamic_cast<enki::IPinnedTask*>(&inSingleThreadTask);
 	CHECK_TRUE(piPinned != nullptr);
+	CHECK_TRUE(piPinned->threadNum < GetNumTaskThreads(), "Pinned tasks require an initialized scheduler!");
 	this->AddPinnedTask(piPinned);
 }
 
 void MyTaskSchedulerImpl::AddMutiThreadTask(IMultiThreadTask& inMultiThreadTask)
 {
+	_RequireTaskThread();
 	enki::ITaskSet* piTaskSet = dynamic_cast<enki::ITaskSet*>(&inMultiThreadTask);
 	CHECK_TRUE(piTaskSet != nullptr);
 	this->AddTaskSetToPipe(piTaskSet);
@@ -126,17 +129,22 @@ void MyTaskSchedulerImpl::WaitForTask(const IWaitable& inToWait)
 {
 	const enki::ICompletable* piComplete = dynamic_cast<const enki::ICompletable*>(&inToWait);
 	CHECK_TRUE(piComplete != nullptr);
+	if (piComplete->GetIsComplete())
+		return;
+	_RequireTaskThread();
 	this->enki::TaskScheduler::WaitforTask(piComplete);
 }
 
 void MyTaskSchedulerImpl::WaitForAll()
 {
+	_RequireTaskThread();
 	this->enki::TaskScheduler::WaitforAll();
 }
 
 MySinglThreadTask::MySinglThreadTask(std::function<void()> inFunction, uint32_t inThreadIndex)
 	:m_uptrImpl(std::make_unique<MySinglThreadTaskImpl>(inFunction, inThreadIndex))
 {
+	CHECK_TRUE(inThreadIndex < MyTaskScheduler::THREAD_COUNT, "Pinned task thread index is out of range!");
 }
 
 void MySinglThreadTask::DependOn(IWaitable& inPrecondition)
@@ -191,12 +199,8 @@ MyTaskScheduler::MyTaskScheduler()
 
 auto MyTaskScheduler::GetInstance() -> MyTaskScheduler&
 {
-	if (g_uptrInstance == nullptr)
-	{
-		g_uptrInstance.reset(new MyTaskScheduler());
-	}
-
-	return *g_uptrInstance;
+	static MyTaskScheduler instance;
+	return instance;
 }
 
 void MyTaskScheduler::Create()

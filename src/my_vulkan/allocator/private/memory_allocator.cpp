@@ -4,16 +4,18 @@
 #include "vk_mem_alloc.h"
 #include "utils.h"
 
-auto MemoryAllocator::_ToVmaMemoryUsage(VkMemoryPropertyFlags _propertyFlags) -> VmaMemoryUsage
+auto MemoryAllocator::_GetAllocationCreateInfo(VkMemoryPropertyFlags flags) -> VmaAllocationCreateInfo
 {
-	// from nvidia ray tracing tutorial
-	if ((_propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-		return VMA_MEMORY_USAGE_GPU_ONLY;
-	else if ((_propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-		return VMA_MEMORY_USAGE_CPU_ONLY;
-	else if ((_propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-		return VMA_MEMORY_USAGE_CPU_TO_GPU;
-	return VMA_MEMORY_USAGE_UNKNOWN;
+	VmaAllocationCreateInfo info{};
+	// Device locality is a placement preference, including on devices with separate Host memory.
+	info.requiredFlags = flags & ~VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+	if (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+		info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	else if (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+		info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+	else if (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+		info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+	return info;
 }
 
 MemoryAllocator::MemoryAllocator()
@@ -68,7 +70,7 @@ MemoryAllocator::~MemoryAllocator()
 auto MemoryAllocator::AllocateForVkImage(VkImage image, VkMemoryPropertyFlags flags) -> VulkanDetail::MemoryAllocation
 {
     CHECK_TRUE(IsValid() && image != VK_NULL_HANDLE, "Invalid image allocation dependencies!");
-    VmaAllocationCreateInfo info{}; info.usage = _ToVmaMemoryUsage(flags);
+    const auto info = _GetAllocationCreateInfo(flags);
     VmaAllocation native = nullptr;
     VK_CHECK(vmaAllocateMemoryForImage(m_vmaAllocator, image, &info, &native, nullptr), "Failed to allocate image memory!");
     VulkanDetail::MemoryAllocation allocation(m_vmaAllocator, native);
@@ -79,12 +81,9 @@ auto MemoryAllocator::AllocateForVkImage(VkImage image, VkMemoryPropertyFlags fl
 auto MemoryAllocator::AllocateForVkBuffer(VkBuffer _vkBuffer, VkMemoryPropertyFlags _flags, VkDeviceSize _alignment) -> VulkanDetail::MemoryAllocation
 {
 	CHECK_TRUE(IsValid() && _vkBuffer != VK_NULL_HANDLE, "Invalid buffer allocation dependencies!");
-	VmaAllocationCreateInfo allocCreateInfo{};
+	const auto allocCreateInfo = _GetAllocationCreateInfo(_flags);
 	VmaAllocation allocResult = nullptr;
 	VmaAllocationInfo allocInfo{};
-
-	allocCreateInfo.usage = _ToVmaMemoryUsage(_flags);
-	allocCreateInfo.requiredFlags = _flags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
 	if (_alignment > 0)
 	{
